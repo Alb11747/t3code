@@ -93,6 +93,7 @@ packageExtensionsChecksum: sha256-34mvKz5PLlrn2Tt9jUJC1SbK5hRE+oxwqyC1J6r09oE=
 
 patchedDependencies:
   '@clerk/expo@4.6.8': b8b22ab733de5bea846ad9e88046c10582352fe9ad86f314f368b2a823f0f281
+  '@effect/platform-node-shared@4.0.0-rc.115': 2aa64cbaeeefae39ea1605cd0baa3c5e6a9e30629186d4bbc05a6b3385b463c8
   '@effect/vitest@4.0.0-rc.115': 172bd95ef73a13d322888984415d5d18d9d2aa8e13fa529eac235efac837e902
   '@expo/metro-config@58.0.6': 90fa980e8b6480631fb2fbb04559834e3c612db40c550cd828f11be297d8d760
   '@ff-labs/fff-node@0.9.4': c4e3cc2420ceb9dc650f9d189e9c24baf7e83f342998bacda5f459a4ce7927a8
@@ -524,7 +525,7 @@ importers:
         version: 4.0.0-rc.115(bufferutil@4.1.0)(effect@4.0.0-rc.115(patch_hash=e7f58877e87996e73e44f697dd39ec71b3a05dcfd00047253c11eb9ee47d84ec))(redis@6.2.1)(utf-8-validate@6.0.6)
       '@effect/platform-node-shared':
         specifier: 4.0.0-rc.115
-        version: 4.0.0-rc.115(bufferutil@4.1.0)(effect@4.0.0-rc.115(patch_hash=e7f58877e87996e73e44f697dd39ec71b3a05dcfd00047253c11eb9ee47d84ec))(utf-8-validate@6.0.6)
+        version: 4.0.0-rc.115(patch_hash=2aa64cbaeeefae39ea1605cd0baa3c5e6a9e30629186d4bbc05a6b3385b463c8)(bufferutil@4.1.0)(effect@4.0.0-rc.115(patch_hash=e7f58877e87996e73e44f697dd39ec71b3a05dcfd00047253c11eb9ee47d84ec))(utf-8-validate@6.0.6)
       '@ff-labs/fff-node':
         specifier: 0.9.4
         version: 0.9.4(patch_hash=c4e3cc2420ceb9dc650f9d189e9c24baf7e83f342998bacda5f459a4ce7927a8)
@@ -12936,7 +12937,7 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  '@effect/platform-node-shared@4.0.0-rc.115(bufferutil@4.1.0)(effect@4.0.0-rc.115(patch_hash=e7f58877e87996e73e44f697dd39ec71b3a05dcfd00047253c11eb9ee47d84ec))(utf-8-validate@6.0.6)':
+  '@effect/platform-node-shared@4.0.0-rc.115(patch_hash=2aa64cbaeeefae39ea1605cd0baa3c5e6a9e30629186d4bbc05a6b3385b463c8)(bufferutil@4.1.0)(effect@4.0.0-rc.115(patch_hash=e7f58877e87996e73e44f697dd39ec71b3a05dcfd00047253c11eb9ee47d84ec))(utf-8-validate@6.0.6)':
     dependencies:
       '@types/ws': 8.18.1
       effect: 4.0.0-rc.115(patch_hash=e7f58877e87996e73e44f697dd39ec71b3a05dcfd00047253c11eb9ee47d84ec)
@@ -12947,7 +12948,7 @@ snapshots:
 
   '@effect/platform-node@4.0.0-rc.115(bufferutil@4.1.0)(effect@4.0.0-rc.115(patch_hash=e7f58877e87996e73e44f697dd39ec71b3a05dcfd00047253c11eb9ee47d84ec))(redis@6.2.1)(utf-8-validate@6.0.6)':
     dependencies:
-      '@effect/platform-node-shared': 4.0.0-rc.115(bufferutil@4.1.0)(effect@4.0.0-rc.115(patch_hash=e7f58877e87996e73e44f697dd39ec71b3a05dcfd00047253c11eb9ee47d84ec))(utf-8-validate@6.0.6)
+      '@effect/platform-node-shared': 4.0.0-rc.115(patch_hash=2aa64cbaeeefae39ea1605cd0baa3c5e6a9e30629186d4bbc05a6b3385b463c8)(bufferutil@4.1.0)(effect@4.0.0-rc.115(patch_hash=e7f58877e87996e73e44f697dd39ec71b3a05dcfd00047253c11eb9ee47d84ec))(utf-8-validate@6.0.6)
       effect: 4.0.0-rc.115(patch_hash=e7f58877e87996e73e44f697dd39ec71b3a05dcfd00047253c11eb9ee47d84ec)
       redis: 6.2.1
       undici: 8.10.2

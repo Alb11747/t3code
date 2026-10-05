@@ -1,0 +1,59 @@
+diff --git a/dist/NodeChildProcessSpawner.js b/dist/NodeChildProcessSpawner.js
+index 95d97c58cd42c5f10c445c289f792df668b1d153..74682bf19dfd89c8231ed66cad17d802c151bd16 100644
+--- a/dist/NodeChildProcessSpawner.js
++++ b/dist/NodeChildProcessSpawner.js
+@@ -44,9 +44,17 @@ const isProcessAlive = (childProcess, exitSignal) => {
+     return false;
+   }
+ };
+-const taskkill = (childProcess, onExit = () => {}) => NodeChildProcess.execFile("taskkill", ["/pid", String(childProcess.pid), "/T", "/F"], {
+-  windowsHide: true
+-}, onExit);
++const taskkill = (childProcess, onExit = () => {}) => {
++  // Once Node observes the leader's exit, taskkill /T cannot reclaim orphaned
++  // descendants through its PID, which may be reused. Skip stale-PID cleanup.
++  if (childProcess.exitCode !== null || childProcess.signalCode !== null) {
++    onExit(null);
++    return;
++  }
++  NodeChildProcess.execFile("taskkill", ["/pid", String(childProcess.pid), "/T", "/F"], {
++    windowsHide: true
++  }, onExit);
++};
+ const make = /*#__PURE__*/Effect.gen(function* () {
+   const fs = yield* FileSystem.FileSystem;
+   const path = yield* Path.Path;
+diff --git a/src/NodeChildProcessSpawner.ts b/src/NodeChildProcessSpawner.ts
+index 2077379773283926b715e29d6b6431bf7ba20ff9..707bcbe89733c1a7c6c8aed46dff885a4a5db0cc 100644
+--- a/src/NodeChildProcessSpawner.ts
++++ b/src/NodeChildProcessSpawner.ts
+@@ -19,7 +19,9 @@
+  * `forceKillAfter`, the wait is limited to one second and never escalates.
+  * With it, cleanup may take the configured duration plus a final one-second
+  * wait after `SIGKILL`. Zombie descendants can consume either full bound. On
+- * Windows, `taskkill` terminates the tree and only the leader's exit is awaited.
++ * Windows, `taskkill` terminates the tree while the leader is running and only
++ * the leader's exit is awaited. Descendants that outlive the leader are not
++ * reclaimed by PID-based cleanup.
+  *
+  * @since 4.0.0
+  */
+@@ -95,10 +97,17 @@ const isProcessAlive = (childProcess: NodeChildProcess.ChildProcess, exitSignal:
+ const taskkill = (
+   childProcess: NodeChildProcess.ChildProcess,
+   onExit: (error: NodeChildProcess.ExecException | null) => void = () => {}
+-) =>
++) => {
++  // Once Node observes the leader's exit, taskkill /T cannot reclaim orphaned
++  // descendants through its PID, which may be reused. Skip stale-PID cleanup.
++  if (childProcess.exitCode !== null || childProcess.signalCode !== null) {
++    onExit(null)
++    return
++  }
+   NodeChildProcess.execFile(
+     "taskkill",
+     ["/pid", String(childProcess.pid!), "/T", "/F"],
+     { windowsHide: true },
+     onExit
+   )
++}
