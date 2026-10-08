@@ -492,7 +492,11 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       accountResponse.account?.type === "chatgpt"
         ? requestCodexChatGptModels({ client, codexHome: initialize.codexHome, spawnedAtMs })
         : requestAllCodexModels(client),
-      input.skipNativeUsage
+      // Native account usage requires ChatGPT auth. Custom providers can be
+      // ready with no OpenAI account and use a configured hub usage source.
+      input.skipNativeUsage ||
+      !accountResponse.requiresOpenaiAuth ||
+      accountResponse.account?.type === "apiKey"
         ? Effect.succeed(undefined)
         : client.request("account/rateLimits/read", null).pipe(
             Effect.map((response): CodexRateLimitsProbe => ({
@@ -718,7 +722,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     ? { status: "ready" as const, auth: managedAuth, message: undefined }
     : accountProbeStatus(snapshot);
   const usageLimits =
-    snapshot.account.account?.type === "apiKey"
+    !snapshot.account.requiresOpenaiAuth || snapshot.account.account?.type === "apiKey"
       ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
       : snapshot.rateLimits === undefined || "failure" in snapshot.rateLimits
         ? makeUnavailableUsageLimits({
