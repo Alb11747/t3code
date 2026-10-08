@@ -16,7 +16,6 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import type {
   EnvironmentId,
   ModelSelection,
-  OrchestrationV2ThreadLaunchWorkspaceStrategy,
   ProjectId,
   ScheduledTask,
   ScheduledTaskId,
@@ -27,6 +26,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { DEFAULT_WEBHOOK_PROMPT } from "@t3tools/client-runtime/scheduled-task-webhook";
+import { availableScratchWorkspaceRoot } from "@t3tools/client-runtime/operations/projects";
 import {
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   MIN_SCHEDULED_TASK_INTERVAL_MS,
@@ -59,6 +59,7 @@ import {
 } from "../../state/environments";
 import { useProjects } from "../../state/entities";
 import { environmentAtomList, environmentIdsKey } from "../../state/environmentAtomList";
+import { projectEnvironment } from "../../state/projects";
 import { formatEnvironmentQueryError, useEnvironmentQuery } from "../../state/query";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -76,7 +77,10 @@ import {
   matchesScheduledTaskScope,
   scheduleFromDraft,
   scheduledTaskDefaultModel,
+  scheduledTaskDefaultProjectId,
+  scheduledTaskProjectChoices,
   taskToDraft,
+  workspaceStrategyFromDraft,
   type DraftState,
   type ScheduleMode,
   type WorkspaceMode,
@@ -114,6 +118,7 @@ import {
 const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 const WEEKDAY_SHORT = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] as const;
+const NO_PROJECT_VALUE = "no-project";
 
 const WORKSPACE_MODE_LABELS: Record<WorkspaceMode, string> = {
   worktree: "Create a new worktree",
@@ -976,10 +981,15 @@ function ScheduledTaskEditorForm({
     connected ? serverEnvironment.scheduledTasksLive({ environmentId, input: {} }) : null,
   );
   const allProjects = useProjects();
-  const projects = allProjects.filter(
-    (project) =>
-      project.environmentId === environmentId &&
-      matchesScheduledTaskScope(scope, environmentId, project.id),
+  const scratchWorkspaceRoot = availableScratchWorkspaceRoot(
+    environment?.connection.phase,
+    environment?.serverConfig,
+  );
+  const { projects, scratchProject, canSelectNoProject } = scheduledTaskProjectChoices(
+    scope,
+    environmentId,
+    allProjects,
+    scratchWorkspaceRoot,
   );
   const settings = useEnvironmentSettings(environmentId);
   const providers =
@@ -990,8 +1000,14 @@ function ScheduledTaskEditorForm({
   const upsertTask = useAtomCommand(serverEnvironment.upsertScheduledTask, {
     label: "scheduled task upsert",
   });
+  const openScratch = useAtomCommand(projectEnvironment.openScratch, { reportFailure: false });
   const [draft, setDraft] = useState<DraftState>(() =>
-    task ? taskToDraft(task) : { ...EMPTY_DRAFT, projectId: projects[0]?.id ?? "" },
+    task
+      ? taskToDraft(task)
+      : {
+          ...EMPTY_DRAFT,
+          projectId: scheduledTaskDefaultProjectId({ projects, canSelectNoProject }),
+        },
   );
   const submissionPending = useRef(false);
   const editingTaskMissing =
@@ -1001,8 +1017,11 @@ function ScheduledTaskEditorForm({
   const liveTask = tasksQuery.data
     ? (tasksQuery.data.tasks.find((entry) => entry.id === draft.editingId) ?? null)
     : task;
-  const selectedProjectId = draft.projectId || projects[0]?.id || "";
-  const selectedProject = projects.find((project) => project.id === selectedProjectId);
+  const selectedProjectId = draft.projectId;
+  const noProject = selectedProjectId === null || selectedProjectId === scratchProject?.id;
+  const selectedProject = noProject
+    ? scratchProject
+    : projects.find((project) => project.id === selectedProjectId);
   const instanceEntries = sortProviderInstanceEntries(
     applyProviderInstanceSettings(
       deriveProviderInstanceEntries(providers),
@@ -1052,10 +1071,13 @@ function ScheduledTaskEditorForm({
     if (
       !draft.title.trim() ||
       !draft.prompt.trim() ||
-      !projects.some((project) => project.id === selectedProjectId) ||
+      (noProject ? !canSelectNoProject : !selectedProject) ||
       selection === null
     ) {
-      reportFailure("Scheduled task is incomplete", "Add a title, prompt, project, and model.");
+      reportFailure(
+        "Scheduled task is incomplete",
+        "Add a title, prompt, and model, and select a project or No project.",
+      );
       return;
     }
     const schedule = scheduleFromDraft(draft);
@@ -1083,7 +1105,11 @@ function ScheduledTaskEditorForm({
       reportFailure("Invalid interval", "Enter an interval of at least one minute.");
       return;
     }
-    if (draft.workspaceMode === "existing_worktree" && !draft.existingWorktreePath.trim()) {
+    if (
+      !noProject &&
+      draft.workspaceMode === "existing_worktree" &&
+      !draft.existingWorktreePath.trim()
+    ) {
       reportFailure("Checkout path is required", "Enter the path of the checkout to run in.");
       return;
     }
@@ -1093,33 +1119,37 @@ function ScheduledTaskEditorForm({
       draft.baseModelSelection.model === selection.model
         ? draft.baseModelSelection
         : selection;
-    const workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy =
-      draft.workspaceMode === "root"
-        ? { type: "root" }
-        : draft.workspaceMode === "existing_worktree"
-          ? { type: "existing_worktree", worktreePath: draft.existingWorktreePath.trim() }
-          : {
-              type: "worktree",
-              baseRef: draft.baseRef.trim() || "main",
-              startFromOrigin: draft.startFromOrigin,
-            };
+    // Lock before resolving Scratch, which may create the folder on first use.
+    submissionPending.current = true;
+    setSaving(true);
+    let projectId = selectedProject?.id;
+    if (noProject) {
+      const result = await openScratch({ environmentId, input: {} });
+      if (result._tag === "Failure") {
+        submissionPending.current = false;
+        setSaving(false);
+        if (!isAtomCommandInterrupted(result)) {
+          reportFailure("Could not save scheduled task", squashAtomCommandFailure(result));
+        }
+        return;
+      }
+      projectId = result.value.id;
+    }
     const input: ScheduledTaskUpsertInput = {
       ...(draft.editingId ? { id: draft.editingId as ScheduledTaskId, requireExisting: true } : {}),
       title: draft.title.trim(),
       prompt: draft.prompt.trim(),
       enabled: draft.enabled,
       schedule,
-      projectId: selectedProjectId as ProjectId,
+      projectId: projectId as ProjectId,
       threadId: draft.threadId ? (draft.threadId as ThreadId) : null,
-      workspaceStrategy,
+      workspaceStrategy: workspaceStrategyFromDraft(draft, noProject),
       modelSelection,
       runtimeMode: draft.runtimeMode,
       interactionMode: draft.interactionMode,
       creationSource: "web",
     };
-    // Lock before React renders, and keep successful creates locked until the form closes.
-    submissionPending.current = true;
-    setSaving(true);
+    // Keep successful creates locked until the form closes.
     const result = await upsertTask({ environmentId, input });
     setSaving(false);
     if (result._tag === "Failure") {
@@ -1153,10 +1183,17 @@ function ScheduledTaskEditorForm({
               onValueChange={(id) => {
                 const next = connectedEnvironments.find((entry) => entry.environmentId === id);
                 if (!next) return;
+                const nextChoices = scheduledTaskProjectChoices(
+                  scope,
+                  next.environmentId,
+                  allProjects,
+                  availableScratchWorkspaceRoot(next.connection.phase, next.serverConfig),
+                );
                 setEnvironmentId(next.environmentId);
                 setDraft((current) => ({
                   ...current,
-                  projectId: "",
+                  projectId: scheduledTaskDefaultProjectId(nextChoices, noProject),
+                  threadId: "",
                   modelKey: "",
                   baseModelSelection: null,
                   baseRef: "main",
@@ -1232,15 +1269,27 @@ function ScheduledTaskEditorForm({
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Project" htmlFor="scheduled-task-project">
               <Select
-                value={selectedProjectId}
-                onValueChange={(projectId) =>
-                  setDraft((current) => ({ ...current, projectId: projectId ?? "" }))
-                }
+                value={noProject ? NO_PROJECT_VALUE : selectedProjectId}
+                onValueChange={(projectId) => {
+                  setDraft((current) => ({
+                    ...current,
+                    projectId: projectId === NO_PROJECT_VALUE ? null : (projectId ?? ""),
+                    threadId:
+                      projectId === (noProject ? NO_PROJECT_VALUE : selectedProjectId)
+                        ? current.threadId
+                        : "",
+                  }));
+                }}
               >
                 <SelectTrigger size="sm" id="scheduled-task-project">
-                  <SelectValue placeholder="Select a project">{selectedProject?.title}</SelectValue>
+                  <SelectValue placeholder="Select a project">
+                    {noProject ? "No project" : selectedProject?.title}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectPopup>
+                  {canSelectNoProject ? (
+                    <SelectItem value={NO_PROJECT_VALUE}>No project</SelectItem>
+                  ) : null}
                   {projects.map((project) => (
                     <SelectItem key={project.id} value={project.id} label={project.title}>
                       <span className="block truncate">{project.title}</span>
@@ -1260,26 +1309,28 @@ function ScheduledTaskEditorForm({
               </Select>
             </Field>
 
-            <Field label="Workspace" htmlFor="scheduled-task-workspace">
-              <Select
-                value={draft.workspaceMode}
-                onValueChange={(value) =>
-                  setDraft((current) => ({ ...current, workspaceMode: value as WorkspaceMode }))
-                }
-              >
-                <SelectTrigger size="sm" id="scheduled-task-workspace">
-                  <SelectValue>{WORKSPACE_MODE_LABELS[draft.workspaceMode]}</SelectValue>
-                </SelectTrigger>
-                <SelectPopup>
-                  <SelectItem value="worktree">Create a new worktree</SelectItem>
-                  <SelectItem value="root">Use the project checkout</SelectItem>
-                  <SelectItem value="existing_worktree">Use a specific checkout</SelectItem>
-                </SelectPopup>
-              </Select>
-            </Field>
+            {!noProject ? (
+              <Field label="Workspace" htmlFor="scheduled-task-workspace">
+                <Select
+                  value={draft.workspaceMode}
+                  onValueChange={(value) =>
+                    setDraft((current) => ({ ...current, workspaceMode: value as WorkspaceMode }))
+                  }
+                >
+                  <SelectTrigger size="sm" id="scheduled-task-workspace">
+                    <SelectValue>{WORKSPACE_MODE_LABELS[draft.workspaceMode]}</SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup>
+                    <SelectItem value="worktree">Create a new worktree</SelectItem>
+                    <SelectItem value="root">Use the project checkout</SelectItem>
+                    <SelectItem value="existing_worktree">Use a specific checkout</SelectItem>
+                  </SelectPopup>
+                </Select>
+              </Field>
+            ) : null}
           </div>
 
-          {draft.workspaceMode === "worktree" ? (
+          {!noProject && draft.workspaceMode === "worktree" ? (
             <Field label="Base branch" htmlFor="scheduled-task-base-ref">
               <WorktreeBaseBranchPicker
                 key={`${environmentId}:${selectedProjectId}`}
@@ -1296,7 +1347,7 @@ function ScheduledTaskEditorForm({
               />
             </Field>
           ) : null}
-          {draft.workspaceMode === "existing_worktree" ? (
+          {!noProject && draft.workspaceMode === "existing_worktree" ? (
             <Field label="Checkout path" htmlFor="scheduled-task-checkout">
               <Input
                 id="scheduled-task-checkout"
