@@ -1,0 +1,254 @@
+name: Fork sync
+
+# Rebases the fork's patches onto upstream main (fork/scripts/sync-upstream.sh)
+# and pushes the result to `sync/candidate`, then runs the release checks.
+#
+# - Clean rebase and passing checks: `main` is moved to the candidate, and the
+#   push starts fork-release.yml.
+# - Conflicts are resolved by Codex when OPENAI_API_KEY is set. Codex-resolved
+#   or failing candidates are never promoted automatically; a review PR from
+#   `sync/candidate` into `upstream-main` (a mirror of upstream) shows exactly
+#   the fork's patches. Run this workflow with `promote` to ship it.
+#
+# Secrets: FORK_DEPLOY_KEY (required) is the private half of a write-enabled
+# deploy key for this repo. GITHUB_TOKEN cannot push upstream's workflow
+# changes, and its pushes would not start fork-release.yml; deploy-key pushes
+# can and do. Only the push steps see the key, never the Codex step.
+# OPENAI_API_KEY (optional) enables Codex. Variable CODEX_MODEL is optional.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      promote:
+        description: Promote the reviewed sync/candidate branch to main
+        type: boolean
+        default: false
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Rebase onto upstream
+    if: ${{ !inputs.promote }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      status: ${{ steps.sync.outputs.status }}
+      upstream_sha: ${{ steps.sync.outputs.upstream_sha }}
+      main_sha: ${{ steps.main.outputs.sha }}
+      candidate_sha: ${{ steps.push.outputs.sha }}
+      codex_resolved: ${{ steps.resolve.outcome == 'success' }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HAS_DEPLOY_KEY: ${{ secrets.FORK_DEPLOY_KEY != '' }}
+      HAS_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+    steps:
+      - name: Require deploy key
+        run: |
+          if [[ "$HAS_DEPLOY_KEY" != true ]]; then
+            echo "::error::Set the FORK_DEPLOY_KEY secret (see fork/README.md)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          # Codex runs in this checkout; keep credentials out of .git/config.
+          persist-credentials: false
+
+      - id: main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          # Mid-rebase checkouts may not contain the fork tooling, so keep copies.
+          cp fork/prompts/resolve-conflict.md "$RUNNER_TEMP/resolve-conflict.md"
+          cp fork/scripts/sync-upstream.sh fork/scripts/resolve-with-codex.sh fork/scripts/deploy-key-env.sh "$RUNNER_TEMP/"
+
+      - id: sync
+        name: Rebase fork patches
+        run: |
+          set +e
+          bash "$RUNNER_TEMP/sync-upstream.sh"
+          code=$?
+          set -e
+          [[ $code == 0 || $code == 2 ]] || exit $code
+
+      - name: Install dependencies for Codex
+        if: steps.sync.outputs.status == 'conflict' && env.HAS_OPENAI_KEY == 'true'
+        continue-on-error: true
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          run-install: true
+
+      - id: resolve
+        name: Resolve conflicts with Codex
+        if: steps.sync.outputs.status == 'conflict' && env.HAS_OPENAI_KEY == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+          CODEX_SUMMARY_FILE: ${{ runner.temp }}/codex-summary.md
+        run: |
+          npm install --global @openai/codex
+          printenv OPENAI_API_KEY | codex login --with-api-key
+          bash "$RUNNER_TEMP/resolve-with-codex.sh" "$RUNNER_TEMP/resolve-conflict.md"
+          bash "$RUNNER_TEMP/sync-upstream.sh" --finish
+
+      - name: Upload Codex summary
+        if: steps.resolve.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-summary
+          path: ${{ runner.temp }}/codex-summary.md
+
+      - name: Report unresolved conflict
+        if: >-
+          !cancelled() && steps.sync.outputs.status == 'conflict' &&
+          steps.resolve.outcome != 'success'
+        run: |
+          stopped="$(git log -1 --format='%h %s' REBASE_HEAD 2>/dev/null || echo unknown)"
+          body="The scheduled upstream sync stopped on a conflict while applying \`$stopped\`.
+
+          Resolve it locally by following *Syncing with upstream* in fork/README.md.
+
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          existing="$(gh issue list --label fork-sync --state open --json number --jq '.[0].number')"
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh label create fork-sync --color FBCA04 --force
+            gh issue create --title "Upstream sync needs a conflict resolved" --label fork-sync --body "$body"
+          fi
+          exit 1
+
+      - id: push
+        name: Push candidate and upstream mirror
+        if: steps.sync.outputs.status == 'rebased' || steps.resolve.outcome == 'success'
+        env:
+          FORK_DEPLOY_KEY: ${{ secrets.FORK_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/deploy-key-env.sh"
+          git push --force --quiet "git@github.com:${GITHUB_REPOSITORY}.git" \
+            refs/fork/upstream:refs/heads/upstream-main HEAD:refs/heads/sync/candidate
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  checks:
+    name: Checks
+    needs: [sync]
+    if: needs.sync.outputs.candidate_sha != ''
+    uses: ./.github/workflows/fork-checks.yml
+    with:
+      ref: ${{ needs.sync.outputs.candidate_sha }}
+
+  # Codex-resolved or failing candidates wait for a person.
+  review:
+    name: Open review PR
+    needs: [sync, checks]
+    if: >-
+      !cancelled() && needs.sync.outputs.candidate_sha != '' &&
+      (needs.sync.outputs.codex_resolved == 'true' || needs.checks.result != 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      CHECKS: ${{ needs.checks.result }}
+    steps:
+      - uses: actions/download-artifact@v8
+        if: needs.sync.outputs.codex_resolved == 'true'
+        with:
+          name: codex-summary
+
+      - run: |
+          {
+            echo "Fork patches rebased onto upstream \`${{ needs.sync.outputs.upstream_sha }}\` as \`${{ needs.sync.outputs.candidate_sha }}\`."
+            echo
+            echo "Checks: **$CHECKS** ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+            echo
+            if [[ -f codex-summary.md ]]; then
+              echo "## Codex conflict resolutions"
+              echo
+              cat codex-summary.md
+            fi
+            echo
+            echo "This diff is the fork's full patch series on top of upstream. To ship it, run the **Fork sync** workflow with **promote** checked. Merging this PR does nothing."
+          } > body.md
+          existing="$(gh pr list --head sync/candidate --base upstream-main --state open --json number --jq '.[0].number')"
+          if [[ -n "$existing" ]]; then
+            gh pr edit "$existing" --body-file body.md
+          else
+            gh pr create --head sync/candidate --base upstream-main --title "Upstream sync needs review" --body-file body.md
+          fi
+
+  promote:
+    name: Promote to main
+    needs: [sync, checks]
+    if: >-
+      !cancelled() && (inputs.promote ||
+      (needs.checks.result == 'success' && needs.sync.outputs.codex_resolved != 'true'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      EXPECTED_MAIN: ${{ needs.sync.outputs.main_sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          sparse-checkout: fork/scripts
+          persist-credentials: false
+
+      - name: Move main to the candidate
+        env:
+          FORK_DEPLOY_KEY: ${{ secrets.FORK_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          source fork/scripts/deploy-key-env.sh
+          remote="git@github.com:${GITHUB_REPOSITORY}.git"
+          git fetch --quiet "$remote" \
+            +refs/heads/sync/candidate:refs/remotes/fork/candidate \
+            +refs/heads/main:refs/remotes/fork/main
+          # A scheduled run only replaces the main it rebased; a manual promote
+          # replaces whatever main is now, since a person reviewed the candidate.
+          expected="${EXPECTED_MAIN:-$(git rev-parse refs/remotes/fork/main)}"
+          git push --force-with-lease="main:$expected" "$remote" refs/remotes/fork/candidate:refs/heads/main
+
+      - name: Close review PR
+        run: |
+          for pr in $(gh pr list --head sync/candidate --state open --json number --jq '.[].number'); do
+            gh pr close "$pr" --comment "Promoted to main by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
+          done
+
+      # Upstream workflows need upstream's runners and credentials, or automate
+      # upstream's own issues and PRs. New ones arrive enabled, so disable all
+      # but this fork's workflows and release-desktop.yml, which fork-release calls.
+      - name: Disable upstream workflows
+        run: |
+          gh workflow list --all --json path,state --jq '.[] | select(.state == "active") | .path' |
+            while read -r path; do
+              case "$(basename "$path")" in
+                fork-* | release-desktop.yml) ;;
+                *) gh workflow disable "$(basename "$path")" ;;
+              esac
+            done
