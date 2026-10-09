@@ -5,6 +5,9 @@ upstream `main` plus a short series of patches. GitHub Actions rebases the
 patches onto upstream, checks them, and publishes Windows x64 and Linux x64
 builds that installed copies pick up through the in-app **Install update** button.
 
+To set up another computer, follow [Install the fork](INSTALL.md) for downloads,
+installation, remote connections and updates.
+
 Read this before changing anything here. Upstream's `AGENTS.md` still governs
 code style, testing and conventions.
 
@@ -243,7 +246,7 @@ fallback until an actual signed webhook → candidate → resume trial succeeds.
 
 - Versions use upstream's nightly format, `<base>-nightly.<date>.<run>`, so
   installs follow the **Nightly** update channel. A copy switched to the
-  Latest channel in settings won't see fork updates.
+  **Stable** track in settings won't see fork updates.
 - The update feed is this repository's releases, set at build time from
   `GITHUB_REPOSITORY`. The app keeps upstream's app ID, so installing a fork
   build replaces official T3 Code and keeps its data.
