@@ -1,0 +1,32 @@
+name: Fork PR checks
+
+# Runs upstream's release gate (fork-checks.yml) on a branch prepared for an
+# upstream pull request. Upstream holds CI on PRs from unvouched contributors
+# at "action required" until a maintainer approves the run, so this is the
+# fork's own evidence that the branch passes.
+#
+# Upstream PR branches start from upstream main and don't contain this file,
+# so pushes to them can't trigger it. Start it from main instead:
+#   gh workflow run fork-pr-checks.yml -R Alb11747/t3code -f ref=<branch-or-sha>
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or commit to check
+        required: true
+        type: string
+
+concurrency:
+  group: fork-pr-checks-${{ inputs.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Checks
+    uses: ./.github/workflows/fork-checks.yml
+    with:
+      ref: ${{ inputs.ref }}
