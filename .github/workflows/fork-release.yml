@@ -1,0 +1,247 @@
+name: Fork release
+
+# Builds and publishes the fork's desktop apps (Linux x64 AppImage, Windows x64
+# installer) as a GitHub prerelease that installed copies pick up through the
+# in-app updater. Versions use upstream's nightly format
+# (<base>-nightly.<date>.<run>), so installs follow the nightly update channel,
+# and the build's update feed points at this repository (GITHUB_REPOSITORY).
+#
+# Upstream's release.yml also deploys services, publishes npm/AUR packages and
+# signs builds with upstream's credentials. It is disabled in this fork; this
+# workflow reuses only its desktop packaging job, release-desktop.yml, which
+# skips signing when the signing secrets are absent.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "fork/*.md"
+  workflow_dispatch:
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+permissions:
+  # The Windows job reads this run's artifact list to wait for the Linux CLI archive.
+  actions: read
+  contents: read
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      name: ${{ steps.meta.outputs.name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+
+      - id: meta
+        name: Resolve release version
+        run: |
+          set -euo pipefail
+          node scripts/resolve-nightly-release.ts \
+            --date "$(date -u +%Y%m%d)" \
+            --run-number "$GITHUB_RUN_NUMBER" \
+            --sha "$GITHUB_SHA" \
+            --github-output
+          version="$(sed -n 's/^version=//p' "$GITHUB_OUTPUT" | tail -1)"
+          echo "name=T3 Code Fork $version (${GITHUB_SHA::12})" >> "$GITHUB_OUTPUT"
+
+      - name: Write release notes
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --quiet https://github.com/pingdotgg/t3code.git main
+          base="$(git merge-base HEAD FETCH_HEAD)"
+          {
+            echo "Built from upstream [\`${base::12}\`](https://github.com/pingdotgg/t3code/commit/$base) plus these fork changes:"
+            echo
+            git log --reverse --format='- %s (%h)' "$base..HEAD"
+            echo
+            echo "See [fork/CHANGES.md](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/fork/CHANGES.md) for details."
+          } > release-notes.md
+          cat release-notes.md
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: release-notes.md
+          retention-days: 1
+
+  checks:
+    name: Checks
+    uses: ./.github/workflows/fork-checks.yml
+    with:
+      ref: ${{ github.sha }}
+
+  build_bundle:
+    name: Build JS bundle
+    needs: [preflight]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # T3 Connect needs upstream's Clerk/relay deployment. These optional
+    # repository variables bake in public client values; without them the
+    # build has no T3 Connect sign-in, and everything else works.
+    env:
+      T3CODE_CLERK_PUBLISHABLE_KEY: ${{ vars.CLERK_PUBLISHABLE_KEY }}
+      T3CODE_CLERK_JWT_TEMPLATE: ${{ vars.CLERK_JWT_TEMPLATE }}
+      T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: ${{ vars.CLERK_CLI_OAUTH_CLIENT_ID }}
+      T3CODE_RELAY_URL: ${{ vars.RELAY_URL }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install bundle dependencies
+        run: vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+
+      - name: Align package versions to release version
+        run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
+
+      - name: Install browser secret helper build libraries
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+
+      - name: Build JS bundle
+        run: vp run build:desktop
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: js-bundle
+          path: |
+            apps/server/dist
+            apps/desktop/dist-electron
+          if-no-files-found: error
+          retention-days: 1
+
+  # Labels must stay "Linux x64": the Windows job waits for a job named
+  # "Build Linux x64" to upload the Linux CLI archive it embeds for WSL.
+  desktop_linux_x64:
+    name: Desktop Linux x64
+    needs: [preflight, build_bundle]
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      ref: ${{ github.sha }}
+      release_channel: nightly
+      relay_client_tracing: false
+      clerk_publishable_key: ${{ vars.CLERK_PUBLISHABLE_KEY }}
+      clerk_jwt_template: ${{ vars.CLERK_JWT_TEMPLATE }}
+      clerk_cli_oauth_client_id: ${{ vars.CLERK_CLI_OAUTH_CLIENT_ID }}
+      relay_url: ${{ vars.RELAY_URL }}
+      label: Linux x64
+      runner: ubuntu-24.04
+      platform: linux
+      target: AppImage
+      arch: x64
+      rust_target: x86_64-unknown-linux-gnu
+      resource_key: linux-x64
+      cli_archive: true
+
+  desktop_win_x64:
+    name: Desktop Windows x64
+    needs: [preflight, build_bundle]
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      ref: ${{ github.sha }}
+      release_channel: nightly
+      relay_client_tracing: false
+      clerk_publishable_key: ${{ vars.CLERK_PUBLISHABLE_KEY }}
+      clerk_jwt_template: ${{ vars.CLERK_JWT_TEMPLATE }}
+      clerk_cli_oauth_client_id: ${{ vars.CLERK_CLI_OAUTH_CLIENT_ID }}
+      relay_url: ${{ vars.RELAY_URL }}
+      label: Windows x64
+      runner: windows-2025
+      platform: win
+      target: nsis
+      arch: x64
+      rust_target: x86_64-pc-windows-msvc
+      resource_key: win32-x64
+      cli_archive: true
+
+  release:
+    name: Publish GitHub release
+    needs: [preflight, checks, desktop_linux_x64, desktop_win_x64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: release-assets
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cli-*
+          merge-multiple: true
+          path: release-assets
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+
+      # The Windows job suffixes its updater manifest with the arch so x64 and
+      # arm64 cannot collide; with x64 only, restore the name the updater reads.
+      - name: Prepare release assets
+        run: |
+          set -euo pipefail
+          cd release-assets
+          shopt -s nullglob
+          for manifest in *-win-x64.yml; do
+            mv "$manifest" "${manifest%-win-x64.yml}.yml"
+          done
+          # Installed apps update only if both installers and both nightly
+          # feeds are attached, so refuse to publish without them.
+          for required in '*.AppImage' '*.exe' nightly.yml nightly-linux.yml; do
+            compgen -G "$required" > /dev/null || { echo "Missing release asset: $required" >&2; exit 1; }
+          done
+          sha256sum t3-*.tar.gz t3-*.zip > SHA256SUMS
+          ls -la
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.preflight.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ needs.preflight.outputs.name }}
+          body_path: release-notes.md
+          prerelease: true
+          make_latest: false
+          files: |
+            release-assets/*.AppImage
+            release-assets/*.exe
+            release-assets/*.blockmap
+            release-assets/*.yml
+            release-assets/*.tar.gz
+            release-assets/*.zip
+            release-assets/SHA256SUMS
+          fail_on_unmatched_files: false
+          token: ${{ github.token }}
