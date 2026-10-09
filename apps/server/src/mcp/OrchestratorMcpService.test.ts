@@ -18,9 +18,14 @@ import {
 } from "@t3tools/contracts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
@@ -1164,11 +1169,18 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
-  it.effect(
-    "delegates to an Antigravity instance whose adapter resolves through the registry",
-    () =>
+  it.effect.each([
+    { mode: "async" as const, timeoutMs: undefined, budgetMs: 0 },
+    { mode: "wait" as const, timeoutMs: undefined, budgetMs: 30_000 },
+    { mode: "wait" as const, timeoutMs: 3_600_000, budgetMs: 45_000 },
+    { mode: "wait" as const, timeoutMs: 500, budgetMs: 500 },
+  ])(
+    "delegates to an Antigravity instance through the adapter registry with mode=$mode timeoutMs=$timeoutMs",
+    (scenario) =>
       Effect.gen(function* () {
         let delegated = false;
+        const firstTaskRead = yield* Deferred.make<void>();
+        const returned = yield* Deferred.make<void>();
         const task = {
           id: taskId,
           threadId: parentThreadId,
@@ -1195,11 +1207,19 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             hasReceipt: () => Effect.succeed(false),
             assertProviderInstanceEnabled: () => Effect.void,
+            getThreadEventSequence: () => Effect.succeed(0),
+            streamStoredEventsFrom: () => Stream.never,
             getThreadRecords: (threadId) =>
               Effect.succeed(
                 threadId === parentThreadId
                   ? parentProjection(delegated ? [task] : [])
                   : childProjection,
+              ).pipe(
+                Effect.tap(() =>
+                  threadId === childThreadId
+                    ? Deferred.succeed(firstTaskRead, undefined)
+                    : Effect.void,
+                ),
               ),
             dispatch: (command) =>
               Ref.update(dispatched, (commands) => [...commands, command]).pipe(
@@ -1243,16 +1263,43 @@ describe("OrchestratorMcpService provider resolution", () => {
 
         yield* Effect.gen(function* () {
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-          const result = yield* service.delegateTask(scope, {
-            task: "Summarize the diff.",
-            target: { providerInstanceId: antigravityInstanceId, model: "ant-model" },
-            mode: "async",
-            clientRequestId: "delegate-antigravity-1",
-          });
+          const fiber = yield* service
+            .delegateTask(scope, {
+              task: "Summarize the diff.",
+              target: { providerInstanceId: antigravityInstanceId, model: "ant-model" },
+              mode: scenario.mode,
+              ...(scenario.timeoutMs === undefined ? {} : { timeoutMs: scenario.timeoutMs }),
+              clientRequestId: "delegate-antigravity-1",
+            })
+            .pipe(
+              Effect.tap(() => Deferred.succeed(returned, undefined)),
+              Effect.forkChild,
+            );
+          if (scenario.mode === "wait") {
+            yield* Deferred.await(firstTaskRead);
+            yield* TestClock.adjust(Duration.millis(scenario.budgetMs - 1));
+            assert.isFalse(yield* Deferred.isDone(returned));
+            yield* TestClock.adjust(Duration.millis(1));
+            assert.isTrue(yield* Deferred.isDone(returned));
+          }
+          const result = yield* Fiber.join(fiber);
+          assert.equal(result.taskId, taskId);
+          assert.equal(result.childThreadId, childThreadId);
+          assert.equal(result.waitTimedOut, scenario.mode === "wait");
+          const status = yield* service.taskStatus(scope, result.taskId);
+          assert.equal(status.status, "running");
+          assert.isFalse(status.waitTimedOut);
           assert.equal(result.status, "running");
           assert.equal(result.providerInstanceId, antigravityInstanceId);
           const commands = yield* Ref.get(dispatched);
-          assert.equal(commands.length, 1);
+          assert.equal(commands.length, scenario.mode === "wait" ? 2 : 1);
+          if (scenario.mode === "wait") {
+            assert.include(commands[1], {
+              type: "delegated_task.wake-policy",
+              taskId,
+              completionWake: "always",
+            });
+          }
           const request = commands[0] as {
             type: string;
             modelSelection: { instanceId: string; model: string };
