@@ -1,0 +1,389 @@
+name: Fork sync
+
+# Sync rebases and checks an immutable candidate; a clean, green rebase ships.
+# Conflicts produce a sync-request artifact and signed T3 webhook, with a
+# fork-sync issue as the fallback. Resume validates an external candidate and
+# always opens review. Promote ships only the explicitly reviewed SHA.
+# CI pushes use FORK_DEPLOY_KEY so workflow changes and fork releases work.
+# Webhook URL/key are confined to the sender step, never candidate checks.
+# Sync follows upstream's nightly releases, so each fork release builds on code
+# upstream already shipped (at most one nightly per six hours). Scheduled runs
+# poll every 30 minutes and stop after a few API calls until a nightly is new.
+
+on:
+  schedule:
+    - cron: "23,53 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Sync upstream, resume T3 resolution, or promote a reviewed SHA
+        type: choice
+        options: [sync, resume, promote]
+        default: sync
+      upstream:
+        description: Upstream commit to sync onto (sync mode)
+        type: choice
+        options: [nightly, main]
+        default: nightly
+      candidate_sha:
+        description: Full candidate SHA (required for resume and promote)
+        type: string
+      request_run_id:
+        description: Original conflict run ID (required for resume)
+        type: string
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Prepare candidate
+    if: inputs.mode != 'promote'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    outputs:
+      status: ${{ steps.pending.outputs.status || steps.target.outputs.status || steps.sync.outputs.status || steps.resume.outputs.status }}
+      upstream_sha: ${{ steps.sync.outputs.upstream_sha || steps.resume.outputs.upstream_sha }}
+      main_sha: ${{ steps.main.outputs.sha || steps.resume.outputs.main_sha }}
+      candidate_sha: ${{ steps.push.outputs.sha || steps.resume.outputs.sha }}
+      requires_review: ${{ steps.resume.outputs.requires_review || 'false' }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - id: pending
+        name: Avoid repeated scheduled handoffs
+        if: github.event_name == 'schedule'
+        run: |
+          recent=$(gh issue list --label fork-sync --state open --json updatedAt --jq '.[].updatedAt')
+          while read -r updated; do
+            [[ -n "$updated" ]] || continue
+            if (( $(date +%s) - $(date -d "$updated" +%s) < 86400 )); then
+              echo "status=pending" >> "$GITHUB_OUTPUT"
+              echo "A recent fork-sync issue is pending; skipping this scheduled sync."
+              break
+            fi
+          done <<< "$recent"
+
+      # Upstream's release list mixes frequent previews with nightlies and is
+      # not strictly ordered, so pick the newest nightly by publication time.
+      - id: target
+        name: Resolve latest upstream nightly
+        if: steps.pending.outputs.status != 'pending' && inputs.mode != 'resume' && inputs.upstream != 'main'
+        run: |
+          tag=$(gh api 'repos/pingdotgg/t3code/releases?per_page=100' --jq '
+            [.[] | select((.draft | not) and .published_at != null and (.tag_name | test("-nightly\\.")))]
+            | sort_by(.published_at) | last | .tag_name // empty')
+          [[ -n "$tag" ]] || { echo "::error::No upstream nightly among the latest 100 releases."; exit 1; }
+          sha=$(gh api "repos/pingdotgg/t3code/commits/$tag" --jq .sha)
+          [[ $sha =~ ^[0-9a-f]{40}$ ]]
+          contained=$(gh api "repos/$GITHUB_REPOSITORY/compare/$sha...main" --jq '.status == "ahead" or .status == "identical"')
+          if [[ $contained == true ]]; then
+            echo "status=current" >> "$GITHUB_OUTPUT"
+            echo "Fork main already contains upstream nightly $tag."
+          else
+            echo "sha=$sha" >> "$GITHUB_OUTPUT"
+            echo "Syncing onto upstream nightly $tag ($sha)."
+          fi
+
+      # Checkout's recursive auth cleanup fails on upstream's vendored gitlinks
+      # without .gitmodules URLs, even with sparse checkout. Public clones need
+      # no checkout credentials; the deploy key is configured separately below.
+      - name: Check out fork
+        if: steps.pending.outputs.status != 'pending' && steps.target.outputs.status != 'current'
+        run: |
+          git clone --filter=blob:none --no-checkout --no-tags --single-branch --branch main \
+            "https://github.com/${GITHUB_REPOSITORY}.git" .
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout main
+
+      - id: main
+        if: steps.pending.outputs.status != 'pending' && steps.target.outputs.status != 'current' && inputs.mode != 'resume'
+        env:
+          HAS_DEPLOY_KEY: ${{ secrets.FORK_DEPLOY_KEY != '' }}
+        run: |
+          [[ "$HAS_DEPLOY_KEY" == true ]] || { echo "::error::Set FORK_DEPLOY_KEY (see fork/README.md)."; exit 1; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          # Early conflicts may remove tooling from the checkout.
+          cp fork/scripts/sync-upstream.sh fork/scripts/deploy-key-env.sh "$RUNNER_TEMP/"
+
+      - id: sync
+        name: Rebase fork patches
+        if: steps.pending.outputs.status != 'pending' && steps.target.outputs.status != 'current' && inputs.mode != 'resume'
+        env:
+          NIGHTLY_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          code=0
+          bash "$RUNNER_TEMP/sync-upstream.sh" ${NIGHTLY_SHA:+--onto "$NIGHTLY_SHA"} || code=$?
+          [[ $code == 0 || $code == 2 ]] || exit "$code"
+
+      - id: request
+        name: Record conflict and tracking issue
+        if: steps.sync.outputs.status == 'conflict'
+        env:
+          MAIN_SHA: ${{ steps.main.outputs.sha }}
+          UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
+        run: |
+          stopped=$(git rev-parse REBASE_HEAD)
+          [[ $MAIN_SHA =~ ^[0-9a-f]{40}$ && $UPSTREAM_SHA =~ ^[0-9a-f]{40}$ && $stopped =~ ^[0-9a-f]{40}$ ]]
+          jq -cn --argjson id "$GITHUB_RUN_ID" --argjson attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg main "$MAIN_SHA" --arg upstream "$UPSTREAM_SHA" --arg stopped "$stopped" \
+            --arg subject "$(git log -1 --format=%s REBASE_HEAD)" --arg created "$(date -u +%FT%TZ)" \
+            '{request_run_id:$id, run_attempt:$attempt, main_sha:$main, upstream_sha:$upstream, stopped_commit:$stopped, stopped_subject:$subject, created_at:$created}' \
+            > "$RUNNER_TEMP/sync-request.json"
+          # Make the issue discoverable before waking a fast resolver.
+          printf "Handoff pending (request run %s).\n\nStopped commit: \`%s\`\n\nRun: %s/%s/actions/runs/%s\n\nLocal resolution: [fork/README.md](%s/%s/blob/main/fork/README.md#syncing-with-upstream).\n" \
+            "$GITHUB_RUN_ID" "$stopped" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/issue.md"
+          existing=$(gh api --method GET "repos/$GITHUB_REPOSITORY/issues" -f state=open -f labels=fork-sync -f per_page=100 --jq '[.[] | select(.pull_request == null)][0].number // empty')
+          if [[ -n "$existing" ]]; then
+            gh issue edit "$existing" --body-file "$RUNNER_TEMP/issue.md"
+          else
+            gh label create fork-sync --color FBCA04 --force
+            issue_url=$(gh issue create --title "Upstream sync conflict" --label fork-sync --body-file "$RUNNER_TEMP/issue.md")
+            existing=${issue_url##*/}
+          fi
+          [[ $existing =~ ^[1-9][0-9]*$ ]]
+          echo "issue_number=$existing" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        if: steps.sync.outputs.status == 'conflict'
+        with:
+          name: sync-request
+          path: ${{ runner.temp }}/sync-request.json
+          if-no-files-found: error
+
+      - id: webhook
+        name: Hand conflict to T3
+        if: steps.sync.outputs.status == 'conflict'
+        env:
+          FORK_SYNC_WEBHOOK_URL: ${{ secrets.FORK_SYNC_WEBHOOK_URL }}
+          FORK_SYNC_WEBHOOK_SECRET: ${{ secrets.FORK_SYNC_WEBHOOK_SECRET }}
+        run: |
+          if [[ -z "$FORK_SYNC_WEBHOOK_URL" || -z "$FORK_SYNC_WEBHOOK_SECRET" ]]; then
+            echo "reason=no webhook configured" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          body="{\"request_run_id\":\"$GITHUB_RUN_ID\"}"
+          signature=$(printf '%s' "$body" | python3 -c 'import hashlib,hmac,os,sys; print(hmac.new(os.environ["FORK_SYNC_WEBHOOK_SECRET"].encode(), sys.stdin.buffer.read(), hashlib.sha256).hexdigest())')
+          code=000
+          for attempt in 1 2 3; do
+            # Suppress curl diagnostics: they can include the bearer URL.
+            network=0
+            code=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              --max-time 20 --proto '=https' --request POST \
+              --header 'Content-Type: application/json' --header "X-Hub-Signature-256: sha256=$signature" \
+              --data-binary "$body" "$FORK_SYNC_WEBHOOK_URL" 2>/dev/null) || network=$?
+            if [[ $network == 0 && $code == 2?? ]]; then
+              echo "handed_off=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            [[ $network != 0 || $code == 429 || $code == 5?? ]] || break
+            [[ $attempt == 3 ]] || sleep "$((attempt * 2))"
+          done
+          echo "reason=HTTP $code (network exit $network)" >> "$GITHUB_OUTPUT"
+
+      - name: Report handoff or local fallback
+        if: "!cancelled() && steps.sync.outputs.status == 'conflict'"
+        env:
+          HANDED_OFF: ${{ steps.webhook.outputs.handed_off }}
+          REASON: ${{ steps.webhook.outputs.reason || 'request artifact or tracking issue failed' }}
+          ISSUE_NUMBER: ${{ steps.request.outputs.issue_number }}
+        run: |
+          state="Needs local resolution ($REASON)"
+          if [[ "$HANDED_OFF" == true ]]; then state="Handed to T3 (request run $GITHUB_RUN_ID)"; fi
+          stopped=$(git log -1 --format='%H %s' REBASE_HEAD)
+          printf "%s\n\nStopped commit: \`%s\`\n\nRun: %s/%s/actions/runs/%s\n\nLocal resolution: [fork/README.md](%s/%s/blob/main/fork/README.md#syncing-with-upstream).\n" \
+            "$state" "$stopped" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/issue.md"
+          existing=$ISSUE_NUMBER
+          if [[ ! $existing =~ ^[1-9][0-9]*$ ]]; then
+            existing=$(gh api --method GET "repos/$GITHUB_REPOSITORY/issues" -f state=open -f labels=fork-sync -f per_page=100 --jq '[.[] | select(.pull_request == null)][0].number // empty')
+          fi
+          if [[ -n "$existing" ]]; then
+            gh issue edit "$existing" --body-file "$RUNNER_TEMP/issue.md"
+          else
+            gh label create fork-sync --color FBCA04 --force
+            gh issue create --title "Upstream sync conflict" --label fork-sync --body-file "$RUNNER_TEMP/issue.md"
+          fi
+          [[ "$HANDED_OFF" == true ]]
+
+      - id: push
+        name: Push candidate and upstream mirror
+        if: steps.sync.outputs.status == 'rebased'
+        env:
+          FORK_DEPLOY_KEY: ${{ secrets.FORK_DEPLOY_KEY }}
+        run: |
+          source "$RUNNER_TEMP/deploy-key-env.sh"
+          git push --force --quiet "git@github.com:${GITHUB_REPOSITORY}.git" \
+            refs/fork/upstream:refs/heads/upstream-main HEAD:refs/heads/sync/candidate
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate resume inputs and source run
+        if: inputs.mode == 'resume'
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          REQUEST_RUN_ID: ${{ inputs.request_run_id }}
+        run: |
+          [[ $CANDIDATE_SHA =~ ^[0-9a-f]{40}$ && $REQUEST_RUN_ID =~ ^[1-9][0-9]*$ ]] || { echo "::error::Invalid resume inputs."; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REQUEST_RUN_ID" > "$RUNNER_TEMP/request-run.json"
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg id "$REQUEST_RUN_ID" '
+            (.id | tostring) == $id and .repository.full_name == $repo and .head_repository.full_name == $repo and
+            .path == ".github/workflows/fork-sync.yml" and .head_branch == "main" and
+            (.event == "schedule" or .event == "workflow_dispatch")
+          ' "$RUNNER_TEMP/request-run.json" > /dev/null
+
+      - uses: actions/download-artifact@v8
+        if: inputs.mode == 'resume'
+        with:
+          name: sync-request
+          run-id: ${{ inputs.request_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/request
+
+      - id: resume
+        name: Verify pinned candidate and request freshness
+        if: inputs.mode == 'resume'
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          REQUEST_RUN_ID: ${{ inputs.request_run_id }}
+          FORK_RESOLVER_HOME: ${{ runner.temp }}/resolver
+        run: |
+          request="$RUNNER_TEMP/request/sync-request.json"
+          # Use trusted main's validator, never tooling from the candidate.
+          source fork/scripts/t3-resolver/common.sh
+          validate_request "$request"
+          jq -e --arg id "$REQUEST_RUN_ID" --arg attempt "$(jq -r .run_attempt "$RUNNER_TEMP/request-run.json")" '
+            (.request_run_id | tostring) == $id and (.run_attempt | tostring) == $attempt
+          ' "$request" > /dev/null
+          main=$(jq -r .main_sha "$request")
+          upstream=$(jq -r .upstream_sha "$request")
+          git fetch --no-tags --quiet "https://github.com/$GITHUB_REPOSITORY.git" \
+            +refs/heads/sync/candidate:refs/remotes/fork/candidate +refs/heads/main:refs/remotes/fork/main
+          [[ $(git rev-parse refs/remotes/fork/candidate) == "$CANDIDATE_SHA" ]] || { echo "::error::Candidate changed."; exit 1; }
+          [[ $(git rev-parse refs/remotes/fork/main) == "$main" ]] || { echo "::error::Stale request: fork main changed."; exit 1; }
+          git merge-base --is-ancestor "$upstream" "$CANDIDATE_SHA"
+          [[ -z $(git rev-list --merges "$upstream..$CANDIDATE_SHA") ]]
+          {
+            echo "sha=$CANDIDATE_SHA"
+            echo "main_sha=$main"
+            echo "upstream_sha=$upstream"
+            echo "requires_review=true"
+            echo "status=rebased"
+          } >> "$GITHUB_OUTPUT"
+
+  checks:
+    name: Checks
+    needs: [sync]
+    if: needs.sync.outputs.candidate_sha != ''
+    uses: ./.github/workflows/fork-checks.yml
+    with:
+      ref: ${{ needs.sync.outputs.candidate_sha }}
+
+  review:
+    name: Open review PR
+    needs: [sync, checks]
+    if: >-
+      !cancelled() && needs.sync.outputs.candidate_sha != '' &&
+      (needs.sync.outputs.requires_review == 'true' || needs.checks.result != 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      CHECKS: ${{ needs.checks.result }}
+      CANDIDATE_SHA: ${{ needs.sync.outputs.candidate_sha }}
+      UPSTREAM_SHA: ${{ needs.sync.outputs.upstream_sha }}
+    steps:
+      - run: |
+          issue=$(gh issue list --label fork-sync --state open --json url --jq '.[0].url // empty')
+          {
+            printf "Fork patches rebased onto upstream \`%s\` as candidate \`%s\`.\n\n" "$UPSTREAM_SHA" "$CANDIDATE_SHA"
+            printf 'Checks: **%s** (%s/%s/actions/runs/%s)\n\n' "$CHECKS" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            if [[ -n "$issue" ]]; then printf 'Tracking issue (T3 resolution summary): %s\n\n' "$issue"; fi
+            printf "Review the full fork patch series. To ship it, run **Fork sync** with \`mode=promote\` and \`candidate_sha=%s\`. Merging this PR does nothing.\n" "$CANDIDATE_SHA"
+          } > body.md
+          existing=$(gh pr list --head sync/candidate --base upstream-main --state open --json number --jq '.[0].number // empty')
+          if [[ -n "$existing" ]]; then
+            gh pr edit "$existing" --body-file body.md
+          else
+            gh pr create --head sync/candidate --base upstream-main --title "Upstream sync needs review" --body-file body.md
+          fi
+
+  promote:
+    name: Promote to main
+    needs: [sync, checks]
+    if: >-
+      !cancelled() && (inputs.mode == 'promote' ||
+      (needs.checks.result == 'success' && needs.sync.outputs.candidate_sha != '' &&
+      needs.sync.outputs.requires_review != 'true'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check out publisher scripts
+        run: |
+          git clone --filter=blob:none --no-checkout --no-tags --single-branch --branch main --depth 1 \
+            "https://github.com/${GITHUB_REPOSITORY}.git" .
+          git sparse-checkout set --cone fork/scripts
+          git checkout main
+
+      - name: Move main to the exact candidate SHA
+        env:
+          FORK_DEPLOY_KEY: ${{ secrets.FORK_DEPLOY_KEY }}
+          CANDIDATE_SHA: ${{ inputs.mode == 'promote' && inputs.candidate_sha || needs.sync.outputs.candidate_sha }}
+          EXPECTED_MAIN: ${{ needs.sync.outputs.main_sha }}
+        run: |
+          [[ $CANDIDATE_SHA =~ ^[0-9a-f]{40}$ ]] || { echo "::error::A full candidate_sha is required."; exit 1; }
+          [[ -n "$FORK_DEPLOY_KEY" ]] || { echo "::error::Set FORK_DEPLOY_KEY."; exit 1; }
+          source fork/scripts/deploy-key-env.sh
+          remote="git@github.com:${GITHUB_REPOSITORY}.git"
+          git fetch --quiet "$remote" +refs/heads/sync/candidate:refs/remotes/fork/candidate +refs/heads/main:refs/remotes/fork/main
+          [[ $(git rev-parse refs/remotes/fork/candidate) == "$CANDIDATE_SHA" ]] || { echo "::error::Candidate changed since review/checks."; exit 1; }
+          # Automatic promotion leases against the original rebase main. Manual
+          # promotion leases against main read in this same step.
+          expected="${EXPECTED_MAIN:-$(git rev-parse refs/remotes/fork/main)}"
+          git push --force-with-lease="main:$expected" "$remote" "$CANDIDATE_SHA:refs/heads/main"
+
+      - name: Close review PR and tracking issue
+        run: |
+          comment="Promoted to main by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
+          for pr in $(gh pr list --head sync/candidate --base upstream-main --state open --json number --jq '.[].number'); do
+            gh pr close "$pr" --comment "$comment"
+          done
+          for issue in $(gh issue list --label fork-sync --state open --json number --jq '.[].number'); do
+            gh issue close "$issue" --comment "$comment"
+          done
+
+      # Upstream workflows need upstream's runners/credentials or automate its
+      # issues. Keep the reusable desktop release and the fork's own workflows.
+      - name: Disable upstream workflows
+        run: |
+          gh workflow list --all --json path,state --jq '.[] | select(.state == "active") | .path' |
+            while read -r path; do
+              case "$(basename "$path")" in
+                fork-* | release-desktop.yml) ;;
+                *) gh workflow disable "$(basename "$path")" ;;
+              esac
+            done
