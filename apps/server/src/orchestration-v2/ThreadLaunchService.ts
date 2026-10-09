@@ -743,27 +743,28 @@ const make = Effect.gen(function* () {
           yield* validateReusableThread(input, candidateThreadId);
         }
 
-        // A Scratch thread launched at the project root runs in a folder of its
-        // own. Only the first attempt claims one; a retry replays its create.
-        const workspaceStrategy: ThreadLaunchWorkspaceStrategy =
-          input.workspaceStrategy.type === "root" && Option.isNone(launchReceipt)
-            ? Option.match(
-                yield* managedFolders
-                  .folderForThread({
-                    projectId: input.projectId,
-                    threadId: candidateThreadId,
-                    text: input.initialMessage?.text ?? input.title,
-                  })
-                  .pipe(Effect.mapError(mapError(input, "provision-worktree", candidateThreadId))),
-                {
-                  onNone: () => input.workspaceStrategy,
-                  onSome: (worktreePath) => ({ type: "existing_worktree", worktreePath }),
-                },
-              )
-            : input.workspaceStrategy;
-        const initialBranch = workspaceStrategy.branch ?? null;
+        // Scratch has no Git checkout: even saved worktree strategies launch
+        // in a per-thread folder. A retry replays the first folder claim.
+        const initialWorkspaceStrategy: ThreadLaunchWorkspaceStrategy = Option.isNone(launchReceipt)
+          ? Option.match(
+              yield* managedFolders
+                .folderForThread({
+                  projectId: input.projectId,
+                  threadId: candidateThreadId,
+                  text: input.initialMessage?.text ?? input.title,
+                })
+                .pipe(Effect.mapError(mapError(input, "provision-worktree", candidateThreadId))),
+              {
+                onNone: () => input.workspaceStrategy,
+                onSome: (worktreePath) => ({ type: "existing_worktree", worktreePath }),
+              },
+            )
+          : input.workspaceStrategy;
+        const initialBranch = initialWorkspaceStrategy.branch ?? null;
         const initialWorktreePath =
-          workspaceStrategy.type === "existing_worktree" ? workspaceStrategy.worktreePath : null;
+          initialWorkspaceStrategy.type === "existing_worktree"
+            ? initialWorkspaceStrategy.worktreePath
+            : null;
         const claimDispatch =
           input.reuseExistingThread === true
             ? threads.dispatch({
@@ -801,6 +802,21 @@ const make = Effect.gen(function* () {
         const threadId =
           claimed.storedEvents.find((stored) => stored.event.type.startsWith("thread."))?.event
             .threadId ?? candidateThreadId;
+        // The accepted create owns the folder, even if its first message
+        // never committed or another concurrent launch claimed it first.
+        const createdThread = claimed.storedEvents.find(
+          (stored) => stored.event.type === "thread.created",
+        )?.event;
+        const workspaceStrategy: ThreadLaunchWorkspaceStrategy =
+          createdThread?.type === "thread.created" && createdThread.payload.worktreePath !== null
+            ? {
+                type: "existing_worktree",
+                worktreePath: createdThread.payload.worktreePath,
+                ...(createdThread.payload.branch === null
+                  ? {}
+                  : { branch: createdThread.payload.branch }),
+              }
+            : initialWorkspaceStrategy;
         if (project.id !== input.projectId) {
           return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
         }
@@ -854,23 +870,26 @@ const make = Effect.gen(function* () {
         const projection = yield* threads
           .getThreadProjection(threadId)
           .pipe(Effect.mapError(mapError(input, "create-thread", threadId)));
-        const runIsPreparing =
-          runId !== null &&
-          projection.runs.some((run) => run.id === runId && run.status === "preparing");
+        const run = projection.runs.find((run) => run.id === runId);
+        const runIsPreparing = run?.status === "preparing";
         const shouldSchedule = runId === null ? Option.isNone(launchReceipt) : runIsPreparing;
         // A retried root launch prepares the folder its first attempt bound, so
         // a Scratch thread keeps its own. Other root launches bind no folder.
         const boundWorktreePath = projection.thread.worktreePath;
         const preparationStrategy: ThreadLaunchWorkspaceStrategy =
-          Option.isSome(launchReceipt) &&
-          workspaceStrategy.type === "root" &&
-          boundWorktreePath !== null
-            ? {
-                type: "existing_worktree",
-                worktreePath: boundWorktreePath,
-                branch: workspaceStrategy.branch,
-              }
-            : workspaceStrategy;
+          // Replay the resolved strategy, including a Scratch folder that
+          // replaced the caller's worktree request before the run was saved.
+          Option.isSome(launchReceipt) && run?.workspacePreparation !== undefined
+            ? run.workspacePreparation
+            : Option.isSome(launchReceipt) &&
+                workspaceStrategy.type === "root" &&
+                boundWorktreePath !== null
+              ? {
+                  type: "existing_worktree",
+                  worktreePath: boundWorktreePath,
+                  branch: workspaceStrategy.branch,
+                }
+              : workspaceStrategy;
         if (shouldSchedule) {
           const ownsPreparation = yield* reservePreparation(input.commandId);
           if (ownsPreparation) {

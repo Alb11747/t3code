@@ -1051,11 +1051,18 @@ it.effect("falls back when the source control writer is unavailable", () =>
   }),
 );
 
-it.effect("runs a Scratch thread launched at the root in its own folder", () =>
+it.effect.each([
+  { type: "root" },
+  { type: "worktree", baseRef: "main", startFromOrigin: true },
+  { type: "existing_worktree", worktreePath: "/old-checkout" },
+] as const)("runs a Scratch thread in its own folder for workspace strategy %j", (workspace) =>
   Effect.gen(function* () {
     // Only `projectId` stands in for the Scratch project here.
     const claimed: Array<{ readonly threadId: ThreadId; readonly text: string }> = [];
+    const setupStarted = yield* Deferred.make<void>();
     const harness = makeHarness({
+      runSetup: () =>
+        Deferred.succeed(setupStarted, undefined).pipe(Effect.as({ status: "no-script" as const })),
       managedFolders: Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
         folderForThread: (input) =>
@@ -1073,11 +1080,12 @@ it.effect("runs a Scratch thread launched at the root in its own folder", () =>
         command: "command:launch:scratch",
         thread: "thread:launch:scratch",
         message: "Convert these PNGs",
+        workspace,
       });
       const launched = yield* launches.launch(input);
       assert.deepEqual(claimed, [{ threadId: launched.threadId, text: "Convert these PNGs" }]);
       assert.equal(launched.projection.thread.worktreePath, "/scratch/folder-1");
-      yield* waitUntil(() => Effect.sync(() => harness.runSetup.mock.calls.length === 1));
+      yield* Deferred.await(setupStarted);
       assert.equal(harness.runSetup.mock.calls[0]?.[0]?.worktreePath, "/scratch/folder-1");
       assert.equal(harness.createWorktree.mock.calls.length, 0);
 
@@ -1102,6 +1110,123 @@ it.effect("runs a Scratch thread launched at the root in its own folder", () =>
       assert.isNull(other.projection.thread.worktreePath);
     }).pipe(Effect.provide(harness.layer));
   }),
+);
+
+it.effect.each([
+  { type: "worktree", baseRef: "main", startFromOrigin: true },
+  { type: "existing_worktree", worktreePath: "/old-checkout" },
+] as const)("replays a Scratch create before its initial message with strategy %j", (workspace) =>
+  Effect.gen(function* () {
+    const setupStarted = yield* Deferred.make<void>();
+    const harness = makeHarness({
+      runSetup: () =>
+        Deferred.succeed(setupStarted, undefined).pipe(Effect.as({ status: "no-script" as const })),
+      managedFolders: Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/projects",
+        folderForThread: () => Effect.die("A replay must not claim another Scratch folder"),
+      }),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const input = launchInput({
+        command: "command:launch:scratch-partial-create",
+        thread: "thread:launch:scratch-partial-create",
+        message: "Resume the accepted Scratch thread",
+        workspace,
+      });
+      yield* threads.dispatch({
+        type: "thread.create",
+        commandId: input.commandId,
+        threadId: input.threadId,
+        projectId,
+        title: input.title,
+        modelSelection,
+        runtimeMode: input.runtimeMode,
+        interactionMode: input.interactionMode,
+        branch: null,
+        worktreePath: "/scratch/already-claimed",
+        createdBy: input.createdBy,
+        creationSource: input.creationSource,
+      });
+      const launched = yield* launches.launch(input);
+      assert.isTrue(launched.resumed);
+      assert.equal(launched.projection.messages.length, 1);
+      assert.equal(launched.projection.runs.length, 1);
+      assert.deepEqual(launched.projection.runs[0]?.workspacePreparation, {
+        type: "existing_worktree",
+        worktreePath: "/scratch/already-claimed",
+      });
+      yield* Deferred.await(setupStarted);
+      assert.equal(harness.runSetup.mock.calls[0]?.[0]?.worktreePath, "/scratch/already-claimed");
+      assert.equal(harness.createWorktree.mock.calls.length, 0);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect(
+  "launches fresh Scratch folders for an unbound scheduled task with a saved worktree strategy",
+  () =>
+    Effect.gen(function* () {
+      const setupStarted = yield* Deferred.make<void>();
+      const claimed: ThreadId[] = [];
+      const harness = makeHarness({
+        runSetup: () =>
+          Deferred.succeed(setupStarted, undefined).pipe(
+            Effect.as({ status: "no-script" as const }),
+          ),
+        managedFolders: Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+          namedProjectsRoot: "/projects",
+          folderForThread: ({ threadId }) =>
+            Effect.sync(() => {
+              claimed.push(threadId);
+              return Option.some(`/scratch/folder-${claimed.length}`);
+            }),
+        }),
+      });
+      const layerScheduledTasks = ScheduledTasks.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            harness.layer,
+            NodeCrypto.layer,
+            Scheduler.layer,
+            Layer.mock(SecretRequests.SecretRequests)({}),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const tasks = yield* ScheduledTasks.ScheduledTaskService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const { task } = yield* tasks.upsert({
+          id: ScheduledTaskId.make("scheduled-task:scratch-worktree"),
+          title: "Scratch schedule",
+          prompt: "SCHEDULER_REPRO_OK",
+          enabled: false,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId,
+          threadId: null,
+          workspaceStrategy: { type: "worktree", baseRef: "main", startFromOrigin: true },
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        for (let run = 1; run <= 2; run += 1) {
+          const result = yield* tasks.runNow({ id: task.id });
+          assert.equal(result.task.lastRunStatus, "succeeded");
+          assert.lengthOf(claimed, run);
+          const projection = yield* threads.getThreadProjection(claimed[run - 1]!);
+          assert.equal(projection.thread.worktreePath, `/scratch/folder-${run}`);
+          assert.equal(projection.messages[0]?.text, task.prompt);
+          // Manual run ids include the trigger time; each tick is a new run.
+          yield* TestClock.adjust(Duration.millis(1));
+        }
+        assert.notEqual(claimed[0], claimed[1]);
+        yield* Deferred.await(setupStarted);
+        assert.equal(harness.createWorktree.mock.calls.length, 0);
+      }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerScheduledTasks)));
+    }),
 );
 
 it.effect("names the worktree itself when the client provides no branch", () =>
