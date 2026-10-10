@@ -41,6 +41,45 @@ exception is `release-desktop.yml`, which `fork-release.yml` calls.
   local `fork-main` branch tracking `fork/main`.
 - Commits follow Conventional Commits, as upstream does.
 
+## Planning a fork feature
+
+Features stay fork-only (see _Fixing open upstream issues_), so the fork
+carries each one through every sync. Eligible pushes to `main` start the
+release workflow; successful builds become available for installed copies
+to download and install. For requested work, post a short plan in the task's
+thread (never commit it), then proceed within the authorized scope without
+waiting for another approval. Cover:
+
+1. **Outcome and entry point.** What the user can do, and the least intrusive
+   place to reach it. Extend an existing menu, header, or setting before
+   adding always-visible UI.
+2. **Existing path and real constraint.** Find the closest existing service,
+   contract, and permission, and confirm in the code what actually blocks the
+   feature. It is often on the server, not in the UI: the chat file-link
+   download needed a server flag because file links only served preview types.
+3. **Surfaces.** Walk _Hit every surface_ in `AGENTS.md`: local web and
+   app.t3.codes, desktop (Electron opens other-origin links in the system
+   browser), mobile, remote connections, and permissions. Mark each as
+   supported, out of scope, or untested.
+4. **Conflict footprint.** Name the upstream files you'll touch, plus a size
+   estimate. Prefer new files and narrow hooks. Search upstream issues and PRs
+   for the same feature; an upstream version can later replace the patch.
+5. **What must not change.** Existing behaviour, permission checks, and
+   security boundaries the feature sits next to.
+6. **Verification.** Focused tests, scoped typecheck and lint, and any
+   real-client check needed before release. Ask before starting dev servers
+   or browsers.
+7. **Release.** One commit plus its `CHANGES.md` entry (_Adding a change_).
+   Complete validation, commit, and push `main` as part of authorized fork work;
+   report what is still untested. Do not ask for a separate confirmation just
+   to push or start the automated release. Ask only when the scope or release
+   target remains unclear.
+
+Build on a branch from the fork's `main` on GitHub (`git fetch fork` first;
+a local `fork-main` may be stale), in a separate worktree. If a helper agent
+investigates or implements, the agent that owns the plan reviews the diff and
+reruns the tests itself before committing.
+
 ## Adding a change
 
 1. Start from the fork's `main` (`git fetch fork && git switch fork-main && git reset --hard fork/main`
@@ -72,9 +111,12 @@ exception is `release-desktop.yml`, which `fork-release.yml` calls.
 5. Validate as `AGENTS.md` describes (package typecheck, touched tests,
    `vp check` on changed files).
 6. Push `main` with `--force-with-lease`. The push starts **Fork release**,
-   which checks, builds and publishes. A fast-forward push that only touches
-   `fork/*.md` skips the release; a force-push always releases, because GitHub
-   can't tell which files changed.
+   subject to GitHub runner availability and the workflow's concurrency queue.
+   Publication waits for the checks and both platform builds to pass; starting
+   the workflow does not immediately publish an update. There is no deliberate
+   waiting period. The 30-minute schedule belongs to upstream sync, not fork
+   pushes. A fast-forward push that only touches `fork/*.md` skips the release;
+   a force-push starts it because GitHub can't tell which files changed.
 
 To change or fix an existing fork change, amend its commit (`git commit
 --fixup=<sha>` plus an autosquash rebase) rather than stacking fix-up commits.
@@ -148,8 +190,9 @@ check run as evidence and retain the approval gate as an unresolved limitation.
 
 1. It finds upstream's newest nightly release and stops if fork `main` already
    contains that commit. Upstream publishes at most one nightly every six hours,
-   so the fork trails upstream `main` by up to that long. A manual run with
-   `upstream=main` syncs to upstream's tip instead.
+   so the fork follows released nightlies rather than every upstream `main`
+   commit. Polling, GitHub scheduling, checks, and builds add further delay.
+   A manual run with `upstream=main` syncs to upstream's tip instead.
 2. `sync-upstream.sh --onto <nightly SHA>` rebases the fork commits onto it,
    dropping commits whose `Upstream-PR` has merged and pruning their entries.
 3. On a conflict, Actions saves pinned request metadata in a `sync-request`
