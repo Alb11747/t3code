@@ -1,4 +1,5 @@
 import {
+  AuthFilesystemReadScope,
   AuthOrchestrationOperateScope,
   EnvironmentId,
   ProjectId,
@@ -16,6 +17,7 @@ import { useRightPanelStore } from "../rightPanelStore";
 
 const state = vi.hoisted(() => ({
   allowed: true,
+  canReadFiles: true,
   listeners: new Set<() => void>(),
   openEditor: vi.fn(),
   updateMetadata: vi.fn(),
@@ -43,9 +45,11 @@ vi.mock(import("../state/use-atom-command"), async (original) => {
 });
 vi.mock(import("../state/session"), async (original) => {
   const { useSyncExternalStore } = await import("react");
+  const { PrimaryConnectionTarget } = await import("@t3tools/client-runtime/connection");
   const readEnvironmentScope = (id: EnvironmentId | null, scope: AuthEnvironmentScope) =>
     id !== null &&
-    (scope !== AuthOrchestrationOperateScope || id !== threadRef.environmentId || state.allowed);
+    (scope !== AuthOrchestrationOperateScope || id !== threadRef.environmentId || state.allowed) &&
+    (scope !== AuthFilesystemReadScope || state.canReadFiles);
   return {
     ...(await original()),
     readEnvironmentScope,
@@ -57,6 +61,19 @@ vi.mock(import("../state/session"), async (original) => {
         },
         () => readEnvironmentScope(id, scope),
       ),
+    readPreparedConnection: () => ({
+      environmentId: threadRef.environmentId,
+      label: "Host",
+      httpBaseUrl: "http://host",
+      socketUrl: "ws://host/ws",
+      httpAuthorization: null,
+      target: new PrimaryConnectionTarget({
+        environmentId: threadRef.environmentId,
+        label: "Host",
+        httpBaseUrl: "http://host",
+        wsBaseUrl: "ws://host",
+      }),
+    }),
   };
 });
 // Atoms derived from the server config run in the real registry over this config.
@@ -135,6 +152,7 @@ let container: HTMLDivElement;
 
 beforeEach(() => {
   state.allowed = true;
+  state.canReadFiles = true;
   state.listeners.clear();
   state.linkedPullRequest = null;
   state.openEditor.mockReset().mockResolvedValue(AsyncResult.success(undefined));
@@ -191,15 +209,47 @@ async function setAllowed(allowed: boolean) {
 it("removes host actions after revocation while keeping file preview and copying", async () => {
   await renderMarkdown("[Readme](docs/readme.md)");
   await openContextMenu();
-  expect(offeredActions()).toEqual(["open", "reveal", "copy-relative", "copy-full"]);
+  expect(offeredActions()).toEqual(["open", "reveal", "copy-relative", "copy-full", "download"]);
   await setAllowed(false);
   state.choose.mockResolvedValue("copy-full");
   await openContextMenu();
-  expect(offeredActions()).toEqual(["copy-relative", "copy-full"]);
+  expect(offeredActions()).toEqual(["copy-relative", "copy-full", "download"]);
   await vi.waitFor(() => expect(state.copy).toHaveBeenCalledWith("/work/docs/readme.md"));
   await act(async () => anchor().click());
   expect(state.openFile).toHaveBeenCalledWith(threadRef, "docs/readme.md", undefined);
   expect(state.openEditor).not.toHaveBeenCalled();
+});
+
+it("offers file downloads only while the connection can read host files", async () => {
+  state.canReadFiles = false;
+  await renderMarkdown("[Readme](docs/readme.md)");
+  await openContextMenu();
+  expect(offeredActions()).not.toContain("download");
+});
+
+it("downloads the workspace file a bare filename link resolves to", async () => {
+  const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  // The mocked query runner serves both the workspace lookup and the asset URL.
+  state.search
+    .mockResolvedValueOnce(
+      AsyncResult.success({ entries: [{ path: "docs/nested/report.pdf", kind: "file" }] }),
+    )
+    .mockResolvedValueOnce(AsyncResult.success({ relativeUrl: "/api/assets/download" }));
+  state.choose.mockResolvedValue("download");
+  await renderMarkdown("[Report](report.pdf)");
+  await openContextMenu();
+  expect(state.search).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      input: {
+        resource: expect.objectContaining({ path: "/work/docs/nested/report.pdf", download: true }),
+      },
+    }),
+  );
+  expect(click).toHaveBeenCalledOnce();
+  expect(click.mock.instances[0]).toHaveProperty(
+    "href",
+    "http://host/api/assets/download#download",
+  );
 });
 
 it("does not launch an editor after revocation during a native context menu", async () => {
