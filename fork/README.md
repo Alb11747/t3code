@@ -41,6 +41,40 @@ exception is `release-desktop.yml`, which `fork-release.yml` calls.
   local `fork-main` branch tracking `fork/main`.
 - Commits follow Conventional Commits, as upstream does.
 
+## Planning a fork feature
+
+Features stay fork-only (see _Fixing open upstream issues_), so the fork
+carries each one through every sync, and each push to `main` ships to every
+installed copy. Before building one, post a short plan in the task's thread
+(never commit it) and get the user's go-ahead. Cover:
+
+1. **Outcome and entry point.** What the user can do, and the least intrusive
+   place to reach it. Extend an existing menu, header, or setting before
+   adding always-visible UI.
+2. **Existing path and real constraint.** Find the closest existing service,
+   contract, and permission, and confirm in the code what actually blocks the
+   feature. It is often on the server, not in the UI: the chat file-link
+   download needed a server flag because file links only served preview types.
+3. **Surfaces.** Walk _Hit every surface_ in `AGENTS.md`: local web and
+   app.t3.codes, desktop (Electron opens other-origin links in the system
+   browser), mobile, remote connections, and permissions. Mark each as
+   supported, out of scope, or untested.
+4. **Conflict footprint.** Name the upstream files you'll touch, plus a size
+   estimate. Prefer new files and narrow hooks. Search upstream issues and PRs
+   for the same feature; an upstream version can later replace the patch.
+5. **What must not change.** Existing behaviour, permission checks, and
+   security boundaries the feature sits next to.
+6. **Verification.** Focused tests, scoped typecheck and lint, and any
+   real-client check needed before release. Ask before starting dev servers
+   or browsers.
+7. **Release.** One commit plus its `CHANGES.md` entry (_Adding a change_).
+   Confirm with the user before pushing `main`, and say what is still untested.
+
+Build on a branch from the fork's `main` on GitHub (`git fetch fork` first;
+a local `fork-main` may be stale), in a separate worktree. If a helper agent
+investigates or implements, the agent that owns the plan reviews the diff and
+reruns the tests itself before committing.
+
 ## Adding a change
 
 1. Start from the fork's `main` (`git fetch fork && git switch fork-main && git reset --hard fork/main`
