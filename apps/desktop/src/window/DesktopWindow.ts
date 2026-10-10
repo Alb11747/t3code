@@ -633,6 +633,18 @@ export const make = Effect.gen(function* () {
       return { action: "deny" };
     });
     window.webContents.on("will-navigate", (event, url) => {
+      const navigationUrl = URL.parse(url);
+      // Signed asset downloads may belong to a remote environment; keep them in Electron.
+      if (
+        navigationUrl &&
+        (navigationUrl.protocol === "http:" || navigationUrl.protocol === "https:") &&
+        navigationUrl.pathname.startsWith("/api/assets/") &&
+        navigationUrl.hash === "#download"
+      ) {
+        event.preventDefault();
+        window.webContents.downloadURL(url);
+        return;
+      }
       if (
         isSameOriginRendererNavigation({
           applicationUrl,
