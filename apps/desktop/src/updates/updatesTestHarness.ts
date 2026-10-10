@@ -35,6 +35,7 @@ export interface UpdatesHarnessOptions {
   readonly platform?: NodeJS.Platform;
   readonly packageType?: string | undefined;
   readonly installRecord?: string | undefined;
+  readonly appUpdateYml?: string;
 }
 
 export function makeHarness(options: UpdatesHarnessOptions = {}) {
@@ -224,16 +225,24 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
         ? (installRecords.get(path) ?? previousInstallRecord)
         : undefined;
       if (installRecord !== undefined) return Effect.succeed(installRecord);
-      return path === "/missing/resources/package-type" && options.packageType !== undefined
-        ? Effect.succeed(options.packageType)
-        : Effect.fail(
-            PlatformError.systemError({
-              module: "FileSystem",
-              method: "readFileString",
-              _tag: "NotFound",
-              pathOrDescriptor: path,
-            }),
-          );
+      const resourcePath = path.replaceAll("\\", "/");
+      if (resourcePath === "/missing/resources/package-type" && options.packageType !== undefined) {
+        return Effect.succeed(options.packageType);
+      }
+      if (
+        resourcePath === "/missing/resources/app-update.yml" &&
+        options.appUpdateYml !== undefined
+      ) {
+        return Effect.succeed(options.appUpdateYml);
+      }
+      return Effect.fail(
+        PlatformError.systemError({
+          module: "FileSystem",
+          method: "readFileString",
+          _tag: "NotFound",
+          pathOrDescriptor: path,
+        }),
+      );
     },
     makeDirectory: () => Effect.void,
     writeFileString: (path, data) =>
