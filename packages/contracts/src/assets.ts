@@ -17,11 +17,13 @@ export const AssetResource = Schema.Union([
     path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
   }),
   // One file served in place from anywhere the environment host can read:
-  // images, videos, HTML, and PDF. An absolute path may lie outside the
-  // workspace; a relative one resolves against the thread's workspace.
+  // images, videos, HTML, and PDF, or any file when download is true.
+  // An absolute path may lie outside the workspace; a relative one resolves
+  // against the thread's workspace. Absent download keeps preview behavior.
   Schema.TaggedStruct("media-file", {
     threadId: ThreadId,
     path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
+    download: Schema.optionalKey(Schema.Boolean),
   }),
   // A workspace file named by a draft that has no thread yet. The draft names
   // its workspace root explicitly instead of resolving one from a thread.
