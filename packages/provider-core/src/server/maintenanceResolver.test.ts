@@ -221,7 +221,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
       latestVersion: "2.1.117",
       updateCommand: null,
       canUpdate: false,
-      message: "Install the update now or review provider settings.",
+      message: "Update this provider manually using the installer that owns it.",
     });
   });
 
@@ -380,6 +380,57 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
       );
       expect(posix.update).toBeNull();
+    }),
+  );
+
+  it.effect("recognizes Windows native binaries inside npm's platform package", () =>
+    Effect.gen(function* () {
+      const prefix = yield* makeTempDir("t3-npm-native-capabilities");
+      const packageDir = NodePath.join(prefix, "node_modules", "@example", "package-tool");
+      const binary = NodePath.join(
+        packageDir,
+        "node_modules",
+        "@example",
+        "package-tool-win32-x64",
+        "vendor",
+        "bin",
+        "package-tool.exe",
+      );
+      NodeFS.mkdirSync(NodePath.dirname(binary), { recursive: true });
+      NodeFS.writeFileSync(binary, "");
+      NodeFS.writeFileSync(NodePath.join(packageDir, "package.json"), "{}");
+      const resolve = resolveProviderMaintenanceCapabilitiesEffect(packageToolUpdate, {
+        binaryPath: binary,
+        env: { PATH: "", PATHEXT: ".EXE;.CMD" },
+      }).pipe(
+        Effect.provideService(HostProcess.Platform, "win32"),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
+      );
+
+      // A project dependency without a global root shim remains manual-only.
+      expect((yield* resolve).update).toBeNull();
+      NodeFS.writeFileSync(NodePath.join(prefix, "package-tool.cmd"), "@echo off\r\n");
+      const capabilities = yield* resolve;
+      expect(capabilities.update).toMatchObject({
+        executable: "npm",
+        args: [
+          "install",
+          "-g",
+          "--prefix",
+          prefix,
+          expect.any(String),
+          "@example/package-tool@latest",
+        ],
+        lockKey: `npm-global:${normalizeCommandPath(prefix)}`,
+      });
+      expect(
+        createProviderVersionAdvisory({
+          driver: driver("packageTool"),
+          currentVersion: "1.0.0",
+          latestVersion: "1.0.1",
+          maintenanceCapabilities: capabilities,
+        }),
+      ).toMatchObject({ canUpdate: true, updateCommand: expect.any(String) });
     }),
   );
 
