@@ -96,6 +96,23 @@ describe("showDesktopUpdateDownloadedToast", () => {
     });
   });
 
+  it("opens fork release notes using the desktop updater's repository", async () => {
+    const openExternal = vi.fn().mockResolvedValue(true);
+    showDesktopUpdateDownloadedToast(
+      { openExternal },
+      downloadedState({
+        downloadedVersion: "0.0.46-nightly.20261010.14",
+        releaseHistoryUrl: "https://github.com/Alb11747/t3code/releases",
+      }),
+    );
+    findReleaseNotesLink(getDescription())?.props.onClick?.();
+    await vi.waitFor(() => {
+      expect(openExternal).toHaveBeenCalledWith(
+        "https://github.com/Alb11747/t3code/releases/tag/v0.0.46-nightly.20261010.14",
+      );
+    });
+  });
+
   it("omits the link when the updater reports no version at all", () => {
     showDesktopUpdateDownloadedToast(
       { openExternal: vi.fn() },
