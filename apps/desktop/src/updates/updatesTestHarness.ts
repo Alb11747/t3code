@@ -37,6 +37,7 @@ export interface UpdatesHarnessOptions {
   readonly platform?: NodeJS.Platform;
   /** Contents of the resources/package-type marker a Linux package ships. */
   readonly packageType?: string | undefined;
+  readonly appUpdateYml?: string;
 }
 
 export function makeHarness(options: UpdatesHarnessOptions = {}) {
@@ -212,17 +213,22 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
   // disk I/O that would outrun the tests' settle loops.
   const updateRestartMarkers = new Set<string>();
   const layerFileSystem = FileSystem.layerNoop({
-    readFileString: (path) =>
-      path === "/missing/resources/package-type" && options.packageType !== undefined
-        ? Effect.succeed(options.packageType)
-        : Effect.fail(
-            PlatformError.systemError({
-              module: "FileSystem",
-              method: "readFileString",
-              _tag: "NotFound",
-              pathOrDescriptor: path,
-            }),
-          ),
+    readFileString: (path) => {
+      if (path === "/missing/resources/package-type" && options.packageType !== undefined) {
+        return Effect.succeed(options.packageType);
+      }
+      if (path === "/missing/resources/app-update.yml" && options.appUpdateYml !== undefined) {
+        return Effect.succeed(options.appUpdateYml);
+      }
+      return Effect.fail(
+        PlatformError.systemError({
+          module: "FileSystem",
+          method: "readFileString",
+          _tag: "NotFound",
+          pathOrDescriptor: path,
+        }),
+      );
+    },
     makeDirectory: () => Effect.void,
     writeFileString: (path) =>
       Effect.sync(() => {
