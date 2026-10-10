@@ -21,6 +21,36 @@ import * as DesktopUpdates from "./DesktopUpdates.ts";
 import { flushCallbacks, makeHarness } from "./updatesTestHarness.ts";
 
 describe("DesktopUpdates", () => {
+  it.effect(
+    "keeps release links on the configured fork through channel changes and updater events",
+    () => {
+      const harness = makeHarness({
+        appUpdateYml: "provider: github\nowner: Alb11747\nrepo: t3code\n",
+      });
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          yield* updates.configure;
+          assert.equal(
+            (yield* updates.getState).releaseHistoryUrl,
+            "https://github.com/Alb11747/t3code/releases",
+          );
+          yield* updates.setChannel("nightly");
+          harness.emit("update-available", { version: "1.2.4-nightly.20260709.766" });
+          yield* flushCallbacks;
+          assert.equal(
+            (yield* updates.getState).releaseHistoryUrl,
+            "https://github.com/Alb11747/t3code/releases",
+          );
+          assert.equal(
+            harness.sentStates.at(-1)?.releaseHistoryUrl,
+            "https://github.com/Alb11747/t3code/releases",
+          );
+        }),
+      ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+    },
+  );
+
   it("preserves complete causes for update poller and event failures", () => {
     const cause = Cause.combine(
       Cause.fail(new Error("updater failed")),
