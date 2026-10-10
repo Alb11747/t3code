@@ -186,7 +186,13 @@ import { readThreadShell, useProjects } from "../state/entities";
 import { serverEnvironment } from "../state/server";
 import { shellEnvironment } from "../state/shell";
 import { assetEnvironment } from "../state/assets";
-import { readEnvironmentScope, usePreparedConnection, useEnvironmentScope } from "../state/session";
+import {
+  readEnvironmentScope,
+  readPreparedConnection,
+  usePreparedConnection,
+  useEnvironmentScope,
+} from "../state/session";
+import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import { previewEnvironment } from "../state/preview";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
@@ -1173,6 +1179,7 @@ interface MarkdownFileLinkProps {
   openInEditorMenuLabel: string;
   onOpenInBrowser?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   onOpenMedia?: (() => void) | undefined;
+  onDownloadFile?: ((filePath: string, panelPath: string | null) => Promise<void>) | undefined;
   onReveal?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   revealLabel?: string | undefined;
 }
@@ -1878,6 +1885,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   openInEditorMenuLabel,
   onOpenInBrowser,
   onOpenMedia,
+  onDownloadFile,
   onReveal,
   revealLabel,
 }: MarkdownFileLinkProps) {
@@ -2062,6 +2070,11 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             ...(onReveal && revealLabel ? ([{ id: "reveal", label: revealLabel }] as const) : []),
             { id: "copy-relative", label: "Copy relative path" },
             { id: "copy-full", label: "Copy full path" },
+            ...(onDownloadFile &&
+            threadRef &&
+            readEnvironmentScope(threadRef.environmentId, AuthFilesystemReadScope)
+              ? ([{ id: "download", label: "Download file" }] as const)
+              : []),
           ] as const,
           position,
         );
@@ -2089,6 +2102,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         if (clicked === "copy-full") {
           handleCopy(targetPath, "Full path");
         }
+        if (clicked === "download") {
+          await onDownloadFile?.(iconPath, panelPath);
+        }
       } catch (cause) {
         reportMarkdownActionFailure(
           { operation: "show-file-context-menu", target: targetPath },
@@ -2104,6 +2120,10 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       handleRevealInFileManager,
       onOpenInBrowser,
       onOpenMedia,
+      onDownloadFile,
+      iconPath,
+      panelPath,
+      threadRef,
       onOpen,
       onReveal,
       openInEditorMenuLabel,
@@ -2227,6 +2247,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.openInEditorMenuLabel === next.openInEditorMenuLabel &&
     previous.onOpenInBrowser === next.onOpenInBrowser &&
     previous.onOpenMedia === next.onOpenMedia &&
+    previous.onDownloadFile === next.onDownloadFile &&
     previous.onReveal === next.onReveal &&
     previous.revealLabel === next.revealLabel
   );
@@ -2288,6 +2309,46 @@ function useChatMarkdownState({
   });
   const pullRequestLinking = usePullRequestLinking(threadRef?.environmentId);
   const environmentId = threadRef?.environmentId ?? explicitEnvironmentId ?? null;
+  const downloadMarkdownFile = useCallback(
+    async (filePath: string) => {
+      if (!threadRef) return;
+      try {
+        const { environmentId, threadId } = threadRef;
+        if (!readEnvironmentScope(environmentId, AuthFilesystemReadScope)) {
+          throw new Error("This connection cannot read host files.");
+        }
+        const connection = readPreparedConnection(environmentId);
+        if (!connection) throw new Error("Reconnect to this environment and try again.");
+        const result = await createAssetUrl({
+          environmentId,
+          input: { resource: { _tag: "media-file", threadId, path: filePath, download: true } },
+        });
+        if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+        if (!readEnvironmentScope(environmentId, AuthFilesystemReadScope)) {
+          throw new Error("This connection cannot read host files.");
+        }
+        const url = resolveAssetUrl(connection.httpBaseUrl, result.value.relativeUrl);
+        if (!url) throw new Error("The environment returned an invalid file URL.");
+        const anchor = document.createElement("a");
+        // Electron handles this marker with downloadURL instead of opening a remote URL externally.
+        anchor.href = `${url}#download`;
+        anchor.download = "";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+      } catch (cause) {
+        reportMarkdownActionFailure({ operation: "download-file", target: filePath }, cause);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not download file",
+            description: cause instanceof Error ? cause.message : "The download failed.",
+          }),
+        );
+      }
+    },
+    [threadRef, createAssetUrl],
+  );
   const canOperateHost = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
   const canOperatePreview = useEnvironmentScope(environmentId, AuthPreviewOperateScope);
   const remoteOpen = useRemoteOpenResolution(environmentId);
@@ -2575,16 +2636,30 @@ function useChatMarkdownState({
     },
     [cwd, findWorkspaceBasenameMatch, threadRef],
   );
-  const revealMarkdownFileInFileManager = useCallback(
-    async (fileLinkMeta: MarkdownFileLinkMeta) => {
-      const workspaceRelativePath = fileLinkMeta.workspaceRelativePath;
+  const resolveMarkdownFileLinkPath = useCallback(
+    async (filePath: string, workspaceRelativePath: string | null) => {
       const match = workspaceRelativePath
         ? await findWorkspaceBasenameMatch(workspaceRelativePath)
         : null;
-      const filePath = match && cwd ? resolvePathLinkTarget(match, cwd) : fileLinkMeta.filePath;
-      return revealFileInFileManager(filePath);
+      return match && cwd ? resolvePathLinkTarget(match, cwd) : filePath;
     },
-    [cwd, findWorkspaceBasenameMatch, revealFileInFileManager],
+    [cwd, findWorkspaceBasenameMatch],
+  );
+  const revealMarkdownFileInFileManager = useCallback(
+    async (fileLinkMeta: MarkdownFileLinkMeta) =>
+      revealFileInFileManager(
+        await resolveMarkdownFileLinkPath(
+          fileLinkMeta.filePath,
+          fileLinkMeta.workspaceRelativePath,
+        ),
+      ),
+    [resolveMarkdownFileLinkPath, revealFileInFileManager],
+  );
+  // Stable so unchanged file chips still skip re-rendering while a reply streams.
+  const downloadMarkdownFileLink = useCallback(
+    async (filePath: string, panelPath: string | null) =>
+      downloadMarkdownFile(await resolveMarkdownFileLinkPath(filePath, panelPath)),
+    [downloadMarkdownFile, resolveMarkdownFileLinkPath],
   );
   const fileLinkChip = useCallback(
     (fileLinkMeta: MarkdownFileLinkMeta, copyMarkdown: string, mediaSource?: string) => {
@@ -2617,6 +2692,7 @@ function useChatMarkdownState({
           copyMarkdown={copyMarkdown}
           theme={resolvedTheme}
           threadRef={threadRef}
+          onDownloadFile={threadRef ? downloadMarkdownFileLink : undefined}
           {...(canUseShellActions ? { onOpen: openInPreferredEditor } : {})}
           onOpenInPanel={openFileInPanel}
           onOpenMedia={
@@ -2646,6 +2722,7 @@ function useChatMarkdownState({
       canUseShellActions,
       canOperatePreview,
       environmentId,
+      downloadMarkdownFileLink,
       fileLinkParentSuffixByPath,
       openFileInPanel,
       openInPreferredEditor,
