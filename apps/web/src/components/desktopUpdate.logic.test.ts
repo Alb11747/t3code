@@ -247,6 +247,18 @@ describe("desktop update UI helpers", () => {
     );
   });
 
+  it.each(["fork", "fork.1"])(
+    "uses the updater's repository for %s release and history links",
+    (suffix) => {
+      const historyUrl = "https://github.com/Alb11747/t3code/releases";
+      const version = `0.0.46-nightly.20261010.14.${suffix}`;
+      expect(getDesktopUpdateReleaseUrl(version, "pingdotgg/t3code", historyUrl)).toBe(
+        `${historyUrl}/tag/v${version}`,
+      );
+      expect(getDesktopUpdateReleaseHistoryUrl(undefined, historyUrl)).toBe(historyUrl);
+    },
+  );
+
   it("toasts only for actionable updater errors", () => {
     expect(
       shouldToastDesktopUpdateActionResult({
