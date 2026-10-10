@@ -234,6 +234,91 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
+  it.effect(
+    "rejects archive previews but streams exact host file downloads outside the workspace",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-download-root-" });
+        const outside = yield* fs.makeTempDirectoryScoped({ prefix: "t3-download-outside-" });
+        for (const [name, mimeType] of [
+          ["archive.zip", "application/zip"],
+          ["notes.md", "text/markdown"],
+          ["report.html", "application/octet-stream"],
+          ["file.unknown-extension", "application/octet-stream"],
+        ] as const) {
+          const filePath = path.join(outside, name);
+          yield* fs.writeFileString(filePath, "download bytes");
+          const resource = {
+            _tag: "media-file" as const,
+            threadId: ThreadId.make("thread-1"),
+            path: filePath,
+          };
+          if (name === "archive.zip" || name === "notes.md") {
+            for (const previewResource of [resource, { ...resource, download: false }]) {
+              expect(
+                yield* issueAssetUrl({ resource: previewResource, workspaceRoot: root }).pipe(
+                  Effect.flip,
+                ),
+              ).toBeInstanceOf(AssetPreviewTypeValidationError);
+            }
+          }
+          const result = yield* issueAssetUrl({
+            resource: { ...resource, download: true },
+            workspaceRoot: root,
+          });
+          const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+          const separator = suffix.indexOf("/");
+          const token = suffix.slice(0, separator);
+          const requestPath = suffix.slice(separator + 1);
+          const asset = yield* resolveAsset(token, requestPath);
+          if (asset?.kind !== "file") return yield* Effect.die("Expected a downloadable host file");
+          expect(asset).toMatchObject({
+            download: true,
+            fileName: name,
+            path: yield* fs.realPath(filePath),
+          });
+          const response = HttpServerResponse.toWeb(yield* assetFileResponse(asset));
+          expect(response.headers.get("content-disposition")).toBe(
+            `attachment; filename="${name}"`,
+          );
+          expect(response.headers.get("content-type")).toBe(mimeType);
+          expect(yield* Effect.promise(() => response.text())).toBe("download bytes");
+          expect(yield* resolveAsset(token, "sibling.zip")).toBeNull();
+          expect(yield* resolveAsset(token, `../${name}`)).toBeNull();
+          const [payload, signature] = token.split(".");
+          const claims = JSON.parse(Buffer.from(payload!, "base64url").toString("utf8"));
+          claims.download = false;
+          const tampered = Buffer.from(JSON.stringify(claims)).toString("base64url");
+          expect(yield* resolveAsset(`${tampered}.${signature}`, requestPath)).toBeNull();
+          // A replacement at the same path must not inherit the old file's capability.
+          yield* fs.rename(filePath, `${filePath}.old`);
+          yield* fs.writeFileString(filePath, "replacement");
+          expect(yield* resolveAsset(token, requestPath)).toBeNull();
+        }
+      }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("rejects directories and missing files when minting downloads", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-download-invalid-" });
+      for (const filePath of [root, path.join(root, "missing.zip")]) {
+        const error = yield* issueAssetUrl({
+          resource: {
+            _tag: "media-file",
+            threadId: ThreadId.make("thread-1"),
+            path: filePath,
+            download: true,
+          },
+        }).pipe(Effect.flip);
+        expect(error._tag).toBe("AssetWorkspaceAssetNotFoundError");
+      }
+    }).pipe(Effect.provide(layerTest)),
+  );
+
   it.effect("reports pixel dimensions from an image header and nothing for other files", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
