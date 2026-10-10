@@ -62,6 +62,7 @@ function downloadedState(overrides: Partial<DesktopUpdateState> = {}): DesktopUp
 describe("showDesktopUpdateDownloadedToast", () => {
   beforeEach(() => {
     testState.addToast.mockReset();
+    vi.stubEnv("T3CODE_DESKTOP_UPDATE_REPOSITORY", "pingdotgg/t3code");
   });
 
   afterEach(() => {
@@ -83,9 +84,13 @@ describe("showDesktopUpdateDownloadedToast", () => {
   });
 
   it("opens the downloaded version's release notes", async () => {
+    vi.stubEnv("T3CODE_DESKTOP_UPDATE_REPOSITORY", "Alb11747/t3code");
     const openExternal = vi.fn().mockResolvedValue(true);
 
-    showDesktopUpdateDownloadedToast({ openExternal }, downloadedState());
+    showDesktopUpdateDownloadedToast(
+      { openExternal },
+      downloadedState({ releaseHistoryUrl: "https://github.com/pingdotgg/t3code/releases" }),
+    );
     const link = findReleaseNotesLink(getDescription());
     link?.props.onClick?.();
     await vi.waitFor(() => {
@@ -112,6 +117,27 @@ describe("showDesktopUpdateDownloadedToast", () => {
       );
     });
   });
+
+  it.each(["fork", "fork.1"])(
+    "opens %s release notes using the desktop updater's repository",
+    async (suffix) => {
+      const openExternal = vi.fn().mockResolvedValue(true);
+      const version = `0.0.46-nightly.20261010.14.${suffix}`;
+      showDesktopUpdateDownloadedToast(
+        { openExternal },
+        downloadedState({
+          downloadedVersion: version,
+          releaseHistoryUrl: "https://github.com/Alb11747/t3code/releases",
+        }),
+      );
+      findReleaseNotesLink(getDescription())?.props.onClick?.();
+      await vi.waitFor(() => {
+        expect(openExternal).toHaveBeenCalledWith(
+          `https://github.com/Alb11747/t3code/releases/tag/v${version}`,
+        );
+      });
+    },
+  );
 
   it("omits the link when the updater reports no version at all", () => {
     showDesktopUpdateDownloadedToast(

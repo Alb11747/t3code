@@ -275,13 +275,20 @@ function createBaseUpdateState(
   channel: DesktopUpdateChannel,
   disabledReason: Option.Option<string>,
   environment: DesktopEnvironment.DesktopEnvironment["Service"],
+  feedConfig: Option.Option<AppUpdateYmlConfig>,
 ): DesktopUpdateState {
   const enabled = Option.isNone(disabledReason);
+  const feed = Option.getOrUndefined(feedConfig);
+  const releaseHistoryUrl =
+    feed?.provider === "github" && feed.owner && feed.repo
+      ? `https://${feed.host ?? "github.com"}/${feed.owner}/${feed.repo}/releases`
+      : undefined;
   return {
     ...createInitialDesktopUpdateState(environment.appVersion, environment.runtimeInfo, channel),
     enabled,
     status: enabled ? "idle" : "disabled",
     message: Option.getOrNull(disabledReason),
+    ...(releaseHistoryUrl ? { releaseHistoryUrl } : {}),
   };
 }
 
@@ -632,9 +639,9 @@ export const make = Effect.gen(function* () {
   );
 
   const baseUpdateState = (channel: DesktopUpdateChannel, disabledReason: Option.Option<string>) =>
-    Ref.get(notAppliedVersionRef).pipe(
-      Effect.map((notAppliedVersion) => ({
-        ...createBaseUpdateState(channel, disabledReason, environment),
+    Effect.all([Ref.get(notAppliedVersionRef), Ref.get(appUpdateYmlConfigRef)]).pipe(
+      Effect.map(([notAppliedVersion, feedConfig]) => ({
+        ...createBaseUpdateState(channel, disabledReason, environment, feedConfig),
         ...Option.match(notAppliedVersion, {
           onNone: () => ({}),
           onSome: (version) => ({ notAppliedVersion: version }),
