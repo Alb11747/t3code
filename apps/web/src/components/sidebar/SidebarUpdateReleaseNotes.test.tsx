@@ -72,6 +72,7 @@ function renderNotes(state: DesktopUpdateState, openExternal = vi.fn().mockResol
 describe("SidebarUpdateReleaseNotes", () => {
   beforeEach(() => {
     testState.addToast.mockReset();
+    vi.stubEnv("T3CODE_DESKTOP_UPDATE_REPOSITORY", "pingdotgg/t3code");
   });
 
   afterEach(() => {
@@ -91,6 +92,25 @@ describe("SidebarUpdateReleaseNotes", () => {
     expect(anchors.map(({ props }) => props.href)).toEqual([
       "https://github.com/JustYannicc/t3code/releases/tag/v0.0.36-nightly.3",
       "https://github.com/JustYannicc/t3code/releases",
+    ]);
+  });
+
+  it("links fork previews and omitted releases to the desktop updater's repository", () => {
+    const historyUrl = "https://github.com/Alb11747/t3code/releases";
+    const version = "0.0.46-nightly.20261010.14.fork.1";
+    const anchors = collectAnchors(
+      renderNotes({
+        ...baseState,
+        availableVersion: version,
+        releaseHistoryUrl: historyUrl,
+        releaseNotes: [{ version, items: ["Fork change"], totalItems: 1 }],
+        omittedReleaseCount: 1,
+      }),
+    );
+
+    expect(anchors.map(({ props }) => props.href)).toEqual([
+      `${historyUrl}/tag/v${version}`,
+      historyUrl,
     ]);
   });
 
