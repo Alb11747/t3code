@@ -189,6 +189,7 @@ import { readThreadShell, useProjects } from "../state/entities";
 import { serverEnvironment } from "../state/server";
 import { shellEnvironment } from "../state/shell";
 import { assetEnvironment } from "../state/assets";
+import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import {
   readEnvironmentScope,
   readPreparedConnection,
@@ -1250,6 +1251,7 @@ interface MarkdownFileLinkProps {
   openInEditorMenuLabel: string;
   onOpenInBrowser?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   onOpenMedia?: (() => void) | undefined;
+  onDownloadFile?: (() => Promise<void>) | undefined;
   onReveal?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   revealLabel?: string | undefined;
 }
@@ -1987,6 +1989,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   openInEditorMenuLabel,
   onOpenInBrowser,
   onOpenMedia,
+  onDownloadFile,
   onReveal,
   revealLabel,
 }: MarkdownFileLinkProps) {
@@ -2167,6 +2170,11 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             : []),
           ...(onReveal && revealLabel ? ([{ id: "reveal", label: revealLabel }] as const) : []),
           ...copyItems.map(({ id, label }) => ({ id, label })),
+          ...(onDownloadFile &&
+          threadRef &&
+          readEnvironmentScope(threadRef.environmentId, AuthFilesystemReadScope)
+            ? ([{ id: "download", label: "Download file" }] as const)
+            : []),
         ] as const,
         position,
       );
@@ -2190,6 +2198,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       const copyItem = copyItems.find(({ id }) => id === clicked);
       if (copyItem) {
         handleCopy(copyItem.value, copyItem.title);
+      }
+      if (clicked === "download") {
+        await onDownloadFile?.();
       }
     } catch (cause) {
       reportMarkdownActionFailure(
@@ -2311,6 +2322,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.openInEditorMenuLabel === next.openInEditorMenuLabel &&
     previous.onOpenInBrowser === next.onOpenInBrowser &&
     previous.onOpenMedia === next.onOpenMedia &&
+    previous.onDownloadFile === next.onDownloadFile &&
     previous.onReveal === next.onReveal &&
     previous.revealLabel === next.revealLabel
   );
@@ -2428,6 +2440,46 @@ function useChatMarkdownState({
   });
   const pullRequestLinking = usePullRequestLinking(threadRef?.environmentId);
   const environmentId = threadRef?.environmentId ?? explicitEnvironmentId ?? null;
+  const downloadMarkdownFile = async (filePath: string) => {
+    if (!threadRef) return;
+    // A catch callback rather than try/catch: React Compiler skips components
+    // that throw inside try.
+    const download = async () => {
+      const { environmentId, threadId } = threadRef;
+      if (!readEnvironmentScope(environmentId, AuthFilesystemReadScope)) {
+        throw new Error("This connection cannot read host files.");
+      }
+      const connection = readPreparedConnection(environmentId);
+      if (!connection) throw new Error("Reconnect to this environment and try again.");
+      const result = await createAssetUrl({
+        environmentId,
+        input: { resource: { _tag: "media-file", threadId, path: filePath, download: true } },
+      });
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      if (!readEnvironmentScope(environmentId, AuthFilesystemReadScope)) {
+        throw new Error("This connection cannot read host files.");
+      }
+      const url = resolveAssetUrl(connection.httpBaseUrl, result.value.relativeUrl);
+      if (!url) throw new Error("The environment returned an invalid file URL.");
+      const anchor = document.createElement("a");
+      // Electron handles this marker with downloadURL instead of opening a remote URL externally.
+      anchor.href = `${url}#download`;
+      anchor.download = "";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+    };
+    await download().catch((cause: unknown) => {
+      reportMarkdownActionFailure({ operation: "download-file", target: filePath }, cause);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not download file",
+          description: cause instanceof Error ? cause.message : "The download failed.",
+        }),
+      );
+    });
+  };
   const canOperateHost = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
   const canOperatePreview = useEnvironmentScope(environmentId, AuthPreviewOperateScope);
   const remoteOpen = useRemoteOpenResolution(environmentId);
@@ -2707,11 +2759,14 @@ function useChatMarkdownState({
       openAt(match ?? panelPath);
     })();
   };
-  const revealMarkdownFileInFileManager = async (fileLinkMeta: MarkdownFileLinkMeta) => {
+  const resolveMarkdownFileLinkPath = async (fileLinkMeta: MarkdownFileLinkMeta) => {
     const match = await findWorkspaceFileMatch(fileLinkMeta);
-    const filePath = match && cwd ? resolvePathLinkTarget(match, cwd) : fileLinkMeta.filePath;
-    return revealFileInFileManager(filePath);
+    return match && cwd ? resolvePathLinkTarget(match, cwd) : fileLinkMeta.filePath;
   };
+  const revealMarkdownFileInFileManager = async (fileLinkMeta: MarkdownFileLinkMeta) =>
+    revealFileInFileManager(await resolveMarkdownFileLinkPath(fileLinkMeta));
+  const downloadMarkdownFileLink = async (fileLinkMeta: MarkdownFileLinkMeta) =>
+    downloadMarkdownFile(await resolveMarkdownFileLinkPath(fileLinkMeta));
   const fileLinkChip = (
     fileLinkMeta: MarkdownFileLinkMeta,
     copyMarkdown: string,
@@ -2746,6 +2801,7 @@ function useChatMarkdownState({
         copyMarkdown={copyMarkdown}
         theme={resolvedTheme}
         threadRef={threadRef}
+        onDownloadFile={threadRef ? () => downloadMarkdownFileLink(fileLinkMeta) : undefined}
         {...(canUseShellActions ? { onOpen: openInPreferredEditor } : {})}
         onOpenInPanel={(path) => openFileInPanel(fileLinkMeta, path)}
         onOpenMedia={
