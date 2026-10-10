@@ -687,7 +687,27 @@ const resolveNpmGlobalPrefix = Effect.fn("resolveNpmGlobalPrefix")(function* (
   const hasManifest = yield* fileSystem
     .exists(manifestPath)
     .pipe(Effect.orElseSucceed(() => false));
-  return hasManifest ? shimDir : null;
+  if (hasManifest) return shimDir;
+
+  // Codex can be configured with the native executable inside its optional
+  // platform package. Prove the owning global install through its root shim;
+  // a project-local dependency only has shims inside node_modules/.bin.
+  const slashPath = context.realCommandPath.replaceAll("\\", "/");
+  const packageIndex = slashPath
+    .toLowerCase()
+    .indexOf(`/node_modules/${packageName.toLowerCase()}/`);
+  if (packageIndex < 0) return null;
+  const prefix = context.realCommandPath.slice(0, packageIndex);
+  if (normalizeCommandPath(prefix).includes("/node_modules/")) return null;
+  const commandName = path.basename(context.resolvedCommandPath).replace(/\.exe$/i, "");
+  const ownsNativeBinary = yield* Effect.all([
+    fileSystem.exists(path.join(prefix, "node_modules", ...packageName.split("/"), "package.json")),
+    fileSystem.exists(path.join(prefix, `${commandName}.cmd`)),
+  ]).pipe(
+    Effect.map((proofs) => proofs.every(Boolean)),
+    Effect.orElseSucceed(() => false),
+  );
+  return ownsNativeBinary ? prefix : null;
 });
 
 export function makePackageManagedProviderMaintenanceResolver(
