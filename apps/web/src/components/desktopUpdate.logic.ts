@@ -33,16 +33,18 @@ export function getDesktopUpdateDownloadedVersion(state: DesktopUpdateState): st
 export function getDesktopUpdateReleaseUrl(
   version: string | null,
   repository: string | undefined = import.meta.env.T3CODE_DESKTOP_UPDATE_REPOSITORY,
+  releaseHistoryUrl?: string,
 ): string | null {
   const normalizedVersion = version?.trim();
   if (!normalizedVersion) return null;
-  return `${desktopReleaseRepositoryUrl(repository)}/tag/v${encodeURIComponent(normalizedVersion)}`;
+  return `${getDesktopUpdateReleaseHistoryUrl(repository, releaseHistoryUrl)}/tag/v${encodeURIComponent(normalizedVersion)}`;
 }
 
 export function getDesktopUpdateReleaseHistoryUrl(
   repository: string | undefined = import.meta.env.T3CODE_DESKTOP_UPDATE_REPOSITORY,
+  releaseHistoryUrl?: string,
 ): string {
-  return desktopReleaseRepositoryUrl(repository);
+  return releaseHistoryUrl ?? desktopReleaseRepositoryUrl(repository);
 }
 
 export function resolveDesktopUpdateButtonAction(
