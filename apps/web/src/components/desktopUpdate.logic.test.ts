@@ -203,6 +203,14 @@ describe("desktop update UI helpers", () => {
     );
   });
 
+  it("uses the updater's fork repository for release and history links", () => {
+    const historyUrl = "https://github.com/Alb11747/t3code/releases";
+    expect(getDesktopUpdateReleaseUrl("0.0.46-nightly.20261010.14", historyUrl)).toBe(
+      `${historyUrl}/tag/v0.0.46-nightly.20261010.14`,
+    );
+    expect(getDesktopUpdateReleaseHistoryUrl(historyUrl)).toBe(historyUrl);
+  });
+
   it("toasts only for actionable updater errors", () => {
     expect(
       shouldToastDesktopUpdateActionResult({

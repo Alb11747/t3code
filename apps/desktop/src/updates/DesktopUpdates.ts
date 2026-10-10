@@ -215,11 +215,18 @@ function createBaseUpdateState(
   channel: DesktopUpdateChannel,
   enabled: boolean,
   environment: DesktopEnvironment.DesktopEnvironment["Service"],
+  feedConfig: Option.Option<AppUpdateYmlConfig>,
 ): DesktopUpdateState {
+  const feed = Option.getOrUndefined(feedConfig);
+  const releaseHistoryUrl =
+    feed?.provider === "github" && feed.owner && feed.repo
+      ? `https://${feed.host ?? "github.com"}/${feed.owner}/${feed.repo}/releases`
+      : undefined;
   return {
     ...createInitialDesktopUpdateState(environment.appVersion, environment.runtimeInfo, channel),
     enabled,
     status: enabled ? "idle" : "disabled",
+    ...(releaseHistoryUrl ? { releaseHistoryUrl } : {}),
   };
 }
 
@@ -924,7 +931,9 @@ export const make = Effect.gen(function* () {
 
       const settings = yield* desktopSettings.get;
       const enabled = yield* shouldEnableAutoUpdates;
-      yield* setState(createBaseUpdateState(settings.updateChannel, enabled, environment));
+      yield* setState(
+        createBaseUpdateState(settings.updateChannel, enabled, environment, appUpdateYmlConfig),
+      );
       if (!enabled) {
         return;
       }
@@ -995,7 +1004,14 @@ export const make = Effect.gen(function* () {
           );
 
         const enabled = yield* shouldEnableAutoUpdates;
-        yield* setState(createBaseUpdateState(nextChannel, enabled, environment));
+        yield* setState(
+          createBaseUpdateState(
+            nextChannel,
+            enabled,
+            environment,
+            yield* Ref.get(appUpdateYmlConfigRef),
+          ),
+        );
 
         if (!enabled || !(yield* Ref.get(updaterConfiguredRef))) {
           return yield* Ref.get(updateStateRef);

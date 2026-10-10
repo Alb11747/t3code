@@ -66,17 +66,17 @@ jobs:
           echo "name=T3 Code Fork $version (${GITHUB_SHA::12})" >> "$GITHUB_OUTPUT"
 
       - name: Write release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
         run: |
           set -euo pipefail
           git fetch --no-tags --quiet https://github.com/pingdotgg/t3code.git main
-          base="$(git merge-base HEAD FETCH_HEAD)"
-          {
-            echo "Built from upstream [\`${base::12}\`](https://github.com/pingdotgg/t3code/commit/$base) plus these fork changes:"
-            echo
-            git log --reverse --format='- %s (%h)' "$base..HEAD"
-            echo
-            echo "See [fork/CHANGES.md](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/fork/CHANGES.md) for details."
-          } > release-notes.md
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            > "$RUNNER_TEMP/fork-releases.json"
+          node fork/scripts/release-notes.cjs \
+            "$RUNNER_TEMP/fork-releases.json" "$RELEASE_TAG" "$GITHUB_REPOSITORY" FETCH_HEAD \
+            > release-notes.md
           cat release-notes.md
 
       - uses: actions/upload-artifact@v7
