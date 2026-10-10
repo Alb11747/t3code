@@ -1,5 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import { DesktopSnapShotId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -75,6 +75,7 @@ function makeFakeBrowserWindow() {
   const webContentsListeners = new Map<string, (...args: readonly unknown[]) => void>();
   let zoomLevel = 0;
   const webContents = {
+    downloadURL: vi.fn(),
     copyImageAt: vi.fn(),
     focus: vi.fn(),
     isDestroyed: vi.fn(() => false),
@@ -151,6 +152,7 @@ function makeFakeBrowserWindow() {
     setFullScreen: window.setFullScreen,
     setOpacity: window.setOpacity,
     webContentsListeners,
+    downloadURL: webContents.downloadURL,
     webContentsOnce: webContents.once,
     windowListeners,
   };
@@ -1412,6 +1414,45 @@ describe("DesktopWindow", () => {
       }),
     );
   });
+
+  it.effect(
+    "downloads marked local and remote assets without navigating or opening the system browser",
+    () =>
+      Effect.gen(function* () {
+        const fakeWindow = makeFakeBrowserWindow();
+        const createCount = yield* Ref.make(0);
+        const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+        const openedExternalUrls: unknown[] = [];
+        yield* Effect.gen(function* () {
+          const desktopWindow = yield* DesktopWindow.DesktopWindow;
+          yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+          const willNavigate = fakeWindow.webContentsListeners.get("will-navigate");
+          if (!willNavigate) return yield* Effect.die("will-navigate listener was not registered");
+          for (const origin of ["http://127.0.0.1:3773", "https://remote.example.com"]) {
+            const url = `${origin}/api/assets/signed-token/archive.zip#download`;
+            const preventDefault = vi.fn();
+            willNavigate({ preventDefault }, url);
+            expect(preventDefault).toHaveBeenCalledOnce();
+            expect(fakeWindow.downloadURL).toHaveBeenLastCalledWith(url);
+          }
+          expect(openedExternalUrls).toEqual([]);
+          // Ordinary asset links still follow the existing external-navigation policy.
+          willNavigate(
+            { preventDefault: vi.fn() },
+            "https://remote.example.com/api/assets/token/report.html",
+          );
+          yield* Effect.promise(() => Promise.resolve());
+          expect(fakeWindow.downloadURL).toHaveBeenCalledTimes(2);
+          expect(openedExternalUrls).toEqual([
+            "https://remote.example.com/api/assets/token/report.html",
+          ]);
+        }).pipe(
+          Effect.provide(
+            layerTest({ window: fakeWindow.window, createCount, mainWindow, openedExternalUrls }),
+          ),
+        );
+      }),
+  );
 
   it.effect("opens safe off-origin renderer navigations in the system browser", () =>
     Effect.gen(function* () {
