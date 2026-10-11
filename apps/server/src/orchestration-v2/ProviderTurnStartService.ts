@@ -1224,6 +1224,16 @@ export const layer: Layer.Layer<
         !noteContinuation
           ? session
           : makeDeliverySession(session, startWithHandoffs);
+      // Lets adapters judge whether the provider's prompt cache has expired.
+      let lastProviderTurnActivityAt: DateTime.Utc | undefined;
+      for (const turn of projection.providerTurns) {
+        const activityAt = turn.completedAt ?? turn.startedAt;
+        if (turn.providerThreadId !== providerThread.id || activityAt === null) continue;
+        lastProviderTurnActivityAt =
+          lastProviderTurnActivityAt === undefined
+            ? activityAt
+            : DateTime.max(lastProviderTurnActivityAt, activityAt);
+      }
       yield* runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,
@@ -1256,6 +1266,7 @@ export const layer: Layer.Layer<
           (legacyInputRunIds.size > 0 &&
             sameNativeThread &&
             !acceptedAttempts.some((source) => source.nativeThreadId !== undefined)),
+        ...(lastProviderTurnActivityAt === undefined ? {} : { lastProviderTurnActivityAt }),
         shouldStartProviderTurn: runControls.shouldStartProviderTurn,
         shouldFinalizeRun: runControls.shouldFinalizeRun,
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
