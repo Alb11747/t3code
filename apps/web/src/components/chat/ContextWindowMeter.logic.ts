@@ -1,5 +1,6 @@
 import type { ModelSelection, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import {
+  CLAUDE_COLD_CACHE_IDLE_MINUTES,
   CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
   isClaudeResumeCompactionQuestion,
 } from "@t3tools/shared/claudeCompaction";
@@ -9,7 +10,6 @@ import {
 } from "../../providerInstances";
 import { getTriggerDisplayModelName, type ModelEsque } from "./providerIconUtils";
 
-const CLAUDE_RESUME_COMPACTION_MINUTES = 70;
 const CLAUDE_RESUME_COMPACTION_TOKENS = 100_000;
 
 export function providerSupportsManualCompaction(
@@ -78,7 +78,7 @@ export function shouldOfferResumeCompaction(input: {
   return (
     Number.isFinite(updatedAt) &&
     Number.isFinite(now) &&
-    now - updatedAt >= CLAUDE_RESUME_COMPACTION_MINUTES * 60_000
+    now - updatedAt >= CLAUDE_COLD_CACHE_IDLE_MINUTES * 60_000
   );
 }
 
