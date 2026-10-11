@@ -85,6 +85,7 @@ interface CapturedTurn {
   readonly nativeThreadId?: string | null;
   readonly providerTurnOrdinal?: number;
   readonly nativeThreadHasTurns?: boolean;
+  readonly lastProviderTurnActivityAt?: DateTime.Utc;
 }
 
 function unimplemented(driver: ProviderDriverKind, detail: string) {
@@ -249,6 +250,9 @@ function makeTestAdapter(input: {
                   ...(turnInput.nativeThreadHasTurns === undefined
                     ? {}
                     : { nativeThreadHasTurns: turnInput.nativeThreadHasTurns }),
+                  ...(turnInput.lastProviderTurnActivityAt === undefined
+                    ? {}
+                    : { lastProviderTurnActivityAt: turnInput.lastProviderTurnActivityAt }),
                 },
               ]);
               if (
@@ -1172,6 +1176,13 @@ describe("orchestration v2 provider switching", () => {
             assert.isFalse(turns[1]?.nativeThreadHasTurns);
             assert.equal(turns[2]?.nativeThreadId, turns[1]?.nativeThreadId);
             assert.isTrue(turns[2]?.nativeThreadHasTurns);
+            // Adapters see the provider thread's latest earlier turn activity.
+            assert.isUndefined(turns[0]?.lastProviderTurnActivityAt);
+            const secondTurn = (yield* orchestrator.getThreadProjection(
+              threadId,
+            )).providerTurns.find((turn) => turn.id.endsWith(":2"));
+            assert.isDefined(secondTurn?.completedAt ?? undefined);
+            assert.deepEqual(turns[2]?.lastProviderTurnActivityAt, secondTurn?.completedAt);
           }).pipe(
             Effect.provide(
               ProviderReplayHarness.layerWithRegistry(
