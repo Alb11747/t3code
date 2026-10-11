@@ -54,6 +54,7 @@ import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
 import {
+  CLAUDE_COLD_CACHE_IDLE_MINUTES,
   CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
   formatClaudeResumeCompactionQuestion,
 } from "@t3tools/shared/claudeCompaction";
@@ -1908,6 +1909,49 @@ function claudeRuntimeQueryPolicyKey(policy: ClaudeRuntimeQueryPolicy): string {
     allowDangerouslySkipPermissions: policy.allowDangerouslySkipPermissions,
     installPermissionCallback: policy.installPermissionCallback,
   });
+}
+
+type ClaudePromptCaching = "default" | "disabled";
+
+/**
+ * Prompt caching for a compaction turn. With `uncachedColdCompaction` on, a
+ * cold compaction runs uncached: its summary replaces the old history, so
+ * writing that history to the cache again buys nothing. Cold means the
+ * thread's last turn ended at least CLAUDE_COLD_CACHE_IDLE_MINUTES ago and
+ * its CLI process is gone (idle release), so the compaction starts a process
+ * anyway. A live process is never replaced for this; it may run background
+ * work.
+ */
+function claudeCompactionPromptCaching(input: {
+  readonly uncachedColdCompaction: boolean;
+  readonly hasLiveProcess: boolean;
+  readonly lastTurnActivityAt: DateTime.Utc | undefined;
+  readonly now: DateTime.Utc;
+}): ClaudePromptCaching {
+  return input.uncachedColdCompaction &&
+    !input.hasLiveProcess &&
+    input.lastTurnActivityAt !== undefined &&
+    DateTime.toEpochMillis(input.now) - DateTime.toEpochMillis(input.lastTurnActivityAt) >=
+      CLAUDE_COLD_CACHE_IDLE_MINUTES * 60_000
+    ? "disabled"
+    : "default";
+}
+
+/**
+ * Environment for a process whose requests must stay uncached. Claude Code
+ * then sends no cache_control markers. A gateway may still add its own:
+ * CLIProxyAPI does for clients it doesn't recognize as native Claude Code,
+ * which includes the Agent SDK, unless the request asks for its explicit
+ * cache mode with this header. Other endpoints don't use the header.
+ */
+function uncachedClaudeEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const header = "X-CPA-Prompt-Cache-Mode: explicit";
+  const customHeaders = environment.ANTHROPIC_CUSTOM_HEADERS?.trim();
+  return {
+    ...environment,
+    DISABLE_PROMPT_CACHING: "1",
+    ANTHROPIC_CUSTOM_HEADERS: customHeaders ? `${customHeaders}\n${header}` : header,
+  };
 }
 
 // Live-query reuse must key on the effective allowlist (including the
@@ -8423,9 +8467,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           return false;
         });
 
+        // A process opened with prompt caching disabled gets its own policy
+        // key, so the next turn that wants caching replaces the process
+        // instead of reusing it.
         const openQuery = Effect.fnUntraced(function* (
           turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
           nativeThreadId: string,
+          promptCaching: ClaudePromptCaching = "default",
         ) {
           const queryPolicy = claudeRuntimeQueryPolicyForRuntimePolicy(turnInput.runtimePolicy);
           const mcpOverrides = claudeMcpQueryOverrides({
@@ -8436,7 +8484,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
           });
-          const queryPolicyKey = claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides);
+          const queryPolicyKey =
+            claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides) +
+            (promptCaching === "disabled" ? ":prompt-caching-disabled" : "");
           const compiledSelection = compileClaudeModelSelection(turnInput.modelSelection);
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
           const existing = yield* Ref.get(queryContext);
@@ -8525,7 +8575,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             cwd: turnInput.runtimePolicy.cwd,
             attachmentsDir,
             settings: adapterOptions.settings,
-            environment: adapterOptions.environment,
+            environment:
+              promptCaching === "disabled"
+                ? uncachedClaudeEnvironment(adapterOptions.environment)
+                : adapterOptions.environment,
             tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
             ...(mcpOverrides.allowedTools === undefined
               ? {}
@@ -8642,7 +8695,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         });
 
         const startTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
-          function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
+          function* (
+            turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
+            promptCaching: ClaudePromptCaching = "default",
+          ) {
             const startedAt = yield* DateTime.now;
             const nativeThreadId = yield* getNativeThreadId(turnInput.providerThread);
             const nativeTurnId = `turn:${turnInput.attemptId}`;
@@ -8744,7 +8800,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     skillNames: yield* userInvocableSkillNames(turnInput.runtimePolicy.cwd),
                     uuid: promptUuid,
                   });
-            const querySession = yield* openQuery(turnInput, nativeThreadId);
+            const querySession = yield* openQuery(turnInput, nativeThreadId, promptCaching);
             const attachTurn = Effect.gen(function* () {
               querySession.lastTurn = context;
               yield* Ref.set(activeTurn, context);
@@ -8856,7 +8912,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               }),
             );
           },
-          (effect, turnInput) =>
+          (effect, turnInput, _promptCaching?: ClaudePromptCaching) =>
             effect.pipe(
               Effect.mapError(
                 (cause) =>
@@ -9283,9 +9339,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           ),
           startTurn,
           compactThread: (turnInput) =>
-            startTurn({
-              ...turnInput,
-              message: { ...turnInput.message, text: "/compact" },
+            Effect.gen(function* () {
+              const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId ?? null;
+              const live = yield* Ref.get(queryContext);
+              const promptCaching = claudeCompactionPromptCaching({
+                uncachedColdCompaction: adapterOptions.settings.uncachedColdCompaction,
+                hasLiveProcess: live !== null && live.nativeThreadId === nativeThreadId,
+                lastTurnActivityAt: turnInput.lastProviderTurnActivityAt,
+                now: yield* DateTime.now,
+              });
+              return yield* startTurn(
+                { ...turnInput, message: { ...turnInput.message, text: "/compact" } },
+                promptCaching,
+              );
             }),
           steerTurn,
           stopTask: ({ providerThread, taskId }) =>
