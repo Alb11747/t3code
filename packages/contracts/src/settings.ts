@@ -707,9 +707,18 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    uncachedColdCompaction: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({
+        title: "Skip cache writes on cold compaction",
+        description:
+          "Compact threads idle 70+ minutes without prompt caching, so the history the summary replaces isn't cached again. Saves usage only if any gateway or proxy forwards uncached requests unchanged.",
+        providerSettingsForm: { control: "switch", clearWhenEmpty: "omit" },
+      }),
+    ),
   },
   {
-    order: ["binaryPath", "homePath", "autoCompactWindow", "launchArgs"],
+    order: ["binaryPath", "homePath", "autoCompactWindow", "uncachedColdCompaction", "launchArgs"],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
