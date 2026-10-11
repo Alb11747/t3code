@@ -117,6 +117,7 @@ describe("ProviderSettingsForm helpers", () => {
       "homePath",
       "autoCompactWindow",
       "launchArgs",
+      "uncachedColdCompaction",
     ]);
   });
 
