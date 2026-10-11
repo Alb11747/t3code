@@ -51,6 +51,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -128,6 +129,9 @@ const CUSTOM_MODEL_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({
     },
   ],
 });
+const UNCACHED_COLD_COMPACTION_SETTINGS = Schema.decodeSync(ClaudeSettings)({
+  uncachedColdCompaction: true,
+});
 const CLAUDE_TEST_MODEL_SELECTION = {
   instanceId: ProviderInstanceId.make(ClaudeAdapterV2.CLAUDE_PROVIDER),
   model: "claude-sonnet-4-6",
@@ -187,6 +191,7 @@ function makeClaudeTestTurnInput(input: {
   readonly attachments: ProviderAdapter.ProviderAdapterV2TurnInput["message"]["attachments"];
   readonly providerTurnOrdinal?: number;
   readonly nativeThreadHasTurns?: boolean;
+  readonly lastProviderTurnActivityAt?: DateTime.Utc;
   readonly messageCreatedBy?: ProviderAdapter.ProviderAdapterV2TurnInput["message"]["createdBy"];
   readonly messageCreationSource?: ProviderAdapter.ProviderAdapterV2TurnInput["message"]["creationSource"];
   readonly modelSelection?: ModelSelection;
@@ -201,6 +206,9 @@ function makeClaudeTestTurnInput(input: {
     ...(input.nativeThreadHasTurns === undefined
       ? {}
       : { nativeThreadHasTurns: input.nativeThreadHasTurns }),
+    ...(input.lastProviderTurnActivityAt === undefined
+      ? {}
+      : { lastProviderTurnActivityAt: input.lastProviderTurnActivityAt }),
     attemptId: input.attemptId,
     rootNodeId: NodeId.make(`node-${input.attemptId}`),
     providerThread: input.providerThread,
@@ -4442,6 +4450,153 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ),
       ),
   );
+
+  describe("cold compaction prompt caching", () => {
+    const COLD_IDLE = Duration.minutes(70);
+    const compactInput = (
+      harness: {
+        readonly threadId: ThreadId;
+        readonly providerThread: OrchestrationV2ProviderThread;
+      },
+      now: DateTime.Utc,
+      idle: Duration.Duration,
+    ) =>
+      makeClaudeTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now,
+        attemptId: RunAttemptId.make("attempt-cold-compact"),
+        text: "/compact",
+        attachments: [],
+        providerTurnOrdinal: 2,
+        nativeThreadHasTurns: true,
+        lastProviderTurnActivityAt: DateTime.subtractDuration(now, idle),
+      });
+
+    it.effect.each([
+      { compactResult: "completed", isError: false },
+      { compactResult: "failed", isError: true },
+    ])(
+      "compacts a cold thread uncached, then caches the next turn ($compactResult compaction)",
+      ({ isError }) =>
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarnessWithOptions({
+            settings: UNCACHED_COLD_COMPACTION_SETTINGS,
+            environment: {
+              CLAUDE_CONFIG_DIR: "/claude-home",
+              ANTHROPIC_CUSTOM_HEADERS: "X-Team: blue",
+            },
+            freshQueueOnReopen: true,
+          });
+          const now = yield* DateTime.now;
+          yield* harness.runtime.compactThread!(compactInput(harness, now, COLD_IDLE));
+          const compactOptions = harness.getOpenedOptions();
+          assert.equal(compactOptions?.env?.DISABLE_PROMPT_CACHING, "1");
+          assert.equal(compactOptions?.env?.CLAUDE_CONFIG_DIR, "/claude-home");
+          // Asks CLIProxyAPI not to add its own markers, keeping the user's headers.
+          assert.equal(
+            compactOptions?.env?.ANTHROPIC_CUSTOM_HEADERS,
+            "X-Team: blue\nX-CPA-Prompt-Cache-Mode: explicit",
+          );
+          yield* Queue.offer(
+            harness.sdkMessages,
+            makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000000901",
+              result: isError ? "Compaction failed." : "Compacted conversation.",
+              isError,
+            }),
+          );
+          yield* Queue.take(harness.terminalReceipts);
+
+          // The queued message opens a new process with normal caching.
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-after-cold-compact"),
+              text: "Continue",
+              attachments: [],
+              providerTurnOrdinal: 3,
+              nativeThreadHasTurns: true,
+              lastProviderTurnActivityAt: now,
+            }),
+          );
+          const nextOptions = harness.getOpenedOptions();
+          assert.notStrictEqual(nextOptions, compactOptions);
+          assert.isUndefined(nextOptions?.env?.DISABLE_PROMPT_CACHING);
+          assert.equal(nextOptions?.env?.ANTHROPIC_CUSTOM_HEADERS, "X-Team: blue");
+          assert.equal(nextOptions?.env?.CLAUDE_CONFIG_DIR, "/claude-home");
+          assert.lengthOf(harness.processQueues, 2);
+          assert.lengthOf(harness.offeredMessages, 2);
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+          ),
+        ),
+    );
+
+    it.effect("keeps a live process and its caching for a compaction", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({
+          settings: UNCACHED_COLD_COMPACTION_SETTINGS,
+        });
+        const now = yield* DateTime.now;
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-before-warm-compact"),
+            text: "Audit in the background.",
+            attachments: [],
+          }),
+        );
+        const liveOptions = harness.getOpenedOptions();
+        yield* harness.offerAndWait(wakeTaskStarted);
+        yield* harness.offerAndWait(turnOneResult);
+        yield* Queue.take(harness.terminalReceipts);
+        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+
+        // Even when the last turn looks old, the process that runs the
+        // background task stays, and so does its caching.
+        yield* harness.runtime.compactThread!(compactInput(harness, now, COLD_IDLE));
+        assert.strictEqual(harness.getOpenedOptions(), liveOptions);
+        assert.isUndefined(liveOptions?.env?.DISABLE_PROMPT_CACHING);
+        assert.deepEqual(harness.offeredMessages[1]?.message.content, "/compact");
+        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+        ),
+      ),
+    );
+
+    it.effect.each([
+      { name: "setting off", settings: DEFAULT_CLAUDE_SETTINGS, idleMinutes: 70 },
+      {
+        name: "idle under 70 minutes",
+        settings: UNCACHED_COLD_COMPACTION_SETTINGS,
+        idleMinutes: 69,
+      },
+    ])("keeps caching for a fresh-process compaction with $name", ({ settings, idleMinutes }) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({ settings });
+        const now = yield* DateTime.now;
+        yield* harness.runtime.compactThread!(
+          compactInput(harness, now, Duration.minutes(idleMinutes)),
+        );
+        assert.isUndefined(harness.getOpenedOptions()?.env?.DISABLE_PROMPT_CACHING);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+        ),
+      ),
+    );
+  });
 
   it.effect("titles Claude reads, searches, and skills on tool completion", () =>
     Effect.gen(function* () {
