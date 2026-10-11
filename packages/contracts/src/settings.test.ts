@@ -280,6 +280,10 @@ describe("ClaudeSettings auto-compaction", () => {
     expect(decodeClaudeSettings({}).autoCompactWindow).toBe("");
   });
 
+  it("keeps cache writes on cold compaction unless enabled", () => {
+    expect(decodeClaudeSettings({}).uncachedColdCompaction).toBe(false);
+  });
+
   it.each(["100000", "300000", "1000000"])(
     "accepts a supported auto-compaction threshold: %s",
     (value) => {
