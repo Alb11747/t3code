@@ -34,6 +34,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import type * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
@@ -409,6 +410,11 @@ export interface ProviderAdapterV2TurnInput {
   readonly runOrdinal: number;
   /** Whether the current native session has an accepted turn; omitted when unknown. */
   readonly nativeThreadHasTurns?: boolean;
+  /**
+   * Latest end of this provider thread's earlier turns (start, for a turn that
+   * never ended); omitted when it has none.
+   */
+  readonly lastProviderTurnActivityAt?: DateTime.Utc;
   readonly providerTurnOrdinal: number;
   readonly restartContinuationOfRunId?: RunId;
   readonly attemptId: RunAttemptId;
