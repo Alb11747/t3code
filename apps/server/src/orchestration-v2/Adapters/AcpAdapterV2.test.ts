@@ -743,6 +743,27 @@ describe("AcpAdapterV2", () => {
         );
         const expectedUsage =
           usageReport === "after-native-completion" ? { usedTokens: 100, maxTokens: 32_000 } : null;
+        for (const [index, event] of compacted.events.entries()) {
+          if (
+            event.type !== "turn_item.updated" ||
+            event.turnItem.type !== "compaction" ||
+            event.turnItem.status !== "completed"
+          )
+            continue;
+          // A crash after persisting this marker sees only this event prefix.
+          const snapshotAtCompletion = compacted.events
+            .slice(0, index + 1)
+            .flatMap((candidate) =>
+              candidate.type === "provider_thread.updated" ? [candidate.providerThread] : [],
+            )
+            .at(-1)!;
+          const nativeCompletion =
+            event.turnItem.nativeItemRef?.nativeId === "acp-compaction:compact-usage-boundary";
+          assert.deepEqual(
+            snapshotAtCompletion.contextUsage,
+            nativeCompletion ? null : expectedUsage,
+          );
+        }
         assert.deepEqual(compacted.providerThread.contextUsage, expectedUsage);
         const continued = yield* runTurn(3, compacted.providerThread, "Continue after compact");
         assert.deepEqual(continued.providerThread.contextUsage, expectedUsage);

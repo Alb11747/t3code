@@ -2091,6 +2091,26 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
 
         const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
           Queue.offer(events, event).pipe(Effect.asVoid);
+        const emitProviderThreadSnapshot = Effect.fnUntraced(function* (
+          context: ActiveAcpTurn,
+          now: DateTime.Utc,
+        ) {
+          const providerThread: OrchestrationV2ProviderThread = {
+            ...context.input.providerThread,
+            providerSessionId: input.providerSessionId,
+            status: "active",
+            lastRunOrdinal: context.input.runOrdinal,
+            firstRunOrdinal:
+              context.input.providerThread.firstRunOrdinal ?? context.input.runOrdinal,
+            contextUsage: context.contextUsage,
+            nativeMetadata: context.nativeMetadata,
+            updatedAt: now,
+          };
+          yield* Ref.update(providerThreadByNativeSessionId, (current) =>
+            new Map(current).set(context.nativeThreadId, providerThread),
+          );
+          yield* emitProviderEvent({ type: "provider_thread.updated", driver, providerThread });
+        });
         let scheduleDeferredFinalize: (context: ActiveAcpTurn) => Effect.Effect<void> = () =>
           Effect.void;
 
@@ -3355,6 +3375,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 updated.delete(context.nativeThreadId);
                 return updated;
               });
+              // Ingest must commit the cleared snapshot before the completed marker.
+              yield* emitProviderThreadSnapshot(context, now);
             }
           } else if (mcpIdentity !== undefined) {
             turnItem = {
@@ -6615,12 +6637,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             yield* emitProviderRetry(context, settledStatus);
           }
           const now = yield* DateTime.now;
-          if (
+          const completedExplicitCompaction =
             flavor.supportsCompaction === true &&
             context.input.message.text.trim() === "/compact" &&
             context.input.message.attachments.length === 0 &&
-            settledStatus === "completed"
-          ) {
+            settledStatus === "completed";
+          if (completedExplicitCompaction) {
             // Usage reports carry no sample identity. Without a native completion
             // boundary, an in-turn report may still describe the pre-compact context.
             // Native completion already clears usage, so only later reports survive.
@@ -6632,6 +6654,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 return updated;
               });
             }
+            // The FIFO event stream is ingested serially. Publish current usage
+            // before completion so a crash at the marker cannot retain stale usage.
+            yield* emitProviderThreadSnapshot(context, now);
             const nativeItemId = `${context.nativeTurnId}:compaction`;
             yield* emitProviderEvent({
               type: "turn_item.updated",
@@ -6668,25 +6693,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             threadId: context.input.threadId,
             providerTurn: turn,
           });
-          const updatedProviderThread: OrchestrationV2ProviderThread = {
-            ...context.input.providerThread,
-            providerSessionId: input.providerSessionId,
-            status: "active",
-            lastRunOrdinal: context.input.runOrdinal,
-            firstRunOrdinal:
-              context.input.providerThread.firstRunOrdinal ?? context.input.runOrdinal,
-            contextUsage: context.contextUsage,
-            nativeMetadata: context.nativeMetadata,
-            updatedAt: now,
-          };
-          yield* Ref.update(providerThreadByNativeSessionId, (current) =>
-            new Map(current).set(context.nativeThreadId, updatedProviderThread),
-          );
-          yield* emitProviderEvent({
-            type: "provider_thread.updated",
-            driver,
-            providerThread: updatedProviderThread,
-          });
+          if (!completedExplicitCompaction) {
+            yield* emitProviderThreadSnapshot(context, now);
+          }
           yield* emitProviderEvent(
             settledStatus === "failed"
               ? {
