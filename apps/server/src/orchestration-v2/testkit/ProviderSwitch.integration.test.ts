@@ -24,6 +24,7 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
+  RuntimeRequestId,
   ThreadId,
   TurnItemId,
   ProviderDriverKind,
@@ -1753,6 +1754,18 @@ describe("orchestration v2 provider switching", () => {
     "accepted-cancelled-running-todo",
     "accepted-cancelled-running-todo-native-history",
     "uncertain-cancelled-running-todo-empty",
+    "accepted-cancelled-running-approval",
+    "accepted-cancelled-running-approval-native-history",
+    "accepted-cancelled-running-user-input",
+    "accepted-cancelled-running-user-input-native-history",
+    "uncertain-cancelled-running-approval-other-turn",
+    "uncertain-cancelled-running-user-input-other-turn",
+    "accepted-cancelled-running-native-subagent",
+    "accepted-cancelled-running-native-subagent-native-history",
+    "uncertain-cancelled-running-app-owned-subagent",
+    "accepted-cancelled-running-compaction",
+    "accepted-cancelled-running-compaction-native-history",
+    "uncertain-cancelled-running-compaction-unfinished",
     "uncertain-cancelled-empty",
     "accepted-cancelled-message-only",
     "accepted-cancelled-message-only-native-history",
@@ -1770,6 +1783,11 @@ describe("orchestration v2 provider switching", () => {
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const injectedHistory = yield* Ref.make<ReadonlyArray<unknown>>([]);
           const cancelledRecovered = attempts.includes("cancelled");
+          const providerRequest =
+            attempts.includes("-approval") || attempts.includes("-user-input");
+          const providerEvidence =
+            providerRequest || attempts.includes("-subagent") || attempts.includes("-compaction");
+          const uncertainEvidence = providerEvidence && attempts.startsWith("uncertain-");
           const failResumeOnce = yield* Ref.make(false);
           const generation = yield* Ref.make(0);
           const layerRegistry = ProviderAdapterRegistry.layerFromAdapters([
@@ -1781,7 +1799,7 @@ describe("orchestration v2 provider switching", () => {
               responseByRunOrdinal: cancelledRecovered
                 ? {
                     1:
-                      attempts.includes("-empty") || attempts.includes("-todo")
+                      attempts.includes("-empty") || attempts.includes("-todo") || providerEvidence
                         ? ""
                         : "Accepted cancelled output",
                   }
@@ -1895,6 +1913,86 @@ describe("orchestration v2 provider switching", () => {
                             nativeThreadId: "previous-native",
                             rootNodeId: NodeId.make("resume-fallback:previous-root"),
                             status: "superseded" as const,
+                          },
+                        },
+                      ]
+                    : []),
+                  ...(providerRequest && firstOutput?.type === "assistant_message"
+                    ? [
+                        {
+                          id: EventId.make("resume-fallback:provider-request"),
+                          type: "turn-item.updated" as const,
+                          threadId,
+                          occurredAt,
+                          payload: {
+                            ...firstOutput,
+                            nodeId: NodeId.make("resume-fallback:request-node"),
+                            providerTurnId: uncertainEvidence
+                              ? ProviderTurnId.make("resume-fallback:other-turn")
+                              : firstOutput.providerTurnId,
+                            status: "waiting" as const,
+                            completedAt: null,
+                            requestId: RuntimeRequestId.make("resume-fallback:request"),
+                            ...(attempts.includes("-approval")
+                              ? {
+                                  type: "approval_request" as const,
+                                  requestKind: "command" as const,
+                                  prompt: "Allow the provider to run the requested command?",
+                                }
+                              : {
+                                  type: "user_input_request" as const,
+                                  questions: [
+                                    {
+                                      id: "choice",
+                                      header: "Choice",
+                                      question: "Which option should the provider use?",
+                                      options: [],
+                                    },
+                                  ],
+                                }),
+                          },
+                        },
+                      ]
+                    : []),
+                  ...(attempts.includes("-subagent") && firstOutput?.type === "assistant_message"
+                    ? [
+                        {
+                          id: EventId.make("resume-fallback:subagent-evidence"),
+                          type: "turn-item.updated" as const,
+                          threadId,
+                          occurredAt,
+                          payload: {
+                            ...firstOutput,
+                            type: "subagent" as const,
+                            nodeId: NodeId.make("resume-fallback:subagent-node"),
+                            subagentId: NodeId.make("resume-fallback:subagent-node"),
+                            origin: uncertainEvidence
+                              ? ("app_owned" as const)
+                              : ("provider_native" as const),
+                            driver: CLAUDE_DRIVER,
+                            providerInstanceId: CLAUDE_MODEL_SELECTION.instanceId,
+                            childThreadId: null,
+                            prompt: "Inspect the requested implementation",
+                            result: null,
+                          },
+                        },
+                      ]
+                    : []),
+                  ...(attempts.includes("-compaction") && firstOutput?.type === "assistant_message"
+                    ? [
+                        {
+                          id: EventId.make("resume-fallback:compaction-evidence"),
+                          type: "turn-item.updated" as const,
+                          threadId,
+                          occurredAt,
+                          payload: {
+                            ...firstOutput,
+                            type: "compaction" as const,
+                            driver: CLAUDE_DRIVER,
+                            status: uncertainEvidence
+                              ? ("running" as const)
+                              : ("completed" as const),
+                            completedAt: uncertainEvidence ? null : occurredAt,
                           },
                         },
                       ]
@@ -2051,11 +2149,11 @@ describe("orchestration v2 provider switching", () => {
               const recoveredHistory = attempts.endsWith("-native-history")
                 ? yield* encodeJson(yield* Ref.get(injectedHistory))
                 : turns[1]!.text;
-              if (attempts.includes("-empty")) {
+              if (attempts.includes("-empty") || uncertainEvidence) {
                 assert.notInclude(recoveredHistory, "Request 1");
               } else {
                 assert.include(recoveredHistory, "Request 1");
-                if (!attempts.includes("-todo")) {
+                if (!attempts.includes("-todo") && !providerEvidence) {
                   assert.include(recoveredHistory, "Accepted cancelled output");
                   assert.equal(recoveredHistory.split("Accepted cancelled output").length - 1, 1);
                 }
@@ -2063,6 +2161,7 @@ describe("orchestration v2 provider switching", () => {
               }
               if (
                 !attempts.includes("-message-empty") &&
+                !uncertainEvidence &&
                 attempts !== "uncertain-cancelled-running-todo-empty"
               ) {
                 assert.include(recoveredHistory, "run-status=cancelled");

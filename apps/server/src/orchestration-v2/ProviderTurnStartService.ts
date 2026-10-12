@@ -734,6 +734,10 @@ export const layer: Layer.Layer<
                 "reasoning",
                 "proposed_plan",
                 "todo_list",
+                "approval_request",
+                "user_input_request",
+                "subagent",
+                "compaction",
                 "command_execution",
                 "dynamic_tool",
                 "file_change",
@@ -757,7 +761,9 @@ export const layer: Layer.Layer<
                 item.text.length === 0 &&
                 (item.type !== "assistant_message" || !item.attachments?.length)) ||
               (item.type === "proposed_plan" && item.markdown.length === 0) ||
-              (item.type === "todo_list" && item.steps.length === 0)
+              (item.type === "todo_list" && item.steps.length === 0) ||
+              (item.type === "subagent" && item.origin !== "provider_native") ||
+              (item.type === "compaction" && item.status !== "completed")
             )
               continue;
             acceptedCancelledAttempts.add(attempt.id);
