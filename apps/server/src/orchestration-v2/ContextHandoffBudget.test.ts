@@ -10,6 +10,7 @@ import {
   ThreadId,
   TurnItemId,
   OrchestrationV2ContextHandoff,
+  OrchestrationV2ContextHandoffJson,
   type OrchestrationV2HistoricalMessage,
   type OrchestrationV2ProviderThread,
 } from "@t3tools/contracts";
@@ -25,10 +26,28 @@ import {
   historicalMessage,
 } from "@t3tools/provider-core/server/handoffBudget";
 import { projectContextHandoffForWire } from "./WireProjection.ts";
-import { deliverContextHandoffs } from "./ContextHandoffDelivery.ts";
+import {
+  ContextHandoffDeliveryUncertainError,
+  deliverContextHandoffs,
+} from "./ContextHandoffDelivery.ts";
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeHandoff = Schema.decodeUnknownSync(OrchestrationV2ContextHandoff);
+const handoffJson = Schema.fromJsonString(OrchestrationV2ContextHandoffJson);
+// Older servers ignore additive fields but reject unknown delivery status literals.
+const legacyHandoffJson = Schema.fromJsonString(
+  OrchestrationV2ContextHandoffJson.mapFields((fields) => ({
+    ...fields,
+    delivery: Schema.optional(
+      Schema.Struct({
+        nativeThreadId: Schema.String,
+        status: Schema.Literals(["pending", "injected", "inline"]),
+        itemIds: Schema.Array(TurnItemId),
+        omittedItemIds: Schema.optional(Schema.Array(TurnItemId)),
+      }),
+    ),
+  })),
+);
 
 const now = DateTime.makeUnsafe("2026-09-17T00:00:00Z");
 const threadId = ThreadId.make("thread:handoff");
@@ -413,6 +432,33 @@ describe("handoff budget", () => {
 });
 
 describe("handoff delivery", () => {
+  it.effect("preserves history and delivery ambiguity across an older server's rewrite", () =>
+    Effect.gen(function* () {
+      const deferred = {
+        ...handoff,
+        delivery: {
+          nativeThreadId: providerThread.nativeThreadRef!.nativeId!,
+          status: "pending" as const,
+          deferred: true as const,
+          itemIds: [],
+        },
+      };
+      const payload = yield* Schema.encodeEffect(handoffJson)(deferred);
+      const legacy = yield* Schema.decodeUnknownEffect(legacyHandoffJson)(payload);
+      assert.deepEqual(legacy.history, handoff.history);
+      const rewritten = yield* Schema.encodeEffect(legacyHandoffJson)(legacy);
+      const upgraded = yield* Schema.decodeUnknownEffect(handoffJson)(rewritten);
+      const error = yield* deliverContextHandoffs({
+        handoffs: [upgraded],
+        providerThread,
+        budget: 16_000,
+        alreadyDeliveredItemIds: new Set(),
+        persist: () => Effect.die("must preserve ambiguity"),
+      }).pipe(Effect.flip);
+      assert.instanceOf(error, ContextHandoffDeliveryUncertainError);
+    }),
+  );
+
   it.effect.each([
     { native: true, label: "injected" },
     { native: false, label: "inline" },
@@ -611,31 +657,43 @@ describe("handoff delivery", () => {
     }),
   );
 
-  it.effect("does not redeliver after ambiguous injection failure", () =>
-    Effect.gen(function* () {
-      let durable = handoff;
-      let calls = 0;
-      const input = {
-        providerThread,
-        budget: 16_000,
-        alreadyDeliveredItemIds: new Set<string>(),
-        inject: () =>
-          Effect.sync(() => {
-            calls++;
-          }).pipe(Effect.andThen(Effect.fail("connection lost"))),
-        persist: (value: OrchestrationV2ContextHandoff) =>
-          Effect.sync(() => {
-            durable = value;
-          }),
-      };
-      yield* deliverContextHandoffs({ ...input, handoffs: [durable] }).pipe(Effect.result);
-      assert.equal(durable.delivery?.status, "pending");
-      const retry = yield* deliverContextHandoffs({ ...input, handoffs: [durable] }).pipe(
-        Effect.result,
-      );
-      assert.equal(retry._tag, "Failure");
-      assert.equal(calls, 1);
-    }),
+  it.effect.each([true, false])(
+    "does not replay ambiguous delivery at any budget (native: %s)",
+    (native) =>
+      Effect.gen(function* () {
+        let durable = handoff;
+        let calls = 0;
+        const input = {
+          providerThread,
+          budget: 16_000,
+          alreadyDeliveredItemIds: new Set<string>(),
+          ...(native
+            ? {
+                inject: () =>
+                  Effect.sync(() => {
+                    calls++;
+                  }).pipe(Effect.andThen(Effect.fail("connection lost"))),
+              }
+            : {}),
+          persist: (value: OrchestrationV2ContextHandoff) =>
+            Effect.sync(() => {
+              durable = value;
+            }),
+        };
+        yield* deliverContextHandoffs({ ...input, handoffs: [durable] }).pipe(Effect.result);
+        assert.equal(durable.delivery?.status, "pending");
+        const ambiguous = durable;
+        for (const budget of [0, 16_000]) {
+          const error = yield* deliverContextHandoffs({
+            ...input,
+            handoffs: [durable],
+            budget,
+          }).pipe(Effect.flip);
+          assert.instanceOf(error, ContextHandoffDeliveryUncertainError);
+          assert.strictEqual(durable, ambiguous);
+        }
+        assert.equal(calls, native ? 1 : 0);
+      }),
   );
 
   it.effect("budgets multiple handoffs together and skips previously delivered items", () =>
@@ -681,6 +739,7 @@ describe("handoff delivery", () => {
       assert.equal(budget, 0);
       let durable: OrchestrationV2ContextHandoff = { ...handoff, strategy: "manual_context" };
       let calls = 0;
+      let writes = 0;
       const deferred = yield* deliverContextHandoffs({
         handoffs: [durable],
         providerThread,
@@ -694,13 +753,25 @@ describe("handoff delivery", () => {
         persist: (value) =>
           Effect.sync(() => {
             durable = value;
+            writes++;
           }),
       });
       yield* deferred.delivered;
       assert.equal(deferred.context, "");
       assert.equal(calls, 0);
       assert.equal(durable.status, "ready");
-      assert.equal(durable.delivery, undefined);
+      assert.equal(durable.delivery?.status, "pending");
+      assert.isTrue(durable.delivery?.deferred);
+      const unchanged = durable;
+      yield* deliverContextHandoffs({
+        handoffs: [durable],
+        providerThread,
+        budget,
+        alreadyDeliveredItemIds: new Set(),
+        persist: () => Effect.die("must not rewrite an unchanged deferral"),
+      });
+      assert.strictEqual(durable, unchanged);
+      assert.equal(writes, 1);
       const next = yield* deliverContextHandoffs({
         handoffs: [durable],
         providerThread,
@@ -714,6 +785,7 @@ describe("handoff delivery", () => {
       assert.include(next.context, messages[0]!.text);
       yield* next.delivered;
       assert.equal(durable.delivery?.status, "inline");
+      assert.isUndefined(durable.delivery?.deferred);
     }),
   );
 });
