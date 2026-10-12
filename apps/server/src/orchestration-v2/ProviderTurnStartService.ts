@@ -859,6 +859,7 @@ export const layer: Layer.Layer<
           const source = runsById.get(item.runId);
           if (
             source === undefined ||
+            source.status === "rolled_back" ||
             source.ordinal >= run.ordinal ||
             acceptedAttempt?.nativeThreadId !== nativeId ||
             acceptedAttempt.runId !== item.runId ||
@@ -1176,6 +1177,14 @@ export const layer: Layer.Layer<
           .filter((source) => source.nativeThreadId === undefined)
           .map((source) => source.runId),
       );
+      const acceptedRunIds = new Set(acceptedAttempts.map((source) => source.runId));
+      // Restart may cancel after the running write but before prompt acceptance.
+      // Its request occupies no native context and must not be replayed as missed work.
+      const unsentCancelledRunIds = new Set(
+        projection.runs
+          .filter((source) => source.status === "cancelled" && !acceptedRunIds.has(source.id))
+          .map((source) => source.id),
+      );
       const legacyRecoveredRunIds = new Set(
         projection.runs
           .filter(
@@ -1217,7 +1226,7 @@ export const layer: Layer.Layer<
               item.runId === run.id ||
               (beforeCompaction && !importedAfterCompaction.has(item.id)) ||
               (item.runId !== null &&
-                missedRunIds.has(item.runId) &&
+                (missedRunIds.has(item.runId) || unsentCancelledRunIds.has(item.runId)) &&
                 !deliveredItemIds.has(item.id)) ||
               (item.providerThreadId !== providerThread.id && !deliveredItemIds.has(item.id))
             )

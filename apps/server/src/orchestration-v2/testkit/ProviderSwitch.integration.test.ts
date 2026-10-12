@@ -499,6 +499,7 @@ describe("orchestration v2 provider switching", () => {
     "deferred-compact-fresh-thread-telemetry",
     "deferred-auto-compact-stale-telemetry",
     "deferred-failed-auto-compact-stale-telemetry",
+    "deferred-rolled-back-auto-compact-fallback",
     "deferred-native-compact-stale-telemetry",
     "deferred-native-compact-equal-telemetry",
     "deferred-native-compact-fresh-telemetry",
@@ -565,6 +566,7 @@ describe("orchestration v2 provider switching", () => {
         const cursorCompaction = compactionScenario && !compactionTelemetry;
         const failedCompactRun = scenario.includes("-failed-");
         const failedCompaction = failedCompactRun && !automaticCompaction;
+        const rolledBackCompaction = scenario === "deferred-rolled-back-auto-compact-fallback";
         const fallbackSelection = cursorCompaction
           ? CURSOR_MODEL_SELECTION
           : CLAUDE_MODEL_SELECTION;
@@ -796,7 +798,7 @@ describe("orchestration v2 provider switching", () => {
             : undefined;
           yield* Effect.addFinalizer(() => Effect.sync(() => crashSpy?.mockRestore()));
           const current = beforeBudgetCrash
-            ? "Continue work"
+            ? "Unsent cancelled request " + "x".repeat(120_000)
             : scenario.startsWith("compact")
               ? "/compact"
               : scenario.startsWith("deferred")
@@ -930,7 +932,9 @@ describe("orchestration v2 provider switching", () => {
             const resumed = yield* orchestrator.getThreadProjection(threadId);
             const resumedHandoff = resumed.contextHandoffs.find((item) => item.id === handoff.id)!;
             assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.nativeThreadId, nativeThreadId);
+            assert.notInclude((yield* Ref.get(capturedTurns)).at(-1)!.text, current);
             const injectedItems = yield* Ref.get(injectedHistory);
+            assert.notInclude(yield* encodeJson(injectedItems), current);
             if (scenario.endsWith("-native")) {
               assert.equal(resumedHandoff.delivery?.status, "injected");
               assert.isAbove(injectedItems.length, 0);
@@ -1078,6 +1082,23 @@ describe("orchestration v2 provider switching", () => {
                 (yield* Ref.get(capturedTurns)).at(-1)!.nativeThreadId,
                 target.nativeThreadRef!.nativeId,
               );
+              if (rolledBackCompaction) {
+                // An in-place rollback retains audit markers and the native thread ID.
+                const abandonedRun = compacted.runs.at(-1)!;
+                yield* eventSink.write({
+                  events: [
+                    {
+                      id: EventId.make("automatic-compaction-rolled-back"),
+                      type: "run.updated",
+                      threadId,
+                      runId: abandonedRun.id,
+                      providerInstanceId: abandonedRun.providerInstanceId,
+                      occurredAt: yield* DateTime.now,
+                      payload: { ...abandonedRun, status: "rolled_back" },
+                    },
+                  ],
+                });
+              }
               yield* dispatch(4, "Continue after compact", targetSelection);
               yield* wait(4);
               const recovered = yield* orchestrator.getThreadProjection(threadId);
@@ -1101,7 +1122,7 @@ describe("orchestration v2 provider switching", () => {
                         : undefined,
                 );
               } else assert.isNull(recoveredUsage);
-              if (failedCompaction) {
+              if (failedCompaction || rolledBackCompaction) {
                 assert.equal(recoveredHandoff.delivery?.status, "pending");
                 assert.isTrue(recoveredHandoff.delivery?.deferred);
                 assert.equal(recoveredTurn.text, "Continue after compact");
