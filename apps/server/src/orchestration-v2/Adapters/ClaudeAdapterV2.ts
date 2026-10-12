@@ -3711,6 +3711,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const interruptedTurns = yield* Ref.make(new Set<OrchestrationV2ProviderTurn["id"]>());
         const steeredTurns = yield* Ref.make(new Set<OrchestrationV2ProviderTurn["id"]>());
         const queryContext = yield* Ref.make<ClaudeLiveQueryContext | null>(null);
+        // Generic 429 retries can omit the window metadata from the preceding turn.
+        const usageLimitResetsByNativeThread = new Map<
+          string,
+          { readonly model: string; readonly windows: ReadonlyMap<string, string | null> }
+        >();
         const openedNativeThreads = yield* Ref.make(new Set<string>());
         const latestPlanByKind = yield* Ref.make(new Map<string, OrchestrationV2PlanArtifact>());
         // Claude 5 task tools edit one list per native session, across turns.
@@ -6228,6 +6233,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           readonly threadDisposition?: "reusable" | "broken";
           readonly result?: SDKResultMessage;
         }) {
+          const nativeThreadId = input.context.nativeThreadId;
+          const model = input.context.input.modelSelection.model;
+          if (input.status === "failed" && input.failure?.class === "usage_limit") {
+            // Keep incomplete windows too: an unknown reset must continue to
+            // prevent scheduling until that window is reported or cleared.
+            usageLimitResetsByNativeThread.set(nativeThreadId, {
+              model,
+              windows: new Map(input.context.rateLimitResetTimes),
+            });
+          } else {
+            usageLimitResetsByNativeThread.delete(nativeThreadId);
+          }
           yield* reasoningDeltas.flushTurn(input.context.nativeTurnId);
           if (input.context.compaction?.status === "running") {
             yield* emitProviderEvent({
@@ -7086,7 +7103,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 limitType,
                 Number.isFinite(resetMs) && resetMs > 0 && resetMs < 8.64e15
                   ? DateTime.formatIso(DateTime.makeUnsafe(resetMs))
-                  : null,
+                  : (context.rateLimitResetTimes.get(limitType) ?? null),
               );
             } else if (
               rateLimitInfo.status === "allowed" ||
@@ -8147,7 +8164,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               usageLimited && message.subtype === "success" && message.local_command === "compact"
                 ? context.compactionFailure
                 : null;
-            const resetTimes = Array.from(context.rateLimitResetTimes.values());
+            const resetTimes = Array.from(context.rateLimitResetTimes.values(), (time) =>
+              time !== null && Date.parse(time) > DateTime.toEpochMillis(completedAt) ? time : null,
+            );
             const resetAt =
               resetTimes.length > 0 && resetTimes.every((time) => time !== null)
                 ? resetTimes.reduce((latest, time) => (time! > latest ? time! : latest), "")
@@ -9005,6 +9024,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (!goalsByNativeThread.has(nativeThreadId)) {
               goalsByNativeThread.set(nativeThreadId, turnInput.providerThread.goal ?? null);
             }
+            const retained = usageLimitResetsByNativeThread.get(nativeThreadId);
+            const retainedResets =
+              retained?.model === turnInput.modelSelection.model ? retained.windows : undefined;
+            if (retainedResets === undefined) usageLimitResetsByNativeThread.delete(nativeThreadId);
             const context: ActiveClaudeTurnContext = {
               input: turnInput,
               nativeThreadId,
@@ -9036,7 +9059,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               announcedUsageLimits: new Set(),
               authenticationFailureMessage: undefined,
               rejectedRateLimitTypes: new Set(),
-              rateLimitResetTimes: new Map(),
+              rateLimitResetTimes: new Map(
+                [...(retainedResets ?? [])].filter(
+                  ([, reset]) =>
+                    reset === null || Date.parse(reset) > DateTime.toEpochMillis(startedAt),
+                ),
+              ),
               latestAssistantRateLimited: false,
               compactionFailure: null,
               steeredSegmentUsage: [],
