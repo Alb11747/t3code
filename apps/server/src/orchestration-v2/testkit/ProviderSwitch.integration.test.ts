@@ -400,6 +400,8 @@ describe("orchestration v2 provider switching", () => {
     "compact-legacy",
     "deferred-fallback",
     "deferred-cancelled",
+    "deferred-compact-fallback",
+    "deferred-failed-compact-fallback",
     "large-current-input",
     "screenshot-native",
     "screenshot-fallback",
@@ -446,10 +448,14 @@ describe("orchestration v2 provider switching", () => {
         const priorImages = scenario.includes("prior-images");
         const replaceNative = scenario.includes("replacement");
         const capacityScenario = modelScenario || scenario.includes("reported-capacity");
+        const compactionScenario = scenario.includes("-compact-");
+        const fallbackSelection = compactionScenario
+          ? CURSOR_MODEL_SELECTION
+          : CLAUDE_MODEL_SELECTION;
         const returning =
           scenario === "large-current-input" || scenario.includes("-change-") || priorImages;
         const targetSelection: ModelSelection = !modelScenario
-          ? CLAUDE_MODEL_SELECTION
+          ? fallbackSelection
           : {
               ...CLAUDE_MODEL_SELECTION,
               ...(reasoningScenario
@@ -468,12 +474,17 @@ describe("orchestration v2 provider switching", () => {
             capturedTurns,
           }),
           makeTestAdapter({
-            instanceId: CLAUDE_MODEL_SELECTION.instanceId,
-            driver: CLAUDE_DRIVER,
-            capabilities: ClaudeProviderCapabilitiesV2,
-            modelSelection: CLAUDE_MODEL_SELECTION,
+            instanceId: fallbackSelection.instanceId,
+            driver: compactionScenario ? CURSOR_DRIVER : CLAUDE_DRIVER,
+            capabilities: compactionScenario
+              ? CursorProviderCapabilitiesV2
+              : ClaudeProviderCapabilitiesV2,
+            modelSelection: fallbackSelection,
             responseByRunOrdinal: {},
             capturedTurns,
+            ...(scenario === "deferred-failed-compact-fallback"
+              ? { failedRunOrdinals: new Set([3]) }
+              : {}),
             ...(scenario.includes("retry") || scenario.includes("unsent") ? { failStartOnce } : {}),
             ...(replaceNative ? { failResumeOnce, nativeThreadGeneration: generation } : {}),
             ...(scenario.includes("reported-capacity")
@@ -503,7 +514,7 @@ describe("orchestration v2 provider switching", () => {
                         ? 1_000_000
                         : 32_000,
                   }
-                : scenario === "large-current-input" || priorImages
+                : scenario === "large-current-input" || priorImages || compactionScenario
                   ? { getModelContextWindow: () => 32_000 }
                   : {}),
             ...(scenario.endsWith("-native") || scenario === "large-current-input"
@@ -584,7 +595,10 @@ describe("orchestration v2 provider switching", () => {
             branch: null,
             worktreePath: null,
           });
-          yield* dispatch(1, "Original request with constraints", CODEX_MODEL_SELECTION);
+          const sourcePrompt = compactionScenario
+            ? "Original request with constraints " + "q".repeat(7_000)
+            : "Original request with constraints";
+          yield* dispatch(1, sourcePrompt, CODEX_MODEL_SELECTION);
           yield* wait(1);
           const write = eventSink.write;
           const spy =
@@ -808,6 +822,64 @@ describe("orchestration v2 provider switching", () => {
             const target = projection.providerThreads.find(
               (thread) => thread.id === handoff.toProviderThreadId,
             )!;
+            if (compactionScenario) {
+              assert.isNull(target.contextUsage);
+              yield* dispatch(3, "/compact", CURSOR_MODEL_SELECTION);
+              yield* wait(3);
+              const compacted = yield* orchestrator.getThreadProjection(threadId);
+              const failedCompaction = scenario === "deferred-failed-compact-fallback";
+              assert.equal(
+                compacted.runs.at(-1)!.status,
+                failedCompaction ? "failed" : "completed",
+              );
+              assert.equal(
+                (yield* Ref.get(capturedTurns)).at(-1)!.nativeThreadId,
+                target.nativeThreadRef!.nativeId,
+              );
+              yield* dispatch(4, "Continue after compact", CURSOR_MODEL_SELECTION);
+              yield* wait(4);
+              const recovered = yield* orchestrator.getThreadProjection(threadId);
+              const recoveredHandoff = recovered.contextHandoffs.find(
+                (candidate) => candidate.id === handoff.id,
+              )!;
+              const recoveredTurn = (yield* Ref.get(capturedTurns)).at(-1)!;
+              assert.equal(recoveredTurn.nativeThreadId, target.nativeThreadRef!.nativeId);
+              assert.isNull(
+                recovered.providerThreads.find((thread) => thread.id === target.id)!.contextUsage,
+              );
+              if (failedCompaction) {
+                assert.equal(recoveredHandoff.delivery?.status, "deferred");
+                assert.equal(recoveredTurn.text, "Continue after compact");
+                return;
+              }
+              assert.equal(recoveredHandoff.delivery?.status, "inline");
+              assert.include(recoveredTurn.text, sourcePrompt);
+              assert.equal(
+                recoveredTurn.text.split("Original request with constraints").length - 1,
+                1,
+              );
+              yield* dispatch(5, "Continue once more", CURSOR_MODEL_SELECTION);
+              yield* wait(5);
+              assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, "Continue once more");
+              assert.equal(
+                (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs.length,
+                recovered.contextHandoffs.length,
+              );
+              // The imported source predates compaction, but consumes native
+              // context again after delivery. A new handoff must account for it.
+              yield* dispatch(6, "A new source constraint", CODEX_MODEL_SELECTION);
+              yield* wait(6);
+              const current = "y".repeat(10_000);
+              yield* dispatch(7, current, CURSOR_MODEL_SELECTION);
+              yield* wait(7);
+              assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, current);
+              assert.equal(
+                (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs.at(-1)!.delivery
+                  ?.status,
+                "deferred",
+              );
+              return;
+            }
             // Model telemetry can recover after the provider compacts the native history.
             yield* eventSink.write({
               events: [

@@ -1055,34 +1055,67 @@ export const layer: Layer.Layer<
       // Legacy attempts lack native identity; exclude their explicitly recovered
       // history, whose attachments were not replayed into the replacement thread.
       const nativeContextEstimate = Effect.gen(function* () {
-        return sameNativeThread
-          ? (yield* projectionStore.getTurnStartHistory(input.threadId)).reduce((sum, item) => {
-              if (
-                item.runId === run.id ||
-                (item.runId !== null &&
-                  missedRunIds.has(item.runId) &&
-                  !deliveredItemIds.has(item.id)) ||
-                (item.providerThreadId !== providerThread.id && !deliveredItemIds.has(item.id))
-              )
-                return sum;
-              const historical = historicalMessage(item);
-              const nativeAttachments =
-                item.type === "user_message" &&
-                item.providerThreadId === providerThread.id &&
-                item.runId !== null &&
-                (nativeInputRunIds.has(item.runId) ||
-                  (legacyInputRunIds.has(item.runId) &&
-                    !coveredItemIds.has(item.id) &&
-                    !legacyRecoveredRunIds.has(item.runId)))
-                  ? attachmentTokenAllowance(item.attachments)
-                  : 0;
-              return (
-                sum +
-                (historical === null ? 0 : Buffer.byteLength(historical.text)) +
-                nativeAttachments
-              );
-            }, 0)
-          : 0;
+        if (!sameNativeThread) return 0;
+        const compaction = projection.runs.findLast(
+          (source) =>
+            source.ordinal < run.ordinal &&
+            source.status === "completed" &&
+            source.completedAt !== null &&
+            projection.messages.some(
+              (candidate) =>
+                candidate.id === source.userMessageId &&
+                candidate.attachments.length === 0 &&
+                candidate.text.trim().toLowerCase() === "/compact",
+            ) &&
+            acceptedAttempts.some(
+              (candidate) =>
+                candidate.id === source.activeAttemptId &&
+                candidate.status === "completed" &&
+                candidate.nativeThreadId !== undefined &&
+                candidate.nativeThreadId === runningProviderThread.nativeThreadRef?.nativeId,
+            ),
+        );
+        const compactedAt = compaction?.completedAt;
+        const importedAfterCompaction = new Set(
+          settledHandoffs.flatMap((handoff) =>
+            compactedAt != null && DateTime.isGreaterThanOrEqualTo(handoff.updatedAt, compactedAt)
+              ? (handoff.delivery?.itemIds ?? [])
+              : [],
+          ),
+        );
+        // Successful compaction bounds the fallback, without inventing telemetry.
+        // Keep its visible summary and later imports; the budget still reserves
+        // space for unobserved native instructions and summary overhead.
+        return (yield* projectionStore.getTurnStartHistory(input.threadId)).reduce((sum, item) => {
+          const beforeCompaction =
+            compactedAt != null &&
+            item.runId !== compaction?.id &&
+            DateTime.isLessThan(item.updatedAt, compactedAt);
+          if (
+            item.runId === run.id ||
+            (beforeCompaction && !importedAfterCompaction.has(item.id)) ||
+            (item.runId !== null &&
+              missedRunIds.has(item.runId) &&
+              !deliveredItemIds.has(item.id)) ||
+            (item.providerThreadId !== providerThread.id && !deliveredItemIds.has(item.id))
+          )
+            return sum;
+          const historical = historicalMessage(item);
+          const nativeAttachments =
+            !beforeCompaction &&
+            item.type === "user_message" &&
+            item.providerThreadId === providerThread.id &&
+            item.runId !== null &&
+            (nativeInputRunIds.has(item.runId) ||
+              (legacyInputRunIds.has(item.runId) &&
+                !coveredItemIds.has(item.id) &&
+                !legacyRecoveredRunIds.has(item.runId)))
+              ? attachmentTokenAllowance(item.attachments)
+              : 0;
+          return (
+            sum + (historical === null ? 0 : Buffer.byteLength(historical.text)) + nativeAttachments
+          );
+        }, 0);
       });
       const modelContextWindow =
         knownModelWindow ??
