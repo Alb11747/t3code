@@ -356,6 +356,25 @@ it.effect.each(["sqlite", "memory"] as const)(
           lookups,
           "SEARCH orchestration_v2_projection_turn_items USING INDEX orchestration_v2_projection_turn_items_completed_compaction_idx (thread_id=?)",
         );
+        const messageQuery = queries.find(
+          ([query]) =>
+            query.includes("FROM orchestration_v2_projection_messages") &&
+            !query.includes("SELECT EXISTS"),
+        );
+        assert.isDefined(messageQuery);
+        const messagePlan = yield* sql.unsafe<{ readonly detail: string }>(
+          `EXPLAIN QUERY PLAN ${messageQuery![0]}`,
+          messageQuery![1],
+        );
+        const messageLookups = messagePlan.map((row) => row.detail);
+        assert.include(
+          messageLookups,
+          "SEARCH orchestration_v2_projection_messages USING INDEX sqlite_autoindex_orchestration_v2_projection_messages_1 (message_id=?)",
+        );
+        assert.include(
+          messageLookups,
+          "SEARCH orchestration_v2_projection_messages USING INDEX orchestration_v2_projection_messages_compact_idx (thread_id=?)",
+        );
       }
       assert.deepEqual(yield* store.getTurnStartHistory(threadId), [item]);
       // Pairing depends on IDs, not payload decoding or item status.
@@ -394,7 +413,12 @@ it.effect.each(["sqlite", "memory"] as const)(
         yield* sql`UPDATE orchestration_v2_projection_turn_items
           SET payload_json = ${original[0]!.payload_json} WHERE turn_item_id = ${item.id}`;
       }
-      for (const text of ["/compact", " \t/COMPACT\n", "\u00a0/compact\u3000"]) {
+      const trimWhitespace =
+        " \t\n\r\v\f\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
+      for (const text of [
+        "/compact",
+        ...[...trimWhitespace].map((space) => `${space}/COMPACT${space}`),
+      ]) {
         yield* store.apply({
           id: EventId.make("compact-input"),
           type: "message.updated",
@@ -403,7 +427,9 @@ it.effect.each(["sqlite", "memory"] as const)(
           occurredAt: now,
           payload: { ...message, text },
         });
-        assert.isFalse((yield* store.getTurnStartContext(threadId, runId)).hasConversation);
+        const compactStartup = yield* store.getTurnStartContext(threadId, runId);
+        assert.isFalse(compactStartup.hasConversation);
+        assert.deepEqual(compactStartup.messages, [{ ...message, text }]);
       }
       const marker = {
         ...message,
@@ -419,9 +445,9 @@ it.effect.each(["sqlite", "memory"] as const)(
         occurredAt: now,
         payload: marker,
       });
-      assert.include(
+      assert.deepEqual(
         (yield* store.getTurnStartContext(threadId, runId)).messages.map((m) => m.id),
-        marker.id,
+        [messageId, marker.id],
       );
       const other = ThreadId.make("other");
       yield* putThread({ ...thread, id: other });
