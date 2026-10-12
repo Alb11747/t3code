@@ -9452,4 +9452,488 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
     );
   });
+
+  describe("overload retries", () => {
+    const nativeThreadId = "overload-thread";
+    const prompt = "Fix the build";
+    const turnCompleted = (id: string, status: "completed" | "failed") =>
+      ({
+        type: "emit_inbound",
+        label: `turn/completed ${id}`,
+        frame: {
+          method: "turn/completed",
+          params: {
+            threadId: nativeThreadId,
+            turn: {
+              ...makeCodexReplayTurn({ id, status }),
+              ...(status === "failed"
+                ? {
+                    error: {
+                      message: "Selected model is at capacity. Please try a different model.",
+                      codexErrorInfo: "serverOverloaded",
+                    },
+                  }
+                : {}),
+            },
+          },
+        },
+      }) satisfies CodexReplay.CodexAppServerReplayEntry;
+    const retryRows = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
+      events.flatMap((event) =>
+        event.type === "turn_item.updated" &&
+        event.turnItem.type === "error" &&
+        event.turnItem.retry !== undefined
+          ? [
+              [
+                event.turnItem.status,
+                event.turnItem.retry.attempt,
+                event.turnItem.retry.retryDelayMs,
+              ],
+            ]
+          : [],
+      );
+    const runInput = (harness: {
+      readonly threadId: ThreadId;
+      readonly providerThread: OrchestrationV2ProviderThread;
+    }) =>
+      DateTime.now.pipe(
+        Effect.map((now) =>
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("overload-attempt"),
+            text: prompt,
+          }),
+        ),
+      );
+    const providerTurnId = (nativeTurnId: string) =>
+      IdAllocator.IdAllocatorV2.pipe(
+        Effect.map((ids) =>
+          ids.derive.providerTurn({ driver: CodexAdapterV2.CODEX_DRIVER_KIND, nativeTurnId }),
+        ),
+      );
+
+    it.effect("continues an overloaded run with an empty-input turn after a backoff", () =>
+      Effect.gen(function* () {
+        const transcript = makeCodexReplayTranscript({
+          scenario: "overload-retry",
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId: "turn-1", prompt }),
+            turnCompleted("turn-1", "failed"),
+            {
+              type: "expect_outbound",
+              label: "retry turn/start",
+              frame: {
+                id: 4,
+                method: "turn/start",
+                params: {
+                  threadId: nativeThreadId,
+                  input: [],
+                  cwd: "/workspace",
+                  model: "gpt-5.4",
+                  approvalPolicy: "never",
+                  approvalsReviewer: "user",
+                  sandboxPolicy: { type: "dangerFullAccess" },
+                  summary: "detailed",
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "retry turn/start",
+              frame: {
+                id: 4,
+                result: { turn: makeCodexReplayTurn({ id: "turn-2", status: "inProgress" }) },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "retry turn/started",
+              frame: {
+                method: "turn/started",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: "turn-2", status: "inProgress" }),
+                },
+              },
+            },
+            turnCompleted("turn-2", "completed"),
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+        yield* harness.runtime.startTurn(yield* runInput(harness));
+        yield* awaitUntil(() => retryRows(harness.events).length > 0, "the retry to be scheduled");
+        // The run stays open through the backoff.
+        assert.lengthOf(harness.terminalEvents(), 0);
+        yield* TestClock.adjust("10 seconds");
+        yield* harness.firstTerminal;
+
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => [event.providerTurnId, event.status]),
+          [[yield* providerTurnId("turn-2"), "completed"]],
+        );
+        assert.deepEqual(retryRows(harness.events), [
+          ["running", 1, 10_000],
+          ["running", 1, null],
+          ["completed", 1, null],
+        ]);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+
+    it.effect("exhausts retries after one hour with three-minute waits", () =>
+      Effect.gen(function* () {
+        const attempts = Array.from({ length: 24 }, (_, index) => index + 1);
+        const retryTurn = (attempt: number): Array<CodexReplay.CodexAppServerReplayEntry> => {
+          const id = `turn-${attempt + 1}`;
+          return [
+            {
+              type: "expect_outbound",
+              label: `retry ${attempt} turn/start`,
+              frame: {
+                id: attempt + 3,
+                method: "turn/start",
+                params: {
+                  threadId: nativeThreadId,
+                  input: [],
+                  cwd: "/workspace",
+                  model: "gpt-5.4",
+                  approvalPolicy: "never",
+                  approvalsReviewer: "user",
+                  sandboxPolicy: { type: "dangerFullAccess" },
+                  summary: "detailed",
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: `retry ${attempt} turn/start`,
+              frame: {
+                id: attempt + 3,
+                result: { turn: makeCodexReplayTurn({ id, status: "inProgress" }) },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: `retry ${attempt} turn/started`,
+              frame: {
+                method: "turn/started",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id, status: "inProgress" }),
+                },
+              },
+            },
+            turnCompleted(id, "failed"),
+          ];
+        };
+        const transcript = makeCodexReplayTranscript({
+          scenario: "overload-retry-exhausted",
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId: "turn-1", prompt }),
+            turnCompleted("turn-1", "failed"),
+            ...attempts.flatMap(retryTurn),
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+        yield* harness.runtime.startTurn(yield* runInput(harness));
+        const delays: Array<number> = [];
+        for (const attempt of attempts) {
+          yield* awaitUntil(
+            () => retryRows(harness.events).some((row) => row[1] === attempt && row[2] !== null),
+            `retry ${attempt} to be scheduled`,
+          );
+          const retryEvent = harness.events.find(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "error" &&
+              event.turnItem.retry?.attempt === attempt &&
+              event.turnItem.retry.retryDelayMs !== null,
+          );
+          if (retryEvent?.type !== "turn_item.updated" || retryEvent.turnItem.type !== "error") {
+            return assert.fail("Expected a scheduled retry row");
+          }
+          const retry = retryEvent.turnItem.retry;
+          assert.equal(retry?.maxAttempts, 24);
+          const delay = retry?.retryDelayMs;
+          if (delay == null) return assert.fail("Expected a retry delay");
+          assert.isAtMost(delay, 180_000);
+          delays.push(delay);
+          assert.lengthOf(harness.terminalEvents(), 0);
+          if (attempt === 24) {
+            yield* TestClock.adjust(delay - 1);
+            assert.lengthOf(harness.terminalEvents(), 0);
+            yield* TestClock.adjust(1);
+          } else {
+            yield* TestClock.adjust(delay);
+          }
+        }
+        yield* harness.firstTerminal;
+
+        assert.equal(
+          delays.reduce((total, delay) => total + delay, 0),
+          3_600_000,
+        );
+        assert.equal(Math.max(...delays), 180_000);
+        const [terminal] = harness.terminalEvents();
+        assert.equal(terminal?.providerTurnId, yield* providerTurnId("turn-25"));
+        assert.equal(terminal?.status, "failed");
+        assert.equal(
+          terminal?.status === "failed" ? terminal.failure.code : null,
+          "serverOverloaded",
+        );
+        assert.deepEqual(retryRows(harness.events).at(-1), ["failed", 24, null]);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+
+    it.effect("settles an overloaded run when Stop arrives during the backoff", () =>
+      Effect.gen(function* () {
+        const transcript = makeCodexReplayTranscript({
+          scenario: "overload-retry-stop",
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId: "turn-1", prompt }),
+            turnCompleted("turn-1", "failed"),
+          ],
+        });
+        const requests: Array<string> = [];
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          () => Effect.void,
+          (method) =>
+            Effect.sync(() => {
+              requests.push(method);
+            }),
+        );
+        yield* harness.runtime.startTurn(yield* runInput(harness));
+        yield* awaitUntil(() => retryRows(harness.events).length > 0, "the retry to be scheduled");
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: yield* providerTurnId("turn-1"),
+        });
+        yield* harness.firstTerminal;
+        // The backoff ending starts nothing once Stop settled the run.
+        yield* TestClock.adjust("10 seconds");
+
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => event.status),
+          ["interrupted"],
+        );
+        assert.deepEqual(retryRows(harness.events), [
+          ["running", 1, 10_000],
+          ["interrupted", 1, 10_000],
+        ]);
+        assert.deepEqual(
+          requests.filter((method) => method === "turn/start" || method === "turn/interrupt"),
+          ["turn/start"],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+
+    const childThreadId = "overload-child-thread";
+    const childTurnId = "overload-child-turn";
+    const runningSubagent = [
+      {
+        type: "emit_inbound",
+        label: "subagent started",
+        frame: {
+          method: "item/completed",
+          params: {
+            item: {
+              type: "subAgentActivity",
+              id: "overload-subagent-call",
+              kind: "started",
+              agentThreadId: childThreadId,
+              agentPath: "/root/review",
+            },
+            threadId: nativeThreadId,
+            turnId: "turn-1",
+            completedAtMs: 1782622441000,
+          },
+        },
+      },
+      {
+        type: "emit_inbound",
+        label: "child turn/started",
+        frame: {
+          method: "turn/started",
+          params: {
+            threadId: childThreadId,
+            turn: makeCodexReplayTurn({ id: childTurnId, status: "inProgress" }),
+          },
+        },
+      },
+    ] satisfies Array<CodexReplay.CodexAppServerReplayEntry>;
+    const childTurnCompleted = (status: "completed" | "interrupted") =>
+      ({
+        type: "emit_inbound",
+        label: `child turn/completed ${status}`,
+        frame: {
+          method: "turn/completed",
+          params: {
+            threadId: childThreadId,
+            turn: makeCodexReplayTurn({ id: childTurnId, status }),
+          },
+        },
+      }) satisfies CodexReplay.CodexAppServerReplayEntry;
+
+    it.effect("retries an overloaded run once its running subagents finish", () =>
+      Effect.gen(function* () {
+        const transcript = makeCodexReplayTranscript({
+          scenario: "overload-retry-after-subagent",
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId: "turn-1", prompt }),
+            ...runningSubagent,
+            turnCompleted("turn-1", "failed"),
+            childTurnCompleted("completed"),
+            {
+              type: "expect_outbound",
+              label: "retry turn/start",
+              frame: {
+                id: 4,
+                method: "turn/start",
+                params: {
+                  threadId: nativeThreadId,
+                  input: [],
+                  cwd: "/workspace",
+                  model: "gpt-5.4",
+                  approvalPolicy: "never",
+                  approvalsReviewer: "user",
+                  sandboxPolicy: { type: "dangerFullAccess" },
+                  summary: "detailed",
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "retry turn/start",
+              frame: {
+                id: 4,
+                result: { turn: makeCodexReplayTurn({ id: "turn-2", status: "inProgress" }) },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "retry turn/started",
+              frame: {
+                method: "turn/started",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: "turn-2", status: "inProgress" }),
+                },
+              },
+            },
+            turnCompleted("turn-2", "completed"),
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+        yield* harness.runtime.startTurn(yield* runInput(harness));
+        yield* awaitUntil(() => retryRows(harness.events).length > 0, "the retry to be scheduled");
+        assert.lengthOf(harness.terminalEvents(), 0);
+        yield* TestClock.adjust("10 seconds");
+        yield* harness.firstTerminal;
+
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => [event.providerTurnId, event.status]),
+          [[yield* providerTurnId("turn-2"), "completed"]],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+
+    it.effect("Stop while an overloaded run waits for subagents ends them without a retry", () =>
+      Effect.gen(function* () {
+        const transcript = makeCodexReplayTranscript({
+          scenario: "overload-retry-subagent-stop",
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId: "turn-1", prompt }),
+            ...runningSubagent,
+            turnCompleted("turn-1", "failed"),
+            {
+              type: "emit_inbound",
+              label: "child message",
+              frame: {
+                method: "item/completed",
+                params: {
+                  threadId: childThreadId,
+                  turnId: childTurnId,
+                  item: { type: "agentMessage", id: "child-message", text: "Reviewing" },
+                },
+              },
+            },
+            {
+              type: "expect_outbound",
+              label: "child turn/interrupt",
+              frame: {
+                id: 4,
+                method: "turn/interrupt",
+                params: { threadId: childThreadId, turnId: childTurnId },
+              },
+            },
+            { type: "emit_inbound", label: "child turn/interrupt", frame: { id: 4, result: {} } },
+            childTurnCompleted("interrupted"),
+          ],
+        });
+        const requests: Array<string> = [];
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          () => Effect.void,
+          (method) =>
+            Effect.sync(() => {
+              requests.push(method);
+            }),
+        );
+        yield* harness.runtime.startTurn(yield* runInput(harness));
+        // The waiting run shows nothing new, so the child message that follows
+        // the failure marks it as handled.
+        yield* awaitUntil(
+          () =>
+            harness.events.some(
+              (event) =>
+                event.type === "turn_item.updated" && event.turnItem.type === "assistant_message",
+            ),
+          "the overload failure to be handled",
+        );
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: yield* providerTurnId("turn-1"),
+        });
+        yield* harness.firstTerminal;
+        yield* TestClock.adjust("10 seconds");
+
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => [event.providerTurnId, event.status]),
+          [[yield* providerTurnId("turn-1"), "failed"]],
+        );
+        assert.lengthOf(retryRows(harness.events), 0);
+        assert.deepEqual(
+          requests.filter((method) => method === "turn/start" || method === "turn/interrupt"),
+          ["turn/start", "turn/interrupt"],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+  });
 });
