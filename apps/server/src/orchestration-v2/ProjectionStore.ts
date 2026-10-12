@@ -3917,10 +3917,19 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               SELECT payload_json FROM orchestration_v2_projection_context_transfers
               WHERE source_thread_id = ${threadId} OR target_thread_id = ${threadId} ORDER BY rowid ASC
             `.pipe(Effect.flatMap(decodeRows(decodeContextTransferPayload, threadId)));
+            // Separate indexed lookups; an OR makes SQLite scan the thread's
+            // entire ordered transcript to find the historical compact markers.
             const turnItems = yield* sql<PayloadRow>`
-              SELECT payload_json FROM orchestration_v2_projection_turn_items
-              WHERE thread_id = ${threadId}
-                AND (run_id = ${runId} OR (type = 'compaction' AND status = 'completed'))
+              SELECT payload_json FROM (
+                SELECT payload_json, ordinal, turn_item_id
+                FROM orchestration_v2_projection_turn_items
+                WHERE thread_id = ${threadId} AND run_id = ${runId}
+                UNION ALL
+                SELECT payload_json, ordinal, turn_item_id
+                FROM orchestration_v2_projection_turn_items
+                WHERE thread_id = ${threadId} AND type = 'compaction' AND status = 'completed'
+                  AND run_id IS NOT ${runId}
+              )
               ORDER BY ordinal ASC, turn_item_id ASC
             `.pipe(Effect.flatMap(decodeRows(decodeTurnItemPayload, threadId)));
             const providerSessions = yield* sql<PayloadRow>`

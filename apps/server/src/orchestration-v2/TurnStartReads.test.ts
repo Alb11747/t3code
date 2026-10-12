@@ -17,6 +17,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
@@ -312,7 +313,50 @@ it.effect.each(["sqlite", "memory"] as const)(
           payload: marker,
         });
       }
-      assert.deepEqual((yield* store.getTurnStartContext(threadId, runId)).turnItems, [compacted]);
+      const currentCompacted = {
+        ...compacted,
+        id: TurnItemId.make("item:current-compaction"),
+        runId,
+        ordinal: 4,
+      };
+      yield* store.apply({
+        id: EventId.make("event:current-compaction"),
+        type: "turn-item.updated",
+        threadId,
+        runId,
+        occurredAt: now,
+        payload: currentCompacted,
+      });
+      const queries: Array<readonly [string, ReadonlyArray<unknown>]> = [];
+      const record: Statement.Transformer = (statement) =>
+        Effect.sync(() => {
+          queries.push(statement.compile());
+          return statement;
+        });
+      const startup = yield* store
+        .getTurnStartContext(threadId, runId)
+        .pipe(Effect.provideService(Statement.CurrentTransformer, record));
+      assert.deepEqual(startup.turnItems, [compacted, currentCompacted]);
+      if (storage === "sqlite") {
+        const itemQuery = queries.find(([query]) =>
+          query.includes("FROM orchestration_v2_projection_turn_items"),
+        );
+        assert.isDefined(itemQuery);
+        const sql = yield* SqlClient.SqlClient;
+        const plan = yield* sql.unsafe<{ readonly detail: string }>(
+          `EXPLAIN QUERY PLAN ${itemQuery![0]}`,
+          itemQuery![1],
+        );
+        const lookups = plan.map((row) => row.detail);
+        assert.include(
+          lookups,
+          "SEARCH orchestration_v2_projection_turn_items USING INDEX orchestration_v2_projection_turn_items_thread_run_idx (thread_id=? AND run_id=?)",
+        );
+        assert.include(
+          lookups,
+          "SEARCH orchestration_v2_projection_turn_items USING INDEX orchestration_v2_projection_turn_items_completed_compaction_idx (thread_id=?)",
+        );
+      }
       assert.deepEqual(yield* store.getTurnStartHistory(threadId), [item]);
       // Pairing depends on IDs, not payload decoding or item status.
       const resultId = TurnItemId.make("interrupt-result");
