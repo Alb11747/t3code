@@ -10,6 +10,7 @@ import {
   ThreadId,
   TurnItemId,
   OrchestrationV2ContextHandoff,
+  OrchestrationV2ContextHandoffJson,
   type OrchestrationV2HistoricalMessage,
   type OrchestrationV2ProviderThread,
 } from "@t3tools/contracts";
@@ -32,6 +33,26 @@ import {
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeHandoff = Schema.decodeUnknownSync(OrchestrationV2ContextHandoff);
+const handoffJson = Schema.fromJsonString(OrchestrationV2ContextHandoffJson);
+const encodeHandoffJson = Schema.encodeEffect(handoffJson);
+const decodeHandoffJson = Schema.decodeUnknownEffect(handoffJson);
+// Freeze the previous delivery contract: older servers ignore additive
+// fields, but cannot decode a new status literal in events or projections.
+const legacyHandoffJson = Schema.fromJsonString(
+  OrchestrationV2ContextHandoffJson.mapFields((fields) => ({
+    ...fields,
+    delivery: Schema.optional(
+      Schema.Struct({
+        nativeThreadId: Schema.String,
+        status: Schema.Literals(["pending", "injected", "inline"]),
+        itemIds: Schema.Array(TurnItemId),
+        omittedItemIds: Schema.optional(Schema.Array(TurnItemId)),
+      }),
+    ),
+  })),
+);
+const encodeLegacyHandoffJson = Schema.encodeEffect(legacyHandoffJson);
+const decodeLegacyHandoffJson = Schema.decodeUnknownEffect(legacyHandoffJson);
 
 const now = DateTime.makeUnsafe("2026-09-17T00:00:00Z");
 const threadId = ThreadId.make("thread:handoff");
@@ -416,6 +437,41 @@ describe("handoff budget", () => {
 });
 
 describe("handoff delivery", () => {
+  it.effect("keeps deferred history readable with the pre-retry handoff schema", () =>
+    Effect.gen(function* () {
+      let durable = handoff;
+      yield* deliverContextHandoffs({
+        handoffs: [durable],
+        providerThread,
+        budget: 0,
+        alreadyDeliveredItemIds: new Set(),
+        persist: (value) =>
+          Effect.sync(() => {
+            durable = value;
+          }),
+      });
+      const payload = yield* encodeHandoffJson(durable);
+      const legacyRead = yield* decodeLegacyHandoffJson(payload);
+      assert.deepEqual(legacyRead.history, durable.history);
+      assert.equal(legacyRead.delivery?.status, "pending");
+      // An older writer may drop the unsent flag. On upgrading again, the
+      // resulting pending marker must remain ambiguous, never silently replayed.
+      const legacyPayload = yield* encodeLegacyHandoffJson(legacyRead);
+      const upgraded = yield* decodeHandoffJson(legacyPayload);
+      for (const native of [false, true]) {
+        const error = yield* deliverContextHandoffs({
+          handoffs: [upgraded],
+          providerThread,
+          budget: 16_000,
+          alreadyDeliveredItemIds: new Set(),
+          ...(native ? { inject: () => Effect.die("must not replay") } : {}),
+          persist: () => Effect.die("must preserve ambiguity"),
+        }).pipe(Effect.flip);
+        assert.instanceOf(error, ContextHandoffDeliveryUncertainError);
+      }
+    }),
+  );
+
   it.effect.each([
     { native: true, label: "injected" },
     { native: false, label: "inline" },
@@ -725,7 +781,8 @@ describe("handoff delivery", () => {
       assert.equal(deferred.context, "");
       assert.equal(calls, 0);
       assert.equal(durable.status, "ready");
-      assert.equal(durable.delivery?.status, "deferred");
+      assert.equal(durable.delivery?.status, "pending");
+      assert.isTrue(durable.delivery?.deferred);
       assert.equal(writes, 1);
       const retryInput = {
         providerThread,
@@ -763,6 +820,7 @@ describe("handoff delivery", () => {
       assert.include(next.context, messages[0]!.text);
       yield* next.delivered;
       assert.equal(durable.delivery?.status, "inline");
+      assert.isUndefined(durable.delivery?.deferred);
     }),
   );
 });

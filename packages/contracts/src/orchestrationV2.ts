@@ -1040,8 +1040,11 @@ export const OrchestrationV2ContextHandoff = Schema.Struct({
   delivery: Schema.optional(
     Schema.Struct({
       nativeThreadId: Schema.String,
-      // `deferred`: the history did not fit the turn's budget and was not sent.
-      status: Schema.Literals(["pending", "injected", "inline", "deferred"]),
+      status: Schema.Literals(["pending", "injected", "inline"]),
+      // A pending delivery with this flag is known unsent and safe to retry.
+      // Older servers ignore the additive field and conservatively preserve
+      // pending ambiguity instead of failing to decode persisted handoffs.
+      deferred: Schema.optional(Schema.Literal(true)),
       itemIds: Schema.Array(TurnItemId),
       // Covered by recovery instructions, but not present in native model history.
       omittedItemIds: Schema.optional(Schema.Array(TurnItemId)),

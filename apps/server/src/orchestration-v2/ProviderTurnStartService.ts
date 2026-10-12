@@ -265,7 +265,8 @@ export const layer: Layer.Layer<
                     // Retry deferred history once space recovers. Child results remain
                     // available through task_status after their delivery turn ends.
                     ((source.status === "completed" || source.status === "cancelled") &&
-                      handoff.delivery?.status === "deferred" &&
+                      handoff.delivery?.status === "pending" &&
+                      handoff.delivery.deferred === true &&
                       !projection.contextTransfers.some(
                         (transfer) =>
                           transfer.id === handoff.transferId && transfer.type === "subagent_result",
@@ -676,7 +677,8 @@ export const layer: Layer.Layer<
           (handoff) =>
             handoff.toProviderThreadId === providerThread.id &&
             handoff.delivery?.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
-            handoff.delivery?.status === "pending",
+            handoff.delivery?.status === "pending" &&
+            handoff.delivery.deferred !== true,
         );
         const resumed = yield* Effect.result(
           uncertainDelivery
@@ -983,7 +985,7 @@ export const layer: Layer.Layer<
           if (handoff.delivery?.nativeThreadId === nativeId) return handoff;
           const deferred: OrchestrationV2ContextHandoff = {
             ...handoff,
-            delivery: { nativeThreadId: nativeId, status: "deferred", itemIds: [] },
+            delivery: { nativeThreadId: nativeId, status: "pending", deferred: true, itemIds: [] },
             updatedAt: now,
           };
           unsentHandoffs.push(deferred);
@@ -1123,8 +1125,7 @@ export const layer: Layer.Layer<
         (handoff) =>
           handoff.toProviderThreadId === providerThread.id &&
           handoff.delivery?.nativeThreadId === runningProviderThread.nativeThreadRef?.nativeId &&
-          handoff.delivery?.status !== "pending" &&
-          handoff.delivery?.status !== "deferred",
+          handoff.delivery?.status !== "pending",
       );
       const deliveredItemIds = new Set(
         settledHandoffs.flatMap((handoff) => handoff.delivery?.itemIds ?? []),
@@ -1137,7 +1138,7 @@ export const layer: Layer.Layer<
       // for retry. Reuse it instead of rebuilding missed-run records each turn.
       const deferredHistoryItemIds = new Set(
         effectiveHandoffs.flatMap((handoff) =>
-          handoff.delivery?.status !== "deferred"
+          handoff.delivery?.status !== "pending" || handoff.delivery.deferred !== true
             ? []
             : [
                 ...(handoff.history?.messages.map((message) => message.itemId) ?? []),

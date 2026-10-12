@@ -33,8 +33,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       (handoff) =>
         nativeThreadId === undefined ||
         handoff.delivery?.nativeThreadId !== nativeThreadId ||
-        handoff.delivery.status === "pending" ||
-        handoff.delivery.status === "deferred",
+        handoff.delivery.status === "pending",
     );
     if (pending.length === 0 || (input.deferInline && input.inject === undefined))
       return { context: "", delivered: Effect.void, unsent: Effect.void };
@@ -45,7 +44,8 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       pending.some(
         (handoff) =>
           handoff.delivery?.nativeThreadId === nativeThreadId &&
-          handoff.delivery.status === "pending",
+          handoff.delivery.status === "pending" &&
+          handoff.delivery.deferred !== true,
       )
     ) {
       return yield* new ContextHandoffDeliveryUncertainError();
@@ -106,12 +106,13 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
           pending.filter(
             (handoff) =>
               handoff.delivery?.nativeThreadId !== nativeThreadId ||
-              handoff.delivery.status !== "deferred",
+              handoff.delivery.status !== "pending" ||
+              handoff.delivery.deferred !== true,
           ),
           (handoff) =>
             input.persist({
               ...handoff,
-              delivery: { nativeThreadId, status: "deferred", itemIds: [] },
+              delivery: { nativeThreadId, status: "pending", deferred: true, itemIds: [] },
             }),
           { discard: true },
         );

@@ -893,7 +893,8 @@ describe("orchestration v2 provider switching", () => {
             const stoppedRun = stopped.runs.at(-1)!;
             const handoff = stopped.contextHandoffs.at(-1)!;
             assert.equal(stoppedRun.status, "running");
-            assert.equal(handoff.delivery?.status, "deferred");
+            assert.equal(handoff.delivery?.status, "pending");
+            assert.isTrue(handoff.delivery?.deferred);
             const nativeThreadId = stopped.providerThreads.find(
               (thread) => thread.id === handoff.toProviderThreadId,
             )!.nativeThreadRef!.nativeId;
@@ -1016,7 +1017,8 @@ describe("orchestration v2 provider switching", () => {
           assert.equal(projection.runs.at(-1)?.status, "completed");
           if (scenario.startsWith("deferred")) {
             const handoff = projection.contextHandoffs.at(-1)!;
-            assert.equal(handoff.delivery?.status, "deferred");
+            assert.equal(handoff.delivery?.status, "pending");
+            assert.isTrue(handoff.delivery?.deferred);
             assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, current);
             if (scenario === "deferred-cancelled") {
               // Restart recovery cancels runs that were still in flight.
@@ -1088,7 +1090,8 @@ describe("orchestration v2 provider switching", () => {
                 );
               } else assert.isNull(recoveredUsage);
               if (failedCompaction) {
-                assert.equal(recoveredHandoff.delivery?.status, "deferred");
+                assert.equal(recoveredHandoff.delivery?.status, "pending");
+                assert.isTrue(recoveredHandoff.delivery?.deferred);
                 assert.equal(recoveredTurn.text, "Continue after compact");
                 return;
               }
@@ -1116,10 +1119,9 @@ describe("orchestration v2 provider switching", () => {
               yield* dispatch(7, current, targetSelection);
               yield* wait(7);
               assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, current);
-              assert.equal(
+              assert.isTrue(
                 (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs.at(-1)!.delivery
-                  ?.status,
-                "deferred",
+                  ?.deferred,
               );
               return;
             }
@@ -1295,7 +1297,8 @@ describe("orchestration v2 provider switching", () => {
                 ],
               });
             }
-            assert.equal(handoff.delivery?.status, "deferred");
+            assert.equal(handoff.delivery?.status, "pending");
+            assert.isTrue(handoff.delivery?.deferred);
             yield* dispatch(3, "Continue after compact", CLAUDE_MODEL_SELECTION);
             yield* wait(3);
             assert.include(
@@ -1467,7 +1470,8 @@ describe("orchestration v2 provider switching", () => {
               const firstDeferred = yield* orchestrator.getThreadProjection(threadId);
               assert.equal(firstDeferred.contextHandoffs.length, failed.contextHandoffs.length + 1);
               const deferredHandoff = firstDeferred.contextHandoffs.at(-1)!;
-              assert.equal(deferredHandoff.delivery?.status, "deferred");
+              assert.equal(deferredHandoff.delivery?.status, "pending");
+              assert.isTrue(deferredHandoff.delivery?.deferred);
               const missedRequest = firstDeferred.turnItems.find(
                 (item) => item.type === "user_message" && item.text === missedText,
               )!;
