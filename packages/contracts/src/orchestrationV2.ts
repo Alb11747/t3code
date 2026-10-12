@@ -1040,7 +1040,8 @@ export const OrchestrationV2ContextHandoff = Schema.Struct({
   delivery: Schema.optional(
     Schema.Struct({
       nativeThreadId: Schema.String,
-      status: Schema.Literals(["pending", "injected", "inline"]),
+      // `deferred`: the history did not fit the turn's budget and was not sent.
+      status: Schema.Literals(["pending", "injected", "inline", "deferred"]),
       itemIds: Schema.Array(TurnItemId),
       // Covered by recovery instructions, but not present in native model history.
       omittedItemIds: Schema.optional(Schema.Array(TurnItemId)),

@@ -399,6 +399,7 @@ describe("orchestration v2 provider switching", () => {
     "compact-fallback",
     "compact-legacy",
     "deferred-fallback",
+    "deferred-cancelled",
     "large-current-input",
     "screenshot-native",
     "screenshot-fallback",
@@ -606,7 +607,7 @@ describe("orchestration v2 provider switching", () => {
           yield* Effect.addFinalizer(() => Effect.sync(() => spy?.mockRestore()));
           const current = scenario.startsWith("compact")
             ? "/compact"
-            : scenario === "deferred-fallback"
+            : scenario.startsWith("deferred")
               ? "x".repeat(120_000)
               : capacityScenario && !turnUsageScenario
                 ? "x".repeat(70_000)
@@ -783,10 +784,27 @@ describe("orchestration v2 provider switching", () => {
           }
           const projection = yield* orchestrator.getThreadProjection(threadId);
           assert.equal(projection.runs.at(-1)?.status, "completed");
-          if (scenario === "deferred-fallback") {
+          if (scenario.startsWith("deferred")) {
             const handoff = projection.contextHandoffs.at(-1)!;
-            assert.isUndefined(handoff.delivery);
+            assert.equal(handoff.delivery?.status, "deferred");
             assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, current);
+            if (scenario === "deferred-cancelled") {
+              // Restart recovery cancels runs that were still in flight.
+              const deferredRun = projection.runs.at(-1)!;
+              yield* eventSink.write({
+                events: [
+                  {
+                    id: EventId.make("deferred-run-cancelled"),
+                    type: "run.updated",
+                    threadId,
+                    runId: deferredRun.id,
+                    providerInstanceId: deferredRun.providerInstanceId,
+                    occurredAt: yield* DateTime.now,
+                    payload: { ...deferredRun, status: "cancelled" },
+                  },
+                ],
+              });
+            }
             const target = projection.providerThreads.find(
               (thread) => thread.id === handoff.toProviderThreadId,
             )!;
@@ -821,7 +839,8 @@ describe("orchestration v2 provider switching", () => {
             const resultTransferId = ContextTransferId.make("completed-subagent-result");
             const completedRun = recovered.runs.at(-1)!;
             const now = yield* DateTime.now;
-            // Completed child results are read through task_status, not replayed inline.
+            // A ready handoff without a deferred marker was already delivered, or
+            // predates delivery records; it must not be replayed.
             yield* eventSink.write({
               events: [
                 {

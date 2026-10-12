@@ -249,12 +249,17 @@ export const layer: Layer.Layer<
                   source.id === handoff.targetRunId &&
                   (source.status === "failed" ||
                     source.status === "interrupted" ||
-                    // Ordinary turns can complete while delivery is deferred for space.
                     (source.status === "completed" &&
                       handoff.delivery === undefined &&
-                      projection.contextTransfers.find(
-                        (transfer) => transfer.id === handoff.transferId,
-                      )?.type !== "subagent_result")),
+                      projection.messages.some(
+                        (message) =>
+                          message.id === source.userMessageId &&
+                          message.attachments.length === 0 &&
+                          message.text.trim().toLowerCase() === "/compact",
+                      )) ||
+                    // Over budget, delivery was deferred; retry once space recovers.
+                    ((source.status === "completed" || source.status === "cancelled") &&
+                      handoff.delivery?.status === "deferred")),
               ))),
       );
       const nativeForkTransfer = projection.contextTransfers.find(
@@ -983,7 +988,8 @@ export const layer: Layer.Layer<
         (handoff) =>
           handoff.toProviderThreadId === providerThread.id &&
           handoff.delivery?.nativeThreadId === runningProviderThread.nativeThreadRef?.nativeId &&
-          handoff.delivery?.status !== "pending",
+          handoff.delivery?.status !== "pending" &&
+          handoff.delivery?.status !== "deferred",
       );
       const deliveredItemIds = new Set(
         settledHandoffs.flatMap((handoff) => handoff.delivery?.itemIds ?? []),

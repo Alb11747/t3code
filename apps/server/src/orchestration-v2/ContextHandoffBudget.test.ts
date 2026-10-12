@@ -700,7 +700,7 @@ describe("handoff delivery", () => {
       assert.equal(deferred.context, "");
       assert.equal(calls, 0);
       assert.equal(durable.status, "ready");
-      assert.equal(durable.delivery, undefined);
+      assert.equal(durable.delivery?.status, "deferred");
       const next = yield* deliverContextHandoffs({
         handoffs: [durable],
         providerThread,
