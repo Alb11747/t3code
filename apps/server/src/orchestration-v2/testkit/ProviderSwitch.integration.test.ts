@@ -14,6 +14,7 @@ import {
   type OrchestrationV2ProviderCapabilities,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2ProviderTurn,
   type OrchestrationV2ProviderTurnTokenUsage,
   ProjectId,
   ProviderInstanceId,
@@ -1710,6 +1711,13 @@ describe("orchestration v2 provider switching", () => {
     "legacy",
     "accepted-cancelled",
     "accepted-cancelled-native-history",
+    "accepted-cancelled-failed",
+    "accepted-cancelled-failed-native-history",
+    "accepted-cancelled-interrupted",
+    "accepted-cancelled-interrupted-native-history",
+    "accepted-cancelled-running-tool",
+    "accepted-cancelled-running-tool-native-history",
+    "uncertain-cancelled-empty",
   ] as const)(
     "starts a replacement native thread as new after the resume fallback with %s attempts",
     (attempts) =>
@@ -1718,7 +1726,7 @@ describe("orchestration v2 provider switching", () => {
           const cwd = yield* checkpointWorkspace("resume-fallback-native-turns");
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const injectedHistory = yield* Ref.make<ReadonlyArray<unknown>>([]);
-          const cancelledAccepted = attempts.startsWith("accepted-cancelled");
+          const cancelledRecovered = attempts.includes("cancelled");
           const failResumeOnce = yield* Ref.make(false);
           const generation = yield* Ref.make(0);
           const layerRegistry = ProviderAdapterRegistry.layerFromAdapters([
@@ -1727,7 +1735,9 @@ describe("orchestration v2 provider switching", () => {
               driver: CLAUDE_DRIVER,
               capabilities: ClaudeProviderCapabilitiesV2,
               modelSelection: CLAUDE_MODEL_SELECTION,
-              responseByRunOrdinal: cancelledAccepted ? { 1: "Accepted cancelled output" } : {},
+              responseByRunOrdinal: cancelledRecovered
+                ? { 1: attempts.endsWith("-empty") ? "" : "Accepted cancelled output" }
+                : {},
               capturedTurns,
               failResumeOnce,
               nativeThreadGeneration: generation,
@@ -1780,8 +1790,20 @@ describe("orchestration v2 provider switching", () => {
               worktreePath: null,
             });
             yield* runToCompletion(1);
-            if (cancelledAccepted) {
-              const firstRun = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+            if (cancelledRecovered) {
+              const existing = yield* orchestrator.getThreadProjection(threadId);
+              const firstRun = existing.runs.at(-1)!;
+              const occurredAt = yield* DateTime.now;
+              const turnStatus = attempts.includes("-failed")
+                ? "failed"
+                : attempts.includes("-interrupted")
+                  ? "interrupted"
+                  : attempts.includes("-running") || attempts.endsWith("-empty")
+                    ? "running"
+                    : "completed";
+              const firstOutput = existing.turnItems.find(
+                (item) => item.runId === firstRun.id && item.type === "assistant_message",
+              );
               yield* (yield* EventSink.EventSinkV2).write({
                 events: [
                   {
@@ -1789,9 +1811,34 @@ describe("orchestration v2 provider switching", () => {
                     type: "run.updated",
                     threadId,
                     runId: firstRun.id,
-                    occurredAt: yield* DateTime.now,
+                    occurredAt,
                     payload: { ...firstRun, status: "cancelled" },
                   },
+                  ...existing.providerTurns.map((turn) => ({
+                    id: EventId.make(`resume-fallback:accepted-turn:${turn.id}`),
+                    type: "provider-turn.updated" as const,
+                    threadId,
+                    occurredAt,
+                    payload: { ...turn, status: turnStatus } satisfies OrchestrationV2ProviderTurn,
+                  })),
+                  ...(attempts.includes("-tool") && firstOutput?.type === "assistant_message"
+                    ? [
+                        {
+                          id: EventId.make("resume-fallback:accepted-tool"),
+                          type: "turn-item.updated" as const,
+                          threadId,
+                          occurredAt,
+                          payload: {
+                            ...firstOutput,
+                            type: "command_execution" as const,
+                            // Tool output belongs to a child node of the root turn.
+                            nodeId: NodeId.make("resume-fallback:tool-node"),
+                            input: "git status",
+                            output: firstOutput.text,
+                          },
+                        },
+                      ]
+                    : []),
                 ],
               });
             }
@@ -1838,12 +1885,16 @@ describe("orchestration v2 provider switching", () => {
             assert.isFalse(turns[1]?.nativeThreadHasTurns);
             assert.equal(turns[2]?.nativeThreadId, turns[1]?.nativeThreadId);
             assert.isTrue(turns[2]?.nativeThreadHasTurns);
-            if (cancelledAccepted) {
+            if (cancelledRecovered) {
               const recoveredHistory = attempts.endsWith("-native-history")
                 ? yield* encodeJson(yield* Ref.get(injectedHistory))
                 : turns[1]!.text;
-              assert.include(recoveredHistory, "Request 1");
-              assert.include(recoveredHistory, "Accepted cancelled output");
+              if (attempts.endsWith("-empty")) {
+                assert.notInclude(recoveredHistory, "Request 1");
+              } else {
+                assert.include(recoveredHistory, "Request 1");
+                assert.include(recoveredHistory, "Accepted cancelled output");
+              }
               assert.include(recoveredHistory, "run-status=cancelled");
             }
           }).pipe(

@@ -690,24 +690,75 @@ export const layer: Layer.Layer<
             .filter((source) => cancelledRunIds.has(source.runId))
             .map((source) => [source.id, source]),
         );
-        const completedCancelledAttempts = new Set(
-          projection.providerTurns.flatMap((turn) =>
-            turn.status === "completed" &&
-            turn.runAttemptId !== null &&
-            cancelledAttempts.get(turn.runAttemptId)?.providerThreadId === turn.providerThreadId &&
-            cancelledAttempts.get(turn.runAttemptId)?.rootNodeId === turn.nodeId
-              ? [turn.runAttemptId]
-              : [],
+        const cancelledRootTurns = new Map(
+          projection.providerTurns
+            .filter(
+              (turn) =>
+                turn.runAttemptId !== null &&
+                cancelledAttempts.get(turn.runAttemptId)?.providerThreadId ===
+                  turn.providerThreadId &&
+                cancelledAttempts.get(turn.runAttemptId)?.rootNodeId === turn.nodeId,
+            )
+            .map((turn) => [turn.id, turn]),
+        );
+        const acceptedCancelledAttempts = new Set(
+          [...cancelledRootTurns.values()].flatMap((turn) =>
+            turn.status === "completed" ? [turn.runAttemptId!] : [],
           ),
         );
+        const unresolvedCancelledRunIds = new Set(
+          [...cancelledRootTurns.values()]
+            .filter((turn) => !acceptedCancelledAttempts.has(turn.runAttemptId!))
+            .map((turn) => cancelledAttempts.get(turn.runAttemptId!)!.runId),
+        );
+        for (const sourceRunId of unresolvedCancelledRunIds) {
+          // Output can commit before turn finalization or restart recovery. Read
+          // only the cancelled runs that still need evidence of prompt admission.
+          const { turnItems } = yield* projectionStore.getThreadRecords(
+            input.threadId,
+            ["turnItems"],
+            {
+              turnItemRunId: sourceRunId,
+              turnItemTypes: [
+                "assistant_message",
+                "reasoning",
+                "proposed_plan",
+                "command_execution",
+                "dynamic_tool",
+                "file_change",
+                "file_search",
+                "web_search",
+              ],
+            },
+          );
+          for (const item of turnItems) {
+            const turn =
+              item.providerTurnId === null
+                ? undefined
+                : cancelledRootTurns.get(item.providerTurnId);
+            const attempt =
+              turn?.runAttemptId == null ? undefined : cancelledAttempts.get(turn.runAttemptId);
+            if (
+              attempt === undefined ||
+              item.runId !== attempt.runId ||
+              item.providerThreadId !== turn?.providerThreadId ||
+              ((item.type === "assistant_message" || item.type === "reasoning") &&
+                item.text.length === 0 &&
+                (item.type !== "assistant_message" || !item.attachments?.length)) ||
+              (item.type === "proposed_plan" && item.markdown.length === 0)
+            )
+              continue;
+            acceptedCancelledAttempts.add(attempt.id);
+          }
+        }
         // Adapters publish running turns on either side of prompt submission.
-        // Neither an absent nor an incomplete turn proves a cancelled request
-        // was unsent. Replace that native session to resolve uncertain occupancy.
+        // Without completion or provider output, prompt admission is uncertain.
+        // Replace that native session to resolve uncertain occupancy.
         const uncertainCancelledPrompt = [...cancelledAttempts.values()].some(
           (source) =>
             source.providerThreadId === providerThread.id &&
             source.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
-            !completedCancelledAttempts.has(source.id),
+            !acceptedCancelledAttempts.has(source.id),
         );
         const resumed = yield* Effect.result(
           uncertainDelivery || uncertainCancelledPrompt
@@ -780,7 +831,7 @@ export const layer: Layer.Layer<
         });
         const createdAt = yield* DateTime.now;
         const acceptedCancelledRunIds = new Set(
-          [...completedCancelledAttempts].map(
+          [...acceptedCancelledAttempts].map(
             (attemptId) => cancelledAttempts.get(attemptId)!.runId,
           ),
         );
