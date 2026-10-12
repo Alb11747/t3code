@@ -239,6 +239,15 @@ export const layer: Layer.Layer<
       const checkpointScope = projection.checkpointScopes.find(
         (candidate) => candidate.id === rootNode?.checkpointScopeId,
       );
+      const compactionMessageIds = new Set(
+        projection.messages
+          .filter(
+            (candidate) =>
+              candidate.attachments.length === 0 &&
+              candidate.text.trim().toLowerCase() === "/compact",
+          )
+          .map((candidate) => candidate.id),
+      );
       const handoffs = projection.contextHandoffs.filter(
         (handoff) =>
           handoff.status === "ready" &&
@@ -251,12 +260,7 @@ export const layer: Layer.Layer<
                     source.status === "interrupted" ||
                     (source.status === "completed" &&
                       handoff.delivery === undefined &&
-                      projection.messages.some(
-                        (message) =>
-                          message.id === source.userMessageId &&
-                          message.attachments.length === 0 &&
-                          message.text.trim().toLowerCase() === "/compact",
-                      )) ||
+                      compactionMessageIds.has(source.userMessageId)) ||
                     // Retry deferred history once space recovers. Child results remain
                     // available through task_status after their delivery turn ends.
                     ((source.status === "completed" || source.status === "cancelled") &&
@@ -790,6 +794,34 @@ export const layer: Layer.Layer<
         return;
       }
       const now = yield* DateTime.now;
+      const sameNativeThread =
+        loadedProviderThread.nativeThreadRef?.nativeId === providerThread.nativeThreadRef?.nativeId;
+      const deliveredAttemptIds = new Set(
+        projection.providerTurns.map((turn) => turn.runAttemptId),
+      );
+      const acceptedAttempts = projection.attempts.filter(
+        (source) =>
+          source.providerThreadId === providerThread.id && deliveredAttemptIds.has(source.id),
+      );
+      const acceptedAttemptsById = new Map(acceptedAttempts.map((source) => [source.id, source]));
+      const nativeId = loadedProviderThread.nativeThreadRef?.nativeId;
+      const compaction =
+        sameNativeThread && nativeId !== undefined
+          ? projection.runs.findLast((source) => {
+              const acceptedAttempt =
+                source.activeAttemptId === null
+                  ? undefined
+                  : acceptedAttemptsById.get(source.activeAttemptId);
+              return (
+                source.ordinal < run.ordinal &&
+                source.status === "completed" &&
+                source.completedAt !== null &&
+                compactionMessageIds.has(source.userMessageId) &&
+                acceptedAttempt?.status === "completed" &&
+                acceptedAttempt.nativeThreadId === nativeId
+              );
+            })
+          : undefined;
       // Only started runs reached the provider-thread update below. Queued runs and
       // failures during session setup cannot establish a new telemetry selection.
       const measuredContext = latestNativeContextUsage(projection, providerThread);
@@ -804,12 +836,13 @@ export const layer: Layer.Layer<
       const sameSelection =
         previousSelection === undefined ||
         modelSelectionsEqual(previousSelection, run.modelSelection);
-      const sameNativeThread =
-        loadedProviderThread.nativeThreadRef?.nativeId === providerThread.nativeThreadRef?.nativeId;
       const threadUsage = loadedProviderThread.contextUsage ?? providerThread.contextUsage;
       const previousUsage = measuredContext
         ? { ...threadUsage, ...measuredContext.usage }
         : threadUsage;
+      const staleAfterCompaction =
+        compaction !== undefined &&
+        (measuredContext === undefined || measuredContext.runOrdinal < compaction.ordinal);
       const reuseTelemetry =
         sameSelection ||
         (previousSelection !== undefined &&
@@ -820,12 +853,13 @@ export const layer: Layer.Layer<
       );
       // Persist before delivery. Keep this native transcript's measured
       // occupancy. A different model drops compaction telemetry and uses the
-      // new window when that window is known.
+      // new window when that window is known. Successful compaction invalidates
+      // older occupancy, while retaining model capacity and fresh compaction reports.
       const handoffUsage = contextUsageForHandoff({
         sameNativeThread,
         sameSelection,
         reuseTelemetry,
-        previousUsage,
+        previousUsage: staleAfterCompaction ? null : previousUsage,
         knownModelWindow,
       });
       const runningProviderThread: OrchestrationV2ProviderThread = {
@@ -970,15 +1004,7 @@ export const layer: Layer.Layer<
       const restartCancelledWork = pendingRestartCancelledBackgroundWork({
         runs: projection.runs,
         providerTurns: projection.providerTurns,
-        compactionMessageIds: new Set(
-          projection.messages
-            .filter(
-              (candidate) =>
-                candidate.attachments.length === 0 &&
-                candidate.text.trim().toLowerCase() === "/compact",
-            )
-            .map((candidate) => candidate.id),
-        ),
+        compactionMessageIds,
         run,
         attempts: projection.attempts,
       });
@@ -1015,13 +1041,6 @@ export const layer: Layer.Layer<
               ],
         ),
       );
-      const deliveredAttemptIds = new Set(
-        projection.providerTurns.map((turn) => turn.runAttemptId),
-      );
-      const acceptedAttempts = projection.attempts.filter(
-        (source) =>
-          source.providerThreadId === providerThread.id && deliveredAttemptIds.has(source.id),
-      );
       const nativeInputRunIds = new Set(
         acceptedAttempts
           .filter(
@@ -1056,25 +1075,6 @@ export const layer: Layer.Layer<
       // history, whose attachments were not replayed into the replacement thread.
       const nativeContextEstimate = Effect.gen(function* () {
         if (!sameNativeThread) return 0;
-        const compaction = projection.runs.findLast(
-          (source) =>
-            source.ordinal < run.ordinal &&
-            source.status === "completed" &&
-            source.completedAt !== null &&
-            projection.messages.some(
-              (candidate) =>
-                candidate.id === source.userMessageId &&
-                candidate.attachments.length === 0 &&
-                candidate.text.trim().toLowerCase() === "/compact",
-            ) &&
-            acceptedAttempts.some(
-              (candidate) =>
-                candidate.id === source.activeAttemptId &&
-                candidate.status === "completed" &&
-                candidate.nativeThreadId !== undefined &&
-                candidate.nativeThreadId === runningProviderThread.nativeThreadRef?.nativeId,
-            ),
-        );
         const compactedAt = compaction?.completedAt;
         const importedAfterCompaction = new Set(
           settledHandoffs.flatMap((handoff) =>

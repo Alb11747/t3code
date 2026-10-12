@@ -402,6 +402,9 @@ describe("orchestration v2 provider switching", () => {
     "deferred-cancelled",
     "deferred-compact-fallback",
     "deferred-failed-compact-fallback",
+    "deferred-compact-stale-telemetry",
+    "deferred-failed-compact-stale-telemetry",
+    "deferred-compact-fresh-telemetry",
     "large-current-input",
     "screenshot-native",
     "screenshot-fallback",
@@ -449,7 +452,11 @@ describe("orchestration v2 provider switching", () => {
         const replaceNative = scenario.includes("replacement");
         const capacityScenario = modelScenario || scenario.includes("reported-capacity");
         const compactionScenario = scenario.includes("-compact-");
-        const fallbackSelection = compactionScenario
+        const compactionTelemetry = compactionScenario && scenario.endsWith("-telemetry");
+        const freshCompactionTelemetry = scenario === "deferred-compact-fresh-telemetry";
+        const cursorCompaction = compactionScenario && !compactionTelemetry;
+        const failedCompaction = scenario.includes("-failed-compact-");
+        const fallbackSelection = cursorCompaction
           ? CURSOR_MODEL_SELECTION
           : CLAUDE_MODEL_SELECTION;
         const returning =
@@ -475,15 +482,23 @@ describe("orchestration v2 provider switching", () => {
           }),
           makeTestAdapter({
             instanceId: fallbackSelection.instanceId,
-            driver: compactionScenario ? CURSOR_DRIVER : CLAUDE_DRIVER,
-            capabilities: compactionScenario
+            driver: cursorCompaction ? CURSOR_DRIVER : CLAUDE_DRIVER,
+            capabilities: cursorCompaction
               ? CursorProviderCapabilitiesV2
               : ClaudeProviderCapabilitiesV2,
             modelSelection: fallbackSelection,
             responseByRunOrdinal: {},
             capturedTurns,
-            ...(scenario === "deferred-failed-compact-fallback"
-              ? { failedRunOrdinals: new Set([3]) }
+            ...(failedCompaction ? { failedRunOrdinals: new Set([3]) } : {}),
+            ...(compactionTelemetry
+              ? {
+                  tokenUsageByRunOrdinal: {
+                    2: { usedTokens: 30_000, maxTokens: 32_000 },
+                    ...(freshCompactionTelemetry
+                      ? { 3: { usedTokens: 100, maxTokens: 32_000 } }
+                      : {}),
+                  },
+                }
               : {}),
             ...(scenario.includes("retry") || scenario.includes("unsent") ? { failStartOnce } : {}),
             ...(replaceNative ? { failResumeOnce, nativeThreadGeneration: generation } : {}),
@@ -514,7 +529,7 @@ describe("orchestration v2 provider switching", () => {
                         ? 1_000_000
                         : 32_000,
                   }
-                : scenario === "large-current-input" || priorImages || compactionScenario
+                : scenario === "large-current-input" || priorImages || cursorCompaction
                   ? { getModelContextWindow: () => 32_000 }
                   : {}),
             ...(scenario.endsWith("-native") || scenario === "large-current-input"
@@ -823,11 +838,17 @@ describe("orchestration v2 provider switching", () => {
               (thread) => thread.id === handoff.toProviderThreadId,
             )!;
             if (compactionScenario) {
-              assert.isNull(target.contextUsage);
-              yield* dispatch(3, "/compact", CURSOR_MODEL_SELECTION);
+              if (compactionTelemetry) {
+                assert.equal(
+                  projection.providerTurns.find(
+                    (turn) => turn.providerThreadId === target.id && turn.ordinal === 2,
+                  )!.tokenUsage?.usedTokens,
+                  30_000,
+                );
+              } else assert.isNull(target.contextUsage);
+              yield* dispatch(3, "/compact", targetSelection);
               yield* wait(3);
               const compacted = yield* orchestrator.getThreadProjection(threadId);
-              const failedCompaction = scenario === "deferred-failed-compact-fallback";
               assert.equal(
                 compacted.runs.at(-1)!.status,
                 failedCompaction ? "failed" : "completed",
@@ -836,7 +857,7 @@ describe("orchestration v2 provider switching", () => {
                 (yield* Ref.get(capturedTurns)).at(-1)!.nativeThreadId,
                 target.nativeThreadRef!.nativeId,
               );
-              yield* dispatch(4, "Continue after compact", CURSOR_MODEL_SELECTION);
+              yield* dispatch(4, "Continue after compact", targetSelection);
               yield* wait(4);
               const recovered = yield* orchestrator.getThreadProjection(threadId);
               const recoveredHandoff = recovered.contextHandoffs.find(
@@ -844,9 +865,15 @@ describe("orchestration v2 provider switching", () => {
               )!;
               const recoveredTurn = (yield* Ref.get(capturedTurns)).at(-1)!;
               assert.equal(recoveredTurn.nativeThreadId, target.nativeThreadRef!.nativeId);
-              assert.isNull(
-                recovered.providerThreads.find((thread) => thread.id === target.id)!.contextUsage,
-              );
+              const recoveredUsage = recovered.providerThreads.find(
+                (thread) => thread.id === target.id,
+              )!.contextUsage;
+              if (compactionTelemetry) {
+                assert.equal(
+                  recoveredUsage?.usedTokens,
+                  failedCompaction ? 30_000 : freshCompactionTelemetry ? 100 : undefined,
+                );
+              } else assert.isNull(recoveredUsage);
               if (failedCompaction) {
                 assert.equal(recoveredHandoff.delivery?.status, "deferred");
                 assert.equal(recoveredTurn.text, "Continue after compact");
@@ -858,19 +885,20 @@ describe("orchestration v2 provider switching", () => {
                 recoveredTurn.text.split("Original request with constraints").length - 1,
                 1,
               );
-              yield* dispatch(5, "Continue once more", CURSOR_MODEL_SELECTION);
+              yield* dispatch(5, "Continue once more", targetSelection);
               yield* wait(5);
               assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, "Continue once more");
               assert.equal(
                 (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs.length,
                 recovered.contextHandoffs.length,
               );
+              if (freshCompactionTelemetry) return;
               // The imported source predates compaction, but consumes native
               // context again after delivery. A new handoff must account for it.
               yield* dispatch(6, "A new source constraint", CODEX_MODEL_SELECTION);
               yield* wait(6);
               const current = "y".repeat(10_000);
-              yield* dispatch(7, current, CURSOR_MODEL_SELECTION);
+              yield* dispatch(7, current, targetSelection);
               yield* wait(7);
               assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, current);
               assert.equal(
