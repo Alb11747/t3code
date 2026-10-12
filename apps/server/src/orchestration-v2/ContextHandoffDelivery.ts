@@ -37,6 +37,19 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     );
     if (pending.length === 0 || (input.deferInline && input.inject === undefined))
       return { context: "", delivered: Effect.void, unsent: Effect.void };
+    // An unacknowledged prompt may already contain this history. A smaller
+    // budget cannot turn that ambiguity into known-unsent delivery.
+    if (
+      nativeThreadId !== undefined &&
+      pending.some(
+        (handoff) =>
+          handoff.delivery?.nativeThreadId === nativeThreadId &&
+          handoff.delivery.status === "pending" &&
+          handoff.delivery.deferred !== true,
+      )
+    ) {
+      return yield* new ContextHandoffDeliveryUncertainError();
+    }
     const budget = typeof input.budget === "number" ? input.budget : yield* input.budget;
     let coverage = pending
       .map(
@@ -78,9 +91,31 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       omittedItems: pending.reduce((sum, handoff) => sum + (handoff.history?.omittedItems ?? 0), 0),
       budget,
     });
-    if (historyCost(selected.messages, selected.context) > budget) {
+    const selectedCost = historyCost(selected.messages, selected.context);
+    if (selectedCost > budget) {
       // Failing here wedges every later turn while the handoff stays ready.
       // Keep it ready instead, like /compact, and let the user message through.
+      yield* Effect.logDebug("Deferring context handoff delivery until context is available", {
+        handoffCount: pending.length,
+        budget,
+        selectedCost,
+      });
+      if (nativeThreadId !== undefined) {
+        yield* Effect.forEach(
+          pending.filter(
+            (handoff) =>
+              handoff.delivery?.nativeThreadId !== nativeThreadId ||
+              handoff.delivery.status !== "pending" ||
+              handoff.delivery.deferred !== true,
+          ),
+          (handoff) =>
+            input.persist({
+              ...handoff,
+              delivery: { nativeThreadId, status: "pending", deferred: true, itemIds: [] },
+            }),
+          { discard: true },
+        );
+      }
       return { context: "", delivered: Effect.void, unsent: Effect.void };
     }
     const omittedItemIds = new Set(selected.omittedItemIds);
@@ -115,15 +150,6 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
         { discard: true },
       );
     if (input.inject !== undefined && nativeThreadId !== undefined) {
-      if (
-        pending.some(
-          (handoff) =>
-            handoff.delivery?.nativeThreadId === nativeThreadId &&
-            handoff.delivery.status === "pending",
-        )
-      ) {
-        return yield* new ContextHandoffDeliveryUncertainError();
-      }
       yield* persist("pending");
       const injected = yield* input.inject({
         messages: selected.messages,
