@@ -2,6 +2,7 @@ import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   type OrchestrationV2ContextHandoff,
+  type OrchestrationV2ConversationMessage,
   CommandId,
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
@@ -12,6 +13,7 @@ import {
   type OrchestrationV2TurnItem,
   RunId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
@@ -706,19 +708,27 @@ export const layer: Layer.Layer<
             turn.status === "completed" ? [turn.runAttemptId!] : [],
           ),
         );
-        const unresolvedCancelledRunIds = new Set(
-          [...cancelledRootTurns.values()]
-            .filter((turn) => !acceptedCancelledAttempts.has(turn.runAttemptId!))
-            .map((turn) => cancelledAttempts.get(turn.runAttemptId!)!.runId),
+        const acceptedCancelledRunIds = new Set(
+          [...acceptedCancelledAttempts].map(
+            (attemptId) => cancelledAttempts.get(attemptId)!.runId,
+          ),
         );
-        for (const sourceRunId of unresolvedCancelledRunIds) {
-          // Output can commit before turn finalization or restart recovery. Read
-          // only the cancelled runs that still need evidence of prompt admission.
-          const { turnItems } = yield* projectionStore.getThreadRecords(
+        const attemptsByRun = Map.groupBy(projection.attempts, (source) => source.runId);
+        const checkedCancelledRunIds = new Set<RunId>();
+        const cancelledMessages: OrchestrationV2ConversationMessage[] = [];
+        const readCancelledAdmission = Effect.fn("readCancelledAdmission")(function* (
+          sourceRunId: RunId,
+        ) {
+          checkedCancelledRunIds.add(sourceRunId);
+          // A provider message can commit before its node and turn item. Keep
+          // both event prefixes, reading only the requested cancelled run.
+          const { turnItems, messages } = yield* projectionStore.getThreadRecords(
             input.threadId,
-            ["turnItems"],
+            ["turnItems", "messages"],
             {
               turnItemRunId: sourceRunId,
+              messageRunIds: [sourceRunId],
+              messageRoles: ["assistant"],
               turnItemTypes: [
                 "assistant_message",
                 "reasoning",
@@ -749,7 +759,37 @@ export const layer: Layer.Layer<
             )
               continue;
             acceptedCancelledAttempts.add(attempt.id);
+            acceptedCancelledRunIds.add(attempt.runId);
           }
+          for (const sourceMessage of messages) {
+            if (
+              sourceMessage.creationSource !== "provider" ||
+              (sourceMessage.text.length === 0 && sourceMessage.attachments.length === 0)
+            )
+              continue;
+            cancelledMessages.push(sourceMessage);
+            acceptedCancelledRunIds.add(sourceRunId);
+            const sourceAttempts = attemptsByRun.get(sourceRunId)!;
+            // Messages carry no native/attempt identity, and their child node
+            // may not have committed yet. An earlier retry's output cannot
+            // establish admission for a later attempt on another native session.
+            if (sourceAttempts.length === 1) {
+              acceptedCancelledAttempts.add(sourceAttempts[0]!.id);
+            }
+          }
+        });
+        const currentCancelledRunIds = new Set(
+          [...cancelledAttempts.values()]
+            .filter(
+              (source) =>
+                source.providerThreadId === providerThread.id &&
+                source.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
+                !acceptedCancelledAttempts.has(source.id),
+            )
+            .map((source) => source.runId),
+        );
+        for (const sourceRunId of currentCancelledRunIds) {
+          yield* readCancelledAdmission(sourceRunId);
         }
         // Adapters publish running turns on either side of prompt submission.
         // Without completion or provider output, prompt admission is uncertain.
@@ -830,11 +870,80 @@ export const layer: Layer.Layer<
           type: "provider_resume_fallback",
         });
         const createdAt = yield* DateTime.now;
-        const acceptedCancelledRunIds = new Set(
-          [...acceptedCancelledAttempts].map(
-            (attemptId) => cancelledAttempts.get(attemptId)!.runId,
+        // Historical cancellation evidence is only needed when reconstructing
+        // a replacement, not on every subsequent ordinary turn.
+        for (const sourceRunId of cancelledRunIds) {
+          if (!checkedCancelledRunIds.has(sourceRunId)) {
+            yield* readCancelledAdmission(sourceRunId);
+          }
+        }
+        const fallbackItems = [...(yield* projectionStore.getTurnStartHistory(input.threadId))];
+        const representedMessages = new Map(
+          fallbackItems.flatMap((item) =>
+            item.type === "assistant_message" ? [[item.messageId, item] as const] : [],
           ),
         );
+        const runOrdinals = new Map(projection.runs.map((source) => [source.id, source.ordinal]));
+        for (const sourceMessage of cancelledMessages) {
+          const representedItem = representedMessages.get(sourceMessage.id);
+          if (representedItem !== undefined) {
+            // Each streaming update commits its message first as well. Overlay
+            // newer durable content without duplicating or moving the item.
+            // Streaming updates can share a millisecond; the conversation
+            // message is the authoritative content at an equal timestamp.
+            if (
+              DateTime.isGreaterThanOrEqualTo(sourceMessage.updatedAt, representedItem.updatedAt)
+            ) {
+              fallbackItems[fallbackItems.indexOf(representedItem)] = {
+                ...representedItem,
+                text: sourceMessage.text,
+                attachments: sourceMessage.attachments,
+                streaming: sourceMessage.streaming,
+                status: sourceMessage.streaming ? "running" : "completed",
+                completedAt: sourceMessage.streaming ? null : sourceMessage.updatedAt,
+                updatedAt: sourceMessage.updatedAt,
+              };
+            }
+            continue;
+          }
+          // Only the message committed before the crash. Include its durable
+          // output in replacement history without persisting a synthetic item.
+          const historicalItem: OrchestrationV2TurnItem = {
+            id: TurnItemId.make(`message-only:${sourceMessage.id}`),
+            threadId: input.threadId,
+            runId: sourceMessage.runId,
+            nodeId: sourceMessage.nodeId,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 0,
+            status: sourceMessage.streaming ? "running" : "completed",
+            title: null,
+            startedAt: sourceMessage.createdAt,
+            completedAt: sourceMessage.streaming ? null : sourceMessage.updatedAt,
+            updatedAt: sourceMessage.updatedAt,
+            type: "assistant_message",
+            messageId: sourceMessage.id,
+            text: sourceMessage.text,
+            attachments: sourceMessage.attachments,
+            streaming: sourceMessage.streaming,
+          };
+          const sourceOrdinal = runOrdinals.get(sourceMessage.runId!)!;
+          const insertAt = fallbackItems.findIndex((item) => {
+            const itemOrdinal = item.runId === null ? 0 : runOrdinals.get(item.runId)!;
+            return (
+              itemOrdinal > sourceOrdinal ||
+              (itemOrdinal === sourceOrdinal &&
+                DateTime.isGreaterThan(item.startedAt ?? item.updatedAt, sourceMessage.createdAt))
+            );
+          });
+          fallbackItems.splice(
+            insertAt === -1 ? fallbackItems.length : insertAt,
+            0,
+            historicalItem,
+          );
+        }
         // Keep accepted requests with their output and cancellation status.
         // Uncertain cancelled requests must not be replayed by later replacements.
         const cancelledRequestIds = new Set(
@@ -855,7 +964,7 @@ export const layer: Layer.Layer<
           coveredRunOrdinals: { from: 1, to: Math.max(1, run.ordinal - 1) },
           strategy: "full_thread_summary",
           runs: projection.runs,
-          items: (yield* projectionStore.getTurnStartHistory(input.threadId)).filter(
+          items: fallbackItems.filter(
             (item) =>
               (item.type !== "user_message" || !cancelledRequestIds.has(item.messageId)) &&
               (item.runId === null ||
@@ -955,6 +1064,7 @@ export const layer: Layer.Layer<
       // by the marker while retaining the run boundary for fallback history.
       let compactionUsageResetAt: DateTime.Utc | undefined;
       let compactionMarker: Extract<OrchestrationV2TurnItem, { type: "compaction" }> | undefined;
+      let explicitCompactionSummaryAt: DateTime.Utc | undefined;
       if (sameNativeThread && nativeId !== undefined) {
         const providerTurnsById = new Map(projection.providerTurns.map((turn) => [turn.id, turn]));
         const runsById = new Map(projection.runs.map((source) => [source.id, source]));
@@ -984,6 +1094,16 @@ export const layer: Layer.Layer<
             continue;
           const completedAt = item.completedAt ?? item.updatedAt;
           if (item.runId === explicitCompaction?.id) {
+            // A later synthetic completion receipt can omit the native summary.
+            if (
+              compaction?.runId === item.runId &&
+              item.summary &&
+              (explicitCompactionSummaryAt === undefined ||
+                DateTime.isGreaterThanOrEqualTo(completedAt, explicitCompactionSummaryAt))
+            ) {
+              compaction.summary = item.summary;
+              explicitCompactionSummaryAt = completedAt;
+            }
             if (
               compaction?.runId === item.runId &&
               (compactionUsageResetAt === undefined ||
@@ -991,7 +1111,6 @@ export const layer: Layer.Layer<
             ) {
               compactionUsageResetAt = completedAt;
               compactionMarker = item;
-              compaction.summary = item.summary ?? "";
             }
             continue;
           }

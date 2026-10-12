@@ -11,6 +11,7 @@ import {
   NodeId,
   type ModelSelection,
   type OrchestrationV2Command,
+  type OrchestrationV2ConversationMessage,
   type OrchestrationV2ProviderCapabilities,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
@@ -21,6 +22,7 @@ import {
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
+  RunAttemptId,
   ThreadId,
   TurnItemId,
   ProviderDriverKind,
@@ -124,6 +126,7 @@ function makeTestAdapter(input: {
   readonly compactionUsageTiming?: "before" | "equal" | "after";
   readonly compactionAfterTokenCount?: number;
   readonly compactionSummary?: string;
+  readonly syntheticCompactionMarker?: "before-native" | "after-native";
   readonly failedRunOrdinals?: ReadonlySet<number>;
   readonly interruptedRunOrdinals?: ReadonlySet<number>;
   readonly holdRunOrdinal?: number;
@@ -406,7 +409,7 @@ function makeTestAdapter(input: {
                     completedAt: eventTime,
                   },
                 });
-                yield* PubSub.publish(events, {
+                const compactionEvent = {
                   type: "turn_item.updated",
                   driver: input.driver,
                   turnItem: {
@@ -433,7 +436,26 @@ function makeTestAdapter(input: {
                       ? {}
                       : { afterTokenCount: input.compactionAfterTokenCount }),
                   },
-                });
+                } satisfies ProviderAdapter.ProviderAdapterV2Event;
+                yield* PubSub.publish(events, compactionEvent);
+                if (input.syntheticCompactionMarker !== undefined) {
+                  const completedAt = DateTime.add(eventTime, { milliseconds: 1 });
+                  yield* PubSub.publish(events, {
+                    ...compactionEvent,
+                    turnItem: {
+                      ...compactionEvent.turnItem,
+                      id: TurnItemId.make(`synthetic-compaction-item:${providerTurnId}`),
+                      nodeId: turnInput.rootNodeId,
+                      ordinal:
+                        turnInput.runOrdinal * 100 +
+                        (input.syntheticCompactionMarker === "before-native" ? -1 : 2),
+                      summary: undefined,
+                      afterTokenCount: undefined,
+                      completedAt,
+                      updatedAt: completedAt,
+                    },
+                  });
+                }
               }
               if (nativeCompaction && input.compactionUsageTiming === "after") {
                 yield* reportUsage;
@@ -518,6 +540,8 @@ describe("orchestration v2 provider switching", () => {
     "deferred-native-compact-mismatched-watermark-telemetry",
     "deferred-native-compact-marker-high-fallback",
     "deferred-native-compact-summary-fallback",
+    "deferred-native-compact-summary-dual-marker-fallback",
+    "deferred-native-compact-summary-dual-marker-reversed-fallback",
     "deferred-auto-compact-marker-low-fallback",
     "large-current-input",
     "screenshot-native",
@@ -572,9 +596,10 @@ describe("orchestration v2 provider switching", () => {
         const nativeCompaction = automaticCompaction || scenario.includes("-native-compact-");
         const threadCompactionTelemetry = scenario === "deferred-compact-fresh-thread-telemetry";
         const watermarkCompactionTelemetry = scenario.includes("-watermark-");
-        const markerOnlyCompaction = scenario.includes("-marker-");
+        const markerOnlyCompaction =
+          scenario.includes("-marker-") && !scenario.includes("-summary-");
         const highCompactionMarker = scenario === "deferred-native-compact-marker-high-fallback";
-        const summaryOnlyCompaction = scenario === "deferred-native-compact-summary-fallback";
+        const summaryOnlyCompaction = scenario.includes("-compact-summary-");
         const matchedWatermark = scenario === "deferred-native-compact-watermark-telemetry";
         const freshCompactionTelemetry =
           scenario === "deferred-compact-fresh-telemetry" ||
@@ -643,6 +668,13 @@ describe("orchestration v2 provider switching", () => {
                 }
               : {}),
             ...(summaryOnlyCompaction ? { compactionSummary: "s".repeat(30_000) } : {}),
+            ...(scenario.includes("-dual-marker-")
+              ? {
+                  syntheticCompactionMarker: scenario.includes("-reversed-")
+                    ? ("before-native" as const)
+                    : ("after-native" as const),
+                }
+              : {}),
             ...(threadCompactionTelemetry
               ? {
                   contextUsageByRunOrdinal: {
@@ -1718,12 +1750,19 @@ describe("orchestration v2 provider switching", () => {
     "accepted-cancelled-running-tool",
     "accepted-cancelled-running-tool-native-history",
     "uncertain-cancelled-empty",
+    "accepted-cancelled-message-only",
+    "accepted-cancelled-message-only-native-history",
+    "accepted-cancelled-message-only-retried",
+    "accepted-cancelled-message-newer-item",
+    "accepted-cancelled-message-newer-item-native-history",
+    "uncertain-cancelled-message-empty",
   ] as const)(
     "starts a replacement native thread as new after the resume fallback with %s attempts",
     (attempts) =>
       Effect.scoped(
         Effect.gen(function* () {
           const cwd = yield* checkpointWorkspace("resume-fallback-native-turns");
+          const layerDatabase = SqlitePersistence.layerMemory;
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const injectedHistory = yield* Ref.make<ReadonlyArray<unknown>>([]);
           const cancelledRecovered = attempts.includes("cancelled");
@@ -1736,7 +1775,7 @@ describe("orchestration v2 provider switching", () => {
               capabilities: ClaudeProviderCapabilitiesV2,
               modelSelection: CLAUDE_MODEL_SELECTION,
               responseByRunOrdinal: cancelledRecovered
-                ? { 1: attempts.endsWith("-empty") ? "" : "Accepted cancelled output" }
+                ? { 1: attempts.includes("-empty") ? "" : "Accepted cancelled output" }
                 : {},
               capturedTurns,
               failResumeOnce,
@@ -1798,7 +1837,9 @@ describe("orchestration v2 provider switching", () => {
                 ? "failed"
                 : attempts.includes("-interrupted")
                   ? "interrupted"
-                  : attempts.includes("-running") || attempts.endsWith("-empty")
+                  : attempts.includes("-running") ||
+                      attempts.includes("-message") ||
+                      attempts.endsWith("-empty")
                     ? "running"
                     : "completed";
               const firstOutput = existing.turnItems.find(
@@ -1821,6 +1862,34 @@ describe("orchestration v2 provider switching", () => {
                     occurredAt,
                     payload: { ...turn, status: turnStatus } satisfies OrchestrationV2ProviderTurn,
                   })),
+                  ...(attempts.endsWith("-retried")
+                    ? [
+                        {
+                          id: EventId.make("resume-fallback:current-attempt"),
+                          type: "run-attempt.updated" as const,
+                          threadId,
+                          occurredAt,
+                          payload: {
+                            ...existing.attempts[0]!,
+                            attemptOrdinal: 2,
+                            status: "cancelled" as const,
+                          },
+                        },
+                        {
+                          id: EventId.make("resume-fallback:previous-attempt"),
+                          type: "run-attempt.updated" as const,
+                          threadId,
+                          occurredAt,
+                          payload: {
+                            ...existing.attempts[0]!,
+                            id: RunAttemptId.make("resume-fallback:previous-attempt"),
+                            nativeThreadId: "previous-native",
+                            rootNodeId: NodeId.make("resume-fallback:previous-root"),
+                            status: "superseded" as const,
+                          },
+                        },
+                      ]
+                    : []),
                   ...(attempts.includes("-tool") && firstOutput?.type === "assistant_message"
                     ? [
                         {
@@ -1839,8 +1908,59 @@ describe("orchestration v2 provider switching", () => {
                         },
                       ]
                     : []),
+                  ...(attempts.includes("-message") && firstOutput?.type === "assistant_message"
+                    ? [
+                        ...(attempts.includes("-newer-item")
+                          ? [
+                              {
+                                id: EventId.make("resume-fallback:stale-message-item"),
+                                type: "turn-item.updated" as const,
+                                threadId,
+                                occurredAt,
+                                payload: { ...firstOutput, text: "Earlier partial output" },
+                              },
+                            ]
+                          : []),
+                        {
+                          id: EventId.make("resume-fallback:message-only"),
+                          type: "message.updated" as const,
+                          threadId,
+                          runId: firstRun.id,
+                          occurredAt,
+                          payload: {
+                            id: firstOutput.messageId,
+                            threadId,
+                            runId: firstRun.id,
+                            // Muse commits its message before this child node.
+                            nodeId: NodeId.make("resume-fallback:uncommitted-message-node"),
+                            role: "assistant",
+                            text: firstOutput.text,
+                            attachments: [],
+                            streaming: true,
+                            createdBy: "agent",
+                            creationSource: "provider",
+                            createdAt: occurredAt,
+                            updatedAt:
+                              attempts.endsWith("-native-history") &&
+                              attempts.includes("-newer-item")
+                                ? firstOutput.updatedAt
+                                : DateTime.add(occurredAt, { milliseconds: 1 }),
+                          } satisfies OrchestrationV2ConversationMessage,
+                        },
+                      ]
+                    : []),
                 ],
               });
+              if (
+                attempts.includes("-message") &&
+                !attempts.includes("-newer-item") &&
+                firstOutput?.type === "assistant_message"
+              ) {
+                // Model the durable event prefix before turn_item.updated commits.
+                const sql = yield* SqlClient.SqlClient;
+                yield* sql`DELETE FROM orchestration_v2_projection_turn_items
+                  WHERE thread_id = ${threadId} AND turn_item_id = ${firstOutput.id}`;
+              }
             }
             // A detached session resumes on the next turn, as after a restart.
             const providerThread = (yield* orchestrator.getThreadProjection(
@@ -1871,8 +1991,16 @@ describe("orchestration v2 provider switching", () => {
                 ),
               });
             }
-            yield* Ref.set(failResumeOnce, true);
+            // Message-only output from an older retry cannot admit the current
+            // cancelled prompt: replacement must occur even if resume succeeds.
+            yield* Ref.set(failResumeOnce, !attempts.endsWith("-retried"));
             yield* runToCompletion(2);
+            const firstRunId = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!.id;
+            const recordsSpy = vi.spyOn(
+              yield* ProjectionStore.ProjectionStoreV2,
+              "getThreadRecords",
+            );
+            yield* Effect.addFinalizer(() => Effect.sync(() => recordsSpy.mockRestore()));
             yield* runToCompletion(3);
 
             const turns = yield* Ref.get(capturedTurns);
@@ -1889,26 +2017,38 @@ describe("orchestration v2 provider switching", () => {
               const recoveredHistory = attempts.endsWith("-native-history")
                 ? yield* encodeJson(yield* Ref.get(injectedHistory))
                 : turns[1]!.text;
-              if (attempts.endsWith("-empty")) {
+              if (attempts.includes("-empty")) {
                 assert.notInclude(recoveredHistory, "Request 1");
               } else {
                 assert.include(recoveredHistory, "Request 1");
                 assert.include(recoveredHistory, "Accepted cancelled output");
+                assert.equal(recoveredHistory.split("Accepted cancelled output").length - 1, 1);
+                assert.notInclude(recoveredHistory, "Earlier partial output");
               }
-              assert.include(recoveredHistory, "run-status=cancelled");
+              if (!attempts.includes("-message-empty")) {
+                assert.include(recoveredHistory, "run-status=cancelled");
+              }
             }
+            assert.isFalse(
+              recordsSpy.mock.calls.some(([, , filter]) => filter?.turnItemRunId === firstRunId),
+              "Normal starts must not reread cancellations on a replaced native session",
+            );
           }).pipe(
             Effect.provide(
-              ProviderReplayHarness.layerWithRegistry(
-                {
-                  name: "resume-fallback-native-turns",
-                  runtimePolicyOverride: {
-                    cwd,
-                    approvalPolicy: "never",
-                    sandboxPolicy: { type: "readOnly" },
+              Layer.mergeAll(
+                ProjectionStore.layer.pipe(Layer.provideMerge(layerDatabase)),
+                ProviderReplayHarness.layerWithRegistry(
+                  {
+                    name: "resume-fallback-native-turns",
+                    runtimePolicyOverride: {
+                      cwd,
+                      approvalPolicy: "never",
+                      sandboxPolicy: { type: "readOnly" },
+                    },
                   },
-                },
-                layerRegistry,
+                  layerRegistry,
+                  { databaseLayer: layerDatabase },
+                ),
               ),
             ),
           );
