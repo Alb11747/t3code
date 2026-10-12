@@ -1048,6 +1048,99 @@ describe("MuseAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect("invalidates Muse usage before successful compaction and accepts later telemetry", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const harness = yield* makeHarness(fake);
+      yield* harness.runtime.compactThread!(yield* turnInput(harness.providerThread));
+      const call = yield* fake.takeCall("session/compact");
+      yield* fake.emit("session/contextUsage", { usedTokens: 30000, windowTokens: 32000 });
+      const stale = yield* harness.takeEvent(
+        "provider_turn.updated",
+        (event) => event.providerTurn.tokenUsage?.usedTokens === 30000,
+      );
+      yield* fake.emit("item/completed", {
+        item: {
+          itemId: "compact",
+          turnId: call.commandId,
+          kind: "compaction",
+          status: "completed",
+          outcome: "compacted",
+          revision: 1,
+        },
+      });
+      yield* harness.takeEvent(
+        "turn_item.updated",
+        (event) => event.turnItem.type === "compaction" && event.turnItem.status === "completed",
+      );
+      // A completed marker can release a deferred retry immediately, before turn finalization.
+      const markerIndex = harness.allEvents.findIndex(
+        (event) => event.type === "turn_item.updated" && event.turnItem.type === "compaction",
+      );
+      const precedingThread = harness.allEvents
+        .slice(0, markerIndex)
+        .findLast((event) => event.type === "provider_thread.updated");
+      const precedingTurn = harness.allEvents
+        .slice(0, markerIndex)
+        .findLast((event) => event.type === "provider_turn.updated");
+      assert.strictEqual(precedingThread?.providerThread.contextUsage, null);
+      assert.strictEqual(precedingTurn?.providerTurn.id, stale.providerTurn.id);
+      assert.deepStrictEqual(precedingTurn?.providerTurn.tokenUsage, stale.providerTurn.tokenUsage);
+      yield* harness.takeEvent("turn.terminal");
+
+      yield* fake.emit("session/contextUsage", { usedTokens: 6000 });
+      const freshThread = yield* harness.takeEvent(
+        "provider_thread.updated",
+        (event) => event.providerThread.contextUsage?.usedTokens === 6000,
+      );
+      const freshTurn = yield* harness.takeEvent(
+        "provider_turn.updated",
+        (event) => event.providerTurn.tokenUsage?.usedTokens === 6000,
+      );
+      assert.strictEqual(freshTurn.providerTurn.tokenUsage?.maxTokens, 32000);
+      yield* harness.runtime.startTurn(yield* turnInput(freshThread.providerThread, 2));
+      yield* fake.takeCall("turn/start");
+      const following = yield* harness.takeEvent(
+        "provider_thread.updated",
+        (event) => event.providerThread.lastRunOrdinal === 2,
+      );
+      assert.strictEqual(following.providerThread.contextUsage?.usedTokens, 6000);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect.each(["failed", "cancelled", "noop"])(
+    "preserves Muse usage when compaction reports %s",
+    (outcome) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        const harness = yield* makeHarness(fake);
+        yield* harness.runtime.compactThread!(yield* turnInput(harness.providerThread));
+        const call = yield* fake.takeCall("session/compact");
+        yield* fake.emit("session/contextUsage", { usedTokens: 30000, windowTokens: 32000 });
+        yield* harness.takeEvent(
+          "provider_turn.updated",
+          (event) => event.providerTurn.tokenUsage?.usedTokens === 30000,
+        );
+        yield* fake.emit("item/completed", {
+          item: {
+            itemId: "compact",
+            turnId: call.commandId,
+            kind: "compaction",
+            status: outcome === "noop" ? "completed" : outcome,
+            outcome,
+            revision: 1,
+          },
+        });
+        yield* harness.takeEvent("turn.terminal");
+        const thread = harness.allEvents.findLast(
+          (event) => event.type === "provider_thread.updated",
+        );
+        const turn = harness.allEvents.findLast((event) => event.type === "provider_turn.updated");
+        assert.strictEqual(thread?.providerThread.contextUsage?.usedTokens, 30000);
+        assert.strictEqual(turn?.providerTurn.tokenUsage?.usedTokens, 30000);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("projects native todos with stable identity and removes cancelled steps", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakeMuse();

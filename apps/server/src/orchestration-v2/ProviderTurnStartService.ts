@@ -833,6 +833,9 @@ export const layer: Layer.Layer<
               explicit: true,
               summary: "",
             };
+      // Native completion can precede explicit run finalization. Bound telemetry
+      // by the marker while retaining the run boundary for fallback history.
+      let compactionUsageResetAt: DateTime.Utc | undefined;
       if (sameNativeThread && nativeId !== undefined) {
         const providerTurnsById = new Map(projection.providerTurns.map((turn) => [turn.id, turn]));
         const runsById = new Map(projection.runs.map((source) => [source.id, source]));
@@ -842,8 +845,7 @@ export const layer: Layer.Layer<
             item.status !== "completed" ||
             item.providerThreadId !== providerThread.id ||
             item.providerTurnId === null ||
-            item.runId === null ||
-            item.runId === explicitCompaction?.id
+            item.runId === null
           )
             continue;
           const providerTurn = providerTurnsById.get(item.providerTurnId);
@@ -861,6 +863,16 @@ export const layer: Layer.Layer<
           )
             continue;
           const completedAt = item.completedAt ?? item.updatedAt;
+          if (item.runId === explicitCompaction?.id) {
+            if (
+              compaction?.runId === item.runId &&
+              (compactionUsageResetAt === undefined ||
+                DateTime.isGreaterThan(completedAt, compactionUsageResetAt))
+            ) {
+              compactionUsageResetAt = completedAt;
+            }
+            continue;
+          }
           if (
             compaction !== undefined &&
             !DateTime.isGreaterThan(completedAt, compaction.completedAt)
@@ -875,6 +887,7 @@ export const layer: Layer.Layer<
             explicit: false,
             summary: item.summary ?? "",
           };
+          compactionUsageResetAt = completedAt;
         }
       }
       // Only started runs reached the provider-thread update below. Queued runs and
@@ -899,10 +912,11 @@ export const layer: Layer.Layer<
         compaction !== undefined &&
         measuredContext !== undefined &&
         (measuredContext.runOrdinal < compaction.ordinal ||
-          (!compaction.explicit &&
-            DateTime.isLessThan(
+          (compactionUsageResetAt !== undefined &&
+            // Equal timestamps cannot establish post-compaction provenance.
+            DateTime.isLessThanOrEqualTo(
               DateTime.makeUnsafe(measuredContext.reportedAt),
-              compaction.completedAt,
+              compactionUsageResetAt,
             )));
       const reuseTelemetry =
         sameSelection ||

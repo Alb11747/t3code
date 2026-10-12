@@ -119,7 +119,8 @@ function makeTestAdapter(input: {
   readonly contextUsageByRunOrdinal?: Readonly<
     Record<number, OrchestrationV2ProviderThread["contextUsage"]>
   >;
-  readonly automaticCompactionRunOrdinals?: ReadonlySet<number>;
+  readonly nativeCompactionRunOrdinals?: ReadonlySet<number>;
+  readonly compactionUsageTiming?: "before" | "equal" | "after";
   readonly failedRunOrdinals?: ReadonlySet<number>;
   readonly interruptedRunOrdinals?: ReadonlySet<number>;
   readonly holdRunOrdinal?: number;
@@ -268,9 +269,7 @@ function makeTestAdapter(input: {
                 yield* Deferred.await(input.releaseFirstTurn);
               }
               const eventTime = yield* DateTime.now;
-              const automaticCompaction = input.automaticCompactionRunOrdinals?.has(
-                turnInput.runOrdinal,
-              );
+              const nativeCompaction = input.nativeCompactionRunOrdinals?.has(turnInput.runOrdinal);
               const providerTurnId = ProviderTurnId.make(
                 `provider-turn:${input.driver}:${turnInput.threadId}:${turnInput.runOrdinal}`,
               );
@@ -299,7 +298,7 @@ function makeTestAdapter(input: {
                     },
                     ordinal: turnInput.runOrdinal,
                     status: terminalStatus,
-                    startedAt: automaticCompaction
+                    startedAt: nativeCompaction
                       ? DateTime.subtract(eventTime, { milliseconds: 1 })
                       : eventTime,
                     completedAt: eventTime,
@@ -355,25 +354,33 @@ function makeTestAdapter(input: {
               ];
               const reportedUsage = input.tokenUsageByRunOrdinal?.[turnInput.runOrdinal];
               const turnEvent = providerEvents[0];
-              if (reportedUsage && turnEvent?.type === "provider_turn.updated") {
-                yield* PubSub.publish(events, {
-                  ...turnEvent,
-                  providerTurn: {
-                    ...turnEvent.providerTurn,
-                    status: "running",
-                    completedAt: null,
-                    tokenUsage: {
-                      ...reportedUsage,
-                      updatedAt: DateTime.formatIso(
-                        automaticCompaction
-                          ? DateTime.subtract(eventTime, { milliseconds: 1 })
-                          : eventTime,
-                      ),
-                    },
-                  },
-                });
+              const reportUsage =
+                reportedUsage && turnEvent?.type === "provider_turn.updated"
+                  ? PubSub.publish(events, {
+                      ...turnEvent,
+                      providerTurn: {
+                        ...turnEvent.providerTurn,
+                        status: "running",
+                        completedAt: null,
+                        tokenUsage: {
+                          ...reportedUsage,
+                          updatedAt: DateTime.formatIso(
+                            nativeCompaction
+                              ? input.compactionUsageTiming === "after"
+                                ? DateTime.add(eventTime, { milliseconds: 1 })
+                                : input.compactionUsageTiming === "equal"
+                                  ? eventTime
+                                  : DateTime.subtract(eventTime, { milliseconds: 1 })
+                              : eventTime,
+                          ),
+                        },
+                      },
+                    })
+                  : Effect.void;
+              if (!nativeCompaction || input.compactionUsageTiming !== "after") {
+                yield* reportUsage;
               }
-              if (automaticCompaction) {
+              if (nativeCompaction) {
                 const nodeId = NodeId.make(`compaction-node:${providerTurnId}`);
                 yield* PubSub.publish(events, {
                   type: "node.updated",
@@ -418,6 +425,9 @@ function makeTestAdapter(input: {
                     driver: input.driver,
                   },
                 });
+              }
+              if (nativeCompaction && input.compactionUsageTiming === "after") {
+                yield* reportUsage;
               }
               const contextUsage = input.contextUsageByRunOrdinal?.[turnInput.runOrdinal];
               if (contextUsage !== undefined) {
@@ -485,6 +495,9 @@ describe("orchestration v2 provider switching", () => {
     "deferred-compact-fresh-thread-telemetry",
     "deferred-auto-compact-stale-telemetry",
     "deferred-failed-auto-compact-stale-telemetry",
+    "deferred-native-compact-stale-telemetry",
+    "deferred-native-compact-equal-telemetry",
+    "deferred-native-compact-fresh-telemetry",
     "large-current-input",
     "screenshot-native",
     "screenshot-fallback",
@@ -534,9 +547,12 @@ describe("orchestration v2 provider switching", () => {
         const compactionScenario = scenario.includes("-compact-");
         const compactionTelemetry = compactionScenario && scenario.endsWith("-telemetry");
         const automaticCompaction = scenario.includes("-auto-compact-");
+        const nativeCompaction = automaticCompaction || scenario.includes("-native-compact-");
         const threadCompactionTelemetry = scenario === "deferred-compact-fresh-thread-telemetry";
         const freshCompactionTelemetry =
-          scenario === "deferred-compact-fresh-telemetry" || threadCompactionTelemetry;
+          scenario === "deferred-compact-fresh-telemetry" ||
+          scenario === "deferred-native-compact-fresh-telemetry" ||
+          threadCompactionTelemetry;
         const cursorCompaction = compactionScenario && !compactionTelemetry;
         const failedCompactRun = scenario.includes("-failed-");
         const failedCompaction = failedCompactRun && !automaticCompaction;
@@ -578,7 +594,16 @@ describe("orchestration v2 provider switching", () => {
                 : {},
             capturedTurns,
             ...(failedCompactRun ? { failedRunOrdinals: new Set([3]) } : {}),
-            ...(automaticCompaction ? { automaticCompactionRunOrdinals: new Set([3]) } : {}),
+            ...(nativeCompaction
+              ? {
+                  nativeCompactionRunOrdinals: new Set([3]),
+                  compactionUsageTiming: scenario.includes("-equal-")
+                    ? ("equal" as const)
+                    : freshCompactionTelemetry
+                      ? ("after" as const)
+                      : ("before" as const),
+                }
+              : {}),
             ...(threadCompactionTelemetry
               ? {
                   contextUsageByRunOrdinal: {
@@ -590,10 +615,10 @@ describe("orchestration v2 provider switching", () => {
                 ? {
                     tokenUsageByRunOrdinal: {
                       2: { usedTokens: 30_000, maxTokens: 32_000 },
-                      ...(freshCompactionTelemetry || automaticCompaction
+                      ...(freshCompactionTelemetry || nativeCompaction
                         ? {
                             3: {
-                              usedTokens: automaticCompaction ? 30_000 : 100,
+                              usedTokens: freshCompactionTelemetry ? 100 : 30_000,
                               maxTokens: 32_000,
                             },
                           }

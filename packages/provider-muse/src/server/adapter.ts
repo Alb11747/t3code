@@ -1385,6 +1385,11 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
             if (previous && previous.revision >= item.revision) return;
             turn.items.set(item.itemId, item);
             turn.dirty.delete(item.itemId);
+            if (item.kind === "compaction" && museItemStatus(item) === "completed") {
+              // Pre-compaction occupancy is no longer current. Keep the dated turn report
+              // for its model capacity; orchestration bounds its usage by this marker.
+              yield* updateThread({ contextUsage: null });
+            }
             yield* publishItem(turn, item);
             if (turn.compact && item.kind === "compaction" && item.status !== "inProgress") {
               yield* finish(
