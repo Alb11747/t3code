@@ -733,6 +733,7 @@ export const layer: Layer.Layer<
                 "assistant_message",
                 "reasoning",
                 "proposed_plan",
+                "todo_list",
                 "command_execution",
                 "dynamic_tool",
                 "file_change",
@@ -755,7 +756,8 @@ export const layer: Layer.Layer<
               ((item.type === "assistant_message" || item.type === "reasoning") &&
                 item.text.length === 0 &&
                 (item.type !== "assistant_message" || !item.attachments?.length)) ||
-              (item.type === "proposed_plan" && item.markdown.length === 0)
+              (item.type === "proposed_plan" && item.markdown.length === 0) ||
+              (item.type === "todo_list" && item.steps.length === 0)
             )
               continue;
             acceptedCancelledAttempts.add(attempt.id);

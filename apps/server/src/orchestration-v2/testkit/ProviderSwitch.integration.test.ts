@@ -20,6 +20,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ProviderSessionId,
+  PlanId,
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
@@ -1749,6 +1750,9 @@ describe("orchestration v2 provider switching", () => {
     "accepted-cancelled-interrupted-native-history",
     "accepted-cancelled-running-tool",
     "accepted-cancelled-running-tool-native-history",
+    "accepted-cancelled-running-todo",
+    "accepted-cancelled-running-todo-native-history",
+    "uncertain-cancelled-running-todo-empty",
     "uncertain-cancelled-empty",
     "accepted-cancelled-message-only",
     "accepted-cancelled-message-only-native-history",
@@ -1775,7 +1779,12 @@ describe("orchestration v2 provider switching", () => {
               capabilities: ClaudeProviderCapabilitiesV2,
               modelSelection: CLAUDE_MODEL_SELECTION,
               responseByRunOrdinal: cancelledRecovered
-                ? { 1: attempts.includes("-empty") ? "" : "Accepted cancelled output" }
+                ? {
+                    1:
+                      attempts.includes("-empty") || attempts.includes("-todo")
+                        ? ""
+                        : "Accepted cancelled output",
+                  }
                 : {},
               capturedTurns,
               failResumeOnce,
@@ -1886,6 +1895,31 @@ describe("orchestration v2 provider switching", () => {
                             nativeThreadId: "previous-native",
                             rootNodeId: NodeId.make("resume-fallback:previous-root"),
                             status: "superseded" as const,
+                          },
+                        },
+                      ]
+                    : []),
+                  ...(attempts.includes("-todo") && firstOutput?.type === "assistant_message"
+                    ? [
+                        {
+                          id: EventId.make("resume-fallback:accepted-todo"),
+                          type: "turn-item.updated" as const,
+                          threadId,
+                          occurredAt,
+                          payload: {
+                            ...firstOutput,
+                            type: "todo_list" as const,
+                            nodeId: NodeId.make("resume-fallback:todo-node"),
+                            planId: PlanId.make("resume-fallback:todo-plan"),
+                            steps: attempts.includes("-empty")
+                              ? []
+                              : [
+                                  {
+                                    id: "accepted",
+                                    text: "Accepted cancelled output",
+                                    status: "running" as const,
+                                  },
+                                ],
                           },
                         },
                       ]
@@ -2021,11 +2055,16 @@ describe("orchestration v2 provider switching", () => {
                 assert.notInclude(recoveredHistory, "Request 1");
               } else {
                 assert.include(recoveredHistory, "Request 1");
-                assert.include(recoveredHistory, "Accepted cancelled output");
-                assert.equal(recoveredHistory.split("Accepted cancelled output").length - 1, 1);
+                if (!attempts.includes("-todo")) {
+                  assert.include(recoveredHistory, "Accepted cancelled output");
+                  assert.equal(recoveredHistory.split("Accepted cancelled output").length - 1, 1);
+                }
                 assert.notInclude(recoveredHistory, "Earlier partial output");
               }
-              if (!attempts.includes("-message-empty")) {
+              if (
+                !attempts.includes("-message-empty") &&
+                attempts !== "uncertain-cancelled-running-todo-empty"
+              ) {
                 assert.include(recoveredHistory, "run-status=cancelled");
               }
             }
