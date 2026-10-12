@@ -604,6 +604,120 @@ function makeTurnInput(input: {
 }
 
 describe("AcpAdapterV2", () => {
+  it.live.each(["missing", "fresh"] as const)(
+    "honors %s usage reports after explicit ACP compaction",
+    (usageReport) =>
+      Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const path = yield* Path.Path;
+        type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+        let sessionUpdateHandler: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
+        let nativeSessionId = "";
+        let promptOrdinal = 0;
+        const instanceId = ProviderInstanceId.make(`acp-compact-${usageReport}`);
+        const threadId = ThreadId.make(`thread-acp-compact-${usageReport}`);
+        const adapter = yield* makeAcpAdapterV2({
+          instanceId,
+          selfInvocation: yield* resolveSelfInvocation(),
+          flavor: {
+            driver: ACP_TEST_DRIVER,
+            capabilities: AcpProviderCapabilitiesV2,
+            supportsCompaction: true,
+            makeRuntime: makeMockRuntime({
+              childProcessSpawner,
+              mockAgentPath: yield* path.fromFileUrl(
+                new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+              ),
+              wrapRuntime: (runtime) => ({
+                ...runtime,
+                handleSessionUpdate: (handler) =>
+                  Effect.sync(() => {
+                    sessionUpdateHandler = handler;
+                  }).pipe(Effect.andThen(runtime.handleSessionUpdate(handler))),
+                prompt: (payload, options) =>
+                  Effect.gen(function* () {
+                    promptOrdinal += 1;
+                    if (promptOrdinal === 1 || (promptOrdinal === 2 && usageReport === "fresh")) {
+                      yield* sessionUpdateHandler!({
+                        sessionId: nativeSessionId,
+                        update: {
+                          sessionUpdate: "usage_update",
+                          used: promptOrdinal === 1 ? 30_000 : 100,
+                          size: 32_000,
+                        },
+                      });
+                    }
+                    return yield* runtime.prompt(payload, options);
+                  }),
+              }),
+            }),
+          },
+        });
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "default" } as const;
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make(`provider-session-acp-compact-${usageReport}`),
+          modelSelection,
+          runtimePolicy,
+        });
+        const initialThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        assert.isString(initialThread.nativeThreadRef?.nativeId);
+        nativeSessionId = initialThread.nativeThreadRef!.nativeId!;
+        const runTurn = Effect.fnUntraced(function* (
+          ordinal: number,
+          providerThread: OrchestrationV2ProviderThread,
+          messageText: string,
+        ) {
+          yield* runtime.startTurn(
+            makeTurnInput({
+              threadId,
+              providerThread,
+              instanceId,
+              runtimePolicy,
+              now: yield* DateTime.now,
+              ordinal,
+              messageText,
+            }),
+          );
+          const events = yield* runtime.events.pipe(
+            Stream.takeUntil((event) => event.type === "turn.terminal"),
+            Stream.runCollect,
+          );
+          const updatedThread = events
+            .flatMap((event) =>
+              event.type === "provider_thread.updated" ? [event.providerThread] : [],
+            )
+            .at(-1)!;
+          return { events, providerThread: updatedThread };
+        });
+        const before = yield* runTurn(1, initialThread, "Establish context usage");
+        assert.equal(before.providerThread.contextUsage?.usedTokens, 30_000);
+        const compacted = yield* runTurn(2, before.providerThread, "/compact");
+        assert.isTrue(
+          compacted.events.some(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "compaction" &&
+              event.turnItem.status === "completed",
+          ),
+        );
+        const expectedUsage =
+          usageReport === "fresh" ? { usedTokens: 100, maxTokens: 32_000 } : null;
+        assert.deepEqual(compacted.providerThread.contextUsage, expectedUsage);
+        const continued = yield* runTurn(3, compacted.providerThread, "Continue after compact");
+        assert.deepEqual(continued.providerThread.contextUsage, expectedUsage);
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
   it.live.each(["failed", "recovered", "completed", "cancelled"] as const)(
     "projects Mistral retry notices and their %s outcome",
     (outcome) =>

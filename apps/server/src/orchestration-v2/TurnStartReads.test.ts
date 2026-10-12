@@ -5,6 +5,7 @@ import {
   EventId,
   MessageId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   RunId,
   ThreadId,
@@ -285,6 +286,34 @@ it.effect.each(["sqlite", "memory"] as const)(
       assert.deepEqual(yield* store.getTurnStartHistory(threadId, [oldRunId]), [item]);
       assert.deepEqual(yield* store.getTurnStartHistory(threadId, [runId]), []);
       assert.deepEqual(yield* store.getTurnStartHistory(threadId, []), []);
+      const { input: _input, output: _output, ...itemBase } = item;
+      const compacted = {
+        ...itemBase,
+        id: TurnItemId.make("item:compaction"),
+        type: "compaction" as const,
+        driver: ProviderDriverKind.make("codex"),
+        ordinal: 3,
+        summary: "Retained context",
+      };
+      for (const marker of [
+        compacted,
+        {
+          ...compacted,
+          id: TurnItemId.make("item:pending-compaction"),
+          status: "running" as const,
+        },
+      ]) {
+        yield* store.apply({
+          id: EventId.make(`event:${marker.id}`),
+          type: "turn-item.updated",
+          threadId,
+          runId: oldRunId,
+          occurredAt: now,
+          payload: marker,
+        });
+      }
+      assert.deepEqual((yield* store.getTurnStartContext(threadId, runId)).turnItems, [compacted]);
+      assert.deepEqual(yield* store.getTurnStartHistory(threadId), [item]);
       // Pairing depends on IDs, not payload decoding or item status.
       const resultId = TurnItemId.make("interrupt-result");
       assert.isTrue(yield* store.hasUnpairedRunInterruptRequest(threadId, item.id, resultId));

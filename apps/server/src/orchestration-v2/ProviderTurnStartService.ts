@@ -805,7 +805,7 @@ export const layer: Layer.Layer<
       );
       const acceptedAttemptsById = new Map(acceptedAttempts.map((source) => [source.id, source]));
       const nativeId = loadedProviderThread.nativeThreadRef?.nativeId;
-      const compaction =
+      const explicitCompaction =
         sameNativeThread && nativeId !== undefined
           ? projection.runs.findLast((source) => {
               const acceptedAttempt =
@@ -822,6 +822,60 @@ export const layer: Layer.Layer<
               );
             })
           : undefined;
+      let compaction =
+        explicitCompaction?.completedAt == null
+          ? undefined
+          : {
+              runId: explicitCompaction.id,
+              ordinal: explicitCompaction.ordinal,
+              completedAt: explicitCompaction.completedAt,
+              explicit: true,
+              summary: "",
+            };
+      if (sameNativeThread && nativeId !== undefined) {
+        const providerTurnsById = new Map(projection.providerTurns.map((turn) => [turn.id, turn]));
+        const runsById = new Map(projection.runs.map((source) => [source.id, source]));
+        for (const item of projection.turnItems) {
+          if (
+            item.type !== "compaction" ||
+            item.status !== "completed" ||
+            item.providerThreadId !== providerThread.id ||
+            item.providerTurnId === null ||
+            item.runId === null ||
+            item.runId === explicitCompaction?.id
+          )
+            continue;
+          const providerTurn = providerTurnsById.get(item.providerTurnId);
+          const acceptedAttempt =
+            providerTurn?.runAttemptId == null
+              ? undefined
+              : acceptedAttemptsById.get(providerTurn.runAttemptId);
+          const source = runsById.get(item.runId);
+          if (
+            source === undefined ||
+            source.ordinal >= run.ordinal ||
+            acceptedAttempt?.nativeThreadId !== nativeId ||
+            acceptedAttempt.runId !== item.runId ||
+            providerTurn?.nodeId !== acceptedAttempt.rootNodeId
+          )
+            continue;
+          const completedAt = item.completedAt ?? item.updatedAt;
+          if (
+            compaction !== undefined &&
+            !DateTime.isGreaterThan(completedAt, compaction.completedAt)
+          )
+            continue;
+          // Automatic compaction can finish before the ordinary turn fails.
+          // Its tool node is scoped through the accepted root provider turn.
+          compaction = {
+            runId: source.id,
+            ordinal: source.ordinal,
+            completedAt,
+            explicit: false,
+            summary: item.summary ?? "",
+          };
+        }
+      }
       // Only started runs reached the provider-thread update below. Queued runs and
       // failures during session setup cannot establish a new telemetry selection.
       const measuredContext = latestNativeContextUsage(projection, providerThread);
@@ -842,7 +896,13 @@ export const layer: Layer.Layer<
         : threadUsage;
       const staleAfterCompaction =
         compaction !== undefined &&
-        (measuredContext === undefined || measuredContext.runOrdinal < compaction.ordinal);
+        measuredContext !== undefined &&
+        (measuredContext.runOrdinal < compaction.ordinal ||
+          (!compaction.explicit &&
+            DateTime.isLessThan(
+              DateTime.makeUnsafe(measuredContext.reportedAt),
+              compaction.completedAt,
+            )));
       const reuseTelemetry =
         sameSelection ||
         (previousSelection !== undefined &&
@@ -855,6 +915,8 @@ export const layer: Layer.Layer<
       // occupancy. A different model drops compaction telemetry and uses the
       // new window when that window is known. Successful compaction invalidates
       // older occupancy, while retaining model capacity and fresh compaction reports.
+      // Thread-only usage is invalidated by its adapter; absent turn telemetry
+      // cannot establish that a provider's current snapshot is stale.
       const handoffUsage = contextUsageForHandoff({
         sameNativeThread,
         sameSelection,
@@ -1086,36 +1148,41 @@ export const layer: Layer.Layer<
         // Successful compaction bounds the fallback, without inventing telemetry.
         // Keep its visible summary and later imports; the budget still reserves
         // space for unobserved native instructions and summary overhead.
-        return (yield* projectionStore.getTurnStartHistory(input.threadId)).reduce((sum, item) => {
-          const beforeCompaction =
-            compactedAt != null &&
-            item.runId !== compaction?.id &&
-            DateTime.isLessThan(item.updatedAt, compactedAt);
-          if (
-            item.runId === run.id ||
-            (beforeCompaction && !importedAfterCompaction.has(item.id)) ||
-            (item.runId !== null &&
-              missedRunIds.has(item.runId) &&
-              !deliveredItemIds.has(item.id)) ||
-            (item.providerThreadId !== providerThread.id && !deliveredItemIds.has(item.id))
-          )
-            return sum;
-          const historical = historicalMessage(item);
-          const nativeAttachments =
-            !beforeCompaction &&
-            item.type === "user_message" &&
-            item.providerThreadId === providerThread.id &&
-            item.runId !== null &&
-            (nativeInputRunIds.has(item.runId) ||
-              (legacyInputRunIds.has(item.runId) &&
-                !coveredItemIds.has(item.id) &&
-                !legacyRecoveredRunIds.has(item.runId)))
-              ? attachmentTokenAllowance(item.attachments)
-              : 0;
-          return (
-            sum + (historical === null ? 0 : Buffer.byteLength(historical.text)) + nativeAttachments
-          );
-        }, 0);
+        return (yield* projectionStore.getTurnStartHistory(input.threadId)).reduce(
+          (sum, item) => {
+            const beforeCompaction =
+              compactedAt != null &&
+              (!compaction?.explicit || item.runId !== compaction.runId) &&
+              DateTime.isLessThan(item.updatedAt, compactedAt);
+            if (
+              item.runId === run.id ||
+              (beforeCompaction && !importedAfterCompaction.has(item.id)) ||
+              (item.runId !== null &&
+                missedRunIds.has(item.runId) &&
+                !deliveredItemIds.has(item.id)) ||
+              (item.providerThreadId !== providerThread.id && !deliveredItemIds.has(item.id))
+            )
+              return sum;
+            const historical = historicalMessage(item);
+            const nativeAttachments =
+              !beforeCompaction &&
+              item.type === "user_message" &&
+              item.providerThreadId === providerThread.id &&
+              item.runId !== null &&
+              (nativeInputRunIds.has(item.runId) ||
+                (legacyInputRunIds.has(item.runId) &&
+                  !coveredItemIds.has(item.id) &&
+                  !legacyRecoveredRunIds.has(item.runId)))
+                ? attachmentTokenAllowance(item.attachments)
+                : 0;
+            return (
+              sum +
+              (historical === null ? 0 : Buffer.byteLength(historical.text)) +
+              nativeAttachments
+            );
+          },
+          Buffer.byteLength(compaction?.summary ?? ""),
+        );
       });
       const modelContextWindow =
         knownModelWindow ??

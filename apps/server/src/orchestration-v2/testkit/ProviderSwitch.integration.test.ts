@@ -8,6 +8,7 @@ import {
   type ChatAttachment,
   EventId,
   MessageId,
+  NodeId,
   type ModelSelection,
   type OrchestrationV2Command,
   type OrchestrationV2ProviderCapabilities,
@@ -115,6 +116,10 @@ function makeTestAdapter(input: {
   readonly tokenUsageByRunOrdinal?: Readonly<
     Record<number, Omit<OrchestrationV2ProviderTurnTokenUsage, "updatedAt">>
   >;
+  readonly contextUsageByRunOrdinal?: Readonly<
+    Record<number, OrchestrationV2ProviderThread["contextUsage"]>
+  >;
+  readonly automaticCompactionRunOrdinals?: ReadonlySet<number>;
   readonly failedRunOrdinals?: ReadonlySet<number>;
   readonly interruptedRunOrdinals?: ReadonlySet<number>;
   readonly holdRunOrdinal?: number;
@@ -263,6 +268,9 @@ function makeTestAdapter(input: {
                 yield* Deferred.await(input.releaseFirstTurn);
               }
               const eventTime = yield* DateTime.now;
+              const automaticCompaction = input.automaticCompactionRunOrdinals?.has(
+                turnInput.runOrdinal,
+              );
               const providerTurnId = ProviderTurnId.make(
                 `provider-turn:${input.driver}:${turnInput.threadId}:${turnInput.runOrdinal}`,
               );
@@ -291,7 +299,9 @@ function makeTestAdapter(input: {
                     },
                     ordinal: turnInput.runOrdinal,
                     status: terminalStatus,
-                    startedAt: eventTime,
+                    startedAt: automaticCompaction
+                      ? DateTime.subtract(eventTime, { milliseconds: 1 })
+                      : eventTime,
                     completedAt: eventTime,
                   },
                 },
@@ -352,7 +362,72 @@ function makeTestAdapter(input: {
                     ...turnEvent.providerTurn,
                     status: "running",
                     completedAt: null,
-                    tokenUsage: { ...reportedUsage, updatedAt: DateTime.formatIso(eventTime) },
+                    tokenUsage: {
+                      ...reportedUsage,
+                      updatedAt: DateTime.formatIso(
+                        automaticCompaction
+                          ? DateTime.subtract(eventTime, { milliseconds: 1 })
+                          : eventTime,
+                      ),
+                    },
+                  },
+                });
+              }
+              if (automaticCompaction) {
+                const nodeId = NodeId.make(`compaction-node:${providerTurnId}`);
+                yield* PubSub.publish(events, {
+                  type: "node.updated",
+                  driver: input.driver,
+                  node: {
+                    id: nodeId,
+                    threadId: turnInput.threadId,
+                    runId: turnInput.runId,
+                    parentNodeId: turnInput.rootNodeId,
+                    rootNodeId: turnInput.rootNodeId,
+                    kind: "tool_call",
+                    status: "completed",
+                    countsForRun: true,
+                    providerThreadId: turnInput.providerThread.id,
+                    providerTurnId,
+                    nativeItemRef: null,
+                    runtimeRequestId: null,
+                    checkpointScopeId: null,
+                    startedAt: eventTime,
+                    completedAt: eventTime,
+                  },
+                });
+                yield* PubSub.publish(events, {
+                  type: "turn_item.updated",
+                  driver: input.driver,
+                  turnItem: {
+                    id: TurnItemId.make(`compaction-item:${providerTurnId}`),
+                    threadId: turnInput.threadId,
+                    runId: turnInput.runId,
+                    nodeId,
+                    providerThreadId: turnInput.providerThread.id,
+                    providerTurnId,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal: turnInput.runOrdinal * 100,
+                    status: "completed",
+                    title: "Context compacted automatically",
+                    startedAt: eventTime,
+                    completedAt: eventTime,
+                    updatedAt: eventTime,
+                    type: "compaction",
+                    driver: input.driver,
+                  },
+                });
+              }
+              const contextUsage = input.contextUsageByRunOrdinal?.[turnInput.runOrdinal];
+              if (contextUsage !== undefined) {
+                yield* PubSub.publish(events, {
+                  type: "provider_thread.updated",
+                  driver: input.driver,
+                  providerThread: {
+                    ...turnInput.providerThread,
+                    contextUsage,
+                    updatedAt: eventTime,
                   },
                 });
               }
@@ -405,6 +480,9 @@ describe("orchestration v2 provider switching", () => {
     "deferred-compact-stale-telemetry",
     "deferred-failed-compact-stale-telemetry",
     "deferred-compact-fresh-telemetry",
+    "deferred-compact-fresh-thread-telemetry",
+    "deferred-auto-compact-stale-telemetry",
+    "deferred-failed-auto-compact-stale-telemetry",
     "large-current-input",
     "screenshot-native",
     "screenshot-fallback",
@@ -453,9 +531,13 @@ describe("orchestration v2 provider switching", () => {
         const capacityScenario = modelScenario || scenario.includes("reported-capacity");
         const compactionScenario = scenario.includes("-compact-");
         const compactionTelemetry = compactionScenario && scenario.endsWith("-telemetry");
-        const freshCompactionTelemetry = scenario === "deferred-compact-fresh-telemetry";
+        const automaticCompaction = scenario.includes("-auto-compact-");
+        const threadCompactionTelemetry = scenario === "deferred-compact-fresh-thread-telemetry";
+        const freshCompactionTelemetry =
+          scenario === "deferred-compact-fresh-telemetry" || threadCompactionTelemetry;
         const cursorCompaction = compactionScenario && !compactionTelemetry;
-        const failedCompaction = scenario.includes("-failed-compact-");
+        const failedCompactRun = scenario.includes("-failed-");
+        const failedCompaction = failedCompactRun && !automaticCompaction;
         const fallbackSelection = cursorCompaction
           ? CURSOR_MODEL_SELECTION
           : CLAUDE_MODEL_SELECTION;
@@ -487,19 +569,36 @@ describe("orchestration v2 provider switching", () => {
               ? CursorProviderCapabilitiesV2
               : ClaudeProviderCapabilitiesV2,
             modelSelection: fallbackSelection,
-            responseByRunOrdinal: {},
+            responseByRunOrdinal: threadCompactionTelemetry
+              ? { 3: "z".repeat(20_000) }
+              : automaticCompaction
+                ? { 3: "z".repeat(4_000) }
+                : {},
             capturedTurns,
-            ...(failedCompaction ? { failedRunOrdinals: new Set([3]) } : {}),
-            ...(compactionTelemetry
+            ...(failedCompactRun ? { failedRunOrdinals: new Set([3]) } : {}),
+            ...(automaticCompaction ? { automaticCompactionRunOrdinals: new Set([3]) } : {}),
+            ...(threadCompactionTelemetry
               ? {
-                  tokenUsageByRunOrdinal: {
+                  contextUsageByRunOrdinal: {
                     2: { usedTokens: 30_000, maxTokens: 32_000 },
-                    ...(freshCompactionTelemetry
-                      ? { 3: { usedTokens: 100, maxTokens: 32_000 } }
-                      : {}),
+                    3: { usedTokens: 6_000, maxTokens: 32_000 },
                   },
                 }
-              : {}),
+              : compactionTelemetry
+                ? {
+                    tokenUsageByRunOrdinal: {
+                      2: { usedTokens: 30_000, maxTokens: 32_000 },
+                      ...(freshCompactionTelemetry || automaticCompaction
+                        ? {
+                            3: {
+                              usedTokens: automaticCompaction ? 30_000 : 100,
+                              maxTokens: 32_000,
+                            },
+                          }
+                        : {}),
+                    },
+                  }
+                : {}),
             ...(scenario.includes("retry") || scenario.includes("unsent") ? { failStartOnce } : {}),
             ...(replaceNative ? { failResumeOnce, nativeThreadGeneration: generation } : {}),
             ...(scenario.includes("reported-capacity")
@@ -838,7 +937,9 @@ describe("orchestration v2 provider switching", () => {
               (thread) => thread.id === handoff.toProviderThreadId,
             )!;
             if (compactionScenario) {
-              if (compactionTelemetry) {
+              if (threadCompactionTelemetry) {
+                assert.equal(target.contextUsage?.usedTokens, 30_000);
+              } else if (compactionTelemetry) {
                 assert.equal(
                   projection.providerTurns.find(
                     (turn) => turn.providerThreadId === target.id && turn.ordinal === 2,
@@ -846,12 +947,16 @@ describe("orchestration v2 provider switching", () => {
                   30_000,
                 );
               } else assert.isNull(target.contextUsage);
-              yield* dispatch(3, "/compact", targetSelection);
+              yield* dispatch(
+                3,
+                automaticCompaction ? "Continue and compact automatically" : "/compact",
+                targetSelection,
+              );
               yield* wait(3);
               const compacted = yield* orchestrator.getThreadProjection(threadId);
               assert.equal(
                 compacted.runs.at(-1)!.status,
-                failedCompaction ? "failed" : "completed",
+                failedCompactRun ? "failed" : "completed",
               );
               assert.equal(
                 (yield* Ref.get(capturedTurns)).at(-1)!.nativeThreadId,
@@ -871,7 +976,13 @@ describe("orchestration v2 provider switching", () => {
               if (compactionTelemetry) {
                 assert.equal(
                   recoveredUsage?.usedTokens,
-                  failedCompaction ? 30_000 : freshCompactionTelemetry ? 100 : undefined,
+                  failedCompaction
+                    ? 30_000
+                    : threadCompactionTelemetry
+                      ? 6_000
+                      : freshCompactionTelemetry
+                        ? 100
+                        : undefined,
                 );
               } else assert.isNull(recoveredUsage);
               if (failedCompaction) {
@@ -897,7 +1008,9 @@ describe("orchestration v2 provider switching", () => {
               // context again after delivery. A new handoff must account for it.
               yield* dispatch(6, "A new source constraint", CODEX_MODEL_SELECTION);
               yield* wait(6);
-              const current = "y".repeat(10_000);
+              // Automatic compaction's 4k response still occupies context. With
+              // 7k of current input, dropping that whole run would admit this handoff.
+              const current = "y".repeat(automaticCompaction ? 7_000 : 10_000);
               yield* dispatch(7, current, targetSelection);
               yield* wait(7);
               assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, current);

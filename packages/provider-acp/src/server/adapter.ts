@@ -1153,6 +1153,7 @@ interface ActiveAcpTurn {
       }
     | undefined;
   contextUsage: ThreadTokenUsageSnapshot | null;
+  hasFreshContextUsage: boolean;
   nativeMetadata: OrchestrationV2ProviderThreadNativeMetadata | null;
   readonly tools: Map<string, AcpToolCallState>;
   /** Streamed tool updates skipped since the last persisted one; see `shouldPersistToolUpdate`. */
@@ -3348,6 +3349,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             };
             if (status === "completed") {
               context.contextUsage = null;
+              context.hasFreshContextUsage = false;
               yield* Ref.update(contextUsageBySessionId, (current) => {
                 const updated = new Map(current);
                 updated.delete(context.nativeThreadId);
@@ -4132,6 +4134,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               );
               if (context?.nativeThreadId === notification.sessionId) {
                 context.contextUsage = stateEvent.usage;
+                context.hasFreshContextUsage = true;
               }
             } else {
               const metadata = yield* Ref.modify(nativeMetadataBySessionId, (current) => {
@@ -6619,6 +6622,16 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             context.input.message.attachments.length === 0 &&
             settledStatus === "completed"
           ) {
+            // ACP may complete /compact without a native compaction notification
+            // or usage report. Only a report from this turn can survive that reset.
+            if (!context.hasFreshContextUsage) {
+              context.contextUsage = null;
+              yield* Ref.update(contextUsageBySessionId, (current) => {
+                const updated = new Map(current);
+                updated.delete(context.nativeThreadId);
+                return updated;
+              });
+            }
             const nativeItemId = `${context.nativeTurnId}:compaction`;
             yield* emitProviderEvent({
               type: "turn_item.updated",
@@ -7012,6 +7025,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               assistant: { current: null, nextSegment: 0 },
               reasoning: { current: null, nextSegment: 0 },
               contextUsage: rememberedContextUsage ?? turnInput.providerThread.contextUsage ?? null,
+              hasFreshContextUsage: false,
               nativeMetadata: initialNativeMetadata,
               tools: new Map(),
               toolUpdatesSkipped: new Map(),
