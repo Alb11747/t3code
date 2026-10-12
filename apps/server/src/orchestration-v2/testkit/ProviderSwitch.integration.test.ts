@@ -497,6 +497,8 @@ describe("orchestration v2 provider switching", () => {
     "deferred-before-budget-cancelled-native",
     "deferred-before-budget-cancelled-pre-prompt",
     "deferred-before-budget-cancelled-pre-prompt-native",
+    "deferred-before-budget-cancelled-pre-prompt-small",
+    "deferred-before-budget-cancelled-pre-prompt-small-native",
     "deferred-compact-fallback",
     "deferred-failed-compact-fallback",
     "deferred-compact-stale-telemetry",
@@ -660,7 +662,7 @@ describe("orchestration v2 provider switching", () => {
             ...(scenario.includes("retry") || scenario.includes("unsent") ? { failStartOnce } : {}),
             ...(replaceNative ? { failResumeOnce, nativeThreadGeneration: generation } : {}),
             ...(scenario.startsWith("deferred-before-budget-cancelled")
-              ? { nativeThreadGeneration: generation }
+              ? { failResumeOnce, nativeThreadGeneration: generation }
               : {}),
             ...(scenario.includes("reported-capacity")
               ? { initialContextUsage: { usedTokens: 999_999, maxTokens: 1_000_000 } }
@@ -818,7 +820,8 @@ describe("orchestration v2 provider switching", () => {
             : undefined;
           yield* Effect.addFinalizer(() => Effect.sync(() => crashSpy?.mockRestore()));
           const current = beforeBudgetCrash
-            ? "Unsent cancelled request " + "x".repeat(120_000)
+            ? "Unsent cancelled request " +
+              (scenario.includes("-small") ? "change the database schema" : "x".repeat(120_000))
             : scenario.startsWith("compact")
               ? "/compact"
               : scenario.startsWith("deferred")
@@ -996,6 +999,26 @@ describe("orchestration v2 provider switching", () => {
             assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, "Continue normally");
             assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.nativeThreadId, resumedNativeId);
             assert.lengthOf(yield* Ref.get(injectedHistory), injectedItems.length);
+            if (scenario.includes("-small")) {
+              // A later resume failure rebuilds from the same durable history;
+              // it must not resurrect the old cancelled request either.
+              yield* orchestrator.dispatch({
+                type: "provider-session.detach",
+                commandId: CommandId.make("detach-before-second-replacement"),
+                threadId,
+                providerSessionId: resumed.providerThreads.find(
+                  (thread) => thread.id === handoff.toProviderThreadId,
+                )!.providerSessionId!,
+              });
+              yield* worker.drain();
+              yield* Ref.set(failResumeOnce, true);
+              yield* dispatch(5, "Continue after another replacement", targetSelection);
+              yield* wait(5);
+              const replacementTurn = (yield* Ref.get(capturedTurns)).at(-1)!;
+              assert.notEqual(replacementTurn.nativeThreadId, resumedNativeId);
+              assert.notInclude(replacementTurn.text, current);
+              assert.notInclude(yield* encodeJson(yield* Ref.get(injectedHistory)), current);
+            }
             return;
           }
           yield* wait(targetOrdinal);

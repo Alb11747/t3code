@@ -766,6 +766,13 @@ export const layer: Layer.Layer<
           type: "provider_resume_fallback",
         });
         const createdAt = yield* DateTime.now;
+        // A cancelled request must not become an instruction in the recovered
+        // session. Retain any output from its run as historical context.
+        const cancelledRequestIds = new Set(
+          projection.runs
+            .filter((source) => source.status === "cancelled")
+            .map((source) => source.userMessageId),
+        );
         const handoff = yield* contextHandoffService.prepareProviderHandoff({
           threadId: projection.thread.id,
           targetRunId: run.id,
@@ -779,10 +786,11 @@ export const layer: Layer.Layer<
           runs: projection.runs,
           items: (yield* projectionStore.getTurnStartHistory(input.threadId)).filter(
             (item) =>
-              item.runId === null ||
-              projection.runs.some(
-                (source) => source.id === item.runId && source.ordinal < run.ordinal,
-              ),
+              (item.type !== "user_message" || !cancelledRequestIds.has(item.messageId)) &&
+              (item.runId === null ||
+                projection.runs.some(
+                  (source) => source.id === item.runId && source.ordinal < run.ordinal,
+                )),
           ),
           createdAt,
         });
