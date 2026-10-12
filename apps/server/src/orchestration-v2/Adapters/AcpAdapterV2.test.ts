@@ -784,6 +784,9 @@ describe("AcpAdapterV2", () => {
     "unproven-low",
     "before-native-completion",
     "after-native-completion",
+    "duplicate-native-completion",
+    "failed-then-native-completion",
+    "second-native-compaction",
   ] as const)(
     "uses only usage following native completion during explicit ACP compaction (%s)",
     (usageReport) =>
@@ -835,8 +838,21 @@ describe("AcpAdapterV2", () => {
                     if (
                       promptOrdinal === 2 &&
                       (usageReport === "before-native-completion" ||
-                        usageReport === "after-native-completion")
+                        usageReport === "after-native-completion" ||
+                        usageReport === "duplicate-native-completion" ||
+                        usageReport === "failed-then-native-completion" ||
+                        usageReport === "second-native-compaction")
                     ) {
+                      if (usageReport === "failed-then-native-completion") {
+                        yield* sessionUpdateHandler!({
+                          sessionId: nativeSessionId,
+                          update: {
+                            sessionUpdate: "compaction_update",
+                            compactionId: "compact-usage-boundary",
+                            status: "failed",
+                          },
+                        });
+                      }
                       yield* sessionUpdateHandler!({
                         sessionId: nativeSessionId,
                         update: {
@@ -845,10 +861,37 @@ describe("AcpAdapterV2", () => {
                           status: "completed",
                         },
                       });
-                      if (usageReport === "after-native-completion") {
+                      if (
+                        usageReport === "after-native-completion" ||
+                        usageReport === "duplicate-native-completion" ||
+                        usageReport === "second-native-compaction"
+                      ) {
                         yield* sessionUpdateHandler!({
                           sessionId: nativeSessionId,
                           update: { sessionUpdate: "usage_update", used: 100, size: 32_000 },
+                        });
+                      }
+                      if (usageReport === "duplicate-native-completion") {
+                        for (const status of ["completed", "in_progress", "completed"]) {
+                          yield* sessionUpdateHandler!({
+                            sessionId: nativeSessionId,
+                            update: {
+                              sessionUpdate: "compaction_update",
+                              compactionId: "compact-usage-boundary",
+                              status,
+                              summary: [{ type: "text", text: "Updated compaction summary" }],
+                            },
+                          });
+                        }
+                      }
+                      if (usageReport === "second-native-compaction") {
+                        yield* sessionUpdateHandler!({
+                          sessionId: nativeSessionId,
+                          update: {
+                            sessionUpdate: "compaction_update",
+                            compactionId: "compact-usage-boundary-2",
+                            status: "completed",
+                          },
                         });
                       }
                     }
@@ -916,7 +959,10 @@ describe("AcpAdapterV2", () => {
           ),
         );
         const expectedUsage =
-          usageReport === "after-native-completion" ? { usedTokens: 100, maxTokens: 32_000 } : null;
+          usageReport === "after-native-completion" || usageReport === "duplicate-native-completion"
+            ? { usedTokens: 100, maxTokens: 32_000 }
+            : null;
+        let completedNativeMarkers = 0;
         for (const [index, event] of compacted.events.entries()) {
           if (
             event.type !== "turn_item.updated" ||
@@ -932,11 +978,25 @@ describe("AcpAdapterV2", () => {
             )
             .at(-1)!;
           const nativeCompletion =
-            event.turnItem.nativeItemRef?.nativeId === "acp-compaction:compact-usage-boundary";
+            event.turnItem.nativeItemRef?.nativeId?.startsWith("acp-compaction:") === true;
+          const repeatedCompletion =
+            nativeCompletion &&
+            usageReport === "duplicate-native-completion" &&
+            completedNativeMarkers > 0;
           assert.deepEqual(
             snapshotAtCompletion.contextUsage,
-            nativeCompletion ? null : expectedUsage,
+            nativeCompletion && !repeatedCompletion ? null : expectedUsage,
           );
+          if (nativeCompletion) completedNativeMarkers += 1;
+          if (repeatedCompletion) {
+            assert.equal(event.turnItem.summary, "Updated compaction summary");
+          }
+        }
+        if (usageReport === "duplicate-native-completion") {
+          assert.equal(completedNativeMarkers, 3);
+        }
+        if (usageReport === "second-native-compaction") {
+          assert.equal(completedNativeMarkers, 2);
         }
         assert.deepEqual(compacted.providerThread.contextUsage, expectedUsage);
         const continued = yield* runTurn(3, compacted.providerThread, "Continue after compact");

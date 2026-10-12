@@ -1153,7 +1153,7 @@ interface ActiveAcpTurn {
       }
     | undefined;
   contextUsage: ThreadTokenUsageSnapshot | null;
-  hasCompletedNativeCompaction: boolean;
+  readonly completedNativeCompactionIds: Set<string>;
   nativeMetadata: OrchestrationV2ProviderThreadNativeMetadata | null;
   readonly tools: Map<string, AcpToolCallState>;
   /** Streamed tool updates skipped since the last persisted one; see `shouldPersistToolUpdate`. */
@@ -3367,9 +3367,14 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 ? {}
                 : { beforeTokenCount: context.contextUsage.usedTokens }),
             };
-            if (status === "completed") {
+            if (
+              status === "completed" &&
+              !context.completedNativeCompactionIds.has(toolCall.toolCallId)
+            ) {
+              // Re-reported terminal frames can update summaries without
+              // invalidating usage sampled after this compaction completed.
+              context.completedNativeCompactionIds.add(toolCall.toolCallId);
               context.contextUsage = null;
-              context.hasCompletedNativeCompaction = true;
               yield* Ref.update(contextUsageBySessionId, (current) => {
                 const updated = new Map(current);
                 updated.delete(context.nativeThreadId);
@@ -6646,7 +6651,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             // Usage reports carry no sample identity. Without a native completion
             // boundary, an in-turn report may still describe the pre-compact context.
             // Native completion already clears usage, so only later reports survive.
-            if (!context.hasCompletedNativeCompaction) {
+            if (context.completedNativeCompactionIds.size === 0) {
               context.contextUsage = null;
               yield* Ref.update(contextUsageBySessionId, (current) => {
                 const updated = new Map(current);
@@ -7034,7 +7039,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               assistant: { current: null, nextSegment: 0 },
               reasoning: { current: null, nextSegment: 0 },
               contextUsage: rememberedContextUsage ?? turnInput.providerThread.contextUsage ?? null,
-              hasCompletedNativeCompaction: false,
+              completedNativeCompactionIds: new Set(),
               nativeMetadata: initialNativeMetadata,
               tools: new Map(),
               toolUpdatesSkipped: new Map(),
