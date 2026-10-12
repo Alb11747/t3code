@@ -6,6 +6,7 @@ import * as NodeStream from "node:stream";
 import type {
   Query as ClaudeQuery,
   SDKMessage,
+  SDKRateLimitInfo,
   SDKResultMessage,
   SDKUserMessage,
   SpawnedProcess,
@@ -2937,6 +2938,163 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       yield* Queue.take(harness.terminalReceipts);
       assert.lengthOf(notices(), 3);
       assert.notEqual(notices()[0]?.id, notices()[2]?.id);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect.each([
+    "generic retry",
+    "sparse rejection",
+    "unrelated allowed window",
+    "allowed window",
+    "overage",
+    "incomplete windows",
+    "expired reset",
+    "successful recovery",
+    "non-limit failure",
+    "interrupted turn",
+    "query exit",
+    "different model",
+    "model switch back",
+    "different native thread",
+  ] as const)("retains usage reset metadata correctly across %s", (scenario) =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarnessWithOptions({
+        close: Queue.shutdown,
+        freshQueueOnReopen: true,
+      });
+      const now = yield* DateTime.now;
+      const resetsAt = Math.floor(DateTime.toEpochMillis(now) / 1000) + 7_200;
+      const resetAt = DateTime.formatIso(DateTime.makeUnsafe(resetsAt * 1000));
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      let ordinal = 0;
+      let frameOrdinal = 0;
+      const uuid = () => `00000000-0000-4000-8000-${String(++frameOrdinal).padStart(12, "0")}`;
+      const messages = () => harness.processQueues.at(-1)!;
+      const start = (
+        modelSelection = CLAUDE_TEST_MODEL_SELECTION,
+        providerThread = harness.providerThread,
+      ) =>
+        harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread,
+            now,
+            attemptId: RunAttemptId.make(`attempt-reset-retention-${++ordinal}`),
+            providerTurnOrdinal: ordinal,
+            modelSelection,
+            text: "Continue.",
+            attachments: [],
+          }),
+        );
+      const limit = (rate_limit_info: SDKRateLimitInfo) =>
+        Queue.offer(
+          messages(),
+          claudeSdkFrame({
+            type: "rate_limit_event",
+            rate_limit_info,
+            uuid: uuid(),
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+      const fail = Effect.fnUntraced(function* (expectedReset: string | null) {
+        yield* Queue.offerAll(messages(), [
+          makeAssistantErrorFrame({ uuid: uuid(), error: "rate_limit" }),
+          makeResultFrame({
+            uuid: uuid(),
+            result: "API Error",
+            terminalReason: "api_error",
+            isError: true,
+            apiErrorStatus: 429,
+          }),
+        ]);
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(terminal.status, "failed");
+        if (terminal.status !== "failed") return;
+        assert.equal(terminal.failure.class, "usage_limit");
+        assert.equal(terminal.failure.resetAt, expectedReset);
+      });
+      yield* start();
+      yield* limit({ status: "rejected", rateLimitType: "five_hour", resetsAt });
+      if (scenario === "incomplete windows") {
+        yield* limit({ status: "rejected", rateLimitType: "seven_day" });
+      }
+      yield* fail(scenario === "incomplete windows" ? null : resetAt);
+
+      if (scenario === "expired reset") yield* TestClock.adjust("3 hours");
+      yield* start(
+        scenario === "different model" || scenario === "model switch back"
+          ? { ...CLAUDE_TEST_MODEL_SELECTION, model: "claude-opus-4-6" }
+          : CLAUDE_TEST_MODEL_SELECTION,
+        scenario === "different native thread"
+          ? {
+              ...harness.providerThread,
+              nativeThreadRef: {
+                driver: harness.providerThread.driver,
+                nativeId: "other-session",
+                strength: "strong",
+              },
+            }
+          : harness.providerThread,
+      );
+      if (scenario === "successful recovery" || scenario === "non-limit failure") {
+        yield* Queue.offerAll(messages(), [
+          makeAssistantErrorFrame({
+            uuid: uuid(),
+            error: scenario === "non-limit failure" ? "server_error" : undefined,
+          }),
+          makeResultFrame({
+            uuid: uuid(),
+            result: scenario === "successful recovery" ? "Done." : "API Error",
+            terminalReason: scenario === "successful recovery" ? "completed" : "api_error",
+            isError: scenario === "non-limit failure",
+            ...(scenario === "non-limit failure" ? { apiErrorStatus: 500 } : {}),
+          }),
+        ]);
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(terminal.status, scenario === "successful recovery" ? "completed" : "failed");
+        yield* start();
+      } else if (scenario === "interrupted turn" || scenario === "query exit") {
+        if (scenario === "interrupted turn") {
+          yield* harness.runtime.interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId: idAllocator.derive.providerTurn({
+              driver: harness.providerThread.driver,
+              nativeTurnId: `turn:attempt-reset-retention-${ordinal}`,
+            }),
+          });
+        } else {
+          yield* Queue.shutdown(messages());
+        }
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(terminal.status, scenario === "interrupted turn" ? "interrupted" : "failed");
+        yield* start();
+      }
+      if (scenario === "sparse rejection")
+        yield* limit({ status: "rejected", rateLimitType: "five_hour" });
+      if (scenario === "unrelated allowed window")
+        yield* limit({ status: "allowed", rateLimitType: "seven_day" });
+      if (scenario === "allowed window")
+        yield* limit({ status: "allowed", rateLimitType: "five_hour" });
+      if (scenario === "overage")
+        yield* limit({ status: "rejected", rateLimitType: "five_hour", overageStatus: "allowed" });
+      const retainsReset =
+        scenario === "generic retry" ||
+        scenario === "sparse rejection" ||
+        scenario === "unrelated allowed window";
+      yield* fail(retainsReset ? resetAt : null);
+      if (scenario === "model switch back") {
+        yield* start();
+        yield* fail(null);
+      }
+      if (scenario === "incomplete windows") {
+        yield* start();
+        yield* limit({ status: "allowed", rateLimitType: "seven_day" });
+        yield* fail(resetAt);
+      }
     }).pipe(
       Effect.provide(
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
