@@ -249,14 +249,12 @@ export const layer: Layer.Layer<
                   source.id === handoff.targetRunId &&
                   (source.status === "failed" ||
                     source.status === "interrupted" ||
+                    // Ordinary turns can complete while delivery is deferred for space.
                     (source.status === "completed" &&
                       handoff.delivery === undefined &&
-                      projection.messages.some(
-                        (message) =>
-                          message.id === source.userMessageId &&
-                          message.attachments.length === 0 &&
-                          message.text.trim().toLowerCase() === "/compact",
-                      ))),
+                      projection.contextTransfers.find(
+                        (transfer) => transfer.id === handoff.transferId,
+                      )?.type !== "subagent_result")),
               ))),
       );
       const nativeForkTransfer = projection.contextTransfers.find(

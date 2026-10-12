@@ -78,9 +78,15 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       omittedItems: pending.reduce((sum, handoff) => sum + (handoff.history?.omittedItems ?? 0), 0),
       budget,
     });
-    if (historyCost(selected.messages, selected.context) > budget) {
+    const selectedCost = historyCost(selected.messages, selected.context);
+    if (selectedCost > budget) {
       // Failing here wedges every later turn while the handoff stays ready.
       // Keep it ready instead, like /compact, and let the user message through.
+      yield* Effect.logDebug("Deferring context handoff delivery until context is available", {
+        handoffIds: pending.map((handoff) => handoff.id),
+        budget,
+        selectedCost,
+      });
       return { context: "", delivered: Effect.void, unsent: Effect.void };
     }
     const omittedItemIds = new Set(selected.omittedItemIds);
