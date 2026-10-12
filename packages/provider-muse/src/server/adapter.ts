@@ -1612,6 +1612,11 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                 title: "Muse retry",
                 completedAt: time,
                 message: `Muse is retrying this turn (attempt ${retry.nextAttempt} of ${retry.maxAttempts}): ${retry.reason}`,
+                retry: {
+                  attempt: retry.nextAttempt,
+                  maxAttempts: retry.maxAttempts,
+                  retryDelayMs: Math.trunc(retry.retryDelayMs),
+                },
               },
             });
             break;

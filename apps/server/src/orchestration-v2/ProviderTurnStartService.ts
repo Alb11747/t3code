@@ -738,6 +738,8 @@ export const layer: Layer.Layer<
                 "user_input_request",
                 "subagent",
                 "compaction",
+                "error",
+                "system_notice",
                 "command_execution",
                 "dynamic_tool",
                 "file_change",
@@ -753,6 +755,12 @@ export const layer: Layer.Layer<
                 : cancelledRootTurns.get(item.providerTurnId);
             const attempt =
               turn?.runAttemptId == null ? undefined : cancelledAttempts.get(turn.runAttemptId);
+            // Older Muse retry notices omit metadata but use this exact native ID.
+            const legacyMuseRetry =
+              item.type === "system_notice" &&
+              item.nativeItemRef?.driver === "muse" &&
+              item.nativeItemRef.nativeId !== null &&
+              /^retry:[1-9][0-9]*$/.test(item.nativeItemRef.nativeId);
             if (
               attempt === undefined ||
               item.runId !== attempt.runId ||
@@ -763,7 +771,10 @@ export const layer: Layer.Layer<
               (item.type === "proposed_plan" && item.markdown.length === 0) ||
               (item.type === "todo_list" && item.steps.length === 0) ||
               (item.type === "subagent" && item.origin !== "provider_native") ||
-              (item.type === "compaction" && item.status !== "completed")
+              (item.type === "compaction" && item.status !== "completed") ||
+              ((item.type === "error" || item.type === "system_notice") &&
+                item.retry === undefined &&
+                !legacyMuseRetry)
             )
               continue;
             acceptedCancelledAttempts.add(attempt.id);

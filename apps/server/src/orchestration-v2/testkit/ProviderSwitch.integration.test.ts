@@ -1766,6 +1766,15 @@ describe("orchestration v2 provider switching", () => {
     "accepted-cancelled-running-compaction",
     "accepted-cancelled-running-compaction-native-history",
     "uncertain-cancelled-running-compaction-unfinished",
+    "accepted-cancelled-running-retry-error",
+    "accepted-cancelled-running-retry-error-native-history",
+    "accepted-cancelled-running-retry-notice",
+    "accepted-cancelled-running-retry-notice-native-history",
+    "accepted-cancelled-running-retry-notice-legacy",
+    "accepted-cancelled-running-retry-notice-legacy-native-history",
+    "uncertain-cancelled-running-retry-notice-legacy-other-driver",
+    "uncertain-cancelled-running-retry-error-unmarked",
+    "uncertain-cancelled-running-retry-notice-unmarked",
     "uncertain-cancelled-empty",
     "accepted-cancelled-message-only",
     "accepted-cancelled-message-only-native-history",
@@ -1786,7 +1795,10 @@ describe("orchestration v2 provider switching", () => {
           const providerRequest =
             attempts.includes("-approval") || attempts.includes("-user-input");
           const providerEvidence =
-            providerRequest || attempts.includes("-subagent") || attempts.includes("-compaction");
+            providerRequest ||
+            attempts.includes("-subagent") ||
+            attempts.includes("-compaction") ||
+            attempts.includes("-retry-");
           const uncertainEvidence = providerEvidence && attempts.startsWith("uncertain-");
           const failResumeOnce = yield* Ref.make(false);
           const generation = yield* Ref.make(0);
@@ -1913,6 +1925,45 @@ describe("orchestration v2 provider switching", () => {
                             nativeThreadId: "previous-native",
                             rootNodeId: NodeId.make("resume-fallback:previous-root"),
                             status: "superseded" as const,
+                          },
+                        },
+                      ]
+                    : []),
+                  ...(attempts.includes("-retry-") && firstOutput?.type === "assistant_message"
+                    ? [
+                        {
+                          id: EventId.make("resume-fallback:retry-evidence"),
+                          type: "turn-item.updated" as const,
+                          threadId,
+                          occurredAt,
+                          payload: {
+                            ...firstOutput,
+                            ...(!uncertainEvidence && !attempts.includes("-legacy")
+                              ? { retry: { attempt: 2, maxAttempts: 3, retryDelayMs: 100 } }
+                              : {}),
+                            ...(attempts.includes("-retry-error")
+                              ? {
+                                  type: "error" as const,
+                                  status: "running" as const,
+                                  completedAt: null,
+                                  failure: makeProviderFailure({ class: "provider_error" }),
+                                }
+                              : {
+                                  type: "system_notice" as const,
+                                  ...(attempts.includes("-legacy")
+                                    ? {
+                                        nativeItemRef: {
+                                          driver: attempts.includes("-other-driver")
+                                            ? CLAUDE_DRIVER
+                                            : ProviderDriverKind.make("muse"),
+                                          nativeId: "retry:2",
+                                          strength: "strong" as const,
+                                        },
+                                      }
+                                    : {}),
+                                  title: uncertainEvidence ? "Provider status" : "Muse retry",
+                                  message: "Transient provider activity",
+                                }),
                           },
                         },
                       ]

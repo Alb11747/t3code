@@ -714,6 +714,40 @@ describe("MuseAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect("reports scheduled retry progress without terminating the admitted turn", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const harness = yield* makeHarness(fake);
+      const { nativeId, providerTurn } = yield* startConversation(harness, fake);
+      yield* fake.emit("turn/retryScheduled", {
+        turnId: nativeId,
+        attempt: 1,
+        nextAttempt: 2,
+        maxAttempts: 3,
+        retryDelayMs: 1250.5,
+        reason: "Provider request timed out",
+      });
+      const notice = yield* harness.takeEvent(
+        "turn_item.updated",
+        (event) => event.turnItem.type === "system_notice",
+      );
+      if (notice.turnItem.type !== "system_notice") assert.fail("Expected a retry notice");
+      assert.deepStrictEqual(notice.turnItem.retry, {
+        attempt: 2,
+        maxAttempts: 3,
+        retryDelayMs: 1250,
+      });
+      assert.strictEqual(notice.turnItem.providerTurnId, providerTurn.id);
+      assert.strictEqual(notice.turnItem.runId, (yield* turnInput(harness.providerThread)).runId);
+      assert.isFalse(harness.allEvents.some((event) => event.type === "turn.terminal"));
+      yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
+      const terminal = yield* harness.takeEvent("turn.terminal");
+      assert.strictEqual(terminal.providerTurnId, providerTurn.id);
+      assert.strictEqual(terminal.status, "completed");
+      assert.strictEqual(fake.calls.filter((call) => call.method === "turn/start").length, 1);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("uses the latest native approval requirement and waits for its resolution event", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakeMuse();
