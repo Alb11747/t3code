@@ -257,9 +257,14 @@ export const layer: Layer.Layer<
                           message.attachments.length === 0 &&
                           message.text.trim().toLowerCase() === "/compact",
                       )) ||
-                    // Over budget, delivery was deferred; retry once space recovers.
+                    // Retry deferred history once space recovers. Child results remain
+                    // available through task_status after their delivery turn ends.
                     ((source.status === "completed" || source.status === "cancelled") &&
-                      handoff.delivery?.status === "deferred")),
+                      handoff.delivery?.status === "deferred" &&
+                      !projection.contextTransfers.some(
+                        (transfer) =>
+                          transfer.id === handoff.transferId && transfer.type === "subagent_result",
+                      ))),
               ))),
       );
       const nativeForkTransfer = projection.contextTransfers.find(

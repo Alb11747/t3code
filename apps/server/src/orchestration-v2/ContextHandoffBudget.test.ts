@@ -681,6 +681,7 @@ describe("handoff delivery", () => {
       assert.equal(budget, 0);
       let durable: OrchestrationV2ContextHandoff = { ...handoff, strategy: "manual_context" };
       let calls = 0;
+      let writes = 0;
       const deferred = yield* deliverContextHandoffs({
         handoffs: [durable],
         providerThread,
@@ -694,6 +695,7 @@ describe("handoff delivery", () => {
         persist: (value) =>
           Effect.sync(() => {
             durable = value;
+            writes++;
           }),
       });
       yield* deferred.delivered;
@@ -701,9 +703,33 @@ describe("handoff delivery", () => {
       assert.equal(calls, 0);
       assert.equal(durable.status, "ready");
       assert.equal(durable.delivery?.status, "deferred");
+      assert.equal(writes, 1);
+      const retryInput = {
+        providerThread,
+        budget,
+        alreadyDeliveredItemIds: new Set<string>(),
+        persist: (value: OrchestrationV2ContextHandoff) =>
+          Effect.sync(() => {
+            durable = value;
+            writes++;
+          }),
+      };
+      yield* deliverContextHandoffs({ ...retryInput, handoffs: [durable] });
+      assert.equal(writes, 1);
+      const replacementThread = {
+        ...providerThread,
+        nativeThreadRef: { ...providerThread.nativeThreadRef!, nativeId: "replacement-thread" },
+      };
+      yield* deliverContextHandoffs({
+        ...retryInput,
+        handoffs: [durable],
+        providerThread: replacementThread,
+      });
+      assert.equal(writes, 2);
+      assert.equal(durable.delivery?.nativeThreadId, "replacement-thread");
       const next = yield* deliverContextHandoffs({
         handoffs: [durable],
-        providerThread,
+        providerThread: replacementThread,
         budget: 16_000,
         alreadyDeliveredItemIds: new Set(),
         persist: (value) =>

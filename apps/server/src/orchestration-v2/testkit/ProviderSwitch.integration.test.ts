@@ -836,7 +836,8 @@ describe("orchestration v2 provider switching", () => {
             const transfer = recovered.contextTransfers.find(
               (candidate) => candidate.id === handoff.transferId,
             )!;
-            const resultTransferId = ContextTransferId.make("completed-subagent-result");
+            const legacyTransferId = ContextTransferId.make("completed-legacy-transfer");
+            const resultTransferId = ContextTransferId.make("deferred-subagent-result");
             const completedRun = recovered.runs.at(-1)!;
             const now = yield* DateTime.now;
             // A ready handoff without a deferred marker was already delivered, or
@@ -844,7 +845,37 @@ describe("orchestration v2 provider switching", () => {
             yield* eventSink.write({
               events: [
                 {
-                  id: EventId.make("completed-result-transfer"),
+                  id: EventId.make("completed-legacy-transfer"),
+                  type: "context-transfer.updated",
+                  threadId,
+                  occurredAt: now,
+                  payload: {
+                    ...transfer,
+                    id: legacyTransferId,
+                    targetRunId: completedRun.id,
+                    status: "consumed",
+                  },
+                },
+                {
+                  id: EventId.make("completed-legacy-handoff"),
+                  type: "context-handoff.updated",
+                  threadId,
+                  occurredAt: now,
+                  payload: {
+                    ...handoff,
+                    id: ContextHandoffId.make("completed-legacy-handoff"),
+                    transferId: legacyTransferId,
+                    targetRunId: completedRun.id,
+                    strategy: "manual_context",
+                    history: undefined,
+                    delivery: undefined,
+                    summaryText: "Previously delivered legacy history",
+                  },
+                },
+                // Child results deferred on completed or restart-cancelled runs
+                // remain available through task_status, without ordinary-turn replay.
+                {
+                  id: EventId.make("deferred-result-transfer"),
                   type: "context-transfer.updated",
                   threadId,
                   occurredAt: now,
@@ -852,24 +883,22 @@ describe("orchestration v2 provider switching", () => {
                     ...transfer,
                     id: resultTransferId,
                     type: "subagent_result",
-                    targetRunId: completedRun.id,
+                    targetRunId: handoff.targetRunId,
                     status: "consumed",
                   },
                 },
                 {
-                  id: EventId.make("completed-result-handoff"),
+                  id: EventId.make("deferred-result-handoff"),
                   type: "context-handoff.updated",
                   threadId,
                   occurredAt: now,
                   payload: {
                     ...handoff,
-                    id: ContextHandoffId.make("completed-subagent-result"),
+                    id: ContextHandoffId.make("deferred-subagent-result"),
                     transferId: resultTransferId,
-                    targetRunId: completedRun.id,
                     strategy: "manual_context",
                     history: undefined,
-                    delivery: undefined,
-                    summaryText: "Previously read child result",
+                    summaryText: "Deferred child result",
                   },
                 },
               ],

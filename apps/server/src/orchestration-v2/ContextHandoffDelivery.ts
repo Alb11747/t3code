@@ -91,7 +91,11 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       });
       if (nativeThreadId !== undefined) {
         yield* Effect.forEach(
-          pending,
+          pending.filter(
+            (handoff) =>
+              handoff.delivery?.nativeThreadId !== nativeThreadId ||
+              handoff.delivery.status !== "deferred",
+          ),
           (handoff) =>
             input.persist({
               ...handoff,
