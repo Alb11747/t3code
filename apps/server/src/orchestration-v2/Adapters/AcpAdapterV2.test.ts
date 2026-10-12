@@ -604,6 +604,180 @@ function makeTurnInput(input: {
 }
 
 describe("AcpAdapterV2", () => {
+  it.live.each(["fresh", "stale-resume"] as const)(
+    "reuses the unused startup ACP session for a placeholder after %s startup",
+    (startup) =>
+      Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const path = yield* Path.Path;
+        const protocolEvents = yield* Queue.unbounded<EffectAcpProtocol.AcpProtocolLogEvent>();
+        const instanceId = ProviderInstanceId.make("acp-unused-startup");
+        const threadId = ThreadId.make("thread-acp-unused-startup");
+        const providerSessionId = ProviderSessionId.make("provider-session-acp-unused-startup");
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "default" } as const;
+        let runtimeCount = 0;
+        const adapter = yield* makeAcpAdapterV2({
+          instanceId,
+          selfInvocation: yield* resolveSelfInvocation(),
+          flavor: {
+            driver: ACP_TEST_DRIVER,
+            capabilities: AcpProviderCapabilitiesV2,
+            makeRuntime: makeMockRuntime({
+              childProcessSpawner,
+              mockAgentPath: yield* path.fromFileUrl(
+                new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+              ),
+              protocolEvents,
+              environment: (runtimeOrdinal) => ({
+                T3_ACP_FAIL_LOAD_SESSION: "1",
+                T3_ACP_SESSION_ID: `mock-session-${runtimeOrdinal}`,
+              }),
+              wrapRuntime(runtime) {
+                runtimeCount += 1;
+                return runtime;
+              },
+            }),
+          },
+        });
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+          ...(startup === "stale-resume" ? { initialNativeThreadId: "stale-session" } : {}),
+        });
+        const startupRuntimeCount = runtimeCount;
+        const now = yield* DateTime.now;
+        const placeholder: OrchestrationV2ProviderThread = {
+          id: ProviderThreadId.make("startup-placeholder"),
+          driver: ACP_TEST_DRIVER,
+          providerInstanceId: instanceId,
+          providerSessionId,
+          appThreadId: threadId,
+          ownerNodeId: null,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+          status: "idle",
+          firstRunOrdinal: null,
+          lastRunOrdinal: null,
+          handoffIds: [],
+          forkedFrom: null,
+          contextUsage: null,
+          nativeMetadata: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        const bound = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+          existingProviderThread: placeholder,
+        });
+        assert.equal(bound.id, placeholder.id);
+        assert.notEqual(bound.nativeThreadRef?.nativeId, "stale-session");
+        assert.equal(runtimeCount, startupRuntimeCount);
+        const startupMethods = yield* pollProtocolMethods(protocolEvents);
+        assert.equal(startupMethods.filter((method) => method === "session/new").length, 1);
+
+        const replaced = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+          existingProviderThread: { ...bound, nativeThreadRef: null },
+        });
+        assert.equal(replaced.id, placeholder.id);
+        assert.equal(runtimeCount, startupRuntimeCount + 1);
+        assert.notEqual(replaced.nativeThreadRef?.nativeId, bound.nativeThreadRef?.nativeId);
+        const replacementMethods = yield* pollProtocolMethods(protocolEvents);
+        assert.equal(replacementMethods.filter((method) => method === "session/new").length, 1);
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.live("creates a fresh ACP session when replacing a resumed provider thread", () =>
+    Effect.gen(function* () {
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const path = yield* Path.Path;
+      const protocolEvents = yield* Queue.unbounded<EffectAcpProtocol.AcpProtocolLogEvent>();
+      const instanceId = ProviderInstanceId.make("acp-fresh-session");
+      const threadId = ThreadId.make("thread-acp-fresh-session");
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const adapter = yield* makeAcpAdapterV2({
+        instanceId,
+        selfInvocation: yield* resolveSelfInvocation(),
+        flavor: {
+          driver: ACP_TEST_DRIVER,
+          capabilities: AcpProviderCapabilitiesV2,
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner,
+            mockAgentPath: yield* path.fromFileUrl(
+              new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+            ),
+            protocolEvents,
+          }),
+        },
+      });
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-acp-fresh-session"),
+        modelSelection,
+        runtimePolicy,
+        initialNativeThreadId: "persisted-session",
+      });
+      const resumed = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+      assert.equal(resumed.nativeThreadRef?.nativeId, "persisted-session");
+      const existingProviderThread: OrchestrationV2ProviderThread = {
+        ...resumed,
+        id: ProviderThreadId.make("existing-provider-row"),
+        nativeThreadRef: null,
+        contextUsage: { usedTokens: 30_000, maxTokens: 32_000 },
+        nativeMetadata: { itemIdentityVersion: 2, updatedAt: "2026-09-17T00:00:00Z" },
+      };
+      const fresh = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+        existingProviderThread,
+      });
+      assert.notEqual(fresh.nativeThreadRef?.nativeId, "persisted-session");
+      assert.equal(fresh.id, existingProviderThread.id);
+      assert.isNull(fresh.contextUsage);
+      assert.deepEqual(fresh.nativeMetadata, { itemIdentityVersion: 2 });
+      yield* runtime.startTurn(
+        makeTurnInput({
+          threadId,
+          providerThread: fresh,
+          instanceId,
+          runtimePolicy,
+          now: yield* DateTime.now,
+        }),
+      );
+      const terminal = yield* runtime.events.pipe(
+        Stream.filter((event) => event.type === "turn.terminal"),
+        Stream.take(1),
+        Stream.runCollect,
+      );
+      assert.equal(terminal[0]?.status, "completed");
+      let promptSessionId: unknown;
+      while (promptSessionId === undefined) {
+        const event = yield* Queue.take(protocolEvents);
+        if (rawProtocolMethod(event) === "session/prompt") {
+          promptSessionId = rawProtocolRequestParam(event, "sessionId");
+        }
+      }
+      assert.equal(promptSessionId, fresh.nativeThreadRef?.nativeId);
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
   it.live.each([
     "missing",
     "unproven-high",

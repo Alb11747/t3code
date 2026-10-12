@@ -685,22 +685,17 @@ export const layer: Layer.Layer<
             .filter((source) => source.status === "cancelled")
             .map((source) => source.id),
         );
-        const cancelledNativeAttempts = new Map(
+        const cancelledAttempts = new Map(
           projection.attempts
-            .filter(
-              (source) =>
-                cancelledRunIds.has(source.runId) &&
-                source.providerThreadId === providerThread.id &&
-                source.nativeThreadId === providerThread.nativeThreadRef?.nativeId,
-            )
+            .filter((source) => cancelledRunIds.has(source.runId))
             .map((source) => [source.id, source]),
         );
         const completedCancelledAttempts = new Set(
           projection.providerTurns.flatMap((turn) =>
-            turn.providerThreadId === providerThread.id &&
             turn.status === "completed" &&
             turn.runAttemptId !== null &&
-            cancelledNativeAttempts.get(turn.runAttemptId)?.rootNodeId === turn.nodeId
+            cancelledAttempts.get(turn.runAttemptId)?.providerThreadId === turn.providerThreadId &&
+            cancelledAttempts.get(turn.runAttemptId)?.rootNodeId === turn.nodeId
               ? [turn.runAttemptId]
               : [],
           ),
@@ -708,8 +703,11 @@ export const layer: Layer.Layer<
         // Adapters publish running turns on either side of prompt submission.
         // Neither an absent nor an incomplete turn proves a cancelled request
         // was unsent. Replace that native session to resolve uncertain occupancy.
-        const uncertainCancelledPrompt = [...cancelledNativeAttempts.keys()].some(
-          (attemptId) => !completedCancelledAttempts.has(attemptId),
+        const uncertainCancelledPrompt = [...cancelledAttempts.values()].some(
+          (source) =>
+            source.providerThreadId === providerThread.id &&
+            source.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
+            !completedCancelledAttempts.has(source.id),
         );
         const resumed = yield* Effect.result(
           uncertainDelivery || uncertainCancelledPrompt
@@ -747,17 +745,32 @@ export const layer: Layer.Layer<
           errorTag: resumed.failure._tag,
         });
         const replacement = yield* loadFromProvider(
-          session.ensureThread({
-            threadId: projection.thread.id,
-            title: projection.thread.title,
-            modelSelection: run.modelSelection,
-            runtimePolicy: resolvedRuntimePolicy,
-            providerSessionId,
-            // The native ref is dropped so the adapter binds a fresh native
-            // session instead of retrying the resume that just failed, while
-            // still adopting this row's identity.
-            existingProviderThread: { ...providerThread, nativeThreadRef: null },
-          }),
+          session
+            .ensureThread({
+              threadId: projection.thread.id,
+              title: projection.thread.title,
+              modelSelection: run.modelSelection,
+              runtimePolicy: resolvedRuntimePolicy,
+              providerSessionId,
+              // The native ref is dropped so the adapter binds a fresh native
+              // session instead of retrying the resume that just failed, while
+              // still adopting this row's identity.
+              existingProviderThread: { ...providerThread, nativeThreadRef: null },
+            })
+            .pipe(
+              Effect.flatMap((replacement) =>
+                replacement.nativeThreadRef?.nativeId === providerThread.nativeThreadRef?.nativeId
+                  ? Effect.fail(
+                      new ProviderAdapter.ProviderAdapterEnsureThreadError({
+                        driver: session.driver,
+                        threadId: projection.thread.id,
+                        cause:
+                          "Provider returned the previous native session instead of a fresh replacement",
+                      }),
+                    )
+                  : Effect.succeed(replacement),
+              ),
+            ),
         );
         if (replacement === undefined) return undefined;
         const transferId = yield* idAllocator.allocate.contextTransfer({
@@ -766,11 +779,18 @@ export const layer: Layer.Layer<
           type: "provider_resume_fallback",
         });
         const createdAt = yield* DateTime.now;
-        // A cancelled request must not become an instruction in the recovered
-        // session. Retain any output from its run as historical context.
+        const acceptedCancelledRunIds = new Set(
+          [...completedCancelledAttempts].map(
+            (attemptId) => cancelledAttempts.get(attemptId)!.runId,
+          ),
+        );
+        // Keep accepted requests with their output and cancellation status.
+        // Uncertain cancelled requests must not be replayed by later replacements.
         const cancelledRequestIds = new Set(
           projection.runs
-            .filter((source) => source.status === "cancelled")
+            .filter(
+              (source) => source.status === "cancelled" && !acceptedCancelledRunIds.has(source.id),
+            )
             .map((source) => source.userMessageId),
         );
         const handoff = yield* contextHandoffService.prepareProviderHandoff({
@@ -920,6 +940,7 @@ export const layer: Layer.Layer<
             ) {
               compactionUsageResetAt = completedAt;
               compactionMarker = item;
+              compaction.summary = item.summary ?? "";
             }
             continue;
           }

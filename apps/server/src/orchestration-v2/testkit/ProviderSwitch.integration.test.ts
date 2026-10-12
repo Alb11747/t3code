@@ -495,6 +495,8 @@ describe("orchestration v2 provider switching", () => {
     "deferred-cancelled",
     "deferred-before-budget-cancelled",
     "deferred-before-budget-cancelled-native",
+    "deferred-before-budget-cancelled-unchanged",
+    "deferred-before-budget-cancelled-unchanged-native",
     "deferred-before-budget-cancelled-pre-prompt",
     "deferred-before-budget-cancelled-pre-prompt-native",
     "deferred-before-budget-cancelled-pre-prompt-small",
@@ -514,6 +516,7 @@ describe("orchestration v2 provider switching", () => {
     "deferred-native-compact-watermark-telemetry",
     "deferred-native-compact-mismatched-watermark-telemetry",
     "deferred-native-compact-marker-high-fallback",
+    "deferred-native-compact-summary-fallback",
     "deferred-auto-compact-marker-low-fallback",
     "large-current-input",
     "screenshot-native",
@@ -570,6 +573,7 @@ describe("orchestration v2 provider switching", () => {
         const watermarkCompactionTelemetry = scenario.includes("-watermark-");
         const markerOnlyCompaction = scenario.includes("-marker-");
         const highCompactionMarker = scenario === "deferred-native-compact-marker-high-fallback";
+        const summaryOnlyCompaction = scenario === "deferred-native-compact-summary-fallback";
         const matchedWatermark = scenario === "deferred-native-compact-watermark-telemetry";
         const freshCompactionTelemetry =
           scenario === "deferred-compact-fresh-telemetry" ||
@@ -637,6 +641,7 @@ describe("orchestration v2 provider switching", () => {
                   ...(highCompactionMarker ? {} : { compactionSummary: "s".repeat(20_000) }),
                 }
               : {}),
+            ...(summaryOnlyCompaction ? { compactionSummary: "s".repeat(30_000) } : {}),
             ...(threadCompactionTelemetry
               ? {
                   contextUsageByRunOrdinal: {
@@ -661,7 +666,8 @@ describe("orchestration v2 provider switching", () => {
                 : {}),
             ...(scenario.includes("retry") || scenario.includes("unsent") ? { failStartOnce } : {}),
             ...(replaceNative ? { failResumeOnce, nativeThreadGeneration: generation } : {}),
-            ...(scenario.startsWith("deferred-before-budget-cancelled")
+            ...(scenario.startsWith("deferred-before-budget-cancelled") &&
+            !scenario.includes("-unchanged")
               ? { failResumeOnce, nativeThreadGeneration: generation }
               : {}),
             ...(scenario.includes("reported-capacity")
@@ -978,6 +984,14 @@ describe("orchestration v2 provider switching", () => {
             yield* wait(3);
             const resumed = yield* orchestrator.getThreadProjection(threadId);
             const resumedHandoff = resumed.contextHandoffs.find((item) => item.id === handoff.id)!;
+            if (scenario.includes("-unchanged")) {
+              assert.equal(resumed.runs.at(-1)!.status, "failed");
+              assert.lengthOf(yield* Ref.get(capturedTurns), 1);
+              assert.lengthOf(yield* Ref.get(injectedHistory), 0);
+              assert.deepEqual(resumedHandoff.delivery, handoff.delivery);
+              assert.lengthOf(resumed.contextHandoffs, stopped.contextHandoffs.length);
+              return;
+            }
             const resumedNativeId = (yield* Ref.get(capturedTurns)).at(-1)!.nativeThreadId;
             assert.notEqual(resumedNativeId, nativeThreadId);
             assert.notInclude((yield* Ref.get(capturedTurns)).at(-1)!.text, current);
@@ -1191,7 +1205,12 @@ describe("orchestration v2 provider switching", () => {
                         : undefined,
                 );
               } else assert.isNull(recoveredUsage);
-              if (failedCompaction || rolledBackCompaction || highCompactionMarker) {
+              if (
+                failedCompaction ||
+                rolledBackCompaction ||
+                highCompactionMarker ||
+                summaryOnlyCompaction
+              ) {
                 assert.equal(recoveredHandoff.delivery?.status, "pending");
                 assert.isTrue(recoveredHandoff.delivery?.deferred);
                 assert.equal(recoveredTurn.text, "Continue after compact");
@@ -1686,13 +1705,20 @@ describe("orchestration v2 provider switching", () => {
       ),
   );
 
-  it.live.each(["native", "legacy"] as const)(
+  it.live.each([
+    "native",
+    "legacy",
+    "accepted-cancelled",
+    "accepted-cancelled-native-history",
+  ] as const)(
     "starts a replacement native thread as new after the resume fallback with %s attempts",
     (attempts) =>
       Effect.scoped(
         Effect.gen(function* () {
           const cwd = yield* checkpointWorkspace("resume-fallback-native-turns");
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+          const injectedHistory = yield* Ref.make<ReadonlyArray<unknown>>([]);
+          const cancelledAccepted = attempts.startsWith("accepted-cancelled");
           const failResumeOnce = yield* Ref.make(false);
           const generation = yield* Ref.make(0);
           const layerRegistry = ProviderAdapterRegistry.layerFromAdapters([
@@ -1701,10 +1727,11 @@ describe("orchestration v2 provider switching", () => {
               driver: CLAUDE_DRIVER,
               capabilities: ClaudeProviderCapabilitiesV2,
               modelSelection: CLAUDE_MODEL_SELECTION,
-              responseByRunOrdinal: {},
+              responseByRunOrdinal: cancelledAccepted ? { 1: "Accepted cancelled output" } : {},
               capturedTurns,
               failResumeOnce,
               nativeThreadGeneration: generation,
+              ...(attempts.endsWith("-native-history") ? { injectedHistory } : {}),
             }),
           ]);
           yield* Effect.gen(function* () {
@@ -1753,6 +1780,21 @@ describe("orchestration v2 provider switching", () => {
               worktreePath: null,
             });
             yield* runToCompletion(1);
+            if (cancelledAccepted) {
+              const firstRun = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+              yield* (yield* EventSink.EventSinkV2).write({
+                events: [
+                  {
+                    id: EventId.make("resume-fallback:accepted-cancelled"),
+                    type: "run.updated",
+                    threadId,
+                    runId: firstRun.id,
+                    occurredAt: yield* DateTime.now,
+                    payload: { ...firstRun, status: "cancelled" },
+                  },
+                ],
+              });
+            }
             // A detached session resumes on the next turn, as after a restart.
             const providerThread = (yield* orchestrator.getThreadProjection(
               threadId,
@@ -1796,6 +1838,14 @@ describe("orchestration v2 provider switching", () => {
             assert.isFalse(turns[1]?.nativeThreadHasTurns);
             assert.equal(turns[2]?.nativeThreadId, turns[1]?.nativeThreadId);
             assert.isTrue(turns[2]?.nativeThreadHasTurns);
+            if (cancelledAccepted) {
+              const recoveredHistory = attempts.endsWith("-native-history")
+                ? yield* encodeJson(yield* Ref.get(injectedHistory))
+                : turns[1]!.text;
+              assert.include(recoveredHistory, "Request 1");
+              assert.include(recoveredHistory, "Accepted cancelled output");
+              assert.include(recoveredHistory, "run-status=cancelled");
+            }
           }).pipe(
             Effect.provide(
               ProviderReplayHarness.layerWithRegistry(
