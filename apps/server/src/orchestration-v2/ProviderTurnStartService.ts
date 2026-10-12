@@ -838,6 +838,7 @@ export const layer: Layer.Layer<
       // Native completion can precede explicit run finalization. Bound telemetry
       // by the marker while retaining the run boundary for fallback history.
       let compactionUsageResetAt: DateTime.Utc | undefined;
+      let compactionAfterTokenCount: number | undefined;
       if (sameNativeThread && nativeId !== undefined) {
         const providerTurnsById = new Map(projection.providerTurns.map((turn) => [turn.id, turn]));
         const runsById = new Map(projection.runs.map((source) => [source.id, source]));
@@ -872,6 +873,7 @@ export const layer: Layer.Layer<
                 DateTime.isGreaterThan(completedAt, compactionUsageResetAt))
             ) {
               compactionUsageResetAt = completedAt;
+              compactionAfterTokenCount = item.afterTokenCount;
             }
             continue;
           }
@@ -890,6 +892,7 @@ export const layer: Layer.Layer<
             summary: item.summary ?? "",
           };
           compactionUsageResetAt = completedAt;
+          compactionAfterTokenCount = item.afterTokenCount;
         }
       }
       // Only started runs reached the provider-thread update below. Queued runs and
@@ -910,12 +913,25 @@ export const layer: Layer.Layer<
       const previousUsage = measuredContext
         ? { ...threadUsage, ...measuredContext.usage }
         : threadUsage;
+      // Claude reports its post-compaction watermark at the marker's timestamp.
+      // The matching count establishes provenance that an ordinary same-ms report lacks.
+      const measuredCompactionWatermark =
+        measuredContext !== undefined &&
+        compactionUsageResetAt !== undefined &&
+        compactionAfterTokenCount !== undefined &&
+        measuredContext.runOrdinal === compaction?.ordinal &&
+        measuredContext.usage.usedTokens === compactionAfterTokenCount &&
+        DateTime.Equivalence(
+          DateTime.makeUnsafe(measuredContext.reportedAt),
+          compactionUsageResetAt,
+        );
       const staleAfterCompaction =
         compaction !== undefined &&
         measuredContext !== undefined &&
         (measuredContext.runOrdinal < compaction.ordinal ||
           (compactionUsageResetAt !== undefined &&
-            // Equal timestamps cannot establish post-compaction provenance.
+            !measuredCompactionWatermark &&
+            // Equal timestamps without a matching watermark have unknown provenance.
             DateTime.isLessThanOrEqualTo(
               DateTime.makeUnsafe(measuredContext.reportedAt),
               compactionUsageResetAt,

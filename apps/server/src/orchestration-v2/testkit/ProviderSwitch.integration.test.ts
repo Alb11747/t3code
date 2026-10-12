@@ -121,6 +121,7 @@ function makeTestAdapter(input: {
   >;
   readonly nativeCompactionRunOrdinals?: ReadonlySet<number>;
   readonly compactionUsageTiming?: "before" | "equal" | "after";
+  readonly compactionAfterTokenCount?: number;
   readonly failedRunOrdinals?: ReadonlySet<number>;
   readonly interruptedRunOrdinals?: ReadonlySet<number>;
   readonly holdRunOrdinal?: number;
@@ -423,6 +424,9 @@ function makeTestAdapter(input: {
                     updatedAt: eventTime,
                     type: "compaction",
                     driver: input.driver,
+                    ...(input.compactionAfterTokenCount === undefined
+                      ? {}
+                      : { afterTokenCount: input.compactionAfterTokenCount }),
                   },
                 });
               }
@@ -498,6 +502,8 @@ describe("orchestration v2 provider switching", () => {
     "deferred-native-compact-stale-telemetry",
     "deferred-native-compact-equal-telemetry",
     "deferred-native-compact-fresh-telemetry",
+    "deferred-native-compact-watermark-telemetry",
+    "deferred-native-compact-mismatched-watermark-telemetry",
     "large-current-input",
     "screenshot-native",
     "screenshot-fallback",
@@ -549,9 +555,12 @@ describe("orchestration v2 provider switching", () => {
         const automaticCompaction = scenario.includes("-auto-compact-");
         const nativeCompaction = automaticCompaction || scenario.includes("-native-compact-");
         const threadCompactionTelemetry = scenario === "deferred-compact-fresh-thread-telemetry";
+        const watermarkCompactionTelemetry = scenario.includes("-watermark-");
+        const matchedWatermark = scenario === "deferred-native-compact-watermark-telemetry";
         const freshCompactionTelemetry =
           scenario === "deferred-compact-fresh-telemetry" ||
           scenario === "deferred-native-compact-fresh-telemetry" ||
+          matchedWatermark ||
           threadCompactionTelemetry;
         const cursorCompaction = compactionScenario && !compactionTelemetry;
         const failedCompactRun = scenario.includes("-failed-");
@@ -587,23 +596,26 @@ describe("orchestration v2 provider switching", () => {
               ? CursorProviderCapabilitiesV2
               : ClaudeProviderCapabilitiesV2,
             modelSelection: fallbackSelection,
-            responseByRunOrdinal: threadCompactionTelemetry
-              ? { 3: "z".repeat(20_000) }
-              : automaticCompaction
-                ? { 3: "z".repeat(4_000) }
-                : {},
+            responseByRunOrdinal:
+              threadCompactionTelemetry || matchedWatermark
+                ? { 3: "z".repeat(20_000) }
+                : automaticCompaction
+                  ? { 3: "z".repeat(4_000) }
+                  : {},
             capturedTurns,
             ...(failedCompactRun ? { failedRunOrdinals: new Set([3]) } : {}),
             ...(nativeCompaction
               ? {
                   nativeCompactionRunOrdinals: new Set([3]),
-                  compactionUsageTiming: scenario.includes("-equal-")
-                    ? ("equal" as const)
-                    : freshCompactionTelemetry
-                      ? ("after" as const)
-                      : ("before" as const),
+                  compactionUsageTiming:
+                    scenario.includes("-equal-") || watermarkCompactionTelemetry
+                      ? ("equal" as const)
+                      : freshCompactionTelemetry
+                        ? ("after" as const)
+                        : ("before" as const),
                 }
               : {}),
+            ...(watermarkCompactionTelemetry ? { compactionAfterTokenCount: 100 } : {}),
             ...(threadCompactionTelemetry
               ? {
                   contextUsageByRunOrdinal: {
