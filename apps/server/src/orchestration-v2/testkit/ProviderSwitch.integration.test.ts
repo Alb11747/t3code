@@ -3,6 +3,8 @@ import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudge
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
+  ContextHandoffId,
+  ContextTransferId,
   type ChatAttachment,
   EventId,
   MessageId,
@@ -400,6 +402,7 @@ describe("orchestration v2 provider switching", () => {
     "compact-native",
     "compact-fallback",
     "compact-legacy",
+    "deferred-fallback",
     "large-current-input",
     "screenshot-native",
     "screenshot-fallback",
@@ -607,11 +610,13 @@ describe("orchestration v2 provider switching", () => {
           yield* Effect.addFinalizer(() => Effect.sync(() => spy?.mockRestore()));
           const current = scenario.startsWith("compact")
             ? "/compact"
-            : capacityScenario && !turnUsageScenario
-              ? "x".repeat(70_000)
-              : scenario === "large-current-input"
-                ? "x".repeat(9_000)
-                : "Continue work";
+            : scenario === "deferred-fallback"
+              ? "x".repeat(120_000)
+              : capacityScenario && !turnUsageScenario
+                ? "x".repeat(70_000)
+                : scenario === "large-current-input"
+                  ? "x".repeat(9_000)
+                  : "Continue work";
           // First establish the returning native thread: the current request must
           // not be charged as existing context on the subsequent handoff.
           if (returning) {
@@ -782,6 +787,83 @@ describe("orchestration v2 provider switching", () => {
           }
           const projection = yield* orchestrator.getThreadProjection(threadId);
           assert.equal(projection.runs.at(-1)?.status, "completed");
+          if (scenario === "deferred-fallback") {
+            const handoff = projection.contextHandoffs.at(-1)!;
+            assert.isUndefined(handoff.delivery);
+            assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, current);
+            const target = projection.providerThreads.find(
+              (thread) => thread.id === handoff.toProviderThreadId,
+            )!;
+            // Model telemetry can recover after the provider compacts the native history.
+            yield* eventSink.write({
+              events: [
+                {
+                  id: EventId.make("deferred-context-recovered"),
+                  type: "provider-thread.updated",
+                  threadId,
+                  occurredAt: yield* DateTime.now,
+                  payload: { ...target, contextUsage: { usedTokens: 100, maxTokens: 128_000 } },
+                },
+              ],
+            });
+            yield* dispatch(3, "Continue after context recovery", CLAUDE_MODEL_SELECTION);
+            yield* wait(3);
+            assert.include(
+              (yield* Ref.get(capturedTurns)).at(-1)!.text,
+              "Original request with constraints",
+            );
+            assert.equal(
+              (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs.find(
+                (candidate) => candidate.id === handoff.id,
+              )?.delivery?.status,
+              "inline",
+            );
+            const recovered = yield* orchestrator.getThreadProjection(threadId);
+            const transfer = recovered.contextTransfers.find(
+              (candidate) => candidate.id === handoff.transferId,
+            )!;
+            const resultTransferId = ContextTransferId.make("completed-subagent-result");
+            const completedRun = recovered.runs.at(-1)!;
+            const now = yield* DateTime.now;
+            // Completed child results are read through task_status, not replayed inline.
+            yield* eventSink.write({
+              events: [
+                {
+                  id: EventId.make("completed-result-transfer"),
+                  type: "context-transfer.updated",
+                  threadId,
+                  occurredAt: now,
+                  payload: {
+                    ...transfer,
+                    id: resultTransferId,
+                    type: "subagent_result",
+                    targetRunId: completedRun.id,
+                    status: "consumed",
+                  },
+                },
+                {
+                  id: EventId.make("completed-result-handoff"),
+                  type: "context-handoff.updated",
+                  threadId,
+                  occurredAt: now,
+                  payload: {
+                    ...handoff,
+                    id: ContextHandoffId.make("completed-subagent-result"),
+                    transferId: resultTransferId,
+                    targetRunId: completedRun.id,
+                    strategy: "manual_context",
+                    history: undefined,
+                    delivery: undefined,
+                    summaryText: "Previously read child result",
+                  },
+                },
+              ],
+            });
+            yield* dispatch(4, "Continue once more", CLAUDE_MODEL_SELECTION);
+            yield* wait(4);
+            assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, "Continue once more");
+            return;
+          }
           if (priorImages) {
             const handoff = projection.contextHandoffs.at(-1)!;
             const context = scenario.endsWith("-native")
