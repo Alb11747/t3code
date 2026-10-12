@@ -3,6 +3,8 @@ import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudge
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
+  ContextHandoffId,
+  ContextTransferId,
   type ChatAttachment,
   EventId,
   MessageId,
@@ -400,6 +402,8 @@ describe("orchestration v2 provider switching", () => {
     "compact-native",
     "compact-fallback",
     "compact-legacy",
+    "deferred-fallback",
+    "deferred-cancelled",
     "large-current-input",
     "screenshot-native",
     "screenshot-fallback",
@@ -607,11 +611,13 @@ describe("orchestration v2 provider switching", () => {
           yield* Effect.addFinalizer(() => Effect.sync(() => spy?.mockRestore()));
           const current = scenario.startsWith("compact")
             ? "/compact"
-            : capacityScenario && !turnUsageScenario
-              ? "x".repeat(70_000)
-              : scenario === "large-current-input"
-                ? "x".repeat(9_000)
-                : "Continue work";
+            : scenario.startsWith("deferred")
+              ? "x".repeat(120_000)
+              : capacityScenario && !turnUsageScenario
+                ? "x".repeat(70_000)
+                : scenario === "large-current-input"
+                  ? "x".repeat(9_000)
+                  : "Continue work";
           // First establish the returning native thread: the current request must
           // not be charged as existing context on the subsequent handoff.
           if (returning) {
@@ -782,6 +788,128 @@ describe("orchestration v2 provider switching", () => {
           }
           const projection = yield* orchestrator.getThreadProjection(threadId);
           assert.equal(projection.runs.at(-1)?.status, "completed");
+          if (scenario.startsWith("deferred")) {
+            const handoff = projection.contextHandoffs.at(-1)!;
+            assert.equal(handoff.delivery?.status, "pending");
+            assert.isTrue(handoff.delivery?.deferred);
+            assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, current);
+            if (scenario === "deferred-cancelled") {
+              const deferredRun = projection.runs.at(-1)!;
+              yield* eventSink.write({
+                events: [
+                  {
+                    id: EventId.make("deferred-run-cancelled"),
+                    type: "run.updated",
+                    threadId,
+                    runId: deferredRun.id,
+                    providerInstanceId: deferredRun.providerInstanceId,
+                    occurredAt: yield* DateTime.now,
+                    payload: { ...deferredRun, status: "cancelled" },
+                  },
+                ],
+              });
+            }
+            const target = projection.providerThreads.find(
+              (thread) => thread.id === handoff.toProviderThreadId,
+            )!;
+            // Model telemetry can recover after the provider compacts the native history.
+            yield* eventSink.write({
+              events: [
+                {
+                  id: EventId.make("deferred-context-recovered"),
+                  type: "provider-thread.updated",
+                  threadId,
+                  occurredAt: yield* DateTime.now,
+                  payload: { ...target, contextUsage: { usedTokens: 100, maxTokens: 128_000 } },
+                },
+              ],
+            });
+            yield* dispatch(3, "Continue after context recovery", CLAUDE_MODEL_SELECTION);
+            yield* wait(3);
+            assert.include(
+              (yield* Ref.get(capturedTurns)).at(-1)!.text,
+              "Original request with constraints",
+            );
+            assert.equal(
+              (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs.find(
+                (candidate) => candidate.id === handoff.id,
+              )?.delivery?.status,
+              "inline",
+            );
+            const recovered = yield* orchestrator.getThreadProjection(threadId);
+            const transfer = recovered.contextTransfers.find(
+              (candidate) => candidate.id === handoff.transferId,
+            )!;
+            const legacyTransferId = ContextTransferId.make("completed-legacy-transfer");
+            const resultTransferId = ContextTransferId.make("deferred-subagent-result");
+            const completedRun = recovered.runs.at(-1)!;
+            const now = yield* DateTime.now;
+            // Legacy ready history may already have been delivered without metadata.
+            yield* eventSink.write({
+              events: [
+                {
+                  id: EventId.make("completed-legacy-transfer"),
+                  type: "context-transfer.updated",
+                  threadId,
+                  occurredAt: now,
+                  payload: {
+                    ...transfer,
+                    id: legacyTransferId,
+                    targetRunId: completedRun.id,
+                    status: "consumed",
+                  },
+                },
+                {
+                  id: EventId.make("completed-legacy-handoff"),
+                  type: "context-handoff.updated",
+                  threadId,
+                  occurredAt: now,
+                  payload: {
+                    ...handoff,
+                    id: ContextHandoffId.make("completed-legacy-handoff"),
+                    transferId: legacyTransferId,
+                    targetRunId: completedRun.id,
+                    strategy: "manual_context",
+                    history: undefined,
+                    delivery: undefined,
+                    summaryText: "Previously delivered legacy history",
+                  },
+                },
+                // Deferred child results are read through task_status, without replay.
+                {
+                  id: EventId.make("deferred-result-transfer"),
+                  type: "context-transfer.updated",
+                  threadId,
+                  occurredAt: now,
+                  payload: {
+                    ...transfer,
+                    id: resultTransferId,
+                    type: "subagent_result",
+                    targetRunId: handoff.targetRunId,
+                    status: "consumed",
+                  },
+                },
+                {
+                  id: EventId.make("deferred-result-handoff"),
+                  type: "context-handoff.updated",
+                  threadId,
+                  occurredAt: now,
+                  payload: {
+                    ...handoff,
+                    id: ContextHandoffId.make("deferred-subagent-result"),
+                    transferId: resultTransferId,
+                    strategy: "manual_context",
+                    history: undefined,
+                    summaryText: "Deferred child result",
+                  },
+                },
+              ],
+            });
+            yield* dispatch(4, "Continue once more", CLAUDE_MODEL_SELECTION);
+            yield* wait(4);
+            assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, "Continue once more");
+            return;
+          }
           if (priorImages) {
             const handoff = projection.contextHandoffs.at(-1)!;
             const context = scenario.endsWith("-native")
@@ -904,7 +1032,13 @@ describe("orchestration v2 provider switching", () => {
       }),
     ),
   );
-  it.live.each(["turn-start", "injection", "large-missed-request"] as const)(
+  it.live.each([
+    "turn-start",
+    "injection",
+    "large-missed-request",
+    "deferred-missed-request",
+    "deferred-omitted-request",
+  ] as const)(
     "recovers %s failure without duplicating history in the same native thread",
     (failure) =>
       Effect.scoped(
@@ -914,6 +1048,7 @@ describe("orchestration v2 provider switching", () => {
           const injectedHistory = yield* Ref.make<ReadonlyArray<unknown>>([]);
           const failOnce = yield* Ref.make(true);
           const generation = yield* Ref.make(0);
+          const modelWindow = failure === "deferred-omitted-request" ? 64_000 : 32_000;
           const layerRegistry = ProviderAdapterRegistry.layerFromAdapters([
             makeTestAdapter({
               instanceId: CODEX_MODEL_SELECTION.instanceId,
@@ -932,7 +1067,7 @@ describe("orchestration v2 provider switching", () => {
               capturedTurns,
               injectedHistory,
               nativeThreadGeneration: generation,
-              getModelContextWindow: () => 32_000,
+              getModelContextWindow: () => modelWindow,
               ...(failure !== "injection"
                 ? { failStartOnce: failOnce }
                 : { failInjectionOnce: failOnce }),
@@ -989,11 +1124,13 @@ describe("orchestration v2 provider switching", () => {
             });
             yield* dispatch(1, "Original request with constraints", CODEX_MODEL_SELECTION);
             yield* wait(1, "completed");
-            yield* dispatch(
-              2,
-              failure === "large-missed-request" ? "x".repeat(7_000) : "First target request",
-              CLAUDE_MODEL_SELECTION,
-            );
+            const deferred = failure.startsWith("deferred");
+            const omitted =
+              failure === "large-missed-request" || failure === "deferred-omitted-request";
+            const missedText = omitted
+              ? "x".repeat(deferred ? 18_000 : 7_000)
+              : "First target request";
+            yield* dispatch(2, missedText, CLAUDE_MODEL_SELECTION);
             yield* wait(2, "failed");
             const failed = yield* orchestrator.getThreadProjection(threadId);
             const failedHandoff = failed.contextHandoffs.at(-1)!;
@@ -1002,10 +1139,60 @@ describe("orchestration v2 provider switching", () => {
               failure !== "injection" ? "injected" : "pending",
             );
             const historyBeforeRetry = (yield* Ref.get(injectedHistory)).length;
-            const retryText =
-              failure === "large-missed-request" ? "y".repeat(10_000) : "Retry target request";
+            let retryText = deferred
+              ? "y".repeat(120_000)
+              : failure === "large-missed-request"
+                ? "y".repeat(10_000)
+                : "Retry target request";
             yield* dispatch(3, retryText, CLAUDE_MODEL_SELECTION);
             yield* wait(3, "completed");
+            if (deferred) {
+              const firstDeferred = yield* orchestrator.getThreadProjection(threadId);
+              assert.equal(firstDeferred.contextHandoffs.length, failed.contextHandoffs.length + 1);
+              const deferredHandoff = firstDeferred.contextHandoffs.at(-1)!;
+              assert.isTrue(deferredHandoff.delivery?.deferred);
+              const missedRequest = firstDeferred.turnItems.find(
+                (item) => item.type === "user_message" && item.text === missedText,
+              )!;
+              assert.include(
+                omitted
+                  ? (deferredHandoff.history?.omittedItemIds ?? [])
+                  : deferredHandoff.history!.messages.map((item) => item.itemId),
+                missedRequest.id,
+              );
+              assert.equal((yield* Ref.get(injectedHistory)).length, historyBeforeRetry);
+              yield* dispatch(4, "Another retry " + "y".repeat(120_000), CLAUDE_MODEL_SELECTION);
+              yield* wait(4, "completed");
+              const stillDeferred = yield* orchestrator.getThreadProjection(threadId);
+              assert.deepEqual(stillDeferred.contextHandoffs, firstDeferred.contextHandoffs);
+              assert.equal((yield* Ref.get(injectedHistory)).length, historyBeforeRetry);
+              // Fresh provider telemetry restores allowance after native compaction.
+              const target = stillDeferred.providerThreads.find(
+                (thread) => thread.id === deferredHandoff.toProviderThreadId,
+              )!;
+              const eventSink = yield* EventSink.EventSinkV2;
+              yield* eventSink.write({
+                events: [
+                  {
+                    id: EventId.make("missed-request-context-recovered"),
+                    type: "provider-thread.updated",
+                    threadId,
+                    occurredAt: yield* DateTime.now,
+                    payload: {
+                      ...target,
+                      contextUsage: { usedTokens: 100, maxTokens: modelWindow },
+                    },
+                  },
+                ],
+              });
+              retryText = "Retry after context recovery";
+              yield* dispatch(5, retryText, CLAUDE_MODEL_SELECTION);
+              yield* wait(5, "completed");
+              assert.equal(
+                (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs.length,
+                firstDeferred.contextHandoffs.length,
+              );
+            }
             const retried = yield* orchestrator.getThreadProjection(threadId);
             const lastTurn = (yield* Ref.get(capturedTurns)).at(-1)!;
             assert.equal(lastTurn.text, retryText);
@@ -1013,15 +1200,18 @@ describe("orchestration v2 provider switching", () => {
               const delta = yield* encodeJson(
                 (yield* Ref.get(injectedHistory)).slice(historyBeforeRetry),
               );
-              if (failure === "large-missed-request") {
+              if (omitted) {
                 assert.include(delta, "omitted 1 items");
                 const missedRequest = retried.turnItems.find(
-                  (item) => item.type === "user_message" && item.text === "x".repeat(7_000),
+                  (item) => item.type === "user_message" && item.text === missedText,
                 )!;
                 const delivery = retried.contextHandoffs.at(-1)!.delivery!;
                 assert.include(delivery.omittedItemIds ?? [], missedRequest.id);
                 assert.notInclude(delivery.itemIds, missedRequest.id);
-              } else assert.include(delta, "First target request");
+              } else {
+                assert.include(delta, "First target request");
+                assert.equal(delta.split("First target request").length - 1, 1);
+              }
               assert.notInclude(delta, "Original request with constraints");
               assert.notInclude(delta, "Original partial work");
               assert.equal(yield* Ref.get(generation), 1);
@@ -1040,8 +1230,9 @@ describe("orchestration v2 provider switching", () => {
             }
             const beforeFollowup = yield* Ref.get(injectedHistory);
             const followup = "z".repeat(6_000);
-            yield* dispatch(4, followup, CLAUDE_MODEL_SELECTION);
-            yield* wait(4, "completed");
+            const followupOrdinal = deferred ? 6 : 4;
+            yield* dispatch(followupOrdinal, followup, CLAUDE_MODEL_SELECTION);
+            yield* wait(followupOrdinal, "completed");
             assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, followup);
             assert.deepEqual(yield* Ref.get(injectedHistory), beforeFollowup);
             assert.equal(

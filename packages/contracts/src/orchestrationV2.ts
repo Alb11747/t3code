@@ -959,6 +959,8 @@ export const OrchestrationV2ContextHandoff = Schema.Struct({
     Schema.Struct({
       nativeThreadId: Schema.String,
       status: Schema.Literals(["pending", "injected", "inline"]),
+      // Known unsent; an additive flag keeps persisted history readable by older servers.
+      deferred: Schema.optional(Schema.Literal(true)),
       itemIds: Schema.Array(TurnItemId),
       // Covered by recovery instructions, but not present in native model history.
       omittedItemIds: Schema.optional(Schema.Array(TurnItemId)),

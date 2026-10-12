@@ -256,6 +256,15 @@ export const layer: Layer.Layer<
                           message.id === source.userMessageId &&
                           message.attachments.length === 0 &&
                           message.text.trim().toLowerCase() === "/compact",
+                      )) ||
+                    // Child results remain available through task_status after
+                    // their delivery turn ends; retry only deferred conversation history.
+                    ((source.status === "completed" || source.status === "cancelled") &&
+                      handoff.delivery?.status === "pending" &&
+                      handoff.delivery.deferred === true &&
+                      !projection.contextTransfers.some(
+                        (transfer) =>
+                          transfer.id === handoff.transferId && transfer.type === "subagent_result",
                       ))),
               ))),
       );
@@ -663,7 +672,8 @@ export const layer: Layer.Layer<
           (handoff) =>
             handoff.toProviderThreadId === providerThread.id &&
             handoff.delivery?.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
-            handoff.delivery?.status === "pending",
+            handoff.delivery?.status === "pending" &&
+            handoff.delivery.deferred !== true,
         );
         const resumed = yield* Effect.result(
           uncertainDelivery
@@ -994,6 +1004,18 @@ export const layer: Layer.Layer<
         ...deliveredItemIds,
         ...settledHandoffs.flatMap((handoff) => handoff.delivery?.omittedItemIds ?? []),
       ]);
+      // Reuse a deferred missed-run handoff instead of creating another copy
+      // of its selected or omitted history on each turn with no allowance.
+      const deferredHistoryItemIds = new Set(
+        effectiveHandoffs.flatMap((handoff) =>
+          handoff.delivery?.status !== "pending" || handoff.delivery.deferred !== true
+            ? []
+            : [
+                ...(handoff.history?.messages.map((message) => message.itemId) ?? []),
+                ...(handoff.history?.omittedItemIds ?? []),
+              ],
+        ),
+      );
       const deliveredAttemptIds = new Set(
         projection.providerTurns.map((turn) => turn.runAttemptId),
       );
@@ -1087,6 +1109,7 @@ export const layer: Layer.Layer<
                 item.runId !== null &&
                 missedRunIds.has(item.runId) &&
                 !coveredItemIds.has(item.id) &&
+                !deferredHistoryItemIds.has(item.id) &&
                 historicalMessage(item) !== null,
             );
       const startWithHandoffs = (
