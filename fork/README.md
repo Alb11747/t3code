@@ -43,7 +43,7 @@ exception is `release-desktop.yml`, which `fork-release.yml` calls.
 
 ## Planning a fork feature
 
-Features stay fork-only (see _Fixing open upstream issues_), so the fork
+Features stay fork-only (see _Fixing bugs_), so the fork
 carries each one through every sync. Eligible pushes to `main` start the
 release workflow; successful builds become available for installed copies
 to download and install. For requested work, post a short plan in the task's
@@ -71,14 +71,21 @@ waiting for another approval. Cover:
    or browsers.
 7. **Release.** One commit plus its `CHANGES.md` entry (_Adding a change_).
    Complete validation, commit, and push `main` as part of authorized fork work;
-   report what is still untested. Do not ask for a separate confirmation just
-   to push or start the automated release. Ask only when the scope or release
-   target remains unclear.
+   report what is still untested. No upstream issue, PR, or discussion for
+   features unless explicitly requested. Do not ask for a separate
+   confirmation just to push or start the automated release. Ask only when the
+   scope or release target remains unclear.
 
 Build on a branch from the fork's `main` on GitHub (`git fetch fork` first;
 a local `fork-main` may be stale), in a separate worktree. If a helper agent
 investigates or implements, the agent that owns the plan reviews the diff and
 reruns the tests itself before committing.
+
+Leave the repository's main checkout (the original clone, not a worktree) on
+`main` when you finish. If your task switched it to another branch, switch it
+back once your work is committed or pushed. If it holds changes you didn't
+make, another agent may still be working there: leave it and say so in your
+report.
 
 ## Adding a change
 
@@ -115,24 +122,59 @@ reruns the tests itself before committing.
    Publication waits for the checks and both platform builds to pass; starting
    the workflow does not immediately publish an update. There is no deliberate
    waiting period. The 30-minute schedule belongs to upstream sync, not fork
-   pushes. A fast-forward push that only touches `fork/*.md` skips the release;
-   a force-push starts it because GitHub can't tell which files changed.
+   pushes. Push as soon as the change is validated; don't hold it for other
+   threads' work. The workflow runs one release at a time and keeps only the
+   newest queued push, so concurrent pushes batch themselves. If the push is
+   rejected because another thread pushed first, `git fetch fork`, rebase onto
+   `fork/main`, and push again.
+   A push that changes only `fork/*.md` relative to the previous `main` skips
+   the release. That holds for force-pushes too: GitHub compares the old and new
+   tips.
 
 To change or fix an existing fork change, amend its commit (`git commit
 --fixup=<sha>` plus an autosquash rebase) rather than stacking fix-up commits.
 To remove one, drop its commit and its `CHANGES.md` entry.
 
-## Fixing open upstream issues
+## Fixing bugs
 
-Bug fixes for open upstream issues go upstream as pull requests **and** into
-the fork. Features and product-behaviour changes stay fork-only: upstream's
-[CONTRIBUTING.md](../CONTRIBUTING.md) doesn't accept unsolicited features, and
-anything beyond an obvious bug needs maintainer approval first. Read
-CONTRIBUTING.md and `.github/pull_request_template.md` before opening a PR.
+Bug fixes go into the fork **and** upstream. Features and product-behaviour
+changes stay fork-only: upstream's [CONTRIBUTING.md](../CONTRIBUTING.md)
+doesn't accept unsolicited features. Read CONTRIBUTING.md and
+`.github/pull_request_template.md` before opening a PR.
 
-1. Pick an open bug issue that maintainers have triaged (or an obvious, very
-   small bug). Check nobody has a PR for it:
-   `gh pr list -R pingdotgg/t3code --state open --search "<issue number>"`.
+Judge upstream PRs, existing ones and your own draft, with the repository's
+`contribution-triage` skill (`.agents/skills/contribution-triage/SKILL.md`)
+as an explicit **dry run**: it checks eligibility, scope, and evidence against
+CONTRIBUTING.md. We are not maintainers, so never let it close, comment on,
+label, or request review for an upstream PR.
+
+1. Search upstream's open issues and PRs for the bug, trying a few phrasings
+   and any error text, and check `fork/CHANGES.md`:
+
+   ```sh
+   gh issue list -R pingdotgg/t3code --state open --search "<keywords>"
+   gh pr list -R pingdotgg/t3code --state open --search "<keywords>"
+   ```
+
+   - **A sound PR exists** (it passes triage and its fix holds up in review):
+     carry it instead of writing a competing one.
+     Fetch it (`git fetch https://github.com/pingdotgg/t3code.git pull/<n>/head`),
+     squash it into one fork commit with its `Upstream-PR:` trailer, and
+     continue at step 6. Put any fixes of your own in a separate commit on top
+     so sync drops only the PR's commit when it merges.
+   - **Otherwise** open your own PR (steps 2–6). With no issue, a very small,
+     obvious fix can go without one; for anything larger, file a bug issue
+     first, since CONTRIBUTING.md wants substantial fixes tied to one. Follow
+     the sections of the `via-triage` template
+     (`.github/ISSUE_TEMPLATE/via-triage.yml`), meant for agent-investigated
+     reports, and redact secrets and home directory paths from quoted evidence.
+
+   For a bug seen on a real install, gather evidence as the `t3 triage`
+   playbook (`.github/triage/PLAYBOOK.md`, section 5) describes: the server
+   trace, provider event log, and desktop backend logs under
+   `~/.t3/userdata/logs`, read-only. Don't run `t3 triage` itself; it starts a
+   second interactive agent and writes into the live `~/.t3`.
+
 2. Branch from **upstream** `main`, not the fork's, so the PR contains only
    the fix: `git fetch origin main && git switch -c fix/<issue>-<slug> origin/main`
    (`origin` = upstream). Fix exactly one underlying problem, with focused
@@ -145,12 +187,14 @@ CONTRIBUTING.md and `.github/pull_request_template.md` before opening a PR.
    fork run is your evidence. Rerun it after every push to the branch.
 4. Open the PR against upstream with a Conventional Commits title in plain
    language (`fix(web): …`) and the template's sections: **Problem**,
-   **Change**, **Scope and approval** (link the triaged issue, or explain why a
-   tiny obvious fix needs none), and **Verification** (focused tests and
+   **Change**, **Scope and approval** (link the issue, or explain why a tiny
+   obvious fix needs none), and **Verification** (focused tests and
    manual checks with results, the fork checks run link, what you couldn't
    check; before/after screenshots for UI). End with the model and harness
-   that did the work:
+   that did the work. Triage the branch and drafted body first, fix any gap it
+   finds, then open the PR:
    `gh pr create -R pingdotgg/t3code --base main --head Alb11747:fix/<issue>-<slug> --title "…" --body-file pr.md`.
+   Then comment the PR link on the issue, if there is one.
 5. Watch the PR from the T3 thread that opened it: call `link_pull_request`,
    then `watch_pull_request`. T3 wakes that thread when checks finish, someone
    comments, or the branch conflicts; handle follow-ups with the `babysit-pr`
