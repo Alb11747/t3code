@@ -1153,7 +1153,7 @@ interface ActiveAcpTurn {
       }
     | undefined;
   contextUsage: ThreadTokenUsageSnapshot | null;
-  hasFreshContextUsage: boolean;
+  hasCompletedNativeCompaction: boolean;
   nativeMetadata: OrchestrationV2ProviderThreadNativeMetadata | null;
   readonly tools: Map<string, AcpToolCallState>;
   /** Streamed tool updates skipped since the last persisted one; see `shouldPersistToolUpdate`. */
@@ -3349,7 +3349,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             };
             if (status === "completed") {
               context.contextUsage = null;
-              context.hasFreshContextUsage = false;
+              context.hasCompletedNativeCompaction = true;
               yield* Ref.update(contextUsageBySessionId, (current) => {
                 const updated = new Map(current);
                 updated.delete(context.nativeThreadId);
@@ -4134,7 +4134,6 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               );
               if (context?.nativeThreadId === notification.sessionId) {
                 context.contextUsage = stateEvent.usage;
-                context.hasFreshContextUsage = true;
               }
             } else {
               const metadata = yield* Ref.modify(nativeMetadataBySessionId, (current) => {
@@ -6622,9 +6621,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             context.input.message.attachments.length === 0 &&
             settledStatus === "completed"
           ) {
-            // ACP may complete /compact without a native compaction notification
-            // or usage report. Only a report from this turn can survive that reset.
-            if (!context.hasFreshContextUsage) {
+            // Usage reports carry no sample identity. Without a native completion
+            // boundary, an in-turn report may still describe the pre-compact context.
+            // Native completion already clears usage, so only later reports survive.
+            if (!context.hasCompletedNativeCompaction) {
               context.contextUsage = null;
               yield* Ref.update(contextUsageBySessionId, (current) => {
                 const updated = new Map(current);
@@ -7025,7 +7025,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               assistant: { current: null, nextSegment: 0 },
               reasoning: { current: null, nextSegment: 0 },
               contextUsage: rememberedContextUsage ?? turnInput.providerThread.contextUsage ?? null,
-              hasFreshContextUsage: false,
+              hasCompletedNativeCompaction: false,
               nativeMetadata: initialNativeMetadata,
               tools: new Map(),
               toolUpdatesSkipped: new Map(),

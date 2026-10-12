@@ -604,8 +604,14 @@ function makeTurnInput(input: {
 }
 
 describe("AcpAdapterV2", () => {
-  it.live.each(["missing", "fresh"] as const)(
-    "honors %s usage reports after explicit ACP compaction",
+  it.live.each([
+    "missing",
+    "unproven-high",
+    "unproven-low",
+    "before-native-completion",
+    "after-native-completion",
+  ] as const)(
+    "uses only usage following native completion during explicit ACP compaction (%s)",
     (usageReport) =>
       Effect.gen(function* () {
         const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -637,15 +643,40 @@ describe("AcpAdapterV2", () => {
                 prompt: (payload, options) =>
                   Effect.gen(function* () {
                     promptOrdinal += 1;
-                    if (promptOrdinal === 1 || (promptOrdinal === 2 && usageReport === "fresh")) {
+                    if (promptOrdinal === 1 || (promptOrdinal === 2 && usageReport !== "missing")) {
                       yield* sessionUpdateHandler!({
                         sessionId: nativeSessionId,
                         update: {
                           sessionUpdate: "usage_update",
-                          used: promptOrdinal === 1 ? 30_000 : 100,
+                          used:
+                            promptOrdinal === 1 ||
+                            usageReport === "unproven-high" ||
+                            usageReport === "after-native-completion"
+                              ? 30_000
+                              : 100,
                           size: 32_000,
                         },
                       });
+                    }
+                    if (
+                      promptOrdinal === 2 &&
+                      (usageReport === "before-native-completion" ||
+                        usageReport === "after-native-completion")
+                    ) {
+                      yield* sessionUpdateHandler!({
+                        sessionId: nativeSessionId,
+                        update: {
+                          sessionUpdate: "compaction_update",
+                          compactionId: "compact-usage-boundary",
+                          status: "completed",
+                        },
+                      });
+                      if (usageReport === "after-native-completion") {
+                        yield* sessionUpdateHandler!({
+                          sessionId: nativeSessionId,
+                          update: { sessionUpdate: "usage_update", used: 100, size: 32_000 },
+                        });
+                      }
                     }
                     return yield* runtime.prompt(payload, options);
                   }),
@@ -711,7 +742,7 @@ describe("AcpAdapterV2", () => {
           ),
         );
         const expectedUsage =
-          usageReport === "fresh" ? { usedTokens: 100, maxTokens: 32_000 } : null;
+          usageReport === "after-native-completion" ? { usedTokens: 100, maxTokens: 32_000 } : null;
         assert.deepEqual(compacted.providerThread.contextUsage, expectedUsage);
         const continued = yield* runTurn(3, compacted.providerThread, "Continue after compact");
         assert.deepEqual(continued.providerThread.contextUsage, expectedUsage);
