@@ -1030,7 +1030,13 @@ describe("orchestration v2 provider switching", () => {
       }),
     ),
   );
-  it.live.each(["turn-start", "injection", "large-missed-request"] as const)(
+  it.live.each([
+    "turn-start",
+    "injection",
+    "large-missed-request",
+    "deferred-missed-request",
+    "deferred-omitted-request",
+  ] as const)(
     "recovers %s failure without duplicating history in the same native thread",
     (failure) =>
       Effect.scoped(
@@ -1040,6 +1046,7 @@ describe("orchestration v2 provider switching", () => {
           const injectedHistory = yield* Ref.make<ReadonlyArray<unknown>>([]);
           const failOnce = yield* Ref.make(true);
           const generation = yield* Ref.make(0);
+          const modelWindow = failure === "deferred-omitted-request" ? 64_000 : 32_000;
           const layerRegistry = ProviderAdapterRegistry.layerFromAdapters([
             makeTestAdapter({
               instanceId: CODEX_MODEL_SELECTION.instanceId,
@@ -1058,7 +1065,7 @@ describe("orchestration v2 provider switching", () => {
               capturedTurns,
               injectedHistory,
               nativeThreadGeneration: generation,
-              getModelContextWindow: () => 32_000,
+              getModelContextWindow: () => modelWindow,
               ...(failure !== "injection"
                 ? { failStartOnce: failOnce }
                 : { failInjectionOnce: failOnce }),
@@ -1115,23 +1122,82 @@ describe("orchestration v2 provider switching", () => {
             });
             yield* dispatch(1, "Original request with constraints", CODEX_MODEL_SELECTION);
             yield* wait(1, "completed");
-            yield* dispatch(
-              2,
-              failure === "large-missed-request" ? "x".repeat(7_000) : "First target request",
-              CLAUDE_MODEL_SELECTION,
-            );
+            const deferred = failure.startsWith("deferred");
+            const omitted =
+              failure === "large-missed-request" || failure === "deferred-omitted-request";
+            const missedText = omitted
+              ? "x".repeat(deferred ? 18_000 : 7_000)
+              : "First target request";
+            yield* dispatch(2, missedText, CLAUDE_MODEL_SELECTION);
             yield* wait(2, "failed");
             const failed = yield* orchestrator.getThreadProjection(threadId);
+            assert.notInclude(
+              failed.providerTurns.map((turn) => turn.runAttemptId),
+              failed.runs.at(-1)!.activeAttemptId,
+            );
             const failedHandoff = failed.contextHandoffs.at(-1)!;
             assert.equal(
               failedHandoff.delivery?.status,
               failure !== "injection" ? "injected" : "pending",
             );
             const historyBeforeRetry = (yield* Ref.get(injectedHistory)).length;
-            const retryText =
-              failure === "large-missed-request" ? "y".repeat(10_000) : "Retry target request";
+            let retryText = deferred
+              ? "y".repeat(120_000)
+              : failure === "large-missed-request"
+                ? "y".repeat(10_000)
+                : "Retry target request";
             yield* dispatch(3, retryText, CLAUDE_MODEL_SELECTION);
             yield* wait(3, "completed");
+            if (deferred) {
+              const firstDeferred = yield* orchestrator.getThreadProjection(threadId);
+              assert.equal(firstDeferred.contextHandoffs.length, failed.contextHandoffs.length + 1);
+              const deferredHandoff = firstDeferred.contextHandoffs.at(-1)!;
+              assert.equal(deferredHandoff.delivery?.status, "deferred");
+              const missedRequest = firstDeferred.turnItems.find(
+                (item) => item.type === "user_message" && item.text === missedText,
+              )!;
+              if (omitted) {
+                assert.include(deferredHandoff.history?.omittedItemIds ?? [], missedRequest.id);
+              } else {
+                assert.include(
+                  deferredHandoff.history!.messages.map((item) => item.itemId),
+                  missedRequest.id,
+                );
+              }
+              assert.equal((yield* Ref.get(injectedHistory)).length, historyBeforeRetry);
+              yield* dispatch(4, "Another retry " + "y".repeat(120_000), CLAUDE_MODEL_SELECTION);
+              yield* wait(4, "completed");
+              const projection = yield* orchestrator.getThreadProjection(threadId);
+              assert.deepEqual(projection.contextHandoffs, firstDeferred.contextHandoffs);
+              assert.equal((yield* Ref.get(injectedHistory)).length, historyBeforeRetry);
+              const target = projection.providerThreads.find(
+                (thread) => thread.id === deferredHandoff.toProviderThreadId,
+              )!;
+              // The successful oversized retries are native history now. Telemetry
+              // after compaction restores room without replaying those prompts.
+              const eventSink = yield* EventSink.EventSinkV2;
+              yield* eventSink.write({
+                events: [
+                  {
+                    id: EventId.make("missed-request-context-recovered"),
+                    type: "provider-thread.updated",
+                    threadId,
+                    occurredAt: yield* DateTime.now,
+                    payload: {
+                      ...target,
+                      contextUsage: { usedTokens: 100, maxTokens: modelWindow },
+                    },
+                  },
+                ],
+              });
+              retryText = "Retry after context recovery";
+              yield* dispatch(5, retryText, CLAUDE_MODEL_SELECTION);
+              yield* wait(5, "completed");
+              assert.equal(
+                (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs.length,
+                firstDeferred.contextHandoffs.length,
+              );
+            }
             const retried = yield* orchestrator.getThreadProjection(threadId);
             const lastTurn = (yield* Ref.get(capturedTurns)).at(-1)!;
             assert.equal(lastTurn.text, retryText);
@@ -1139,15 +1205,18 @@ describe("orchestration v2 provider switching", () => {
               const delta = yield* encodeJson(
                 (yield* Ref.get(injectedHistory)).slice(historyBeforeRetry),
               );
-              if (failure === "large-missed-request") {
+              if (omitted) {
                 assert.include(delta, "omitted 1 items");
                 const missedRequest = retried.turnItems.find(
-                  (item) => item.type === "user_message" && item.text === "x".repeat(7_000),
+                  (item) => item.type === "user_message" && item.text === missedText,
                 )!;
                 const delivery = retried.contextHandoffs.at(-1)!.delivery!;
                 assert.include(delivery.omittedItemIds ?? [], missedRequest.id);
                 assert.notInclude(delivery.itemIds, missedRequest.id);
-              } else assert.include(delta, "First target request");
+              } else {
+                assert.include(delta, "First target request");
+                assert.equal(delta.split("First target request").length - 1, 1);
+              }
               assert.notInclude(delta, "Original request with constraints");
               assert.notInclude(delta, "Original partial work");
               assert.equal(yield* Ref.get(generation), 1);
@@ -1166,8 +1235,8 @@ describe("orchestration v2 provider switching", () => {
             }
             const beforeFollowup = yield* Ref.get(injectedHistory);
             const followup = "z".repeat(6_000);
-            yield* dispatch(4, followup, CLAUDE_MODEL_SELECTION);
-            yield* wait(4, "completed");
+            yield* dispatch(deferred ? 6 : 4, followup, CLAUDE_MODEL_SELECTION);
+            yield* wait(deferred ? 6 : 4, "completed");
             assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, followup);
             assert.deepEqual(yield* Ref.get(injectedHistory), beforeFollowup);
             assert.equal(

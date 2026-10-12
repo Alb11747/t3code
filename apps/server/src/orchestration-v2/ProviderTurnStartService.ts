@@ -1003,6 +1003,18 @@ export const layer: Layer.Layer<
         ...deliveredItemIds,
         ...settledHandoffs.flatMap((handoff) => handoff.delivery?.omittedItemIds ?? []),
       ]);
+      // Deferred history is still unsent, but already has a handoff selected
+      // for retry. Reuse it instead of rebuilding missed-run records each turn.
+      const deferredHistoryItemIds = new Set(
+        effectiveHandoffs.flatMap((handoff) =>
+          handoff.delivery?.status !== "deferred"
+            ? []
+            : [
+                ...(handoff.history?.messages.map((message) => message.itemId) ?? []),
+                ...(handoff.history?.omittedItemIds ?? []),
+              ],
+        ),
+      );
       const deliveredAttemptIds = new Set(
         projection.providerTurns.map((turn) => turn.runAttemptId),
       );
@@ -1096,6 +1108,7 @@ export const layer: Layer.Layer<
                 item.runId !== null &&
                 missedRunIds.has(item.runId) &&
                 !coveredItemIds.has(item.id) &&
+                !deferredHistoryItemIds.has(item.id) &&
                 historicalMessage(item) !== null,
             );
       const startWithHandoffs = (
