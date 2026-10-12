@@ -475,6 +475,8 @@ describe("orchestration v2 provider switching", () => {
     "compact-legacy",
     "deferred-fallback",
     "deferred-cancelled",
+    "deferred-before-budget-cancelled",
+    "deferred-before-budget-cancelled-native",
     "deferred-compact-fallback",
     "deferred-failed-compact-fallback",
     "deferred-compact-stale-telemetry",
@@ -733,15 +735,40 @@ describe("orchestration v2 provider switching", () => {
                 )
               : undefined;
           yield* Effect.addFinalizer(() => Effect.sync(() => spy?.mockRestore()));
-          const current = scenario.startsWith("compact")
-            ? "/compact"
-            : scenario.startsWith("deferred")
-              ? "x".repeat(120_000)
-              : capacityScenario && !turnUsageScenario
-                ? "x".repeat(70_000)
-                : scenario === "large-current-input"
-                  ? "x".repeat(9_000)
-                  : "Continue work";
+          const beforeBudgetCrash = scenario.startsWith("deferred-before-budget-cancelled");
+          const runningCommitted = yield* Deferred.make<void>();
+          const writeIfRunCurrent = eventSink.writeIfRunCurrent;
+          const crashSpy = beforeBudgetCrash
+            ? vi.spyOn(eventSink, "writeIfRunCurrent").mockImplementation((input) => {
+                if (
+                  !input.events.some(
+                    (event) =>
+                      event.type === "run.updated" &&
+                      event.payload.ordinal === 2 &&
+                      event.payload.status === "running",
+                  )
+                )
+                  return writeIfRunCurrent(input);
+                return writeIfRunCurrent(input).pipe(
+                  Effect.tap(() => Deferred.succeed(runningCommitted, undefined)),
+                  // Stop the start effect immediately after the real running
+                  // transaction, before budgeting or handoff delivery can run.
+                  Effect.map((result) => ({ ...result, committed: false })),
+                );
+              })
+            : undefined;
+          yield* Effect.addFinalizer(() => Effect.sync(() => crashSpy?.mockRestore()));
+          const current = beforeBudgetCrash
+            ? "Continue work"
+            : scenario.startsWith("compact")
+              ? "/compact"
+              : scenario.startsWith("deferred")
+                ? "x".repeat(120_000)
+                : capacityScenario && !turnUsageScenario
+                  ? "x".repeat(70_000)
+                  : scenario === "large-current-input"
+                    ? "x".repeat(9_000)
+                    : "Continue work";
           // First establish the returning native thread: the current request must
           // not be charged as existing context on the subsequent handoff.
           if (returning) {
@@ -833,6 +860,56 @@ describe("orchestration v2 provider switching", () => {
           }
           if (scenario.includes("retry")) yield* Ref.set(failStartOnce, true);
           yield* dispatch(targetOrdinal, current, targetSelection);
+          if (beforeBudgetCrash) {
+            yield* Deferred.await(runningCommitted);
+            yield* worker.drain();
+            crashSpy!.mockRestore();
+            const stopped = yield* orchestrator.getThreadProjection(threadId);
+            const stoppedRun = stopped.runs.at(-1)!;
+            const handoff = stopped.contextHandoffs.at(-1)!;
+            assert.equal(stoppedRun.status, "running");
+            assert.equal(handoff.delivery?.status, "deferred");
+            const nativeThreadId = stopped.providerThreads.find(
+              (thread) => thread.id === handoff.toProviderThreadId,
+            )!.nativeThreadRef!.nativeId;
+            assert.lengthOf(yield* Ref.get(capturedTurns), 1);
+            // Restart recovery cancels the in-flight run before a provider
+            // accepted any prompt. Resuming its native thread must retain history.
+            yield* eventSink.write({
+              events: [
+                {
+                  id: EventId.make("before-budget-run-cancelled"),
+                  type: "run.updated",
+                  threadId,
+                  runId: stoppedRun.id,
+                  occurredAt: yield* DateTime.now,
+                  payload: { ...stoppedRun, status: "cancelled" },
+                },
+              ],
+            });
+            yield* dispatch(3, "Resume after restart", targetSelection);
+            yield* wait(3);
+            const resumed = yield* orchestrator.getThreadProjection(threadId);
+            const resumedHandoff = resumed.contextHandoffs.find((item) => item.id === handoff.id)!;
+            assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.nativeThreadId, nativeThreadId);
+            const injectedItems = yield* Ref.get(injectedHistory);
+            if (scenario.endsWith("-native")) {
+              assert.equal(resumedHandoff.delivery?.status, "injected");
+              assert.isAbove(injectedItems.length, 0);
+              assert.equal((yield* encodeJson(injectedItems)).split(sourcePrompt).length - 1, 1);
+            } else {
+              assert.equal(resumedHandoff.delivery?.status, "inline");
+              assert.equal(
+                (yield* Ref.get(capturedTurns)).at(-1)!.text.split(sourcePrompt).length - 1,
+                1,
+              );
+            }
+            yield* dispatch(4, "Continue normally", targetSelection);
+            yield* wait(4);
+            assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, "Continue normally");
+            assert.lengthOf(yield* Ref.get(injectedHistory), injectedItems.length);
+            return;
+          }
           yield* wait(targetOrdinal);
           if (scenario.includes("retry")) {
             const failed = yield* orchestrator.getThreadProjection(threadId);
@@ -1193,7 +1270,7 @@ describe("orchestration v2 provider switching", () => {
                 ],
               });
             }
-            assert.isUndefined(handoff.delivery);
+            assert.equal(handoff.delivery?.status, "deferred");
             yield* dispatch(3, "Continue after compact", CLAUDE_MODEL_SELECTION);
             yield* wait(3);
             assert.include(

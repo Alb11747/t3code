@@ -1,6 +1,7 @@
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
+  type OrchestrationV2ContextHandoff,
   CommandId,
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
@@ -959,6 +960,22 @@ export const layer: Layer.Layer<
         status: "running",
         startedAt: now,
       };
+      // Recovery cancels running turns. Record known-unsent history in the same
+      // transaction so a crash before budgeting cannot strand its ready handoff.
+      // Existing same-native delivery markers retain their ambiguity or completion.
+      const unsentHandoffs: Array<OrchestrationV2ContextHandoff> = [];
+      if (nativeId !== undefined && nativeId !== null) {
+        effectiveHandoffs = effectiveHandoffs.map((handoff) => {
+          if (handoff.delivery?.nativeThreadId === nativeId) return handoff;
+          const deferred: OrchestrationV2ContextHandoff = {
+            ...handoff,
+            delivery: { nativeThreadId: nativeId, status: "deferred", itemIds: [] },
+            updatedAt: now,
+          };
+          unsentHandoffs.push(deferred);
+          return deferred;
+        });
+      }
       const events: Array<OrchestrationV2DomainEvent> = [
         {
           id: yield* idAllocator.allocate.event({
@@ -1038,6 +1055,17 @@ export const layer: Layer.Layer<
           payload: runningRootNode,
         },
       ];
+      for (const handoff of unsentHandoffs) {
+        events.push({
+          id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+          type: "context-handoff.updated",
+          threadId: projection.thread.id,
+          runId: run.id,
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: now,
+          payload: handoff,
+        });
+      }
       const runningWrite = yield* eventSink.writeIfRunCurrent({
         threadId: projection.thread.id,
         runId: run.id,
