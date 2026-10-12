@@ -122,6 +122,7 @@ function makeTestAdapter(input: {
   readonly nativeCompactionRunOrdinals?: ReadonlySet<number>;
   readonly compactionUsageTiming?: "before" | "equal" | "after";
   readonly compactionAfterTokenCount?: number;
+  readonly compactionSummary?: string;
   readonly failedRunOrdinals?: ReadonlySet<number>;
   readonly interruptedRunOrdinals?: ReadonlySet<number>;
   readonly holdRunOrdinal?: number;
@@ -424,6 +425,9 @@ function makeTestAdapter(input: {
                     updatedAt: eventTime,
                     type: "compaction",
                     driver: input.driver,
+                    ...(input.compactionSummary === undefined
+                      ? {}
+                      : { summary: input.compactionSummary }),
                     ...(input.compactionAfterTokenCount === undefined
                       ? {}
                       : { afterTokenCount: input.compactionAfterTokenCount }),
@@ -491,6 +495,8 @@ describe("orchestration v2 provider switching", () => {
     "deferred-cancelled",
     "deferred-before-budget-cancelled",
     "deferred-before-budget-cancelled-native",
+    "deferred-before-budget-cancelled-pre-prompt",
+    "deferred-before-budget-cancelled-pre-prompt-native",
     "deferred-compact-fallback",
     "deferred-failed-compact-fallback",
     "deferred-compact-stale-telemetry",
@@ -505,6 +511,8 @@ describe("orchestration v2 provider switching", () => {
     "deferred-native-compact-fresh-telemetry",
     "deferred-native-compact-watermark-telemetry",
     "deferred-native-compact-mismatched-watermark-telemetry",
+    "deferred-native-compact-marker-high-fallback",
+    "deferred-auto-compact-marker-low-fallback",
     "large-current-input",
     "screenshot-native",
     "screenshot-fallback",
@@ -550,6 +558,7 @@ describe("orchestration v2 provider switching", () => {
         const generation = yield* Ref.make(0);
         const priorImages = scenario.includes("prior-images");
         const replaceNative = scenario.includes("replacement");
+        const prePromptCancellation = scenario.includes("-pre-prompt");
         const capacityScenario = modelScenario || scenario.includes("reported-capacity");
         const compactionScenario = scenario.includes("-compact-");
         const compactionTelemetry = compactionScenario && scenario.endsWith("-telemetry");
@@ -557,6 +566,8 @@ describe("orchestration v2 provider switching", () => {
         const nativeCompaction = automaticCompaction || scenario.includes("-native-compact-");
         const threadCompactionTelemetry = scenario === "deferred-compact-fresh-thread-telemetry";
         const watermarkCompactionTelemetry = scenario.includes("-watermark-");
+        const markerOnlyCompaction = scenario.includes("-marker-");
+        const highCompactionMarker = scenario === "deferred-native-compact-marker-high-fallback";
         const matchedWatermark = scenario === "deferred-native-compact-watermark-telemetry";
         const freshCompactionTelemetry =
           scenario === "deferred-compact-fresh-telemetry" ||
@@ -618,6 +629,12 @@ describe("orchestration v2 provider switching", () => {
                 }
               : {}),
             ...(watermarkCompactionTelemetry ? { compactionAfterTokenCount: 100 } : {}),
+            ...(markerOnlyCompaction
+              ? {
+                  compactionAfterTokenCount: highCompactionMarker ? 30_000 : 2_000,
+                  ...(highCompactionMarker ? {} : { compactionSummary: "s".repeat(20_000) }),
+                }
+              : {}),
             ...(threadCompactionTelemetry
               ? {
                   contextUsageByRunOrdinal: {
@@ -642,6 +659,9 @@ describe("orchestration v2 provider switching", () => {
                 : {}),
             ...(scenario.includes("retry") || scenario.includes("unsent") ? { failStartOnce } : {}),
             ...(replaceNative ? { failResumeOnce, nativeThreadGeneration: generation } : {}),
+            ...(scenario.startsWith("deferred-before-budget-cancelled")
+              ? { nativeThreadGeneration: generation }
+              : {}),
             ...(scenario.includes("reported-capacity")
               ? { initialContextUsage: { usedTokens: 999_999, maxTokens: 1_000_000 } }
               : {}),
@@ -913,8 +933,8 @@ describe("orchestration v2 provider switching", () => {
               (thread) => thread.id === handoff.toProviderThreadId,
             )!.nativeThreadRef!.nativeId;
             assert.lengthOf(yield* Ref.get(capturedTurns), 1);
-            // Restart recovery cancels the in-flight run before a provider
-            // accepted any prompt. Resuming its native thread must retain history.
+            // Persisted state cannot prove prompt acceptance around a crash,
+            // whether the adapter published a running provider turn or not.
             yield* eventSink.write({
               events: [
                 {
@@ -925,13 +945,38 @@ describe("orchestration v2 provider switching", () => {
                   occurredAt: yield* DateTime.now,
                   payload: { ...stoppedRun, status: "cancelled" },
                 },
+                ...(prePromptCancellation
+                  ? [
+                      {
+                        id: EventId.make("pre-prompt-provider-turn-cancelled"),
+                        type: "provider-turn.updated" as const,
+                        threadId,
+                        runId: stoppedRun.id,
+                        occurredAt: stoppedRun.startedAt!,
+                        // ACP, Claude and OpenCode can publish a running turn
+                        // before prompt submission. Recovery marks it cancelled.
+                        payload: {
+                          id: ProviderTurnId.make("pre-prompt-provider-turn"),
+                          providerThreadId: handoff.toProviderThreadId,
+                          nodeId: stoppedRun.rootNodeId!,
+                          runAttemptId: stoppedRun.activeAttemptId,
+                          nativeTurnRef: null,
+                          ordinal: 1,
+                          status: "cancelled" as const,
+                          startedAt: stoppedRun.startedAt,
+                          completedAt: yield* DateTime.now,
+                        },
+                      },
+                    ]
+                  : []),
               ],
             });
             yield* dispatch(3, "Resume after restart", targetSelection);
             yield* wait(3);
             const resumed = yield* orchestrator.getThreadProjection(threadId);
             const resumedHandoff = resumed.contextHandoffs.find((item) => item.id === handoff.id)!;
-            assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.nativeThreadId, nativeThreadId);
+            const resumedNativeId = (yield* Ref.get(capturedTurns)).at(-1)!.nativeThreadId;
+            assert.notEqual(resumedNativeId, nativeThreadId);
             assert.notInclude((yield* Ref.get(capturedTurns)).at(-1)!.text, current);
             const injectedItems = yield* Ref.get(injectedHistory);
             assert.notInclude(yield* encodeJson(injectedItems), current);
@@ -949,6 +994,7 @@ describe("orchestration v2 provider switching", () => {
             yield* dispatch(4, "Continue normally", targetSelection);
             yield* wait(4);
             assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, "Continue normally");
+            assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.nativeThreadId, resumedNativeId);
             assert.lengthOf(yield* Ref.get(injectedHistory), injectedItems.length);
             return;
           }
@@ -1122,7 +1168,7 @@ describe("orchestration v2 provider switching", () => {
                         : undefined,
                 );
               } else assert.isNull(recoveredUsage);
-              if (failedCompaction || rolledBackCompaction) {
+              if (failedCompaction || rolledBackCompaction || highCompactionMarker) {
                 assert.equal(recoveredHandoff.delivery?.status, "pending");
                 assert.isTrue(recoveredHandoff.delivery?.deferred);
                 assert.equal(recoveredTurn.text, "Continue after compact");
@@ -1146,9 +1192,12 @@ describe("orchestration v2 provider switching", () => {
               // context again after delivery. A new handoff must account for it.
               yield* dispatch(6, "A new source constraint", CODEX_MODEL_SELECTION);
               yield* wait(6);
-              // Automatic compaction's 4k response still occupies context. With
-              // 7k of current input, dropping that whole run would admit this handoff.
-              const current = "y".repeat(automaticCompaction ? 7_000 : 10_000);
+              // The 4k response still occupies context. Use 5k of current input
+              // when the marker already accounts for 2k; dropping later output
+              // would incorrectly admit the handoff in either automatic case.
+              const current = "y".repeat(
+                markerOnlyCompaction ? 5_000 : automaticCompaction ? 7_000 : 10_000,
+              );
               yield* dispatch(7, current, targetSelection);
               yield* wait(7);
               assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, current);

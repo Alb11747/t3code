@@ -680,15 +680,48 @@ export const layer: Layer.Layer<
             handoff.delivery?.status === "pending" &&
             handoff.delivery.deferred !== true,
         );
+        const cancelledRunIds = new Set(
+          projection.runs
+            .filter((source) => source.status === "cancelled")
+            .map((source) => source.id),
+        );
+        const cancelledNativeAttempts = new Map(
+          projection.attempts
+            .filter(
+              (source) =>
+                cancelledRunIds.has(source.runId) &&
+                source.providerThreadId === providerThread.id &&
+                source.nativeThreadId === providerThread.nativeThreadRef?.nativeId,
+            )
+            .map((source) => [source.id, source]),
+        );
+        const completedCancelledAttempts = new Set(
+          projection.providerTurns.flatMap((turn) =>
+            turn.providerThreadId === providerThread.id &&
+            turn.status === "completed" &&
+            turn.runAttemptId !== null &&
+            cancelledNativeAttempts.get(turn.runAttemptId)?.rootNodeId === turn.nodeId
+              ? [turn.runAttemptId]
+              : [],
+          ),
+        );
+        // Adapters publish running turns on either side of prompt submission.
+        // Neither an absent nor an incomplete turn proves a cancelled request
+        // was unsent. Replace that native session to resolve uncertain occupancy.
+        const uncertainCancelledPrompt = [...cancelledNativeAttempts.keys()].some(
+          (attemptId) => !completedCancelledAttempts.has(attemptId),
+        );
         const resumed = yield* Effect.result(
-          uncertainDelivery
+          uncertainDelivery || uncertainCancelledPrompt
             ? Effect.fail(
                 new ProviderAdapter.ProviderAdapterTurnStartError({
                   driver: session.driver,
                   threadId: projection.thread.id,
                   providerThreadId: providerThread.id,
                   runId,
-                  cause: "Uncertain native history injection",
+                  cause: uncertainDelivery
+                    ? "Uncertain native history injection"
+                    : "Uncertain native prompt acceptance after cancellation",
                 }),
               )
             : session.resumeThread({
@@ -706,7 +739,11 @@ export const layer: Layer.Layer<
           driver: session.driver,
           providerThreadId: providerThread.id,
           runId,
-          reason: uncertainDelivery ? "uncertain_history_delivery" : "resume_failed",
+          reason: uncertainDelivery
+            ? "uncertain_history_delivery"
+            : uncertainCancelledPrompt
+              ? "uncertain_cancelled_prompt"
+              : "resume_failed",
           errorTag: resumed.failure._tag,
         });
         const replacement = yield* loadFromProvider(
@@ -838,7 +875,7 @@ export const layer: Layer.Layer<
       // Native completion can precede explicit run finalization. Bound telemetry
       // by the marker while retaining the run boundary for fallback history.
       let compactionUsageResetAt: DateTime.Utc | undefined;
-      let compactionAfterTokenCount: number | undefined;
+      let compactionMarker: Extract<OrchestrationV2TurnItem, { type: "compaction" }> | undefined;
       if (sameNativeThread && nativeId !== undefined) {
         const providerTurnsById = new Map(projection.providerTurns.map((turn) => [turn.id, turn]));
         const runsById = new Map(projection.runs.map((source) => [source.id, source]));
@@ -874,7 +911,7 @@ export const layer: Layer.Layer<
                 DateTime.isGreaterThan(completedAt, compactionUsageResetAt))
             ) {
               compactionUsageResetAt = completedAt;
-              compactionAfterTokenCount = item.afterTokenCount;
+              compactionMarker = item;
             }
             continue;
           }
@@ -893,7 +930,7 @@ export const layer: Layer.Layer<
             summary: item.summary ?? "",
           };
           compactionUsageResetAt = completedAt;
-          compactionAfterTokenCount = item.afterTokenCount;
+          compactionMarker = item;
         }
       }
       // Only started runs reached the provider-thread update below. Queued runs and
@@ -919,9 +956,9 @@ export const layer: Layer.Layer<
       const measuredCompactionWatermark =
         measuredContext !== undefined &&
         compactionUsageResetAt !== undefined &&
-        compactionAfterTokenCount !== undefined &&
+        compactionMarker?.afterTokenCount !== undefined &&
         measuredContext.runOrdinal === compaction?.ordinal &&
-        measuredContext.usage.usedTokens === compactionAfterTokenCount &&
+        measuredContext.usage.usedTokens === compactionMarker.afterTokenCount &&
         DateTime.Equivalence(
           DateTime.makeUnsafe(measuredContext.reportedAt),
           compactionUsageResetAt,
@@ -1177,14 +1214,6 @@ export const layer: Layer.Layer<
           .filter((source) => source.nativeThreadId === undefined)
           .map((source) => source.runId),
       );
-      const acceptedRunIds = new Set(acceptedAttempts.map((source) => source.runId));
-      // Restart may cancel after the running write but before prompt acceptance.
-      // Its request occupies no native context and must not be replayed as missed work.
-      const unsentCancelledRunIds = new Set(
-        projection.runs
-          .filter((source) => source.status === "cancelled" && !acceptedRunIds.has(source.id))
-          .map((source) => source.id),
-      );
       const legacyRecoveredRunIds = new Set(
         projection.runs
           .filter(
@@ -1205,7 +1234,17 @@ export const layer: Layer.Layer<
       // history, whose attachments were not replayed into the replacement thread.
       const nativeContextEstimate = Effect.gen(function* () {
         if (!sameNativeThread) return 0;
-        const compactedAt = compaction?.completedAt;
+        const countedCompaction =
+          compactionMarker?.afterTokenCount === undefined ? undefined : compactionMarker;
+        const compactedAt =
+          countedCompaction === undefined ? compaction?.completedAt : compactionUsageResetAt;
+        const postCompactionRunIds = new Set(
+          countedCompaction === undefined
+            ? []
+            : projection.runs
+                .filter((source) => compaction !== undefined && source.ordinal > compaction.ordinal)
+                .map((source) => source.id),
+        );
         const importedAfterCompaction = new Set(
           settledHandoffs.flatMap((handoff) =>
             compactedAt != null && DateTime.isGreaterThanOrEqualTo(handoff.updatedAt, compactedAt)
@@ -1213,20 +1252,31 @@ export const layer: Layer.Layer<
               : [],
           ),
         );
-        // Successful compaction bounds the fallback, without inventing telemetry.
-        // Keep its visible summary and later imports; the budget still reserves
-        // space for unobserved native instructions and summary overhead.
+        // A provider's post-compaction count already covers its summary and earlier
+        // inputs. Add later native output and imports; absent a count, keep the summary.
         return (yield* projectionStore.getTurnStartHistory(input.threadId)).reduce(
           (sum, item) => {
+            // Timeline ordinals distinguish later output from the marker even
+            // when both events share a millisecond timestamp.
+            const afterCountedCompaction =
+              countedCompaction !== undefined &&
+              ((item.providerTurnId === countedCompaction.providerTurnId &&
+                item.ordinal > countedCompaction.ordinal) ||
+                (item.runId !== null && postCompactionRunIds.has(item.runId)));
             const beforeCompaction =
               compactedAt != null &&
-              (!compaction?.explicit || item.runId !== compaction.runId) &&
-              DateTime.isLessThan(item.updatedAt, compactedAt);
+              !afterCountedCompaction &&
+              (countedCompaction !== undefined ||
+                !compaction?.explicit ||
+                item.runId !== compaction.runId) &&
+              (countedCompaction === undefined
+                ? DateTime.isLessThan(item.updatedAt, compactedAt)
+                : DateTime.isLessThanOrEqualTo(item.updatedAt, compactedAt));
             if (
               item.runId === run.id ||
               (beforeCompaction && !importedAfterCompaction.has(item.id)) ||
               (item.runId !== null &&
-                (missedRunIds.has(item.runId) || unsentCancelledRunIds.has(item.runId)) &&
+                missedRunIds.has(item.runId) &&
                 !deliveredItemIds.has(item.id)) ||
               (item.providerThreadId !== providerThread.id && !deliveredItemIds.has(item.id))
             )
@@ -1249,7 +1299,7 @@ export const layer: Layer.Layer<
               nativeAttachments
             );
           },
-          Buffer.byteLength(compaction?.summary ?? ""),
+          countedCompaction?.afterTokenCount ?? Buffer.byteLength(compaction?.summary ?? ""),
         );
       });
       const modelContextWindow =
