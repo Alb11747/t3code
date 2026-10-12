@@ -25,7 +25,10 @@ import {
   historicalMessage,
 } from "@t3tools/provider-core/server/handoffBudget";
 import { projectContextHandoffForWire } from "./WireProjection.ts";
-import { deliverContextHandoffs } from "./ContextHandoffDelivery.ts";
+import {
+  ContextHandoffDeliveryUncertainError,
+  deliverContextHandoffs,
+} from "./ContextHandoffDelivery.ts";
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeHandoff = Schema.decodeUnknownSync(OrchestrationV2ContextHandoff);
@@ -611,31 +614,51 @@ describe("handoff delivery", () => {
     }),
   );
 
-  it.effect("does not redeliver after ambiguous injection failure", () =>
-    Effect.gen(function* () {
-      let durable = handoff;
-      let calls = 0;
-      const input = {
-        providerThread,
-        budget: 16_000,
-        alreadyDeliveredItemIds: new Set<string>(),
-        inject: () =>
-          Effect.sync(() => {
-            calls++;
-          }).pipe(Effect.andThen(Effect.fail("connection lost"))),
-        persist: (value: OrchestrationV2ContextHandoff) =>
-          Effect.sync(() => {
-            durable = value;
-          }),
-      };
-      yield* deliverContextHandoffs({ ...input, handoffs: [durable] }).pipe(Effect.result);
-      assert.equal(durable.delivery?.status, "pending");
-      const retry = yield* deliverContextHandoffs({ ...input, handoffs: [durable] }).pipe(
-        Effect.result,
-      );
-      assert.equal(retry._tag, "Failure");
-      assert.equal(calls, 1);
-    }),
+  it.effect.each([
+    { native: true, label: "injection" },
+    { native: false, label: "inline delivery" },
+  ])(
+    "preserves pending ambiguity after failed $label, even without context allowance",
+    ({ native }) =>
+      Effect.gen(function* () {
+        let durable = handoff;
+        let calls = 0;
+        let writes = 0;
+        const input = {
+          providerThread,
+          budget: 16_000,
+          alreadyDeliveredItemIds: new Set<string>(),
+          ...(native
+            ? {
+                inject: () =>
+                  Effect.sync(() => {
+                    calls++;
+                  }).pipe(Effect.andThen(Effect.fail("connection lost"))),
+              }
+            : {}),
+          persist: (value: OrchestrationV2ContextHandoff) =>
+            Effect.sync(() => {
+              durable = value;
+              writes++;
+            }),
+        };
+        // An inline prompt can be accepted before its delivery acknowledgement
+        // is persisted, leaving the same ambiguity as a failed injection.
+        yield* deliverContextHandoffs({ ...input, handoffs: [durable] }).pipe(Effect.result);
+        assert.equal(durable.delivery?.status, "pending");
+        const ambiguous = durable;
+        for (const budget of [0, 16_000]) {
+          const error = yield* deliverContextHandoffs({
+            ...input,
+            handoffs: [durable],
+            budget,
+          }).pipe(Effect.flip);
+          assert.instanceOf(error, ContextHandoffDeliveryUncertainError);
+          assert.strictEqual(durable, ambiguous);
+        }
+        assert.equal(writes, 1);
+        assert.equal(calls, native ? 1 : 0);
+      }),
   );
 
   it.effect("budgets multiple handoffs together and skips previously delivered items", () =>

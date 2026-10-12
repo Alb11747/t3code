@@ -38,6 +38,18 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     );
     if (pending.length === 0 || (input.deferInline && input.inject === undefined))
       return { context: "", delivered: Effect.void, unsent: Effect.void };
+    // A previous prompt may already have been accepted. Deferral cannot make
+    // that delivery safe to retry on the same native thread.
+    if (
+      nativeThreadId !== undefined &&
+      pending.some(
+        (handoff) =>
+          handoff.delivery?.nativeThreadId === nativeThreadId &&
+          handoff.delivery.status === "pending",
+      )
+    ) {
+      return yield* new ContextHandoffDeliveryUncertainError();
+    }
     const budget = typeof input.budget === "number" ? input.budget : yield* input.budget;
     let coverage = pending
       .map(
@@ -138,15 +150,6 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
         { discard: true },
       );
     if (input.inject !== undefined && nativeThreadId !== undefined) {
-      if (
-        pending.some(
-          (handoff) =>
-            handoff.delivery?.nativeThreadId === nativeThreadId &&
-            handoff.delivery.status === "pending",
-        )
-      ) {
-        return yield* new ContextHandoffDeliveryUncertainError();
-      }
       yield* persist("pending");
       const injected = yield* input.inject({
         messages: selected.messages,
