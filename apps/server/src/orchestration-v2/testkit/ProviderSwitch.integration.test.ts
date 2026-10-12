@@ -1781,6 +1781,10 @@ describe("orchestration v2 provider switching", () => {
     "accepted-cancelled-message-only-retried",
     "accepted-cancelled-message-newer-item",
     "accepted-cancelled-message-newer-item-native-history",
+    "accepted-cancelled-message-only-occupancy",
+    "accepted-cancelled-message-only-occupancy-native-history",
+    "accepted-cancelled-message-newer-item-occupancy",
+    "accepted-cancelled-message-newer-item-occupancy-native-history",
     "uncertain-cancelled-message-empty",
   ] as const)(
     "starts a replacement native thread as new after the resume fallback with %s attempts",
@@ -1792,6 +1796,8 @@ describe("orchestration v2 provider switching", () => {
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const injectedHistory = yield* Ref.make<ReadonlyArray<unknown>>([]);
           const cancelledRecovered = attempts.includes("cancelled");
+          const recoveredOccupancy = attempts.includes("-occupancy");
+          let contextWindow = 26_000;
           const providerRequest =
             attempts.includes("-approval") || attempts.includes("-user-input");
           const providerEvidence =
@@ -1813,12 +1819,13 @@ describe("orchestration v2 provider switching", () => {
                     1:
                       attempts.includes("-empty") || attempts.includes("-todo") || providerEvidence
                         ? ""
-                        : "Accepted cancelled output",
+                        : `Accepted cancelled output${recoveredOccupancy ? "x".repeat(5800) : ""}`,
                   }
                 : {},
               capturedTurns,
               failResumeOnce,
               nativeThreadGeneration: generation,
+              ...(recoveredOccupancy ? { getModelContextWindow: () => contextWindow } : {}),
               ...(attempts.endsWith("-native-history") ? { injectedHistory } : {}),
             }),
           ]);
@@ -1833,7 +1840,7 @@ describe("orchestration v2 provider switching", () => {
                 messageId: MessageId.make(`resume-fallback:${ordinal}`),
                 createdBy: "user",
                 creationSource: "web",
-                text: `Request ${ordinal}`,
+                text: `Request ${ordinal}${recoveredOccupancy && ordinal === 3 ? "x".repeat(5000) : ""}`,
                 attachments: [],
                 modelSelection: CLAUDE_MODEL_SELECTION,
                 dispatchMode: { type: "start_immediately" },
@@ -2178,6 +2185,48 @@ describe("orchestration v2 provider switching", () => {
             // cancelled prompt: replacement must occur even if resume succeeds.
             yield* Ref.set(failResumeOnce, !attempts.endsWith("-retried"));
             yield* runToCompletion(2);
+            if (recoveredOccupancy) {
+              const recovered = yield* orchestrator.getThreadProjection(threadId);
+              const handoff = recovered.contextHandoffs.at(-1)!;
+              assert.include(handoff.delivery!.itemIds, handoff.history!.messages.at(-1)!.itemId);
+              const occurredAt = yield* DateTime.now;
+              // A different history record waits for room after reconstructed
+              // assistant text has entered the replacement native transcript.
+              yield* (yield* EventSink.EventSinkV2).write({
+                events: [
+                  {
+                    id: EventId.make("resume-fallback:pending-occupancy-history"),
+                    type: "context-handoff.updated",
+                    threadId,
+                    occurredAt,
+                    payload: {
+                      ...handoff,
+                      id: ContextHandoffId.make("resume-fallback:occupancy-history"),
+                      transferId: null,
+                      history: {
+                        coverage: "Additional recovered context",
+                        messages: [
+                          {
+                            ...handoff.history!.messages.at(-1)!,
+                            itemId: TurnItemId.make("resume-fallback:additional-history"),
+                            text: "Additional recovered answer",
+                          },
+                        ],
+                        omittedItems: 0,
+                        omittedItemIds: [],
+                      },
+                      delivery: {
+                        nativeThreadId: handoff.delivery!.nativeThreadId,
+                        status: "pending",
+                        deferred: true,
+                        itemIds: [],
+                      },
+                      updatedAt: occurredAt,
+                    },
+                  },
+                ],
+              });
+            }
             const firstRunId = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!.id;
             const recordsSpy = vi.spyOn(
               yield* ProjectionStore.ProjectionStoreV2,
@@ -2185,9 +2234,29 @@ describe("orchestration v2 provider switching", () => {
             );
             yield* Effect.addFinalizer(() => Effect.sync(() => recordsSpy.mockRestore()));
             yield* runToCompletion(3);
+            if (recoveredOccupancy) {
+              const deferred = (yield* orchestrator.getThreadProjection(
+                threadId,
+              )).contextHandoffs.find(
+                (handoff) => handoff.id === "resume-fallback:occupancy-history",
+              )!;
+              assert.equal(deferred.delivery?.status, "pending");
+              assert.isTrue(deferred.delivery?.deferred);
+              // A larger model window leaves room when recovered output is
+              // counted once, but not if it is added to the same item twice.
+              contextWindow = 32_000;
+              yield* runToCompletion(4);
+              const delivered = (yield* orchestrator.getThreadProjection(
+                threadId,
+              )).contextHandoffs.find((handoff) => handoff.id === deferred.id)!;
+              assert.equal(
+                delivered.delivery?.status,
+                attempts.endsWith("-native-history") ? "injected" : "inline",
+              );
+            }
 
             const turns = yield* Ref.get(capturedTurns);
-            assert.equal(turns.length, 3);
+            assert.equal(turns.length, recoveredOccupancy ? 4 : 3);
             assert.equal(yield* Ref.get(generation), 2);
             // The fallback binds a new native thread to a provider thread that
             // already has a turn, so the provider must not resume it.

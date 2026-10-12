@@ -1470,6 +1470,27 @@ export const layer: Layer.Layer<
               : [],
           ),
         );
+        // Replacement history can contain message-only output or newer text
+        // than its durable item. Count the text actually imported, once per ID,
+        // until compaction covers it; the item scan adds only any later growth.
+        const importedTextCosts = new Map<TurnItemId, number>();
+        for (const handoff of settledHandoffs) {
+          const selectedIds = new Set(handoff.delivery?.itemIds ?? []);
+          for (const message of handoff.history?.messages ?? []) {
+            if (
+              selectedIds.has(message.itemId) &&
+              (compactedAt == null || importedAfterCompaction.has(message.itemId))
+            ) {
+              importedTextCosts.set(
+                message.itemId,
+                Math.max(
+                  importedTextCosts.get(message.itemId) ?? 0,
+                  Buffer.byteLength(message.text),
+                ),
+              );
+            }
+          }
+        }
         // A provider's post-compaction count already covers its summary and earlier
         // inputs. Add later native output and imports; absent a count, keep the summary.
         return (yield* projectionStore.getTurnStartHistory(input.threadId)).reduce(
@@ -1513,11 +1534,16 @@ export const layer: Layer.Layer<
                 : 0;
             return (
               sum +
-              (historical === null ? 0 : Buffer.byteLength(historical.text)) +
+              Math.max(
+                0,
+                (historical === null ? 0 : Buffer.byteLength(historical.text)) -
+                  (importedTextCosts.get(item.id) ?? 0),
+              ) +
               nativeAttachments
             );
           },
-          countedCompaction?.afterTokenCount ?? Buffer.byteLength(compaction?.summary ?? ""),
+          (countedCompaction?.afterTokenCount ?? Buffer.byteLength(compaction?.summary ?? "")) +
+            [...importedTextCosts.values()].reduce((sum, cost) => sum + cost, 0),
         );
       });
       const modelContextWindow =

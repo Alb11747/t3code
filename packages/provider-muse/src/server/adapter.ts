@@ -212,6 +212,7 @@ interface ActiveTurn {
   readonly items: Map<string, MuseItem>;
   readonly ordinals: Map<string, number>;
   readonly started: Map<string, DateTime.Utc>;
+  readonly compactionCompletedAt: Map<string, DateTime.Utc>;
   readonly dirty: Set<string>;
   readonly settledRequests: Set<string>;
   readonly done: Deferred.Deferred<void>;
@@ -724,6 +725,16 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           return;
         const time = yield* DateTime.now;
         const status = terminal ?? itemStatus(item);
+        if (
+          item.kind === "compaction" &&
+          museItemStatus(item) === "completed" &&
+          !turn.compactionCompletedAt.has(item.itemId)
+        ) {
+          // A revised summary is still the same compaction. Keep its first
+          // successful boundary so later usage remains fresh.
+          turn.compactionCompletedAt.set(item.itemId, time);
+          yield* updateThread({ contextUsage: null });
+        }
         if (item.kind === "subagent" || item.kind === "workflow") {
           const wasRunning = observedChildren.has(item.itemId);
           if (status === "running") observedChildren.set(item.itemId, turn);
@@ -744,7 +755,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         const base = {
           ...baseItem(turn, item.itemId, time),
           status,
-          completedAt: streaming ? null : time,
+          completedAt: streaming ? null : (turn.compactionCompletedAt.get(item.itemId) ?? time),
           title: item.tool ?? null,
         };
         if (item.kind === "subagent") {
@@ -1385,11 +1396,6 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
             if (previous && previous.revision >= item.revision) return;
             turn.items.set(item.itemId, item);
             turn.dirty.delete(item.itemId);
-            if (item.kind === "compaction" && museItemStatus(item) === "completed") {
-              // Pre-compaction occupancy is no longer current. Keep the dated turn report
-              // for its model capacity; orchestration bounds its usage by this marker.
-              yield* updateThread({ contextUsage: null });
-            }
             yield* publishItem(turn, item);
             if (turn.compact && item.kind === "compaction" && item.status !== "inProgress") {
               yield* finish(
@@ -1977,6 +1983,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           items: new Map(),
           ordinals: new Map(),
           started: new Map(),
+          compactionCompletedAt: new Map(),
           dirty: new Set(),
           settledRequests: new Set(),
           done: yield* Deferred.make<void>(),

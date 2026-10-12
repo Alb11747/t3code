@@ -30,6 +30,7 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -1140,6 +1141,99 @@ describe("MuseAdapterV2", () => {
       );
       assert.strictEqual(following.providerThread.contextUsage?.usedTokens, 6000);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect.each([undefined, "inProgress", "failed"] as const)(
+    "preserves fresh usage and completion time when automatic compaction revises after %s",
+    (previousStatus) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        const harness = yield* makeHarness(fake);
+        const { nativeId } = yield* startConversation(harness, fake);
+        yield* fake.emit("session/contextUsage", { usedTokens: 30000, windowTokens: 32000 });
+        yield* harness.takeEvent(
+          "provider_thread.updated",
+          (event) => event.providerThread.contextUsage?.usedTokens === 30000,
+        );
+        const compaction: MuseItem = {
+          itemId: "automatic-compact",
+          turnId: nativeId,
+          kind: "compaction",
+          status: "completed",
+          outcome: "compacted",
+          revision: 2,
+          summary: ["Initial compacted summary"],
+        };
+        if (previousStatus !== undefined) {
+          yield* fake.emit("item/updated", {
+            item: { ...compaction, status: previousStatus, outcome: undefined, revision: 1 },
+          });
+          yield* harness.takeEvent(
+            "turn_item.updated",
+            (event) => event.turnItem.type === "compaction",
+          );
+          const unchanged = harness.allEvents.findLast(
+            (event) => event.type === "provider_thread.updated",
+          );
+          assert.strictEqual(unchanged?.providerThread.contextUsage?.usedTokens, 30000);
+        }
+        yield* fake.emit("item/completed", { item: compaction });
+        const first = yield* harness.takeEvent(
+          "turn_item.updated",
+          (event) => event.turnItem.type === "compaction" && event.turnItem.status === "completed",
+        );
+        const reset = harness.allEvents.findLast(
+          (event) => event.type === "provider_thread.updated",
+        );
+        assert.strictEqual(reset?.providerThread.contextUsage, null);
+        yield* TestClock.adjust("1 second");
+        yield* fake.emit("session/contextUsage", { usedTokens: 6000 });
+        const fresh = yield* harness.takeEvent(
+          "provider_turn.updated",
+          (event) => event.providerTurn.tokenUsage?.usedTokens === 6000,
+        );
+        yield* TestClock.adjust("1 second");
+        yield* fake.emit("item/completed", {
+          item: { ...compaction, revision: 3, summary: ["Updated compacted summary"] },
+        });
+        const revised = yield* harness.takeEvent(
+          "turn_item.updated",
+          (event) =>
+            event.turnItem.type === "compaction" &&
+            event.turnItem.summary === "Updated compacted summary",
+        );
+        const preserved = harness.allEvents.findLast(
+          (event) => event.type === "provider_thread.updated",
+        );
+        assert.strictEqual(preserved?.providerThread.contextUsage?.usedTokens, 6000);
+        assert.isTrue(
+          DateTime.Equivalence(revised.turnItem.completedAt!, first.turnItem.completedAt!),
+        );
+        assert.isTrue(
+          DateTime.isGreaterThan(
+            DateTime.makeUnsafe(fresh.providerTurn.tokenUsage!.updatedAt!),
+            revised.turnItem.completedAt!,
+          ),
+        );
+        yield* fake.emit("item/completed", {
+          item: { ...compaction, itemId: "another-compact", revision: 1 },
+        });
+        const another = yield* harness.takeEvent(
+          "turn_item.updated",
+          (event) =>
+            event.turnItem.type === "compaction" &&
+            event.turnItem.nativeItemRef?.nativeId === "another-compact",
+        );
+        const nextReset = harness.allEvents.findLast(
+          (event) => event.type === "provider_thread.updated",
+        );
+        assert.strictEqual(nextReset?.providerThread.contextUsage, null);
+        assert.isTrue(
+          DateTime.isGreaterThan(another.turnItem.completedAt!, first.turnItem.completedAt!),
+        );
+        yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
+        yield* harness.takeEvent("turn.terminal");
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect.each(["failed", "cancelled", "noop"])(
