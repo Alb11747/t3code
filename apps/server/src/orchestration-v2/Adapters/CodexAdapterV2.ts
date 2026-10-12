@@ -946,6 +946,16 @@ function describeCodexGoal(goal: OrchestrationV2ProviderGoal): string {
 // Codex starts the next goal turn milliseconds after the last one completes.
 const CODEX_GOAL_CONTINUATION_GRACE = "5 seconds";
 
+// Codex fails a turn at once on `serverOverloaded` ("Selected model is at
+// capacity") unless the server sent Retry-After. The run instead continues
+// with empty-input turns, which see the failed turn's recorded work, after
+// 10s, 20s, 40s, 80s, 160s, eighteen 3-minute waits and a final 50s: one hour total.
+const CODEX_OVERLOAD_RETRY_MAX_ATTEMPTS = 24;
+const codexOverloadRetryDelayMs = (attempt: number) =>
+  attempt === CODEX_OVERLOAD_RETRY_MAX_ATTEMPTS
+    ? 50_000
+    : Math.min(10_000 * 2 ** (attempt - 1), 180_000);
+
 const providerTurnsForThread = (
   providerTurns: ReadonlyArray<OrchestrationV2ProviderTurn>,
   providerThread: OrchestrationV2ProviderThread,
@@ -1138,6 +1148,8 @@ interface ActiveCodexProviderRetry {
   readonly failure: OrchestrationV2ProviderFailure;
   readonly startedAt: DateTime.Utc;
   readonly itemOrdinal: number;
+  /** The earlier turn whose row this retry updates, when it spans overload retries. */
+  readonly itemProviderTurnId?: ProviderTurnId;
 }
 
 interface TrackedRunningCommandItem {
@@ -1165,11 +1177,29 @@ interface CodexGoalHold {
   readonly event: Extract<CodexRootTerminalEvent, { readonly failure: null }>;
   readonly completedTurn: OrchestrationV2ProviderTurn;
   readonly next: Deferred.Deferred<ActiveCodexTurnContext | undefined>;
+  /**
+   * Set when T3, not Codex, starts the next turn to retry an overloaded one:
+   * the retry row, and the failure to settle with if the retry cannot start.
+   */
+  readonly overloadRetry?: {
+    readonly state: ActiveCodexProviderRetry;
+    readonly failed: CodexRootTerminalEvent;
+  };
 }
 
 interface DeferredCodexRootTerminal {
   readonly context: ActiveCodexTurnContext;
   readonly event: CodexRootTerminalEvent;
+  /**
+   * An overloaded turn's retry, waiting for its subagents to finish. Stop sets
+   * `stopped` so the run settles with its failure instead.
+   */
+  readonly overloadRetry?: {
+    readonly attempt: number;
+    readonly failedTurn: OrchestrationV2ProviderTurn;
+    readonly providerRetry?: ActiveCodexProviderRetry;
+    readonly stopped: boolean;
+  };
 }
 
 interface CodexSubagentThreadContext {
@@ -1907,6 +1937,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         // Stops in progress by native thread. Until a Stop resolves its target,
         // a held run must not settle as completed.
         const goalStops = new Map<string, number>();
+        // Overload retries the current run used, by native thread. A new run resets it.
+        const overloadRetryAttempts = new Map<string, number>();
         const latestGoalTurnId = (providerTurnId: ProviderTurnId) =>
           goalRuns.get(providerTurnId)?.at(-1)?.providerTurnId ?? providerTurnId;
 
@@ -1936,6 +1968,31 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           yield* emitGoalUpdate(nativeThreadId);
         });
 
+        const emitOverloadRetryRow = Effect.fnUntraced(function* (
+          context: ActiveCodexTurnContext,
+          state: ActiveCodexProviderRetry,
+          status: "running" | "failed" | "interrupted",
+        ) {
+          yield* emitProviderEvent({
+            type: "turn_item.updated",
+            driver: CODEX_PROVIDER,
+            turnItem: makeProviderRetryTurnItem({
+              driver: CODEX_PROVIDER,
+              threadId: context.projectionThreadId,
+              runId: context.projectionRunId,
+              nodeId: context.providerNodeId,
+              providerThreadId: context.providerThread.id,
+              providerTurnId: state.itemProviderTurnId ?? context.providerTurnId,
+              itemOrdinal: state.itemOrdinal,
+              failure: state.failure,
+              retry: state.retry,
+              status,
+              startedAt: state.startedAt,
+              updatedAt: yield* DateTime.now,
+            }),
+          });
+        });
+
         // Call only for new model-output activity. A local item/completed can
         // arrive while the upstream response stream is still retrying.
         const completeProviderRetry = Effect.fn("CodexAdapterV2.completeProviderRetry")(function* (
@@ -1963,7 +2020,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runId: context.projectionRunId,
               nodeId: context.providerNodeId,
               providerThreadId: context.providerThread.id,
-              providerTurnId: context.providerTurnId,
+              providerTurnId: providerRetry.itemProviderTurnId ?? context.providerTurnId,
               itemOrdinal: providerRetry.itemOrdinal,
               failure: providerRetry.failure,
               retry: providerRetry.retry,
@@ -4432,6 +4489,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               goalRun.push(next);
               goalRuns.set(goalHold.context.providerTurnId, goalRun);
               goalRuns.set(next.providerTurnId, goalRun);
+              // The retry row stays running until the new turn's output or end settles it.
+              if (goalHold.overloadRetry !== undefined) {
+                const state: ActiveCodexProviderRetry = {
+                  ...goalHold.overloadRetry.state,
+                  retry: { ...goalHold.overloadRetry.state.retry, retryDelayMs: null },
+                };
+                yield* Ref.update(providerRetries, (current) =>
+                  new Map(current).set(next.providerTurnId, state),
+                );
+                yield* emitOverloadRetryRow(next, state, "running");
+              }
               yield* Deferred.succeed(goalHold.next, next);
               return;
             }
@@ -4544,6 +4612,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               failure,
               startedAt: previous?.startedAt ?? updatedAt,
               itemOrdinal,
+              ...(previous?.itemProviderTurnId === undefined
+                ? {}
+                : { itemProviderTurnId: previous.itemProviderTurnId }),
             };
             yield* Ref.update(providerRetries, (current) => {
               const updated = new Map(current);
@@ -4559,7 +4630,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 runId: context.projectionRunId,
                 nodeId: context.providerNodeId,
                 providerThreadId: context.providerThread.id,
-                providerTurnId: context.providerTurnId,
+                providerTurnId: state.itemProviderTurnId ?? context.providerTurnId,
                 itemOrdinal,
                 failure,
                 retry,
@@ -5623,6 +5694,152 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }
         });
 
+        /**
+         * The retry attempt a root turn that failed with `serverOverloaded`
+         * gets, or undefined when its failure settles the run.
+         */
+        const overloadRetryAttempt = Effect.fnUntraced(function* (input: {
+          readonly context: ActiveCodexTurnContext;
+          readonly nativeTurnId: string;
+          readonly status: OrchestrationV2ProviderTurn["status"];
+          readonly failureCode?: string | null;
+        }) {
+          const nativeThreadId = input.context.providerThread.nativeThreadRef?.nativeId;
+          if (
+            nativeThreadId == null ||
+            input.context.subagent !== null ||
+            input.status !== "failed"
+          )
+            return undefined;
+          const code = input.failureCode ?? input.context.latestProviderFailure?.failure.code;
+          const attempt = (overloadRetryAttempts.get(nativeThreadId) ?? 0) + 1;
+          if (
+            code !== "serverOverloaded" ||
+            attempt > CODEX_OVERLOAD_RETRY_MAX_ATTEMPTS ||
+            (yield* Ref.get(interruptingNativeTurns)).has(input.nativeTurnId) ||
+            // Codex drives goal runs' turns itself.
+            goalsByNativeThread.get(nativeThreadId)?.status === "active" ||
+            goalActivations.has(nativeThreadId)
+          ) {
+            return undefined;
+          }
+          return attempt;
+        });
+
+        /**
+         * Keeps an overloaded run open as a goal hold that T3 continues after a
+         * backoff. Stop settles it through the goal hold path.
+         */
+        const holdForOverloadRetry = Effect.fnUntraced(function* (input: {
+          readonly context: ActiveCodexTurnContext;
+          readonly event: Extract<CodexRootTerminalEvent, { readonly status: "failed" }>;
+          readonly providerRetry?: ActiveCodexProviderRetry;
+          readonly failedTurn: OrchestrationV2ProviderTurn;
+          readonly attempt: number;
+        }) {
+          const { context, event, attempt } = input;
+          const nativeThreadId = context.providerThread.nativeThreadRef?.nativeId;
+          if (nativeThreadId == null) return;
+          overloadRetryAttempts.set(nativeThreadId, attempt);
+          const state: ActiveCodexProviderRetry = {
+            nativeMessage: event.failure.message,
+            failure: { ...event.failure, retryable: true },
+            retry: {
+              attempt,
+              maxAttempts: CODEX_OVERLOAD_RETRY_MAX_ATTEMPTS,
+              retryDelayMs: codexOverloadRetryDelayMs(attempt),
+            },
+            startedAt: input.providerRetry?.startedAt ?? (yield* DateTime.now),
+            itemOrdinal: input.providerRetry?.itemOrdinal ?? event.failureItemOrdinal,
+            itemProviderTurnId: input.providerRetry?.itemProviderTurnId ?? context.providerTurnId,
+          };
+          const hold: CodexGoalHold = {
+            context,
+            // Only Stop settles the hold with this event.
+            event: {
+              type: "turn.terminal",
+              driver: CODEX_PROVIDER,
+              providerThreadId: event.providerThreadId,
+              providerTurnId: event.providerTurnId,
+              runOrdinal: event.runOrdinal,
+              status: "interrupted",
+              failure: null,
+              threadDisposition: "reusable",
+            },
+            completedTurn: input.failedTurn,
+            next: yield* Deferred.make<ActiveCodexTurnContext | undefined>(),
+            overloadRetry: { state, failed: event },
+          };
+          goalHolds.set(nativeThreadId, hold);
+          yield* emitOverloadRetryRow(context, state, "running");
+          yield* retryOverloadedTurn(nativeThreadId, hold, state.retry.retryDelayMs ?? 0).pipe(
+            Effect.forkIn(scope),
+          );
+        });
+
+        /**
+         * Starts the empty-input turn that continues a held overloaded run. The
+         * turn/started handler joins it to the run through the hold.
+         */
+        const retryOverloadedTurn = (
+          nativeThreadId: string,
+          hold: CodexGoalHold,
+          delayMs: number,
+        ) =>
+          Effect.gen(function* () {
+            yield* Effect.sleep(delayMs);
+            const stillHeld = () =>
+              goalHolds.get(nativeThreadId) === hold && !goalStops.has(nativeThreadId);
+            if (!(yield* turnTerminalizationPermit.withPermits(1)(Effect.sync(stillHeld)))) return;
+            const started = yield* nativeTurnStartParams(hold.context.input, []).pipe(
+              Effect.flatMap((params) => client.request("turn/start", params)),
+              Effect.map((response) => response.turn.id),
+              Effect.catch((cause) =>
+                turnTerminalizationPermit.withPermits(1)(
+                  Effect.gen(function* () {
+                    yield* Effect.logWarning("orchestration-v2.codex-overload-retry-failed", {
+                      cause,
+                    });
+                    if (!stillHeld() || hold.overloadRetry === undefined) return undefined;
+                    goalHolds.delete(nativeThreadId);
+                    yield* emitProviderEvent({
+                      type: "provider_turn.updated",
+                      driver: CODEX_PROVIDER,
+                      threadId: hold.context.projectionThreadId,
+                      providerTurn: hold.completedTurn,
+                    });
+                    yield* emitOverloadRetryRow(hold.context, hold.overloadRetry.state, "failed");
+                    yield* emitRootTerminal(hold.context, hold.overloadRetry.failed);
+                    yield* Deferred.succeed(hold.next, undefined);
+                    return undefined;
+                  }),
+                ),
+              ),
+            );
+            if (started === undefined) return;
+            // A Stop that settled the hold while turn/start was in flight leaves
+            // the new turn without a run to report to.
+            const orphaned = yield* turnTerminalizationPermit.withPermits(1)(
+              Effect.gen(function* () {
+                return (
+                  goalHolds.get(nativeThreadId) !== hold &&
+                  !(yield* Ref.get(activeTurns)).has(started)
+                );
+              }),
+            );
+            if (orphaned) {
+              yield* client
+                .request("turn/interrupt", { threadId: nativeThreadId, turnId: started })
+                .pipe(
+                  Effect.catch((cause) =>
+                    Effect.logWarning("orchestration-v2.codex-overload-retry-stop-failed", {
+                      cause,
+                    }),
+                  ),
+                );
+            }
+          });
+
         const emitOrDeferRootTerminal = Effect.fn("CodexAdapterV2.emitOrDeferRootTerminal")(
           function* (input: {
             readonly context: ActiveCodexTurnContext;
@@ -5632,11 +5849,43 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             readonly failureCode?: string | null;
             readonly providerRetry?: ActiveCodexProviderRetry;
             readonly goalHoldTurn?: OrchestrationV2ProviderTurn;
+            readonly overloadRetry?: {
+              readonly attempt: number;
+              readonly failedTurn: OrchestrationV2ProviderTurn;
+            };
           }) {
             const event = yield* makeRootTerminalEvent(input);
             const hasActiveDescendants = Array.from((yield* Ref.get(activeTurns)).values()).some(
               (candidate) => isDescendantCodexTurn(candidate, input.context),
             );
+            const overloadRetry = input.overloadRetry;
+            if (overloadRetry !== undefined && event.status === "failed") {
+              if (!hasActiveDescendants) {
+                return yield* holdForOverloadRetry({ ...input, ...overloadRetry, event });
+              }
+              // Retrying now would orphan the turn's running subagents, so the
+              // retry waits for them (see flushReadyRootTerminals).
+              const deferred: DeferredCodexRootTerminal = {
+                context: input.context,
+                event,
+                overloadRetry: {
+                  ...overloadRetry,
+                  ...(input.providerRetry === undefined
+                    ? {}
+                    : { providerRetry: input.providerRetry }),
+                  stopped: false,
+                },
+              };
+              yield* Ref.update(deferredRootTerminals, (current) =>
+                new Map(current).set(input.nativeTurnId, deferred),
+              );
+              return;
+            }
+            // A retried run's failure ends the row an earlier turn started.
+            const carriedRetry = input.providerRetry;
+            if (event.status === "failed" && carriedRetry?.itemProviderTurnId !== undefined) {
+              yield* emitOverloadRetryRow(input.context, carriedRetry, "failed");
+            }
             if (event.status !== "completed" && hasActiveDescendants) {
               yield* Ref.update(deferredRootTerminals, (current) => {
                 const updated = new Map(current);
@@ -5683,6 +5932,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             threadId: hold.context.projectionThreadId,
             providerTurn: hold.completedTurn,
           });
+          if (hold.overloadRetry !== undefined) {
+            yield* emitOverloadRetryRow(hold.context, hold.overloadRetry.state, "interrupted");
+          }
           yield* emitRootTerminal(hold.context, { ...hold.event, status });
           yield* Deferred.succeed(hold.next, undefined);
         });
@@ -5692,7 +5944,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           expected?: CodexRootTerminalEvent,
         ) {
           const hold = goalHolds.get(nativeThreadId);
-          if (hold === undefined || goalStops.has(nativeThreadId)) return;
+          // An overload retry hold settles only through its retry or Stop.
+          if (
+            hold === undefined ||
+            hold.overloadRetry !== undefined ||
+            goalStops.has(nativeThreadId)
+          )
+            return;
           if (expected !== undefined && hold.event !== expected) return;
           goalHolds.delete(nativeThreadId);
           yield* settleGoalHold(hold, "completed");
@@ -5703,10 +5961,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const activeTurnContexts = Array.from((yield* Ref.get(activeTurns)).values());
             const readyEvents = yield* Ref.modify(deferredRootTerminals, (current) => {
               const updated = new Map(current);
-              const ready: Array<{
-                context: ActiveCodexTurnContext;
-                event: CodexRootTerminalEvent;
-              }> = [];
+              const ready: Array<DeferredCodexRootTerminal> = [];
               for (const [nativeTurnId, deferred] of current) {
                 if (
                   !activeTurnContexts.some((candidate) =>
@@ -5720,7 +5975,27 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return [ready, updated] as const;
             });
             for (const ready of readyEvents) {
-              yield* emitRootTerminal(ready.context, ready.event);
+              const { overloadRetry, event } = ready;
+              if (overloadRetry !== undefined && event.status === "failed") {
+                if (!overloadRetry.stopped) {
+                  yield* holdForOverloadRetry({
+                    ...overloadRetry,
+                    context: ready.context,
+                    event,
+                  });
+                  continue;
+                }
+                yield* emitProviderEvent({
+                  type: "provider_turn.updated",
+                  driver: CODEX_PROVIDER,
+                  threadId: ready.context.projectionThreadId,
+                  providerTurn: overloadRetry.failedTurn,
+                });
+                if (overloadRetry.providerRetry?.itemProviderTurnId !== undefined) {
+                  yield* emitOverloadRetryRow(ready.context, overloadRetry.providerRetry, "failed");
+                }
+              }
+              yield* emitRootTerminal(ready.context, event);
             }
           },
         );
@@ -5761,7 +6036,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     runId: input.context.projectionRunId,
                     nodeId: input.context.providerNodeId,
                     providerThreadId: input.context.providerThread.id,
-                    providerTurnId: input.context.providerTurnId,
+                    providerTurnId:
+                      providerRetry.itemProviderTurnId ?? input.context.providerTurnId,
                     itemOrdinal: providerRetry.itemOrdinal,
                     failure: providerRetry.failure,
                     retry: providerRetry.retry,
@@ -5817,7 +6093,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   input.status === "completed",
                 ),
               };
-              if (!holdsForGoal) {
+              // Like a goal hold, a retried turn reads as running so Stop reaches it.
+              const overloadAttempt = yield* overloadRetryAttempt(input);
+              if (!holdsForGoal && overloadAttempt === undefined) {
                 yield* emitProviderEvent({
                   type: "provider_turn.updated",
                   driver: CODEX_PROVIDER,
@@ -5908,6 +6186,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ...input,
                   ...(providerRetry === undefined ? {} : { providerRetry }),
                   ...(holdsForGoal ? { goalHoldTurn: completedTurn } : {}),
+                  ...(overloadAttempt === undefined
+                    ? {}
+                    : { overloadRetry: { attempt: overloadAttempt, failedTurn: completedTurn } }),
                 });
               }
               const waiter = (yield* Ref.get(turnWaiters)).get(input.nativeTurnId);
@@ -6178,15 +6459,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           );
         });
 
-        const startNativeTurn = (
+        const nativeTurnStartParams = (
           turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
           codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>,
         ) =>
           Effect.gen(function* () {
-            const threadId = yield* getNativeThreadId(turnInput.providerThread);
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
-            const turnStartParams = yield* buildCodexTurnStartParams({
-              nativeThreadId: threadId,
+            return yield* buildCodexTurnStartParams({
+              nativeThreadId: yield* getNativeThreadId(turnInput.providerThread),
               codexInput,
               runtimePolicy: turnInput.runtimePolicy,
               modelSelection: turnInput.modelSelection,
@@ -6196,6 +6476,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               omitServiceTier: adapterOptions.resolveRuntime !== undefined,
               ...(turnInput.appContext === undefined ? {} : { appContext: turnInput.appContext }),
             });
+          });
+
+        /** Starts a native turn with this run's full turn configuration. */
+        const startNativeTurn = (
+          turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
+          codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>,
+        ) =>
+          Effect.gen(function* () {
+            const threadId = yield* getNativeThreadId(turnInput.providerThread);
+            overloadRetryAttempts.delete(threadId);
+            const turnStartParams = yield* nativeTurnStartParams(turnInput, codexInput);
             yield* Ref.update(pendingRootTurns, (current) => {
               const updated = new Map(current);
               updated.set(threadId, turnInput);
@@ -6689,12 +6980,28 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           interruptTurn: (requestedInput) =>
             Effect.gen(function* () {
               const { turnInput, goalTurns } = yield* resolveGoalStopTarget(requestedInput);
-              const [activeTurnContexts, settledTurnContexts] =
+              const [activeTurnContexts, settledTurnContexts, deferredRoot] =
                 yield* turnTerminalizationPermit.withPermits(1)(
                   Effect.gen(function* () {
+                    // A failed root waiting for its subagents settles with its
+                    // failure, not an overload retry, once Stop ends them.
+                    const deferredRoot = yield* Ref.modify(deferredRootTerminals, (current) => {
+                      for (const [nativeTurnId, deferred] of current) {
+                        if (deferred.context.providerTurnId !== turnInput.providerTurnId) continue;
+                        if (deferred.overloadRetry === undefined)
+                          return [deferred.context, current];
+                        const updated = new Map(current).set(nativeTurnId, {
+                          ...deferred,
+                          overloadRetry: { ...deferred.overloadRetry, stopped: true },
+                        });
+                        return [deferred.context, updated];
+                      }
+                      return [undefined, current];
+                    });
                     return [
                       Array.from((yield* Ref.get(activeTurns)).values()),
                       Array.from((yield* Ref.get(settledTurns)).values()),
+                      deferredRoot,
                     ] as const;
                   }),
                 );
@@ -6708,7 +7015,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     )
                   : undefined);
               const lineageRoots = Array.from(
-                new Set([...(activeTurn === undefined ? [] : [activeTurn]), ...goalTurns]),
+                new Set([
+                  ...(activeTurn === undefined ? [] : [activeTurn]),
+                  ...(deferredRoot === undefined ? [] : [deferredRoot]),
+                  ...goalTurns,
+                ]),
               );
               const inLineage = (context: ActiveCodexTurnContext) =>
                 lineageRoots.some(
