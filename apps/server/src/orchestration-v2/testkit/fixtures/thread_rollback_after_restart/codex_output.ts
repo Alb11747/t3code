@@ -23,9 +23,9 @@ export function assertThreadRollbackAfterRestartOutput(
   );
   const revert = methods.indexOf("thread/revert");
   assert.isAbove(revert, 0, "the rollback must reach thread/revert");
-  assert.equal(
-    methods.lastIndexOf("thread/resume", revert),
-    revert - 2,
-    "the fresh app-server must resume the thread right before listing turns and reverting",
+  assert.deepEqual(
+    methods.slice(revert - 3, revert + 1),
+    ["thread/resume", "thread/read", "thread/turns/list", "thread/revert"],
+    "the fresh app-server must resume the thread before reading metadata, listing turns, and reverting",
   );
 }

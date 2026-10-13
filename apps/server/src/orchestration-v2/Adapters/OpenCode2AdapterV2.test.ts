@@ -794,6 +794,11 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
       // The subagent still runs, so the session is not idle and the next Stop reaches it.
       assert.isTrue(yield* runtime.hasPendingBackgroundWork!);
       assert.isTrue(yield* runtime.hasPendingBackgroundWorkForThread!(thread));
+      assert.equal(
+        (yield* runtime.unloadThread!({ providerThread: thread }).pipe(Effect.flip))._tag,
+        "ProviderAdapterProtocolError",
+      );
+      assert.isTrue(yield* runtime.hasPendingBackgroundWorkForThread!(thread));
     }).pipe(Effect.scoped),
   );
 
@@ -2928,7 +2933,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
   );
 
   it.effect(
-    "registers T3's MCP server for the thread alone and removes it when the thread unloads",
+    "registers T3's MCP server for the thread alone, retains it when unload is declined, and removes it after work stops",
     () =>
       Effect.gen(function* () {
         const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
@@ -2957,15 +2962,29 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
             },
           }),
           reply("mcp.add", null),
-          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
-          promptAccepted,
-          event("session.execution.succeeded", { sessionID: SESSION }),
+          ...backgroundLaunch(CHILD),
+          out("session.interrupt", { sessionID: CHILD }),
+          reply("session.interrupt", { interrupted: true }),
+          out("session.interrupt", { sessionID: SESSION }),
+          reply("session.interrupt", { interrupted: true }),
+          event("session.execution.interrupted", { sessionID: SESSION }),
           out("mcp.remove", { server, "location[directory]": WORK }),
           reply("mcp.remove", null),
         ]);
-        const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
-        yield* runtime.startTurn(turnInput(thread));
-        assert.equal((yield* Fiber.join(terminal))?.status, "completed");
+        const watch = yield* watchBackgroundTurn(runtime);
+        yield* runtime.startTurn(withLineage(thread));
+        yield* watch.attached;
+        assert.equal(
+          (yield* runtime.unloadThread!({ providerThread: thread }).pipe(Effect.flip))._tag,
+          "ProviderAdapterProtocolError",
+        );
+        yield* runtime.interruptTurn({
+          providerThread: thread,
+          providerTurnId: yield* providerTurnId,
+          requestRuntimeRestart: true,
+        });
+        assert.equal((yield* watch.terminal)?.status, "interrupted");
+        assert.isFalse(yield* runtime.hasPendingBackgroundWorkForThread!(thread));
         yield* runtime.unloadThread!({ providerThread: thread });
       }).pipe(Effect.scoped),
   );
