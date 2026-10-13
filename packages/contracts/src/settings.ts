@@ -640,13 +640,22 @@ export const CodexSettings = makeProviderSettingsSchema(
         description: "Additional CLI arguments passed to codex app-server on session start.",
       }),
     ),
+    promptSuggestions: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({
+        title: "Composer predictions",
+        description:
+          "After each turn, predict your next prompt with ChatGPT's composer prediction service and show it in the empty composer (Right Arrow or Tab to use it). Needs ChatGPT sign-in; whether it counts against usage is unverified.",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
     customModels: Schema.Array(CustomModelSetting).pipe(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
   },
   {
-    order: ["binaryPath", "homePath", "shadowHomePath", "launchArgs"],
+    order: ["binaryPath", "homePath", "shadowHomePath", "promptSuggestions", "launchArgs"],
   },
 );
 export type CodexSettings = typeof CodexSettings.Type;
