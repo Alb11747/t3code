@@ -11,6 +11,7 @@ import {
   PositiveInt,
   ProjectId,
   RunId,
+  RuntimeRequestId,
   ScheduledTaskId,
   SecretRef,
   ThreadId,
@@ -30,6 +31,7 @@ import {
   OrchestrationV2CreationSource,
   OrchestrationV2RunStatus,
   OrchestrationV2TurnItemStatus,
+  OrchestrationV2UserInputQuestion,
 } from "./orchestrationV2.ts";
 import {
   ProviderOptionDescriptor,
@@ -209,6 +211,17 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   waitTimedOut: Schema.Boolean.annotate({
     description:
       "True only on that mode=wait call when timeoutMs elapsed. The timeout does not cancel the child. Later task_status reads return false and use status for liveness.",
+  }),
+  pendingQuestions: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        requestId: RuntimeRequestId,
+        questions: Schema.Array(OrchestrationV2UserInputQuestion),
+      }),
+    ),
+  ).annotate({
+    description:
+      "Questions the child is blocked on. Answer each with t3_pending_request_respond using childThreadId and requestId, or ask the user when the decision is theirs.",
   }),
 });
 export type OrchestratorMcpDelegateTaskResult = typeof OrchestratorMcpDelegateTaskResult.Type;
