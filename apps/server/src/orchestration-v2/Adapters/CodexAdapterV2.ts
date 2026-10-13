@@ -1888,6 +1888,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const pendingRootTurns = yield* Ref.make(
           new Map<string, ProviderAdapter.ProviderAdapterV2TurnInput>(),
         );
+        // Native threads whose turn/start was given up before Codex answered,
+        // by a deadline or a Stop. Codex takes a thread's starts in order, so
+        // the next turn it starts there belongs to the abandoned start, which
+        // has no run left to report to.
+        const abandonedTurnStarts = new Set<string>();
+        const stopAbandonedTurn = (nativeThreadId: string, nativeTurnId: string) =>
+          Effect.logWarning("orchestration-v2.codex-abandoned-turn-started", {
+            nativeThreadId,
+            nativeTurnId,
+          }).pipe(
+            Effect.andThen(
+              client.request("turn/interrupt", { threadId: nativeThreadId, turnId: nativeTurnId }),
+            ),
+            Effect.catch((cause) =>
+              Effect.logWarning("orchestration-v2.codex-abandoned-turn-stop-failed", { cause }),
+            ),
+            Effect.forkIn(scope),
+            Effect.asVoid,
+          );
         const turnWaiters = yield* Ref.make(new Map<string, Deferred.Deferred<void, never>>());
         const subagentThreads = yield* Ref.make(new Map<string, CodexSubagentThreadContext>());
         const subagentSelections = new Map<string, Omit<ModelSelection, "instanceId">>();
@@ -4493,6 +4512,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               }
               return;
             }
+            // Checked before a pending start: a newer start waiting on the same
+            // thread must not adopt the turn Codex started for the abandoned one.
+            if (abandonedTurnStarts.delete(payload.threadId)) {
+              yield* stopAbandonedTurn(payload.threadId, payload.turn.id);
+              return;
+            }
             const pendingRootTurn = (yield* Ref.get(pendingRootTurns)).get(payload.threadId);
             if (pendingRootTurn !== undefined) {
               yield* registerRootTurn({
@@ -6596,7 +6621,22 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               else next.delete(threadId);
               return next;
             });
-            const started = yield* client.request("turn/start", turnStartParams);
+            const started = yield* client.request("turn/start", turnStartParams).pipe(
+              Effect.onInterrupt(() =>
+                Effect.gen(function* () {
+                  // turn/started can arrive before the response and register
+                  // the turn already; stop that one now instead of waiting.
+                  const registered = Array.from((yield* Ref.get(activeTurns)).values()).find(
+                    (context) => context.input === turnInput,
+                  );
+                  if (registered !== undefined) {
+                    return yield* stopAbandonedTurn(threadId, registered.nativeTurnId);
+                  }
+                  abandonedTurnStarts.add(threadId);
+                }),
+              ),
+            );
+            abandonedTurnStarts.delete(threadId);
             yield* registerRootTurn({
               turnInput,
               nativeTurnId: started.turn.id,
