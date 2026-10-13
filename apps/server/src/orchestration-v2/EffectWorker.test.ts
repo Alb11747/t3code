@@ -14,6 +14,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -960,4 +961,49 @@ it.effect("frees a worker from an effect that outlives its lease", () =>
       ),
     ),
   ),
+);
+
+it.effect("drain waits for settlement after an effect outlives its lease", () =>
+  Effect.gen(function* () {
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const effectId = "effect:drain-long-execution";
+    yield* outbox.enqueue([
+      {
+        id: effectId,
+        commandId: CommandId.make("command:drain-long-execution"),
+        threadId,
+        request: { type: "terminal.cleanup" },
+      },
+    ]);
+    const reached = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const drained = yield* Deferred.make<void>();
+    const layerWorker = EffectWorker.layerWithOptions({ leaseDurationMs: 1_000 }).pipe(
+      Layer.provide(
+        Layer.merge(
+          Layer.succeed(EffectOutbox.EffectOutboxV2, outbox),
+          Layer.succeed(
+            EffectWorker.OrchestrationEffectExecutorV2,
+            EffectWorker.OrchestrationEffectExecutorV2.of({
+              execute: () =>
+                Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release))),
+            }),
+          ),
+        ),
+      ),
+    );
+    const draining = yield* Effect.gen(function* () {
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      return yield* worker.drain(1).pipe(Effect.tap(() => Deferred.succeed(drained, undefined)));
+    }).pipe(Effect.provide(layerWorker), Effect.forkScoped);
+    yield* Deferred.await(reached);
+    yield* TestClock.adjust("1 second");
+    assert.isFalse(yield* Deferred.isDone(drained));
+    yield* Deferred.succeed(release, undefined);
+    assert.equal(yield* Fiber.join(draining), 1);
+    assert.deepEqual(
+      yield* outbox.get(effectId).pipe(Effect.map(Option.map((effect) => effect.status))),
+      Option.some("succeeded"),
+    );
+  }).pipe(Effect.provide(EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)))),
 );
