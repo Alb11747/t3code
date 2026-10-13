@@ -785,14 +785,21 @@ describe("AcpAdapterV2", () => {
     "before-native-completion",
     "after-native-completion",
     "duplicate-native-completion",
+    "duplicate-native-completion-with-output",
     "failed-then-native-completion",
     "second-native-compaction",
   ] as const)(
-    "uses only usage following native completion during explicit ACP compaction (%s)",
+    "preserves native ACP compaction usage and completion boundaries (%s)",
     (usageReport) =>
       Effect.gen(function* () {
         const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
         const path = yield* Path.Path;
+        const baseClock = yield* Clock.Clock;
+        let nativeUpdateTime = Date.UTC(2026, 9, 13);
+        const nativeUpdateClock: Clock.Clock = {
+          ...baseClock,
+          currentTimeMillis: Effect.sync(() => nativeUpdateTime),
+        };
         type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
         let sessionUpdateHandler: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
         let nativeSessionId = "";
@@ -815,7 +822,10 @@ describe("AcpAdapterV2", () => {
                 ...runtime,
                 handleSessionUpdate: (handler) =>
                   Effect.sync(() => {
-                    sessionUpdateHandler = handler;
+                    sessionUpdateHandler = (notification) =>
+                      handler(notification).pipe(
+                        Effect.provideService(Clock.Clock, nativeUpdateClock),
+                      );
                   }).pipe(Effect.andThen(runtime.handleSessionUpdate(handler))),
                 prompt: (payload, options) =>
                   Effect.gen(function* () {
@@ -840,6 +850,7 @@ describe("AcpAdapterV2", () => {
                       (usageReport === "before-native-completion" ||
                         usageReport === "after-native-completion" ||
                         usageReport === "duplicate-native-completion" ||
+                        usageReport === "duplicate-native-completion-with-output" ||
                         usageReport === "failed-then-native-completion" ||
                         usageReport === "second-native-compaction")
                     ) {
@@ -852,6 +863,7 @@ describe("AcpAdapterV2", () => {
                             status: "failed",
                           },
                         });
+                        nativeUpdateTime += 1_000;
                       }
                       yield* sessionUpdateHandler!({
                         sessionId: nativeSessionId,
@@ -883,6 +895,27 @@ describe("AcpAdapterV2", () => {
                             },
                           });
                         }
+                      }
+                      if (usageReport === "duplicate-native-completion-with-output") {
+                        nativeUpdateTime += 1_000;
+                        yield* sessionUpdateHandler!({
+                          sessionId: nativeSessionId,
+                          update: {
+                            sessionUpdate: "agent_message",
+                            messageId: "post-compaction-output",
+                            content: [{ type: "text", text: "Output after compaction" }],
+                          },
+                        });
+                        nativeUpdateTime += 1_000;
+                        yield* sessionUpdateHandler!({
+                          sessionId: nativeSessionId,
+                          update: {
+                            sessionUpdate: "compaction_update",
+                            compactionId: "compact-usage-boundary",
+                            status: "completed",
+                            summary: [{ type: "text", text: "Updated compaction summary" }],
+                          },
+                        });
                       }
                       if (usageReport === "second-native-compaction") {
                         yield* sessionUpdateHandler!({
@@ -949,7 +982,13 @@ describe("AcpAdapterV2", () => {
         });
         const before = yield* runTurn(1, initialThread, "Establish context usage");
         assert.equal(before.providerThread.contextUsage?.usedTokens, 30_000);
-        const compacted = yield* runTurn(2, before.providerThread, "/compact");
+        const compacted = yield* runTurn(
+          2,
+          before.providerThread,
+          usageReport === "duplicate-native-completion-with-output"
+            ? "Continue with automatic compaction"
+            : "/compact",
+        );
         assert.isTrue(
           compacted.events.some(
             (event) =>
@@ -997,6 +1036,47 @@ describe("AcpAdapterV2", () => {
         }
         if (usageReport === "second-native-compaction") {
           assert.equal(completedNativeMarkers, 2);
+        }
+        if (usageReport === "duplicate-native-completion-with-output") {
+          const completions = compacted.events.flatMap((event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "compaction" &&
+            event.turnItem.status === "completed"
+              ? [event.turnItem]
+              : [],
+          );
+          assert.equal(completions.length, 2);
+          const output = compacted.events
+            .flatMap((event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "assistant_message" &&
+              event.turnItem.text === "Output after compaction"
+                ? [event.turnItem]
+                : [],
+            )
+            .at(0)!;
+          assert.isDefined(output);
+          assert.isTrue(DateTime.isLessThan(completions[0]!.completedAt!, output.startedAt!));
+          assert.deepEqual(completions[1]!.completedAt, completions[0]!.completedAt);
+          assert.equal(completions[1]!.summary, "Updated compaction summary");
+          const completionNodes = compacted.events.flatMap((event) =>
+            event.type === "node.updated" && event.node.id === completions[0]!.nodeId
+              ? [event.node]
+              : [],
+          );
+          assert.deepEqual(completionNodes.at(-1)!.completedAt, completions[0]!.completedAt);
+        }
+        if (usageReport === "failed-then-native-completion") {
+          const nativeMarkers = compacted.events.flatMap((event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "compaction" &&
+            event.turnItem.nativeItemRef?.nativeId === "acp-compaction:compact-usage-boundary"
+              ? [event.turnItem]
+              : [],
+          );
+          assert.isTrue(
+            DateTime.isLessThan(nativeMarkers[0]!.completedAt!, nativeMarkers[1]!.completedAt!),
+          );
         }
         assert.deepEqual(compacted.providerThread.contextUsage, expectedUsage);
         const continued = yield* runTurn(3, compacted.providerThread, "Continue after compact");

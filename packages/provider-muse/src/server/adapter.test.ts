@@ -1426,7 +1426,7 @@ describe("MuseAdapterV2", () => {
           revision: 1,
         },
       });
-      yield* harness.takeEvent(
+      const marker = yield* harness.takeEvent(
         "turn_item.updated",
         (event) => event.turnItem.type === "compaction" && event.turnItem.status === "completed",
       );
@@ -1454,6 +1454,18 @@ describe("MuseAdapterV2", () => {
         "provider_turn.updated",
         (event) => event.providerTurn.tokenUsage?.usedTokens === 6000,
       );
+      assert.isTrue(
+        DateTime.isLessThanOrEqualTo(
+          DateTime.makeUnsafe(stale.providerTurn.tokenUsage!.updatedAt!),
+          marker.turnItem.completedAt!,
+        ),
+      );
+      assert.isTrue(
+        DateTime.isGreaterThan(
+          DateTime.makeUnsafe(freshTurn.providerTurn.tokenUsage!.updatedAt!),
+          marker.turnItem.completedAt!,
+        ),
+      );
       assert.strictEqual(freshTurn.providerTurn.tokenUsage?.maxTokens, 32000);
       yield* harness.runtime.startTurn(yield* turnInput(freshThread.providerThread, 2));
       yield* fake.takeCall("turn/start");
@@ -1462,6 +1474,89 @@ describe("MuseAdapterV2", () => {
         (event) => event.providerThread.lastRunOrdinal === 2,
       );
       assert.strictEqual(following.providerThread.contextUsage?.usedTokens, 6000);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("orders same-clock compactions, duplicate frames, usage, and later output", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const harness = yield* makeHarness(fake);
+      const { nativeId } = yield* startConversation(harness, fake);
+      const compaction: MuseItem = {
+        itemId: "first-compact",
+        turnId: nativeId,
+        kind: "compaction",
+        status: "completed",
+        outcome: "compacted",
+        revision: 1,
+      };
+      yield* fake.emit("item/completed", { item: compaction });
+      const first = yield* harness.takeEvent(
+        "turn_item.updated",
+        (event) => event.turnItem.type === "compaction",
+      );
+      yield* fake.emit("session/contextUsage", { usedTokens: 6000 });
+      const fresh = yield* harness.takeEvent(
+        "provider_turn.updated",
+        (event) => event.providerTurn.tokenUsage?.usedTokens === 6000,
+      );
+      assert.isTrue(
+        DateTime.isGreaterThan(
+          DateTime.makeUnsafe(fresh.providerTurn.tokenUsage!.updatedAt!),
+          first.turnItem.completedAt!,
+        ),
+      );
+      yield* fake.emit("item/completed", {
+        item: { ...compaction, revision: 2, summary: ["Revised summary"] },
+      });
+      const duplicate = yield* harness.takeEvent(
+        "turn_item.updated",
+        (event) => event.turnItem.type === "compaction",
+      );
+      assert.isTrue(
+        DateTime.Equivalence(duplicate.turnItem.completedAt!, first.turnItem.completedAt!),
+      );
+      yield* fake.emit("item/completed", { item: { ...compaction, itemId: "second-compact" } });
+      const second = yield* harness.takeEvent(
+        "turn_item.updated",
+        (event) => event.turnItem.type === "compaction",
+      );
+      assert.isTrue(
+        DateTime.isLessThanOrEqualTo(
+          DateTime.makeUnsafe(fresh.providerTurn.tokenUsage!.updatedAt!),
+          second.turnItem.completedAt!,
+        ),
+      );
+      yield* fake.emit("item/completed", {
+        item: {
+          itemId: "later-answer",
+          turnId: nativeId,
+          kind: "agentMessage",
+          status: "completed",
+          revision: 1,
+          text: "After the second compaction",
+        },
+      });
+      const output = yield* harness.takeEvent(
+        "turn_item.updated",
+        (event) => event.turnItem.type === "assistant_message",
+      );
+      assert.isTrue(
+        DateTime.isGreaterThan(output.turnItem.updatedAt, second.turnItem.completedAt!),
+      );
+      yield* fake.emit("session/contextUsage", { usedTokens: 7000 });
+      const latest = yield* harness.takeEvent(
+        "provider_turn.updated",
+        (event) => event.providerTurn.tokenUsage?.usedTokens === 7000,
+      );
+      assert.isTrue(
+        DateTime.isGreaterThan(
+          DateTime.makeUnsafe(latest.providerTurn.tokenUsage!.updatedAt!),
+          second.turnItem.completedAt!,
+        ),
+      );
+      yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
+      yield* harness.takeEvent("turn.terminal");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 

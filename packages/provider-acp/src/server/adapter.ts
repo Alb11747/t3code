@@ -1153,7 +1153,7 @@ interface ActiveAcpTurn {
       }
     | undefined;
   contextUsage: ThreadTokenUsageSnapshot | null;
-  readonly completedNativeCompactionIds: Set<string>;
+  readonly completedNativeCompactions: Map<string, DateTime.Utc>;
   nativeMetadata: OrchestrationV2ProviderThreadNativeMetadata | null;
   readonly tools: Map<string, AcpToolCallState>;
   /** Streamed tool updates skipped since the last persisted one; see `shouldPersistToolUpdate`. */
@@ -3276,7 +3276,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           };
           const startedAt = context.toolStartedAt.get(toolCall.toolCallId) ?? now;
           context.toolStartedAt.set(toolCall.toolCallId, startedAt);
-          const completedAt = completedAtForStatus(status, now);
+          const completedAt =
+            status === "completed" && toolCall.toolCallId.startsWith("acp-compaction:")
+              ? (context.completedNativeCompactions.get(toolCall.toolCallId) ?? now)
+              : completedAtForStatus(status, now);
           const title = toolCall.title ?? null;
           yield* emitProviderEvent({
             type: "node.updated",
@@ -3369,11 +3372,11 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             };
             if (
               status === "completed" &&
-              !context.completedNativeCompactionIds.has(toolCall.toolCallId)
+              !context.completedNativeCompactions.has(toolCall.toolCallId)
             ) {
-              // Re-reported terminal frames can update summaries without
-              // invalidating usage sampled after this compaction completed.
-              context.completedNativeCompactionIds.add(toolCall.toolCallId);
+              // Summary enrichment keeps the first completion boundary, preserving
+              // output and usage sampled after this compaction completed.
+              context.completedNativeCompactions.set(toolCall.toolCallId, now);
               context.contextUsage = null;
               yield* Ref.update(contextUsageBySessionId, (current) => {
                 const updated = new Map(current);
@@ -6651,7 +6654,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             // Usage reports carry no sample identity. Without a native completion
             // boundary, an in-turn report may still describe the pre-compact context.
             // Native completion already clears usage, so only later reports survive.
-            if (context.completedNativeCompactionIds.size === 0) {
+            if (context.completedNativeCompactions.size === 0) {
               context.contextUsage = null;
               yield* Ref.update(contextUsageBySessionId, (current) => {
                 const updated = new Map(current);
@@ -7039,7 +7042,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               assistant: { current: null, nextSegment: 0 },
               reasoning: { current: null, nextSegment: 0 },
               contextUsage: rememberedContextUsage ?? turnInput.providerThread.contextUsage ?? null,
-              completedNativeCompactionIds: new Set(),
+              completedNativeCompactions: new Map(),
               nativeMetadata: initialNativeMetadata,
               tools: new Map(),
               toolUpdatesSkipped: new Map(),

@@ -619,6 +619,11 @@ export const layer: Layer.Layer<
           });
           return undefined;
         });
+      const cancelledRunIds = new Set(
+        projection.runs
+          .filter((source) => source.status === "cancelled")
+          .map((source) => source.id),
+      );
       let effectiveHandoffs = handoffs;
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
@@ -682,11 +687,6 @@ export const layer: Layer.Layer<
             handoff.delivery?.status === "pending" &&
             handoff.delivery.deferred !== true,
         );
-        const cancelledRunIds = new Set(
-          projection.runs
-            .filter((source) => source.status === "cancelled")
-            .map((source) => source.id),
-        );
         const cancelledAttempts = new Map(
           projection.attempts
             .filter((source) => cancelledRunIds.has(source.runId))
@@ -749,6 +749,7 @@ export const layer: Layer.Layer<
                 "file_search",
                 "web_search",
                 "thread_created",
+                "secret_request",
               ],
             },
           );
@@ -1469,7 +1470,7 @@ export const layer: Layer.Layer<
         const compactedAt =
           countedCompaction === undefined ? compaction?.completedAt : compactionUsageResetAt;
         const postCompactionRunIds = new Set(
-          countedCompaction === undefined
+          compaction === undefined
             ? []
             : projection.runs
                 .filter((source) => compaction !== undefined && source.ordinal > compaction.ordinal)
@@ -1477,7 +1478,9 @@ export const layer: Layer.Layer<
         );
         const importedAfterCompaction = new Set(
           settledHandoffs.flatMap((handoff) =>
-            compactedAt != null && DateTime.isGreaterThanOrEqualTo(handoff.updatedAt, compactedAt)
+            compactedAt != null &&
+            (postCompactionRunIds.has(handoff.targetRunId) ||
+              DateTime.isGreaterThanOrEqualTo(handoff.updatedAt, compactedAt))
               ? (handoff.delivery?.itemIds ?? [])
               : [],
           ),
@@ -1507,16 +1510,16 @@ export const layer: Layer.Layer<
         // inputs. Add later native output and imports; absent a count, keep the summary.
         return (yield* projectionStore.getTurnStartHistory(input.threadId)).reduce(
           (sum, item) => {
-            // Timeline ordinals distinguish later output from the marker even
-            // when both events share a millisecond timestamp.
-            const afterCountedCompaction =
-              countedCompaction !== undefined &&
-              ((item.providerTurnId === countedCompaction.providerTurnId &&
-                item.ordinal > countedCompaction.ordinal) ||
-                (item.runId !== null && postCompactionRunIds.has(item.runId)));
+            // Timeline and run ordinals preserve native order even when a reset
+            // marker advances ahead of the server clock.
+            const afterCompaction =
+              (compactionMarker !== undefined &&
+                item.providerTurnId === compactionMarker.providerTurnId &&
+                item.ordinal > compactionMarker.ordinal) ||
+              (item.runId !== null && postCompactionRunIds.has(item.runId));
             const beforeCompaction =
               compactedAt != null &&
-              !afterCountedCompaction &&
+              !afterCompaction &&
               (countedCompaction !== undefined ||
                 !compaction?.explicit ||
                 item.runId !== compaction.runId) &&
@@ -1525,6 +1528,14 @@ export const layer: Layer.Layer<
                 : DateTime.isLessThanOrEqualTo(item.updatedAt, compactedAt));
             if (
               item.runId === run.id ||
+              // A cancelled prompt from a replaced native session occupies
+              // this transcript only when a handoff actually imported it.
+              (item.type === "user_message" &&
+                item.runId !== null &&
+                cancelledRunIds.has(item.runId) &&
+                !nativeInputRunIds.has(item.runId) &&
+                !legacyInputRunIds.has(item.runId) &&
+                !deliveredItemIds.has(item.id)) ||
               (beforeCompaction && !importedAfterCompaction.has(item.id)) ||
               (item.runId !== null &&
                 missedRunIds.has(item.runId) &&

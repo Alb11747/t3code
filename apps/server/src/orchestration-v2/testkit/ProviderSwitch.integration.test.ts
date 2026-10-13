@@ -30,6 +30,7 @@ import {
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -526,6 +527,8 @@ describe("orchestration v2 provider switching", () => {
     "deferred-before-budget-cancelled-pre-prompt-native",
     "deferred-before-budget-cancelled-pre-prompt-small",
     "deferred-before-budget-cancelled-pre-prompt-small-native",
+    "deferred-before-budget-cancelled-pre-prompt-occupancy",
+    "deferred-before-budget-cancelled-pre-prompt-reimported-occupancy",
     "deferred-compact-fallback",
     "deferred-failed-compact-fallback",
     "deferred-compact-stale-telemetry",
@@ -545,6 +548,7 @@ describe("orchestration v2 provider switching", () => {
     "deferred-native-compact-summary-dual-marker-fallback",
     "deferred-native-compact-summary-dual-marker-reversed-fallback",
     "deferred-auto-compact-marker-low-fallback",
+    "deferred-auto-compact-fallback-future-marker",
     "large-current-input",
     "screenshot-native",
     "screenshot-fallback",
@@ -595,6 +599,9 @@ describe("orchestration v2 provider switching", () => {
         const compactionScenario = scenario.includes("-compact-");
         const compactionTelemetry = compactionScenario && scenario.endsWith("-telemetry");
         const automaticCompaction = scenario.includes("-auto-compact-");
+        const futureMarker = scenario.endsWith("-future-marker");
+        const clock = yield* Clock.Clock;
+        const fixedTime = yield* clock.currentTimeMillis;
         const nativeCompaction = automaticCompaction || scenario.includes("-native-compact-");
         const threadCompactionTelemetry = scenario === "deferred-compact-fresh-thread-telemetry";
         const watermarkCompactionTelemetry = scenario.includes("-watermark-");
@@ -670,11 +677,12 @@ describe("orchestration v2 provider switching", () => {
                 }
               : {}),
             ...(summaryOnlyCompaction ? { compactionSummary: "s".repeat(30_000) } : {}),
-            ...(scenario.includes("-dual-marker-")
+            ...(scenario.includes("-dual-marker-") || futureMarker
               ? {
-                  syntheticCompactionMarker: scenario.includes("-reversed-")
-                    ? ("before-native" as const)
-                    : ("after-native" as const),
+                  syntheticCompactionMarker:
+                    scenario.includes("-reversed-") || futureMarker
+                      ? ("before-native" as const)
+                      : ("after-native" as const),
                 }
               : {}),
             ...(threadCompactionTelemetry
@@ -732,7 +740,10 @@ describe("orchestration v2 provider switching", () => {
                         ? 1_000_000
                         : 32_000,
                   }
-                : scenario === "large-current-input" || priorImages || cursorCompaction
+                : scenario === "large-current-input" ||
+                    priorImages ||
+                    cursorCompaction ||
+                    scenario.includes("-occupancy")
                   ? { getModelContextWindow: () => 32_000 }
                   : {}),
             ...(scenario.endsWith("-native") || scenario === "large-current-input"
@@ -1048,6 +1059,89 @@ describe("orchestration v2 provider switching", () => {
             assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, "Continue normally");
             assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.nativeThreadId, resumedNativeId);
             assert.lengthOf(yield* Ref.get(injectedHistory), injectedItems.length);
+            if (scenario.includes("-occupancy")) {
+              const cancelledInput = stopped.turnItems.find(
+                (item) => item.type === "user_message" && item.runId === stoppedRun.id,
+              )!;
+              const latest = yield* orchestrator.getThreadProjection(threadId);
+              const occurredAt = yield* DateTime.now;
+              const reimported = scenario.includes("-reimported");
+              // Only an explicit import receipt can put the old unsent prompt
+              // into this replacement's native transcript.
+              yield* eventSink.write({
+                events: [
+                  ...(reimported
+                    ? [
+                        {
+                          id: EventId.make("occupancy:reimported-cancellation"),
+                          type: "context-handoff.updated" as const,
+                          threadId,
+                          occurredAt,
+                          payload: {
+                            ...resumedHandoff,
+                            id: ContextHandoffId.make("occupancy:reimported-cancellation"),
+                            history: {
+                              coverage: "Explicitly imported cancelled prompt",
+                              messages: [
+                                {
+                                  ...resumedHandoff.history!.messages[0]!,
+                                  itemId: cancelledInput.id,
+                                  text: current,
+                                },
+                              ],
+                              omittedItems: 0,
+                              omittedItemIds: [],
+                            },
+                            delivery: {
+                              nativeThreadId: resumedNativeId!,
+                              status: "inline" as const,
+                              itemIds: [cancelledInput.id],
+                            },
+                            updatedAt: occurredAt,
+                          },
+                        },
+                      ]
+                    : []),
+                  {
+                    id: EventId.make("occupancy:deferred-history"),
+                    type: "context-handoff.updated" as const,
+                    threadId,
+                    occurredAt,
+                    payload: {
+                      ...resumedHandoff,
+                      id: ContextHandoffId.make("occupancy:deferred-history"),
+                      transferId: null,
+                      targetRunId: latest.runs.at(-1)!.id,
+                      history: {
+                        coverage: "Later deferred context",
+                        messages: [
+                          {
+                            ...resumedHandoff.history!.messages[0]!,
+                            itemId: TurnItemId.make("occupancy:additional-history"),
+                            text: "Additional recovered context",
+                          },
+                        ],
+                        omittedItems: 0,
+                        omittedItemIds: [],
+                      },
+                      delivery: {
+                        nativeThreadId: resumedNativeId!,
+                        status: "pending" as const,
+                        deferred: true,
+                        itemIds: [],
+                      },
+                      updatedAt: occurredAt,
+                    },
+                  },
+                ],
+              });
+              yield* dispatch(5, "Retry deferred history", targetSelection);
+              yield* wait(5);
+              const delivered = (yield* orchestrator.getThreadProjection(
+                threadId,
+              )).contextHandoffs.find((item) => item.id === "occupancy:deferred-history")!;
+              assert.equal(delivered.delivery?.status, reimported ? "pending" : "inline");
+            }
             if (scenario.includes("-small")) {
               // A later resume failure rebuilds from the same durable history;
               // it must not resurrect the old cancelled request either.
@@ -1271,14 +1365,74 @@ describe("orchestration v2 provider switching", () => {
               // context again after delivery. A new handoff must account for it.
               yield* dispatch(6, "A new source constraint", CODEX_MODEL_SELECTION);
               yield* wait(6);
+              if (futureMarker) {
+                const laterRun = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+                  (source) => source.ordinal === 5,
+                )!;
+                const reimportId = ContextHandoffId.make("future-marker:reimport-old-source");
+                // This old source is imported through a later target run,
+                // rather than the original handoff targeted before compaction.
+                yield* eventSink.write({
+                  events: [
+                    {
+                      id: EventId.make("future-marker:reimport-old-source"),
+                      type: "context-handoff.updated",
+                      threadId,
+                      occurredAt: yield* DateTime.now,
+                      payload: {
+                        ...recoveredHandoff,
+                        id: reimportId,
+                        transferId: null,
+                        targetRunId: laterRun.id,
+                        history: {
+                          ...recoveredHandoff.history!,
+                          messages: recoveredHandoff.history!.messages.map((message, index) => ({
+                            ...message,
+                            itemId: TurnItemId.make(`future-marker:exported-source:${index}`),
+                          })),
+                        },
+                        delivery: {
+                          nativeThreadId: target.nativeThreadRef!.nativeId!,
+                          status: "pending",
+                          deferred: true,
+                          itemIds: [],
+                        },
+                      },
+                    },
+                  ],
+                });
+                yield* dispatch(7, "Import the new source", targetSelection);
+                yield* wait(7);
+                const importedProjection = yield* orchestrator.getThreadProjection(threadId);
+                const imported = importedProjection.contextHandoffs.find(
+                  (item) => item.id === reimportId,
+                )!;
+                assert.equal(imported.delivery?.status, "inline");
+                assert.equal(imported.targetRunId, laterRun.id);
+                const marker = importedProjection.turnItems.find((item) =>
+                  item.id.startsWith("synthetic-compaction-item:"),
+                )!;
+                assert.equal(DateTime.toEpochMillis(marker.updatedAt), fixedTime + 1);
+                assert.equal(DateTime.toEpochMillis(imported.updatedAt), fixedTime);
+                assert.include((yield* Ref.get(capturedTurns)).at(-1)!.text, sourcePrompt);
+                yield* dispatch(8, "Another source constraint", CODEX_MODEL_SELECTION);
+                yield* wait(8);
+              }
               // The 4k response still occupies context. Use 5k of current input
               // when the marker already accounts for 2k; dropping later output
               // would incorrectly admit the handoff in either automatic case.
               const current = "y".repeat(
-                markerOnlyCompaction ? 5_000 : automaticCompaction ? 7_000 : 10_000,
+                futureMarker
+                  ? 6_000
+                  : markerOnlyCompaction
+                    ? 5_000
+                    : automaticCompaction
+                      ? 7_000
+                      : 10_000,
               );
-              yield* dispatch(7, current, targetSelection);
-              yield* wait(7);
+              const retryOrdinal = futureMarker ? 9 : 7;
+              yield* dispatch(retryOrdinal, current, targetSelection);
+              yield* wait(retryOrdinal);
               assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, current);
               assert.isTrue(
                 (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs.at(-1)!.delivery
@@ -1504,6 +1658,20 @@ describe("orchestration v2 provider switching", () => {
               },
               layerRegistry,
             ),
+          ),
+          Effect.provideService(
+            Clock.Clock,
+            futureMarker
+              ? {
+                  currentTimeMillisUnsafe: () => fixedTime,
+                  currentTimeMillis: Effect.succeed(fixedTime),
+                  currentTimeNanosUnsafe: () => BigInt(fixedTime) * 1_000_000n,
+                  currentTimeNanos: Effect.succeed(BigInt(fixedTime) * 1_000_000n),
+                  monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
+                  monotonicTimeNanos: clock.monotonicTimeNanos,
+                  sleep: (duration) => clock.sleep(duration),
+                }
+              : clock,
           ),
         );
       }),
@@ -1769,6 +1937,8 @@ describe("orchestration v2 provider switching", () => {
     "uncertain-cancelled-running-user-input-request-only-runless",
     "accepted-cancelled-running-thread-created",
     "uncertain-cancelled-running-thread-created-other-turn",
+    "accepted-cancelled-running-secret-request",
+    "uncertain-cancelled-running-secret-request-other-turn",
     "accepted-cancelled-running-native-subagent",
     "accepted-cancelled-running-native-subagent-native-history",
     "uncertain-cancelled-running-app-owned-subagent",
@@ -1813,6 +1983,7 @@ describe("orchestration v2 provider switching", () => {
           const providerEvidence =
             providerRequest ||
             attempts.includes("-thread-created") ||
+            attempts.includes("-secret-request") ||
             attempts.includes("-subagent") ||
             attempts.includes("-compaction") ||
             attempts.includes("-retry-");
@@ -2067,6 +2238,31 @@ describe("orchestration v2 provider switching", () => {
                             targetRunId: null,
                             targetProviderInstanceId: CLAUDE_MODEL_SELECTION.instanceId,
                             targetModel: CLAUDE_MODEL_SELECTION.model,
+                          },
+                        },
+                      ]
+                    : []),
+                  ...(attempts.includes("-secret-request") &&
+                  firstOutput?.type === "assistant_message"
+                    ? [
+                        {
+                          id: EventId.make("resume-fallback:secret-request"),
+                          type: "turn-item.updated" as const,
+                          threadId,
+                          occurredAt,
+                          payload: {
+                            ...firstOutput,
+                            type: "secret_request" as const,
+                            nodeId: firstRun.rootNodeId,
+                            providerTurnId: uncertainEvidence
+                              ? ProviderTurnId.make("resume-fallback:other-turn")
+                              : firstOutput.providerTurnId,
+                            nativeItemRef: null,
+                            status: "waiting" as const,
+                            completedAt: null,
+                            label: "Service credential",
+                            reason: "Authenticate the requested service",
+                            secretStatus: "pending" as const,
                           },
                         },
                       ]

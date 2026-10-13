@@ -341,6 +341,16 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         | undefined;
       // The last finished turn, so context usage reported after it still lands on it.
       let lastProviderTurn: OrchestrationV2ProviderTurn | undefined;
+      let contextUsageResetAt: DateTime.Utc | undefined;
+      // Inbox order survives a coarse clock: evidence emitted after a compaction
+      // must sort after its boundary, including when several resets share a tick.
+      const contextEvidenceTime = DateTime.now.pipe(
+        Effect.map((time) =>
+          contextUsageResetAt === undefined
+            ? time
+            : DateTime.max(time, DateTime.addDuration(contextUsageResetAt, 1)),
+        ),
+      );
       const agentEndedAt = new Map<string, DateTime.Utc>();
       // "default" is the catalog's default model, from the provider snapshot. Without
       // one, Muse keeps whatever model the session already runs.
@@ -728,7 +738,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           item.status !== "failed"
         )
           return;
-        const time = yield* DateTime.now;
+        const time = yield* contextEvidenceTime;
         const status = terminal ?? itemStatus(item);
         if (
           item.kind === "compaction" &&
@@ -737,6 +747,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         ) {
           // A revised summary is still the same compaction. Keep its first
           // successful boundary so later usage remains fresh.
+          contextUsageResetAt = time;
           turn.compactionCompletedAt.set(item.itemId, time);
           yield* updateThread({ contextUsage: null });
         }
@@ -985,7 +996,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       ) {
         if (active !== turn || seenTerminals.has(turn.nativeId)) return;
         seenTerminals.add(turn.nativeId);
-        const completedAt = yield* DateTime.now;
+        const completedAt = yield* contextEvidenceTime;
         for (const item of turn.items.values()) {
           // Workflows and subagents outlive a completed turn. A stopped or failed
           // turn ends them in T3 too, as the orchestrator stops following them.
@@ -1307,7 +1318,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         if (method === "session/contextUsage") {
           const usage = yield* decode(MuseContextUsage, params);
           const currentTurn = active?.providerTurn ?? lastProviderTurn;
-          const updatedAt = DateTime.formatIso(yield* DateTime.now);
+          const updatedAt = DateTime.formatIso(yield* contextEvidenceTime);
           const tokenUsage = {
             ...currentTurn?.tokenUsage,
             usedTokens: usage.usedTokens,
@@ -1517,7 +1528,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                       outputTokens: usage.usage.outputTokens,
                       cachedInputTokens: usage.usage.cacheReadTokens ?? usage.usage.cachedTokens,
                       reasoningOutputTokens: usage.usage.reasoningTokens,
-                      updatedAt: DateTime.formatIso(yield* DateTime.now),
+                      updatedAt: DateTime.formatIso(yield* contextEvidenceTime),
                     },
                   }
                 : {}),
