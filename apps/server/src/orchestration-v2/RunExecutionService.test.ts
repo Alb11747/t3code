@@ -3862,6 +3862,37 @@ it.effect("leaves a running run to shutdown recovery when its subscription close
   }),
 );
 
+it.effect.each(["Continue", "/compact"])(
+  "does not dispatch %s after stream failure settles the run during its context read",
+  (messageText) =>
+    Effect.gen(function* () {
+      const contextReadStarted = yield* Deferred.make<void>();
+      const runFailed = yield* Deferred.make<void>();
+      const current = yield* Ref.make(true);
+      const providerCalls = yield* Ref.make(0);
+      const start = () => Ref.update(providerCalls, (count) => count + 1);
+      const { observed } = yield* captureRootRunTermination({
+        key: `stream-end:context-read:${messageText}`,
+        shouldStartProviderTurn: () => Ref.get(current),
+        shouldFinalizeRun: () => Ref.get(current),
+        events: () =>
+          Stream.unwrap(Deferred.await(contextReadStarted).pipe(Effect.as(Stream.empty))),
+        appContext: Deferred.succeed(contextReadStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(runFailed)),
+          Effect.as([]),
+        ),
+        refreshAfterTurn: Ref.set(current, false).pipe(
+          Effect.andThen(Deferred.succeed(runFailed, undefined)),
+        ),
+        messageText,
+        startTurn: start,
+        compactThread: start,
+      });
+      assert.deepEqual(observed, ["run:failed", "pull-requests-refreshed"]);
+      assert.equal(yield* Ref.get(providerCalls), 0);
+    }),
+);
+
 it.effect("refreshes pull requests only once when startup failure closes its event stream", () =>
   Effect.gen(function* () {
     const ingestionStarted = yield* Deferred.make<void>();
@@ -3919,6 +3950,10 @@ function captureRootRunTermination(input: {
   readonly startTurn?: ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"];
   readonly refreshAfterTurn?: Effect.Effect<void>;
   readonly isShuttingDown?: Effect.Effect<boolean>;
+  readonly shouldStartProviderTurn?: RunExecutionService.RunExecutionServiceV2StartRootRunInput["shouldStartProviderTurn"];
+  readonly appContext?: ReturnType<McpAppModelContext.McpAppModelContext["Service"]["forThread"]>;
+  readonly messageText?: string;
+  readonly compactThread?: ProviderAdapter.ProviderAdapterV2SessionRuntime["compactThread"];
 }) {
   return Effect.gen(function* () {
     const ids = backgroundScenarioIds(input.key);
@@ -3953,7 +3988,9 @@ function captureRootRunTermination(input: {
     const layerTest = RunExecutionService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
-          McpAppModelContext.layerEmpty,
+          Layer.mock(McpAppModelContext.McpAppModelContext)({
+            forThread: () => input.appContext ?? Effect.succeed([]),
+          }),
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
           Layer.mock(EventSink.EventSinkV2)({
             write: (payload) =>
@@ -4038,6 +4075,7 @@ function captureRootRunTermination(input: {
             close: Deferred.succeed(ingestionDone, undefined),
           }),
           startTurn: input.startTurn ?? (() => Effect.void),
+          ...(input.compactThread === undefined ? {} : { compactThread: input.compactThread }),
           ...(input.isShuttingDown === undefined ? {} : { isShuttingDown: input.isShuttingDown }),
         } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
         run: {
@@ -4064,6 +4102,9 @@ function captureRootRunTermination(input: {
         attemptId: ids.attemptId,
         providerTurnOrdinal: 1,
         shouldFinalizeRun: input.shouldFinalizeRun,
+        ...(input.shouldStartProviderTurn === undefined
+          ? {}
+          : { shouldStartProviderTurn: input.shouldStartProviderTurn }),
         ...(input.hasUnpairedRunInterruptRequest === undefined
           ? {}
           : {
@@ -4071,7 +4112,7 @@ function captureRootRunTermination(input: {
             }),
         message: {
           messageId: MessageId.make(`message:${input.key}`),
-          text: "interrupt projection",
+          text: input.messageText ?? "interrupt projection",
           attachments: [],
           createdBy: "user",
           creationSource: "web",
