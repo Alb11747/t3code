@@ -304,7 +304,7 @@ function makeTestAdapter(input: {
                       nativeId: `native-turn:${turnInput.threadId}:${turnInput.runOrdinal}`,
                       strength: "strong",
                     },
-                    ordinal: turnInput.runOrdinal,
+                    ordinal: turnInput.providerTurnOrdinal,
                     status: terminalStatus,
                     startedAt: nativeCompaction
                       ? DateTime.subtract(eventTime, { milliseconds: 1 })
@@ -1760,6 +1760,13 @@ describe("orchestration v2 provider switching", () => {
     "accepted-cancelled-running-user-input-native-history",
     "uncertain-cancelled-running-approval-other-turn",
     "uncertain-cancelled-running-user-input-other-turn",
+    "accepted-cancelled-running-approval-request-only",
+    "accepted-cancelled-running-user-input-request-only",
+    "accepted-cancelled-running-approval-request-only-previous-attempt-retried",
+    "uncertain-cancelled-running-approval-request-only-other-turn",
+    "uncertain-cancelled-running-user-input-request-only-runless",
+    "accepted-cancelled-running-thread-created",
+    "uncertain-cancelled-running-thread-created-other-turn",
     "accepted-cancelled-running-native-subagent",
     "accepted-cancelled-running-native-subagent-native-history",
     "uncertain-cancelled-running-app-owned-subagent",
@@ -1800,8 +1807,10 @@ describe("orchestration v2 provider switching", () => {
           let contextWindow = 26_000;
           const providerRequest =
             attempts.includes("-approval") || attempts.includes("-user-input");
+          const runtimeRequestOnly = attempts.includes("-request-only");
           const providerEvidence =
             providerRequest ||
+            attempts.includes("-thread-created") ||
             attempts.includes("-subagent") ||
             attempts.includes("-compaction") ||
             attempts.includes("-retry-");
@@ -1906,7 +1915,13 @@ describe("orchestration v2 provider switching", () => {
                     type: "provider-turn.updated" as const,
                     threadId,
                     occurredAt,
-                    payload: { ...turn, status: turnStatus } satisfies OrchestrationV2ProviderTurn,
+                    payload: {
+                      ...turn,
+                      status: turnStatus,
+                      ...(runtimeRequestOnly && attempts.endsWith("-retried")
+                        ? { ordinal: turn.ordinal + 1 }
+                        : {}),
+                    } satisfies OrchestrationV2ProviderTurn,
                   })),
                   ...(attempts.endsWith("-retried")
                     ? [
@@ -1934,6 +1949,25 @@ describe("orchestration v2 provider switching", () => {
                             status: "superseded" as const,
                           },
                         },
+                        ...(runtimeRequestOnly
+                          ? [
+                              {
+                                id: EventId.make("resume-fallback:previous-turn"),
+                                type: "provider-turn.updated" as const,
+                                threadId,
+                                occurredAt,
+                                payload: {
+                                  ...existing.providerTurns[0]!,
+                                  id: ProviderTurnId.make("resume-fallback:previous-turn"),
+                                  runAttemptId: RunAttemptId.make(
+                                    "resume-fallback:previous-attempt",
+                                  ),
+                                  nodeId: NodeId.make("resume-fallback:previous-root"),
+                                  status: "running" as const,
+                                },
+                              },
+                            ]
+                          : []),
                       ]
                     : []),
                   ...(attempts.includes("-retry-") && firstOutput?.type === "assistant_message"
@@ -1975,7 +2009,69 @@ describe("orchestration v2 provider switching", () => {
                         },
                       ]
                     : []),
-                  ...(providerRequest && firstOutput?.type === "assistant_message"
+                  ...(runtimeRequestOnly && firstOutput?.type === "assistant_message"
+                    ? [
+                        {
+                          id: EventId.make("resume-fallback:runtime-request-only"),
+                          type: "runtime-request.updated" as const,
+                          threadId,
+                          occurredAt,
+                          payload: {
+                            id: RuntimeRequestId.make("resume-fallback:request"),
+                            // No request node or turn item has committed yet.
+                            nodeId: NodeId.make("resume-fallback:uncommitted-request-node"),
+                            providerTurnId: attempts.endsWith("-runless")
+                              ? null
+                              : attempts.includes("-previous-attempt")
+                                ? ProviderTurnId.make("resume-fallback:previous-turn")
+                                : uncertainEvidence
+                                  ? ProviderTurnId.make("resume-fallback:other-turn")
+                                  : firstOutput.providerTurnId,
+                            nativeRequestRef: {
+                              driver: ProviderDriverKind.make("muse"),
+                              nativeId: "request-only",
+                              strength: "strong" as const,
+                            },
+                            kind: attempts.includes("-approval")
+                              ? ("command" as const)
+                              : ("user_input" as const),
+                            status: "cancelled" as const,
+                            responseCapability: {
+                              type: "not_resumable" as const,
+                              reason: "Cancelled",
+                            },
+                            createdAt: occurredAt,
+                            resolvedAt: occurredAt,
+                          },
+                        },
+                      ]
+                    : []),
+                  ...(attempts.includes("-thread-created") &&
+                  firstOutput?.type === "assistant_message"
+                    ? [
+                        {
+                          id: EventId.make("resume-fallback:thread-created"),
+                          type: "turn-item.updated" as const,
+                          threadId,
+                          occurredAt,
+                          payload: {
+                            ...firstOutput,
+                            type: "thread_created" as const,
+                            nodeId: firstRun.rootNodeId,
+                            providerTurnId: uncertainEvidence
+                              ? ProviderTurnId.make("resume-fallback:other-turn")
+                              : firstOutput.providerTurnId,
+                            targetThreadId: ThreadId.make("resume-fallback:created-thread"),
+                            targetRunId: null,
+                            targetProviderInstanceId: CLAUDE_MODEL_SELECTION.instanceId,
+                            targetModel: CLAUDE_MODEL_SELECTION.model,
+                          },
+                        },
+                      ]
+                    : []),
+                  ...(providerRequest &&
+                  !runtimeRequestOnly &&
+                  firstOutput?.type === "assistant_message"
                     ? [
                         {
                           id: EventId.make("resume-fallback:provider-request"),

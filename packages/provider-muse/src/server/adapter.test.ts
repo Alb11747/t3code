@@ -829,10 +829,205 @@ describe("MuseAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect.each(["before", "during", "broken host", "broken replay"] as const)(
+    "keeps pre-admission reports out of failed user runs (%s)",
+    (reportTiming) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        const offers =
+          yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+        const harness = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          undefined,
+          undefined,
+          undefined,
+          runtimePolicy,
+          {
+            continuationRequests: {
+              offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+            },
+          },
+        );
+        let offered: ProviderContinuationRequests.ProviderContinuationRequest | undefined;
+        const report = Effect.gen(function* () {
+          yield* fake.emit("item/completed", {
+            item: {
+              itemId: "report-message",
+              turnId: "report-1",
+              kind: "agentMessage",
+              status: "completed",
+              revision: 1,
+              text: "Workflow result",
+            },
+          });
+          yield* fake.emit("turn/completed", { turnId: "report-1", terminal: "completed" });
+        });
+        if (reportTiming === "before") {
+          yield* fake.emit("turn/started", { turnId: "report-1" });
+          offered = yield* Queue.take(offers);
+          yield* report;
+          yield* fake.emit("session/contextUsage", { usedTokens: 16 });
+          yield* harness.takeEvent(
+            "provider_thread.updated",
+            (event) => event.providerThread.contextUsage?.usedTokens === 16,
+          );
+        }
+        const admission = pendingPromise<Record<string, unknown>>();
+        fake.queueResponse("turn/start", admission.promise);
+        const input = yield* turnInput(harness.providerThread);
+        const starting = yield* harness.runtime
+          .startTurn(input)
+          .pipe(Effect.exit, Effect.forkScoped);
+        const call = yield* fake.takeCall("turn/start");
+        if (reportTiming !== "before") {
+          yield* fake.emit("turn/started", { turnId: "report-1" });
+          if (reportTiming === "broken replay")
+            yield* fake.emit("session/todoListChanged", { items: "Malformed buffered snapshot" });
+          yield* report;
+        }
+        yield* fake.emit("session/todoListChanged", {
+          items: [{ text: "Report the workflow result", status: "completed" }],
+        });
+        // The inbox processes notifications serially; this telemetry marks the preceding prefix.
+        yield* fake.emit("session/contextUsage", { usedTokens: 17 });
+        yield* harness.takeEvent(
+          "provider_thread.updated",
+          (event) => event.providerThread.contextUsage?.usedTokens === 17,
+        );
+        if (reportTiming === "broken host") admission.resolve({ turnId: "unowned-turn" });
+        else if (reportTiming === "broken replay") admission.resolve({ turnId: call.commandId });
+        else admission.reject(new Error("Prompt was refused"));
+        assert.strictEqual(
+          (yield* Fiber.join(starting))._tag,
+          reportTiming === "broken replay" ? "Success" : "Failure",
+        );
+        yield* harness.takeEvent("turn.terminal", (event) => event.status === "failed");
+        assert.isFalse(
+          harness.allEvents.some(
+            (event) =>
+              (event.type === "message.updated" && event.message.runId === input.runId) ||
+              (event.type === "turn_item.updated" && event.turnItem.type === "todo_list"),
+          ),
+        );
+        if (reportTiming === "broken host" || reportTiming === "broken replay") {
+          assert.strictEqual((yield* Deferred.await(harness.eventsEnded))._tag, "Failure");
+          assert.strictEqual(Queue.sizeUnsafe(offers), 0);
+          return;
+        }
+        offered ??= yield* Queue.take(offers);
+        assert.isTrue(Option.isSome(yield* offered.dispatchIfCurrent!(Effect.void)));
+        const continuation = yield* turnInput(harness.providerThread, 2);
+        yield* harness.runtime.startTurn({
+          ...continuation,
+          message: { ...continuation.message, createdBy: "agent", creationSource: "provider" },
+        });
+        const reported = yield* harness.takeEvent("message.updated");
+        assert.strictEqual(reported.message.runId, continuation.runId);
+        assert.strictEqual(reported.message.text, "Workflow result");
+        assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "completed");
+        assert.strictEqual(fake.calls.filter((call) => call.method === "turn/start").length, 1);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("publishes known own-item deltas while native admission is pending", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const harness = yield* makeHarness(fake);
+      const admission = pendingPromise<Record<string, unknown>>();
+      fake.queueResponse("turn/start", admission.promise);
+      const input = yield* turnInput(harness.providerThread);
+      const starting = yield* harness.runtime.startTurn(input).pipe(Effect.forkScoped);
+      const call = yield* fake.takeCall("turn/start");
+      yield* fake.emit("item/started", {
+        item: {
+          itemId: "own-message",
+          turnId: call.commandId,
+          kind: "agentMessage",
+          status: "inProgress",
+          revision: 1,
+          text: "",
+        },
+      });
+      yield* harness.takeEvent("message.updated");
+      yield* fake.emit("item/delta", { itemId: "own-message", delta: "Accepted own output" });
+      yield* fake.emit("session/contextUsage", { usedTokens: 17 });
+      yield* harness.takeEvent(
+        "provider_thread.updated",
+        (event) => event.providerThread.contextUsage?.usedTokens === 17,
+      );
+      yield* TestClock.adjust("50 millis");
+      yield* fake.emit("session/contextUsage", { usedTokens: 18 });
+      yield* harness.takeEvent(
+        "provider_thread.updated",
+        (event) => event.providerThread.contextUsage?.usedTokens === 18,
+      );
+      assert.isTrue(
+        harness.allEvents.some(
+          (event) =>
+            event.type === "message.updated" &&
+            event.message.runId === input.runId &&
+            event.message.text === "Accepted own output",
+        ),
+      );
+      admission.resolve({ turnId: call.commandId });
+      yield* Fiber.join(starting);
+      yield* fake.emit("turn/completed", { turnId: call.commandId, terminal: "completed" });
+      assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "completed");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("preserves own turnless output when the turn finishes before admission ack", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const harness = yield* makeHarness(fake);
+      const admission = pendingPromise<Record<string, unknown>>();
+      fake.queueResponse("turn/start", admission.promise);
+      const input = yield* turnInput(harness.providerThread);
+      const starting = yield* harness.runtime.startTurn(input).pipe(Effect.forkScoped);
+      const call = yield* fake.takeCall("turn/start");
+      yield* fake.emit("session/todoListChanged", {
+        items: [{ text: "Finish the user task", status: "completed" }],
+      });
+      yield* fake.emit("item/completed", {
+        item: {
+          itemId: "own-turnless-answer",
+          turnId: null,
+          kind: "agentMessage",
+          status: "completed",
+          revision: 1,
+          text: "User answer",
+        },
+      });
+      yield* fake.emit("turn/completed", { turnId: call.commandId, terminal: "completed" });
+      yield* harness.takeEvent("turn.terminal");
+      admission.resolve({ turnId: call.commandId });
+      yield* Fiber.join(starting);
+      assert.isTrue(
+        harness.allEvents.some(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "todo_list" &&
+            event.turnItem.runId === input.runId &&
+            event.turnItem.steps.some((step) => step.text === "Finish the user task"),
+        ),
+      );
+      assert.isTrue(
+        harness.allEvents.some(
+          (event) =>
+            event.type === "message.updated" &&
+            event.message.runId === input.runId &&
+            event.message.text === "User answer",
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("lets a user turn take a held Muse report turn, approvals included", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakeMuse();
-      const offers: Array<ProviderContinuationRequests.ProviderContinuationRequest> = [];
+      const offers =
+        yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
       const harness = yield* makeHarness(
         fake,
         INSTANCE_ID,
@@ -840,18 +1035,55 @@ describe("MuseAdapterV2", () => {
         undefined,
         undefined,
         runtimePolicy,
-        { continuationRequests: { offer: (request) => Effect.sync(() => offers.push(request)) } },
+        {
+          continuationRequests: {
+            offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          },
+        },
       );
       // A finished workflow's report turn starts while T3 runs nothing: it is held.
       yield* fake.emit("turn/started", { turnId: "report-1" });
-      yield* Effect.yieldNow;
-      assert.lengthOf(offers, 1);
-      // The user sends a message first; Muse runs the report before it.
-      const { nativeId } = yield* startConversation(harness, fake);
+      const offered = yield* Queue.take(offers);
       yield* fake.emit("approval/requested", approval("report-1"));
+      yield* fake.emit("item/completed", {
+        item: {
+          itemId: "report-message",
+          turnId: "report-1",
+          kind: "agentMessage",
+          status: "completed",
+          revision: 1,
+          text: "Workflow result",
+        },
+      });
+      yield* fake.emit("session/contextUsage", { usedTokens: 17 });
+      yield* harness.takeEvent(
+        "provider_thread.updated",
+        (event) => event.providerThread.contextUsage?.usedTokens === 17,
+      );
+      // The user sends a message first; Muse runs the report before it.
+      const admission = pendingPromise<Record<string, unknown>>();
+      fake.queueResponse("turn/start", admission.promise);
+      const starting = yield* harness.runtime
+        .startTurn(yield* turnInput(harness.providerThread))
+        .pipe(Effect.forkScoped);
+      const call = yield* fake.takeCall("turn/start");
+      yield* fake.emit("session/contextUsage", { usedTokens: 18 });
+      yield* harness.takeEvent(
+        "provider_thread.updated",
+        (event) => event.providerThread.contextUsage?.usedTokens === 18,
+      );
+      assert.isFalse(harness.allEvents.some((event) => event.type === "runtime_request.updated"));
+      assert.isFalse(harness.allEvents.some((event) => event.type === "message.updated"));
+      admission.resolve({ turnId: call.commandId, status: "accepted", disposition: "queued" });
+      yield* Fiber.join(starting);
+      const nativeId = call.commandId!;
       const asked = yield* harness.takeEvent(
         "runtime_request.updated",
         (event) => event.runtimeRequest.status === "pending",
+      );
+      assert.strictEqual(
+        (yield* harness.takeEvent("message.updated")).message.text,
+        "Workflow result",
       );
       yield* harness.runtime.respondToRuntimeRequest({
         requestId: asked.runtimeRequest.id,
@@ -864,9 +1096,99 @@ describe("MuseAdapterV2", () => {
       const terminal = yield* harness.takeEvent("turn.terminal");
       assert.strictEqual(terminal.status, "completed");
       // The user turn took it, so the continuation is not dispatched.
-      const dispatched = yield* offers[0]!.dispatchIfCurrent!(Effect.succeed("run"));
+      const dispatched = yield* offered.dispatchIfCurrent!(Effect.succeed("run"));
       assert.isTrue(Option.isNone(dispatched));
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "keeps a report for its continuation when the user turn finishes before admission ack",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        const offers =
+          yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+        const harness = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          undefined,
+          undefined,
+          undefined,
+          runtimePolicy,
+          {
+            continuationRequests: {
+              offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+            },
+          },
+        );
+        const admission = pendingPromise<Record<string, unknown>>();
+        fake.queueResponse("turn/start", admission.promise);
+        const input = yield* turnInput(harness.providerThread);
+        const starting = yield* harness.runtime.startTurn(input).pipe(Effect.forkScoped);
+        const call = yield* fake.takeCall("turn/start");
+        yield* fake.emit("turn/started", { turnId: "report-1" });
+        yield* fake.emit("item/completed", {
+          item: {
+            itemId: "user-answer",
+            turnId: call.commandId,
+            kind: "agentMessage",
+            status: "completed",
+            revision: 1,
+            text: "User answer",
+          },
+        });
+        yield* fake.emit("turn/completed", { turnId: call.commandId, terminal: "completed" });
+        const ownAnswer = yield* harness.takeEvent("message.updated");
+        assert.strictEqual(ownAnswer.message.text, "User answer");
+        assert.strictEqual(ownAnswer.message.runId, input.runId);
+        yield* harness.takeEvent("turn.terminal");
+        // The command is still pending after its own turn ended. Report frames
+        // arriving in this gap must stay with the already-buffered report start.
+        yield* fake.emit("item/completed", {
+          item: {
+            itemId: "report-answer",
+            turnId: "report-1",
+            kind: "agentMessage",
+            status: "completed",
+            revision: 1,
+            text: "Workflow result",
+          },
+        });
+        yield* fake.emit("turn/completed", { turnId: "report-1", terminal: "completed" });
+        yield* fake.emit("session/contextUsage", { usedTokens: 17 });
+        yield* harness.takeEvent(
+          "provider_thread.updated",
+          (event) => event.providerThread.contextUsage?.usedTokens === 17,
+        );
+        admission.resolve({ turnId: call.commandId });
+        yield* Fiber.join(starting);
+        const offered = yield* Queue.take(offers);
+        assert.isTrue(Option.isSome(yield* offered.dispatchIfCurrent!(Effect.void)));
+        const continuation = yield* turnInput(harness.providerThread, 2);
+        yield* harness.runtime.startTurn({
+          ...continuation,
+          message: { ...continuation.message, createdBy: "agent", creationSource: "provider" },
+        });
+        yield* fake.emit("session/contextUsage", { usedTokens: 18 });
+        yield* harness.takeEvent(
+          "provider_thread.updated",
+          (event) => event.providerThread.contextUsage?.usedTokens === 18,
+        );
+        const report = harness.allEvents.find(
+          (event) => event.type === "message.updated" && event.message.runId === continuation.runId,
+        );
+        assert.strictEqual(report?.type, "message.updated");
+        if (report?.type !== "message.updated") return;
+        assert.strictEqual(report.message.text, "Workflow result");
+        assert.isTrue(
+          harness.allEvents.some(
+            (event) =>
+              event.type === "turn.terminal" &&
+              event.runOrdinal === 2 &&
+              event.status === "completed",
+          ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect("approves a workflow child's approval in full access after its turn ended", () =>

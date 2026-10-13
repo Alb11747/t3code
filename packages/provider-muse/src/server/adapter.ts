@@ -334,6 +334,11 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       let nativeSessionId: string | undefined;
       let thread: OrchestrationV2ProviderThread | undefined;
       let active: ActiveTurn | undefined;
+      // Command admission outlives its native turn, which may finish before the ACK.
+      // External reports must wait for that ACK instead of proving prompt acceptance.
+      let beforeAdmission:
+        | { readonly nativeId: string; readonly events: Array<[string, unknown]> }
+        | undefined;
       // The last finished turn, so context usage reported after it still lands on it.
       let lastProviderTurn: OrchestrationV2ProviderTurn | undefined;
       const agentEndedAt = new Map<string, DateTime.Utc>();
@@ -1340,6 +1345,24 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         // or after it, so it skips turn routing.
         if (params.subagentOrigin !== undefined && method.startsWith("approval/"))
           return yield* handleRequestEvent(method, params, undefined);
+        const nativeTurnId =
+          typeof params.turnId === "string"
+            ? params.turnId
+            : (itemEvent?.turnId ??
+              (method === "item/delta" && typeof params.itemId === "string"
+                ? active?.items.get(params.itemId)?.turnId
+                : undefined));
+        if (beforeAdmission !== undefined) {
+          // Turnless output belongs to this run until a report could have produced it.
+          const foreign =
+            nativeTurnId !== undefined
+              ? nativeTurnId !== beforeAdmission.nativeId
+              : wake !== undefined || beforeAdmission.events.length > 0;
+          if (foreign) {
+            beforeAdmission.events.push([method, data]);
+            return;
+          }
+        }
         // Muse starts a turn on its own when a workflow finishes, to report its result.
         // During a run, that run shows it. Otherwise hold it and ask the orchestrator for
         // a run; that run takes the held events, unless a user turn takes them first.
@@ -1371,8 +1394,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           }
         }
         if (wake && active?.nativeId !== wake.nativeId) {
-          const turnId = typeof params.turnId === "string" ? params.turnId : itemEvent?.turnId;
-          if (turnId === wake.nativeId) {
+          if (nativeTurnId === wake.nativeId) {
             wake.events.push([method, data]);
             return;
           }
@@ -1992,9 +2014,31 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           interruptRequested: false,
           compact,
         };
+        const replayReports = Effect.gen(function* () {
+          const buffered = beforeAdmission?.events ?? [];
+          beforeAdmission = undefined;
+          if (broken || closed) return;
+          // Its own native turn can finish before the command acknowledgment arrives.
+          // Leave the held report for a continuation when this run already ended.
+          if (active === turn) {
+            const held = wake;
+            wake = undefined;
+            if (continuation && !held) return yield* finish(turn, "completed");
+            if (held && !continuation) turn.joined.add(held.nativeId);
+            for (const [method, data] of held?.events ?? []) {
+              if (broken || closed) return;
+              yield* handleNotification(method, data).pipe(Effect.catch(failHost));
+            }
+          }
+          for (const [method, data] of buffered) {
+            if (broken || closed) return;
+            yield* handleNotification(method, data).pipe(Effect.catch(failHost));
+          }
+        });
         yield* Effect.gen(function* () {
           thread = turnInput.providerThread;
           active = turn;
+          beforeAdmission = continuation || compact ? undefined : { nativeId, events: [] };
           yield* emit({
             type: "provider_turn.updated",
             driver: MUSE_PROVIDER,
@@ -2007,14 +2051,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
             lastRunOrdinal: turnInput.runOrdinal,
           });
           yield* updateSession("running");
-          // A user turn takes a held Muse turn: Muse runs it first, so this run shows it
-          // (and its approvals), and the continuation asked for it is no longer needed.
-          const held = wake;
-          wake = undefined;
-          if (continuation && !held) return yield* finish(turn, "completed");
-          if (held && !continuation) turn.joined.add(held.nativeId);
-          for (const [method, data] of held?.events ?? [])
-            yield* handleNotification(method, data).pipe(Effect.catch(failHost));
+          if (continuation || compact) yield* replayReports;
         }).pipe(eventPermit.withPermits(1));
         if (continuation) return;
         yield* Effect.gen(function* () {
@@ -2061,6 +2098,9 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
               );
               return yield* protocolError("Muse admitted the turn under an unexpected identity");
             }
+            // Only accepted input may take a held report into its run. Queued input
+            // is already admitted; the report and its approvals can now be shown.
+            yield* eventPermit.withPermits(1)(replayReports);
           }
         }).pipe(
           Effect.onError((cause) => {
@@ -2070,7 +2110,9 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
               : error instanceof Error
                 ? error.message
                 : "Muse could not start the turn.";
-            return eventPermit.withPermits(1)(finish(turn, "failed", detail));
+            return eventPermit.withPermits(1)(
+              finish(turn, "failed", detail).pipe(Effect.andThen(replayReports)),
+            );
           }),
         );
       });

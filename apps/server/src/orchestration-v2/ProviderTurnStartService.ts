@@ -720,13 +720,16 @@ export const layer: Layer.Layer<
           sourceRunId: RunId,
         ) {
           checkedCancelledRunIds.add(sourceRunId);
-          // A provider message can commit before its node and turn item. Keep
-          // both event prefixes, reading only the requested cancelled run.
-          const { turnItems, messages } = yield* projectionStore.getThreadRecords(
+          // Provider messages and requests can commit before their node and
+          // turn item. Read only the requested cancelled run's evidence.
+          const { turnItems, messages, runtimeRequests } = yield* projectionStore.getThreadRecords(
             input.threadId,
-            ["turnItems", "messages"],
+            ["turnItems", "messages", "runtimeRequests"],
             {
               turnItemRunId: sourceRunId,
+              runtimeRequestProviderTurnIds: [...cancelledRootTurns.values()]
+                .filter((turn) => cancelledAttempts.get(turn.runAttemptId!)!.runId === sourceRunId)
+                .map((turn) => turn.id),
               messageRunIds: [sourceRunId],
               messageRoles: ["assistant"],
               turnItemTypes: [
@@ -745,6 +748,7 @@ export const layer: Layer.Layer<
                 "file_change",
                 "file_search",
                 "web_search",
+                "thread_created",
               ],
             },
           );
@@ -779,6 +783,14 @@ export const layer: Layer.Layer<
               continue;
             acceptedCancelledAttempts.add(attempt.id);
             acceptedCancelledRunIds.add(attempt.runId);
+          }
+          // Muse persists the request before its node and turn item. The read
+          // only returns requests on this run's root turns, which name their attempt.
+          for (const request of runtimeRequests) {
+            acceptedCancelledAttempts.add(
+              cancelledRootTurns.get(request.providerTurnId!)!.runAttemptId!,
+            );
+            acceptedCancelledRunIds.add(sourceRunId);
           }
           for (const sourceMessage of messages) {
             if (

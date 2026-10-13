@@ -7,7 +7,9 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderTurnId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   TurnItemId,
   type OrchestrationV2AppThread,
@@ -255,6 +257,45 @@ it.effect.each(["sqlite", "memory"] as const)(
       );
       assert.deepEqual(
         (yield* store.getThreadRecords(threadId, ["turnItems"], { turnItemRunIds: [] })).turnItems,
+        [],
+      );
+      const requestTurnId = ProviderTurnId.make("startup:request-turn");
+      const requests = [requestTurnId, ProviderTurnId.make("startup:other-turn"), null].map(
+        (providerTurnId, index) => ({
+          id: RuntimeRequestId.make(`startup:request:${index}`),
+          nodeId: NodeId.make(`startup:request-node:${index}`),
+          providerTurnId,
+          nativeRequestRef: null,
+          kind: "user_input" as const,
+          status: "cancelled" as const,
+          responseCapability: { type: "not_resumable" as const, reason: "Cancelled" },
+          createdAt: now,
+          resolvedAt: now,
+        }),
+      );
+      for (const request of requests) {
+        yield* store.apply({
+          id: EventId.make(`event:${request.id}`),
+          type: "runtime-request.updated",
+          threadId,
+          occurredAt: now,
+          payload: request,
+        });
+      }
+      assert.deepEqual(
+        (yield* store.getThreadRecords(threadId, ["runtimeRequests"])).runtimeRequests,
+        requests,
+      );
+      assert.deepEqual(
+        (yield* store.getThreadRecords(threadId, ["runtimeRequests"], {
+          runtimeRequestProviderTurnIds: [requestTurnId],
+        })).runtimeRequests,
+        [requests[0]!],
+      );
+      assert.deepEqual(
+        (yield* store.getThreadRecords(threadId, ["runtimeRequests"], {
+          runtimeRequestProviderTurnIds: [],
+        })).runtimeRequests,
         [],
       );
       assert.deepEqual(yield* store.getThreadAttachmentIds(threadId), []);
