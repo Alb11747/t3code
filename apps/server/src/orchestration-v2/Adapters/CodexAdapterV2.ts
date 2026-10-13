@@ -1,4 +1,6 @@
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
+import { makeCodexComposerPredictions } from "../../provider/CodexComposerPredictions.ts";
+import * as PromptSuggestions from "../../provider/PromptSuggestions.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
@@ -83,6 +85,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import { FetchHttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { resolveAttachmentPath, resolveAttachmentPathById } from "../../attachmentStore.ts";
@@ -1591,6 +1594,7 @@ export const createCodexAdapterV2 = (
   Effect.gen(function* () {
     const clientFactory = yield* CodexAppServerClientFactory;
     const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+    const promptSuggestions = yield* PromptSuggestions.PromptSuggestions;
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
     const hostEnvironment = yield* HostProcess.Environment;
@@ -1627,6 +1631,7 @@ export const createCodexAdapterV2 = (
       idAllocator,
       serverConfig,
       continuationRequests,
+      promptSuggestions,
       ...hooks,
     });
   });
@@ -1678,6 +1683,7 @@ export interface CodexAdapterV2Options {
   readonly environment: NodeJS.ProcessEnv;
   readonly clientFactory: CodexAppServerClientFactoryShape;
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
+  readonly promptSuggestions?: Pick<typeof PromptSuggestions.PromptSuggestions.Service, "publish">;
   /**
    * Resolves launch settings when each session opens, replacing `settings` and
    * `environment`. Managed ChatGPT sign-in uses it to launch the T3-installed
@@ -1708,6 +1714,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
     threadId === null ? Effect.succeed(undefined) : mcpSessions.read(threadId);
   const { clientFactory, crypto, fileSystem, idAllocator, serverConfig } = adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests;
+  const promptSuggestions = adapterOptions.promptSuggestions ?? { publish: () => Effect.void };
+  const composerPredictions = yield* makeCodexComposerPredictions.pipe(
+    Effect.provide(FetchHttpClient.layer),
+  );
 
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
@@ -1829,6 +1839,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           new Map<ProviderThreadId, Extract<OrchestrationV2TurnItem, { type: "error" }>>(),
         );
         const activeTurns = yield* Ref.make(new Map<string, ActiveCodexTurnContext>());
+        // Identity guards late predictions even if the HTTP request outlives interruption.
+        const predictions = new Map<
+          ThreadId,
+          { context: ActiveCodexTurnContext; fiber?: Fiber.Fiber<void> }
+        >();
+        const revokePrediction = Effect.fnUntraced(function* (threadId: ThreadId) {
+          const prediction = predictions.get(threadId);
+          predictions.delete(threadId);
+          yield* promptSuggestions.publish(threadId, null);
+          if (prediction?.fiber) yield* Fiber.interrupt(prediction.fiber);
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.forEach(predictions.keys(), revokePrediction, { discard: true }),
+        );
         const turnTokenUsageByThread = new Map<string, CodexTurnTokenUsageState>();
         const usageStateForThread = (nativeThreadId: string) => {
           let state = turnTokenUsageByThread.get(nativeThreadId);
@@ -2052,6 +2076,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return next;
             });
             beginTurnTokenUsage(context);
+            yield* revokePrediction(input.turnInput.threadId);
+            predictions.set(input.turnInput.threadId, { context });
             yield* Ref.update(activeTurns, (current) => {
               const updated = new Map(current);
               updated.set(input.nativeTurnId, context);
@@ -6172,6 +6198,41 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* Deferred.succeed(input.context.nativeStartReady, undefined);
               }
               yield* flushReadyRootTerminals();
+              const prediction = predictions.get(input.context.input.threadId);
+              if (
+                adapterOptions.settings.promptSuggestions &&
+                input.context.subagent === null &&
+                input.status === "completed" &&
+                !holdsForGoal &&
+                overloadAttempt === undefined &&
+                nativeThreadId != null &&
+                prediction?.context === input.context
+              ) {
+                prediction.fiber = yield* Effect.gen(function* () {
+                  const id = yield* crypto.randomUUIDv4;
+                  const text = yield* composerPredictions.predict({
+                    client,
+                    environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+                    nativeThreadId,
+                    model: input.context.input.modelSelection.model,
+                    turnId: id,
+                  });
+                  if (text && predictions.get(input.context.input.threadId) === prediction) {
+                    yield* promptSuggestions.publish(input.context.input.threadId, {
+                      id,
+                      runId: input.context.input.runId,
+                      text,
+                    });
+                  }
+                }).pipe(
+                  Effect.catch((cause) =>
+                    Effect.logDebug("Codex composer prediction unavailable.", {
+                      reason: cause._tag,
+                    }),
+                  ),
+                  Effect.forkIn(scope),
+                );
+              }
               if (!retainSettledContext && !interruptInProgress) {
                 yield* Ref.update(runningCommandItemsByTurn, (current) => {
                   if (!current.has(input.nativeTurnId)) {
@@ -6874,8 +6935,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               turnInput.restartContinuationOfRunId === undefined
                 ? parseCodexGoalCommand(turnInput.message.text)
                 : null;
-            if (goalCommand !== null) return runGoalCommand(turnInput, goalCommand);
+            if (goalCommand !== null) {
+              return revokePrediction(turnInput.threadId).pipe(
+                Effect.andThen(runGoalCommand(turnInput, goalCommand)),
+              );
+            }
             return Effect.gen(function* () {
+              yield* revokePrediction(turnInput.threadId);
               yield* startNativeTurn(
                 turnInput,
                 turnInput.restartContinuationOfRunId === undefined
@@ -7444,6 +7510,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ),
           rollbackThread: (threadInput) =>
             Effect.gen(function* () {
+              if (threadInput.providerThread.appThreadId !== null) {
+                yield* revokePrediction(threadInput.providerThread.appThreadId);
+              }
               const threadId = yield* getNativeThreadId(threadInput.providerThread);
               const numTurns = yield* resolveCodexRollbackTurnCount(threadInput);
               const nativeConversationHeadRef =
