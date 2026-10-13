@@ -69,6 +69,18 @@ send `X-CPA-Prompt-Cache-Mode: explicit`, which a CLIProxyAPI build that honors
 the header uses to skip its own markers. If another thread kept the same history
 cached, that history costs ordinary input instead of a cheap cache read.
 
+## Prompt suggestions
+
+Turn on **Prompt suggestions** in the Claude provider settings to have Claude
+suggest your next prompt when a turn finishes. On web and desktop the
+suggestion appears in the empty composer. Press **Right Arrow** or **Tab** to
+put it in the composer, where you can edit it before you send, or **Esc** to
+hide it. The suggestion disappears when you send your next message.
+
+Claude does not always have a suggestion, for example in plan mode, after an
+error, or when you are close to a usage limit. A thread where Claude is
+already running starts suggesting once Claude restarts for it.
+
 ## Usage limits
 
 If your Claude subscription runs out of usage mid-turn, the thread shows which
