@@ -1180,7 +1180,9 @@ describe("orchestration v2 provider switching", () => {
               } else if (compactionTelemetry) {
                 assert.equal(
                   projection.providerTurns.find(
-                    (turn) => turn.providerThreadId === target.id && turn.ordinal === 2,
+                    (turn) =>
+                      turn.providerThreadId === target.id &&
+                      turn.nodeId === projection.runs.find((run) => run.ordinal === 2)!.rootNodeId,
                   )!.tokenUsage?.usedTokens,
                   30_000,
                 );
