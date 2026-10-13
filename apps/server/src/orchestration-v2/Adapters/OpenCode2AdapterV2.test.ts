@@ -3616,6 +3616,122 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect.each([
+    { status: "failed", scenario: "completed" },
+    { status: "interrupted", scenario: "completed" },
+    { status: "failed", scenario: "later-step" },
+    { status: "failed", scenario: "failed" },
+  ] as const)(
+    "keeps context usage valid after $scenario compaction and $status execution",
+    ({ status, scenario }) =>
+      Effect.gen(function* () {
+        const gate = makeProviderReplayGate(["after-compaction"]);
+        const compactionEnded = event("session.compaction.ended", {
+          sessionID: SESSION,
+          reason: "auto",
+          text: "A compact summary.",
+          recent: "",
+        });
+        const { runtime, thread } = yield* resumed(
+          [
+            out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+            promptAccepted,
+            event("session.step.ended", {
+              sessionID: SESSION,
+              assistantMessageID: "msg_before_compaction",
+              finish: "tool-calls",
+              cost: 0,
+              tokens: {
+                input: 140000,
+                output: 40,
+                reasoning: 0,
+                cache: { read: 300, write: 0 },
+              },
+            }),
+            event("session.compaction.started", {
+              sessionID: SESSION,
+              reason: "auto",
+              recent: "",
+            }),
+            scenario === "failed"
+              ? event("session.compaction.failed", {
+                  sessionID: SESSION,
+                  reason: "auto",
+                  error: { type: "provider", message: "Compaction failed." },
+                })
+              : compactionEnded,
+            // Hold the terminal until the compaction marker has an earlier timestamp.
+            event("session.execution.started", { sessionID: SESSION }, "after-compaction"),
+            ...(scenario === "later-step"
+              ? [
+                  event("session.step.ended", {
+                    sessionID: SESSION,
+                    assistantMessageID: "msg_after_compaction",
+                    finish: "tool-calls",
+                    cost: 0,
+                    tokens: {
+                      input: 2000,
+                      output: 20,
+                      reasoning: 0,
+                      cache: { read: 100, write: 0 },
+                    },
+                  }),
+                  // A repeated end without an active compaction must keep the later step.
+                  compactionEnded,
+                ]
+              : []),
+            event(`session.execution.${status}`, {
+              sessionID: SESSION,
+              ...(status === "failed"
+                ? { error: { type: "provider", message: "Execution failed." } }
+                : {}),
+            }),
+          ],
+          { replayGate: gate },
+        );
+        const compacted = yield* Deferred.make<DateTime.Utc>();
+        const events = yield* runtime.events.pipe(
+          Stream.tap((event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "compaction" &&
+            event.turnItem.status !== "running"
+              ? Deferred.succeed(compacted, event.turnItem.updatedAt)
+              : Effect.void,
+          ),
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+        yield* runtime.startTurn(turnInput(thread));
+        const compactedAt = yield* Deferred.await(compacted);
+        yield* TestClock.adjust("1 second");
+        gate.release("after-compaction");
+        const collected = yield* Fiber.join(events);
+        const settled = collected
+          .flatMap((event) => (event.type === "provider_turn.updated" ? [event.providerTurn] : []))
+          .at(-1)!;
+        assert.isDefined(settled);
+        assert.equal(settled.status, status);
+        assert.isTrue(
+          DateTime.toEpochMillis(settled.completedAt!) > DateTime.toEpochMillis(compactedAt),
+        );
+        assert.deepInclude(settled.turnTokenUsage, {
+          usageStatus: "partial",
+          inputTokens: scenario === "later-step" ? 142400 : 140300,
+          outputTokens: scenario === "later-step" ? 60 : 40,
+        });
+        if (scenario === "completed") {
+          assert.isUndefined(settled.tokenUsage);
+        } else {
+          assert.deepInclude(settled.tokenUsage, {
+            usedTokens: scenario === "later-step" ? 2120 : 140340,
+            inputTokens: scenario === "later-step" ? 2100 : 140300,
+          });
+        }
+        assert.deepInclude(collected.at(-1), { type: "turn.terminal", status });
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.effect("reports a model's input limit as its context window", () =>
     Effect.gen(function* () {
       const runtime = yield* openCode2ReplayRuntime([...opening]);

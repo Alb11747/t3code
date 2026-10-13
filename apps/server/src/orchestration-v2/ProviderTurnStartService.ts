@@ -720,39 +720,70 @@ export const layer: Layer.Layer<
           sourceRunId: RunId,
         ) {
           checkedCancelledRunIds.add(sourceRunId);
-          // Provider messages and requests can commit before their node and
+          // Provider nodes, messages and requests can commit before their
           // turn item. Read only the requested cancelled run's evidence.
-          const { turnItems, messages, runtimeRequests } = yield* projectionStore.getThreadRecords(
-            input.threadId,
-            ["turnItems", "messages", "runtimeRequests"],
-            {
-              turnItemRunId: sourceRunId,
-              runtimeRequestProviderTurnIds: [...cancelledRootTurns.values()]
-                .filter((turn) => cancelledAttempts.get(turn.runAttemptId!)!.runId === sourceRunId)
-                .map((turn) => turn.id),
-              messageRunIds: [sourceRunId],
-              messageRoles: ["assistant"],
-              turnItemTypes: [
-                "assistant_message",
-                "reasoning",
-                "proposed_plan",
-                "todo_list",
-                "approval_request",
-                "user_input_request",
-                "subagent",
-                "compaction",
-                "error",
-                "system_notice",
-                "command_execution",
-                "dynamic_tool",
-                "file_change",
-                "file_search",
-                "web_search",
-                "thread_created",
-                "secret_request",
-              ],
-            },
-          );
+          const { nodes, turnItems, messages, runtimeRequests } =
+            yield* projectionStore.getThreadRecords(
+              input.threadId,
+              ["nodes", "turnItems", "messages", "runtimeRequests"],
+              {
+                nodeRunId: sourceRunId,
+                turnItemRunId: sourceRunId,
+                runtimeRequestProviderTurnIds: [...cancelledRootTurns.values()]
+                  .filter(
+                    (turn) => cancelledAttempts.get(turn.runAttemptId!)!.runId === sourceRunId,
+                  )
+                  .map((turn) => turn.id),
+                messageRunIds: [sourceRunId],
+                messageRoles: ["assistant"],
+                turnItemTypes: [
+                  "assistant_message",
+                  "reasoning",
+                  "proposed_plan",
+                  "todo_list",
+                  "approval_request",
+                  "user_input_request",
+                  "subagent",
+                  "compaction",
+                  "error",
+                  "system_notice",
+                  "command_execution",
+                  "dynamic_tool",
+                  "file_change",
+                  "file_search",
+                  "web_search",
+                  "thread_created",
+                  "secret_request",
+                ],
+              },
+            );
+          for (const node of nodes) {
+            const turn =
+              node.providerTurnId === null
+                ? undefined
+                : cancelledRootTurns.get(node.providerTurnId);
+            const attempt =
+              turn?.runAttemptId == null ? undefined : cancelledAttempts.get(turn.runAttemptId);
+            if (
+              attempt === undefined ||
+              node.runId !== attempt.runId ||
+              node.providerThreadId !== turn?.providerThreadId ||
+              node.rootNodeId !== attempt.rootNodeId ||
+              node.nativeItemRef === null ||
+              node.status === "idle" ||
+              node.status === "pending" ||
+              // Text/plan nodes can exist before nonempty content, and ACP
+              // represents unfinished native compaction as a synthetic tool.
+              !["tool_call", "approval_request", "user_input_request", "subagent"].includes(
+                node.kind,
+              ) ||
+              (node.nativeItemRef.nativeId?.startsWith("acp-compaction:") === true &&
+                node.status !== "completed")
+            )
+              continue;
+            acceptedCancelledAttempts.add(attempt.id);
+            acceptedCancelledRunIds.add(attempt.runId);
+          }
           for (const item of turnItems) {
             const turn =
               item.providerTurnId === null
@@ -1445,7 +1476,7 @@ export const layer: Layer.Layer<
           .filter((source) => source.nativeThreadId === undefined)
           .map((source) => source.runId),
       );
-      const legacyRecoveredRunIds = new Set(
+      const recoveredRunIds = new Set(
         projection.runs
           .filter(
             (source) =>
@@ -1461,8 +1492,8 @@ export const layer: Layer.Layer<
           .map((source) => source.id),
       );
       // Use saved text and actual native attachments when telemetry is absent.
-      // Legacy attempts lack native identity; exclude their explicitly recovered
-      // history, whose attachments were not replayed into the replacement thread.
+      // Replacement receipts exclude unreplayed text and attachments, including
+      // legacy history. A native fork can change identity while retaining history.
       const nativeContextEstimate = Effect.gen(function* () {
         if (!sameNativeThread) return 0;
         const countedCompaction =
@@ -1528,13 +1559,15 @@ export const layer: Layer.Layer<
                 : DateTime.isLessThanOrEqualTo(item.updatedAt, compactedAt));
             if (
               item.runId === run.id ||
-              // A cancelled prompt from a replaced native session occupies
-              // this transcript only when a handoff actually imported it.
-              (item.type === "user_message" &&
+              // Recovery replaces same-row history with its imports. Without a
+              // recovery receipt, native forks may still retain earlier history.
+              (item.providerThreadId === providerThread.id &&
                 item.runId !== null &&
-                cancelledRunIds.has(item.runId) &&
                 !nativeInputRunIds.has(item.runId) &&
-                !legacyInputRunIds.has(item.runId) &&
+                (recoveredRunIds.has(item.runId) ||
+                  (item.type === "user_message" &&
+                    cancelledRunIds.has(item.runId) &&
+                    !legacyInputRunIds.has(item.runId))) &&
                 !deliveredItemIds.has(item.id)) ||
               (beforeCompaction && !importedAfterCompaction.has(item.id)) ||
               (item.runId !== null &&
@@ -1550,9 +1583,7 @@ export const layer: Layer.Layer<
               item.providerThreadId === providerThread.id &&
               item.runId !== null &&
               (nativeInputRunIds.has(item.runId) ||
-                (legacyInputRunIds.has(item.runId) &&
-                  !coveredItemIds.has(item.id) &&
-                  !legacyRecoveredRunIds.has(item.runId)))
+                (legacyInputRunIds.has(item.runId) && !coveredItemIds.has(item.id)))
                 ? attachmentTokenAllowance(item.attachments)
                 : 0;
             return (

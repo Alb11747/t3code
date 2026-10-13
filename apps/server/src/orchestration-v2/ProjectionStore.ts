@@ -294,6 +294,7 @@ export interface ProjectionRuntimeResponseContext {
 }
 
 export interface ProjectionRecordFilter {
+  readonly nodeRunId?: RunId;
   readonly messageRoles?: ReadonlyArray<OrchestrationV2ConversationMessage["role"]>;
   readonly turnItemRunId?: RunId;
   readonly messageIds?: ReadonlyArray<MessageId>;
@@ -3005,6 +3006,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             SELECT payload_json
             FROM orchestration_v2_projection_nodes
             WHERE thread_id = ${threadId}
+              ${filter?.nodeRunId === undefined ? sql`` : sql`AND run_id = ${filter.nodeRunId}`}
             ORDER BY COALESCE(started_at, ''), node_id ASC
               `
               : sql<PayloadRow & { readonly position: number }>`
@@ -6281,6 +6283,9 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
             return yield* new ProjectionStoreThreadNotFoundError({ threadId });
           const selected = {
             ...projection,
+            nodes: projection.nodes.filter(
+              (row) => filter?.nodeRunId === undefined || row.runId === filter.nodeRunId,
+            ),
             runtimeRequests: projection.runtimeRequests.filter(
               (row) =>
                 filter?.runtimeRequestProviderTurnIds === undefined ||

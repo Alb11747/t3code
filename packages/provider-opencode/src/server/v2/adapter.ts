@@ -1226,6 +1226,9 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     ) {
       const compaction = turn.compaction;
       if (compaction === undefined) return;
+      // The preceding step measured the context that this compaction replaced.
+      // A later step will report the compacted context; cumulative usage stays intact.
+      if (status === "completed") turn.lastStep = undefined;
       const updatedAt = yield* DateTime.now;
       const completedAt = status === "running" ? null : updatedAt;
       yield* emit({

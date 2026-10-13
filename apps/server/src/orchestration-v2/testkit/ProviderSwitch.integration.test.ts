@@ -518,6 +518,7 @@ describe("orchestration v2 provider switching", () => {
     "compact-fallback",
     "compact-legacy",
     "deferred-fallback",
+    "deferred-retained-native-fork",
     "deferred-cancelled",
     "deferred-before-budget-cancelled",
     "deferred-before-budget-cancelled-native",
@@ -1440,6 +1441,40 @@ describe("orchestration v2 provider switching", () => {
               );
               return;
             }
+            if (scenario === "deferred-retained-native-fork") {
+              // Pi rollback forks the native session while retaining its earlier
+              // transcript. A changed native ID alone is not a recovery receipt.
+              const forkNativeId = "retained-native-fork";
+              yield* eventSink.write({
+                events: [
+                  {
+                    id: EventId.make("retained-native-fork"),
+                    type: "provider-thread.updated",
+                    threadId,
+                    occurredAt: yield* DateTime.now,
+                    payload: {
+                      ...target,
+                      nativeThreadRef: { ...target.nativeThreadRef!, nativeId: forkNativeId },
+                      contextUsage: null,
+                    },
+                  },
+                ],
+              });
+              yield* dispatch(3, "Continue retained native history", targetSelection);
+              yield* wait(3);
+              const continued = yield* orchestrator.getThreadProjection(threadId);
+              assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.nativeThreadId, forkNativeId);
+              assert.equal(continued.contextHandoffs.length, projection.contextHandoffs.length);
+              assert.equal(
+                continued.contextHandoffs.find((item) => item.id === handoff.id)!.delivery?.status,
+                "pending",
+              );
+              assert.equal(
+                (yield* Ref.get(capturedTurns)).at(-1)!.text,
+                "Continue retained native history",
+              );
+              return;
+            }
             // Model telemetry can recover after the provider compacts the native history.
             yield* eventSink.write({
               events: [
@@ -1921,6 +1956,13 @@ describe("orchestration v2 provider switching", () => {
     "accepted-cancelled-interrupted-native-history",
     "accepted-cancelled-running-tool",
     "accepted-cancelled-running-tool-native-history",
+    "accepted-cancelled-running-tool-node-only",
+    "uncertain-cancelled-running-tool-node-only-other-turn",
+    "uncertain-cancelled-running-tool-node-only-other-root",
+    "uncertain-cancelled-running-tool-node-only-app-owned",
+    "uncertain-cancelled-running-tool-node-only-pending",
+    "accepted-cancelled-running-compaction-node-only",
+    "uncertain-cancelled-running-compaction-node-only-unfinished",
     "accepted-cancelled-running-todo",
     "accepted-cancelled-running-todo-native-history",
     "uncertain-cancelled-running-todo-empty",
@@ -1955,6 +1997,7 @@ describe("orchestration v2 provider switching", () => {
     "uncertain-cancelled-running-retry-error-unmarked",
     "uncertain-cancelled-running-retry-notice-unmarked",
     "uncertain-cancelled-empty",
+    "uncertain-cancelled-empty-omitted-history-occupancy",
     "accepted-cancelled-message-only",
     "accepted-cancelled-message-only-native-history",
     "accepted-cancelled-message-only-retried",
@@ -1976,11 +2019,14 @@ describe("orchestration v2 provider switching", () => {
           const injectedHistory = yield* Ref.make<ReadonlyArray<unknown>>([]);
           const cancelledRecovered = attempts.includes("cancelled");
           const recoveredOccupancy = attempts.includes("-occupancy");
+          const omittedOccupancy = attempts.includes("-omitted-history");
+          const nodeOnly = attempts.includes("-node-only");
           let contextWindow = 26_000;
           const providerRequest =
             attempts.includes("-approval") || attempts.includes("-user-input");
           const runtimeRequestOnly = attempts.includes("-request-only");
           const providerEvidence =
+            nodeOnly ||
             providerRequest ||
             attempts.includes("-thread-created") ||
             attempts.includes("-secret-request") ||
@@ -1997,12 +2043,16 @@ describe("orchestration v2 provider switching", () => {
               capabilities: ClaudeProviderCapabilitiesV2,
               modelSelection: CLAUDE_MODEL_SELECTION,
               responseByRunOrdinal: cancelledRecovered
-                ? {
-                    1:
-                      attempts.includes("-empty") || attempts.includes("-todo") || providerEvidence
-                        ? ""
-                        : `Accepted cancelled output${recoveredOccupancy ? "x".repeat(5800) : ""}`,
-                  }
+                ? omittedOccupancy
+                  ? { 1: "Old native output " + "x".repeat(120_000), 2: "" }
+                  : {
+                      1:
+                        attempts.includes("-empty") ||
+                        attempts.includes("-todo") ||
+                        providerEvidence
+                          ? ""
+                          : `Accepted cancelled output${recoveredOccupancy ? "x".repeat(5800) : ""}`,
+                    }
                 : {},
               capturedTurns,
               failResumeOnce,
@@ -2015,14 +2065,15 @@ describe("orchestration v2 provider switching", () => {
             const orchestrator = yield* Orchestrator.OrchestratorV2;
             const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
             const runToCompletion = Effect.fn("runToCompletion")(function* (ordinal: number) {
+              const actualOrdinal = ordinal + (omittedOccupancy ? 1 : 0);
               yield* orchestrator.dispatch({
                 type: "message.dispatch",
-                commandId: CommandId.make(`resume-fallback:${ordinal}`),
+                commandId: CommandId.make(`resume-fallback:${actualOrdinal}`),
                 threadId,
-                messageId: MessageId.make(`resume-fallback:${ordinal}`),
+                messageId: MessageId.make(`resume-fallback:${actualOrdinal}`),
                 createdBy: "user",
                 creationSource: "web",
-                text: `Request ${ordinal}${recoveredOccupancy && ordinal === 3 ? "x".repeat(5000) : ""}`,
+                text: `Request ${actualOrdinal}${recoveredOccupancy && ordinal === 3 ? "x".repeat(5000) : ""}`,
                 attachments: [],
                 modelSelection: CLAUDE_MODEL_SELECTION,
                 dispatchMode: { type: "start_immediately" },
@@ -2031,7 +2082,7 @@ describe("orchestration v2 provider switching", () => {
                 Stream.filter(
                   ({ event }) =>
                     event.type === "run.updated" &&
-                    event.payload.ordinal === ordinal &&
+                    event.payload.ordinal === actualOrdinal &&
                     (event.payload.status === "completed" || event.payload.status === "failed"),
                 ),
                 Stream.runHead,
@@ -2056,6 +2107,7 @@ describe("orchestration v2 provider switching", () => {
               branch: null,
               worktreePath: null,
             });
+            if (omittedOccupancy) yield* runToCompletion(0);
             yield* runToCompletion(1);
             if (cancelledRecovered) {
               const existing = yield* orchestrator.getThreadProjection(threadId);
@@ -2067,7 +2119,7 @@ describe("orchestration v2 provider switching", () => {
                   ? "interrupted"
                   : attempts.includes("-running") ||
                       attempts.includes("-message") ||
-                      attempts.endsWith("-empty")
+                      attempts.includes("-empty")
                     ? "running"
                     : "completed";
               const firstOutput = existing.turnItems.find(
@@ -2083,19 +2135,23 @@ describe("orchestration v2 provider switching", () => {
                     occurredAt,
                     payload: { ...firstRun, status: "cancelled" },
                   },
-                  ...existing.providerTurns.map((turn) => ({
-                    id: EventId.make(`resume-fallback:accepted-turn:${turn.id}`),
-                    type: "provider-turn.updated" as const,
-                    threadId,
-                    occurredAt,
-                    payload: {
-                      ...turn,
-                      status: turnStatus,
-                      ...(runtimeRequestOnly && attempts.endsWith("-retried")
-                        ? { ordinal: turn.ordinal + 1 }
-                        : {}),
-                    } satisfies OrchestrationV2ProviderTurn,
-                  })),
+                  ...existing.providerTurns
+                    .filter(
+                      (turn) => !omittedOccupancy || turn.runAttemptId === firstRun.activeAttemptId,
+                    )
+                    .map((turn) => ({
+                      id: EventId.make(`resume-fallback:accepted-turn:${turn.id}`),
+                      type: "provider-turn.updated" as const,
+                      threadId,
+                      occurredAt,
+                      payload: {
+                        ...turn,
+                        status: turnStatus,
+                        ...(runtimeRequestOnly && attempts.endsWith("-retried")
+                          ? { ordinal: turn.ordinal + 1 }
+                          : {}),
+                      } satisfies OrchestrationV2ProviderTurn,
+                    })),
                   ...(attempts.endsWith("-retried")
                     ? [
                         {
@@ -2330,7 +2386,9 @@ describe("orchestration v2 provider switching", () => {
                         },
                       ]
                     : []),
-                  ...(attempts.includes("-compaction") && firstOutput?.type === "assistant_message"
+                  ...(attempts.includes("-compaction") &&
+                  !nodeOnly &&
+                  firstOutput?.type === "assistant_message"
                     ? [
                         {
                           id: EventId.make("resume-fallback:compaction-evidence"),
@@ -2374,7 +2432,47 @@ describe("orchestration v2 provider switching", () => {
                         },
                       ]
                     : []),
-                  ...(attempts.includes("-tool") && firstOutput?.type === "assistant_message"
+                  ...(nodeOnly && firstOutput?.type === "assistant_message"
+                    ? [
+                        {
+                          id: EventId.make("resume-fallback:tool-node-only"),
+                          type: "node.updated" as const,
+                          threadId,
+                          occurredAt,
+                          payload: {
+                            ...existing.nodes.find((node) => node.id === firstRun.rootNodeId)!,
+                            id: NodeId.make("resume-fallback:tool-node-only"),
+                            kind: "tool_call" as const,
+                            parentNodeId: firstRun.rootNodeId,
+                            rootNodeId: attempts.endsWith("-other-root")
+                              ? NodeId.make("resume-fallback:other-root")
+                              : firstRun.rootNodeId!,
+                            providerThreadId: firstOutput.providerThreadId,
+                            providerTurnId: attempts.endsWith("-other-turn")
+                              ? ProviderTurnId.make("resume-fallback:other-turn")
+                              : firstOutput.providerTurnId,
+                            nativeItemRef: attempts.endsWith("-app-owned")
+                              ? null
+                              : {
+                                  driver: CLAUDE_DRIVER,
+                                  nativeId: attempts.includes("-compaction")
+                                    ? "acp-compaction:node-only"
+                                    : "tool-only",
+                                  strength: "strong" as const,
+                                },
+                            status: attempts.endsWith("-pending")
+                              ? ("pending" as const)
+                              : attempts.includes("-compaction") && !uncertainEvidence
+                                ? ("completed" as const)
+                                : ("running" as const),
+                            completedAt: null,
+                          },
+                        },
+                      ]
+                    : []),
+                  ...(attempts.includes("-tool") &&
+                  !nodeOnly &&
+                  firstOutput?.type === "assistant_message"
                     ? [
                         {
                           id: EventId.make("resume-fallback:accepted-tool"),
@@ -2436,8 +2534,8 @@ describe("orchestration v2 provider switching", () => {
                 ],
               });
               if (
-                attempts.includes("-message") &&
-                !attempts.includes("-newer-item") &&
+                (nodeOnly ||
+                  (attempts.includes("-message") && !attempts.includes("-newer-item"))) &&
                 firstOutput?.type === "assistant_message"
               ) {
                 // Model the durable event prefix before turn_item.updated commits.
@@ -2482,7 +2580,15 @@ describe("orchestration v2 provider switching", () => {
             if (recoveredOccupancy) {
               const recovered = yield* orchestrator.getThreadProjection(threadId);
               const handoff = recovered.contextHandoffs.at(-1)!;
-              assert.include(handoff.delivery!.itemIds, handoff.history!.messages.at(-1)!.itemId);
+              if (omittedOccupancy) {
+                const oldOutput = recovered.turnItems.find(
+                  (item) =>
+                    item.type === "assistant_message" && item.text.startsWith("Old native output"),
+                )!;
+                assert.include(handoff.delivery!.omittedItemIds!, oldOutput.id);
+              } else {
+                assert.include(handoff.delivery!.itemIds, handoff.history!.messages.at(-1)!.itemId);
+              }
               const occurredAt = yield* DateTime.now;
               // A different history record waits for room after reconstructed
               // assistant text has entered the replacement native transcript.
@@ -2534,8 +2640,8 @@ describe("orchestration v2 provider switching", () => {
               )).contextHandoffs.find(
                 (handoff) => handoff.id === "resume-fallback:occupancy-history",
               )!;
-              assert.equal(deferred.delivery?.status, "pending");
-              assert.isTrue(deferred.delivery?.deferred);
+              assert.equal(deferred.delivery?.status, omittedOccupancy ? "inline" : "pending");
+              if (!omittedOccupancy) assert.isTrue(deferred.delivery?.deferred);
               // A larger model window leaves room when recovered output is
               // counted once, but not if it is added to the same item twice.
               contextWindow = 32_000;
@@ -2549,7 +2655,7 @@ describe("orchestration v2 provider switching", () => {
               );
             }
 
-            const turns = yield* Ref.get(capturedTurns);
+            const turns = (yield* Ref.get(capturedTurns)).slice(omittedOccupancy ? 1 : 0);
             assert.equal(turns.length, recoveredOccupancy ? 4 : 3);
             assert.equal(yield* Ref.get(generation), 2);
             // The fallback binds a new native thread to a provider thread that
@@ -2564,7 +2670,7 @@ describe("orchestration v2 provider switching", () => {
                 ? yield* encodeJson(yield* Ref.get(injectedHistory))
                 : turns[1]!.text;
               if (attempts.includes("-empty") || uncertainEvidence) {
-                assert.notInclude(recoveredHistory, "Request 1");
+                assert.notInclude(recoveredHistory, `Request ${omittedOccupancy ? 2 : 1}`);
               } else {
                 assert.include(recoveredHistory, "Request 1");
                 if (!attempts.includes("-todo") && !providerEvidence) {
@@ -2576,7 +2682,8 @@ describe("orchestration v2 provider switching", () => {
               if (
                 !attempts.includes("-message-empty") &&
                 !uncertainEvidence &&
-                attempts !== "uncertain-cancelled-running-todo-empty"
+                attempts !== "uncertain-cancelled-running-todo-empty" &&
+                !omittedOccupancy
               ) {
                 assert.include(recoveredHistory, "run-status=cancelled");
               }
