@@ -102,6 +102,7 @@ const makeClaudeConfig = (overrides: Partial<ClaudeSettings>): ClaudeSettings =>
   launchArgs: "",
   autoCompactWindow: "",
   uncachedColdCompaction: false,
+  promptSuggestions: false,
   ...overrides,
 });
 
