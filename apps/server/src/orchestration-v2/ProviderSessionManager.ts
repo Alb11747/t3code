@@ -2155,6 +2155,7 @@ export const layerWithOptions = (
         return {
           ...runtime,
           subscribeEvents,
+          isShuttingDown: Effect.sync(() => shutdownSignal.received),
           ...(runtime.unloadThread === undefined
             ? {}
             : {
@@ -2602,6 +2603,7 @@ export const layerWithOptions = (
       // closing within the time box.
       const sessionScopes = yield* Scope.make("parallel");
       const shutdown = Effect.gen(function* () {
+        shutdownSignal.received = true;
         const activeSessions = [...(yield* Ref.get(sessions)).values()];
         yield* Effect.forEach(
           activeSessions,

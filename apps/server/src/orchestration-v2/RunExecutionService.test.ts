@@ -3536,7 +3536,7 @@ it.effect("records a finished run as failed when its ownership check cannot be r
   }),
 );
 
-it.effect("does not refresh pull requests for auxiliary or stale provider terminals", () =>
+it.effect("fails on stream end despite auxiliary or stale provider terminals", () =>
   Effect.gen(function* () {
     const { observed } = yield* captureRootRunTermination({
       key: "pull-request-refresh:auxiliary",
@@ -3553,7 +3553,7 @@ it.effect("does not refresh pull requests for auxiliary or stale provider termin
           ),
         ]),
     });
-    assert.deepEqual(observed, []);
+    assert.deepEqual(observed, ["run:failed", "pull-requests-refreshed"]);
   }),
 );
 
@@ -3579,6 +3579,127 @@ it.effect("refreshes pull requests after a provider stream exits with an error",
     const error = written.find((item) => item.type === "error");
     assert.include(error?.failure.message ?? "", "provider event stream closed unexpectedly");
   }),
+);
+
+it.effect("fails and finalizes an owned run when its stream ends without a root terminal", () =>
+  Effect.gen(function* () {
+    const { written, observed, finalEvents } = yield* captureRootRunTermination({
+      key: "stream-end-without-terminal",
+      shouldFinalizeRun: () => Effect.succeed(true),
+      events: (ids) =>
+        Stream.make(
+          {
+            type: "subagent.updated",
+            driver,
+            subagent: makeRunOwnedSubagentFixture({
+              ids,
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              childThreadId: ids.childThreadId,
+              driver,
+              status: "running",
+            }),
+          },
+          {
+            type: "turn_item.updated",
+            driver,
+            turnItem: makeRunOwnedSubagentTurnItemFixture({
+              ids,
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              childThreadId: ids.childThreadId,
+              driver,
+              status: "running",
+            }),
+          },
+          {
+            type: "node.updated",
+            driver,
+            node: makeRunOwnedSubagentNodeFixture({ ids, status: "running" }),
+          },
+        ),
+    });
+    assert.deepEqual(observed, ["run:failed", "pull-requests-refreshed"]);
+    assert.include(
+      written.find((item) => item.type === "error")?.failure.message ?? "",
+      "provider event stream closed unexpectedly",
+    );
+    assert.equal(written.find((item) => item.type === "subagent")?.status, "failed");
+    assert.equal(
+      finalEvents.find((event) => event.type === "run-attempt.updated")?.payload.status,
+      "failed",
+    );
+    assert.equal(
+      finalEvents.find((event) => event.type === "subagent.updated")?.payload.status,
+      "failed",
+    );
+    const nodes = finalEvents.filter((event) => event.type === "node.updated");
+    assert.lengthOf(nodes, 2);
+    assert.isTrue(nodes.every((event) => event.payload.status === "failed"));
+    assert.equal(
+      finalEvents.find((event) => event.type === "provider-thread.updated")?.payload.status,
+      "idle",
+    );
+  }),
+);
+
+it.effect(
+  "does not fail a stopped or superseded run when its old stream ends without a terminal",
+  () =>
+    Effect.gen(function* () {
+      const { written, observed, committedEffects } = yield* captureRootRunTermination({
+        key: "stream-end:ownership-lost",
+        shouldFinalizeRun: () => Effect.succeed(false),
+        rejectTerminalWrite: true,
+        events: () => Stream.empty,
+      });
+      assert.deepEqual(written, []);
+      assert.deepEqual(observed, []);
+      assert.deepEqual(committedEffects, []);
+    }),
+);
+
+it.effect("leaves a running run to shutdown recovery when its subscription closes", () =>
+  Effect.gen(function* () {
+    const { written, observed, submittedEffects } = yield* captureRootRunTermination({
+      key: "stream-end:shutdown",
+      shouldFinalizeRun: () => Effect.succeed(true),
+      isShuttingDown: Effect.succeed(true),
+      events: () => Stream.empty,
+    });
+    assert.deepEqual(written, []);
+    assert.deepEqual(observed, []);
+    assert.deepEqual(submittedEffects, []);
+  }),
+);
+
+it.effect.each(["Continue", "/compact"])(
+  "does not dispatch %s after stream failure settles the run during its context read",
+  (messageText) =>
+    Effect.gen(function* () {
+      const contextReadStarted = yield* Deferred.make<void>();
+      const runFailed = yield* Deferred.make<void>();
+      const current = yield* Ref.make(true);
+      const providerCalls = yield* Ref.make(0);
+      const start = () => Ref.update(providerCalls, (count) => count + 1);
+      const { observed } = yield* captureRootRunTermination({
+        key: `stream-end:context-read:${messageText}`,
+        shouldStartProviderTurn: () => Ref.get(current),
+        shouldFinalizeRun: () => Ref.get(current),
+        events: () =>
+          Stream.unwrap(Deferred.await(contextReadStarted).pipe(Effect.as(Stream.empty))),
+        appContext: Deferred.succeed(contextReadStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(runFailed)),
+          Effect.as([]),
+        ),
+        refreshAfterTurn: Ref.set(current, false).pipe(
+          Effect.andThen(Deferred.succeed(runFailed, undefined)),
+        ),
+        messageText,
+        startTurn: start,
+        compactThread: start,
+      });
+      assert.deepEqual(observed, ["run:failed", "pull-requests-refreshed"]);
+      assert.equal(yield* Ref.get(providerCalls), 0);
+    }),
 );
 
 it.effect("refreshes pull requests only once when startup failure closes its event stream", () =>
@@ -3637,6 +3758,11 @@ function captureRootRunTermination(input: {
   >;
   readonly startTurn?: ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"];
   readonly refreshAfterTurn?: Effect.Effect<void>;
+  readonly isShuttingDown?: Effect.Effect<boolean>;
+  readonly shouldStartProviderTurn?: RunExecutionService.RunExecutionServiceV2StartRootRunInput["shouldStartProviderTurn"];
+  readonly appContext?: ReturnType<McpAppModelContext.McpAppModelContext["Service"]["forThread"]>;
+  readonly messageText?: string;
+  readonly compactThread?: ProviderAdapter.ProviderAdapterV2SessionRuntime["compactThread"];
 }) {
   return Effect.gen(function* () {
     const ids = backgroundScenarioIds(input.key);
@@ -3649,6 +3775,7 @@ function captureRootRunTermination(input: {
       status: "running",
     });
     const writtenItems = yield* Ref.make<ReadonlyArray<OrchestrationV2TurnItem>>([]);
+    const finalEvents = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
     const observed = yield* Ref.make<ReadonlyArray<string>>([]);
     const submittedEffects = yield* Ref.make<ReadonlyArray<PendingOrchestrationEffectV2>>([]);
     const committedEffects = yield* Ref.make<ReadonlyArray<PendingOrchestrationEffectV2>>([]);
@@ -3657,6 +3784,7 @@ function captureRootRunTermination(input: {
       Ref.update(writtenItems, (current) => [...current, payload]);
     const captureFinalEvents = (events: ReadonlyArray<OrchestrationV2DomainEvent>) =>
       Effect.gen(function* () {
+        yield* Ref.update(finalEvents, (current) => [...current, ...events]);
         for (const event of events) {
           if (event.type === "turn-item.updated") {
             yield* captureTurnItem(event.payload);
@@ -3669,7 +3797,9 @@ function captureRootRunTermination(input: {
     const layerTest = RunExecutionService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
-          McpAppModelContext.layerEmpty,
+          Layer.mock(McpAppModelContext.McpAppModelContext)({
+            forThread: () => input.appContext ?? Effect.succeed([]),
+          }),
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
           Layer.mock(EventSink.EventSinkV2)({
             write: (payload) =>
@@ -3754,6 +3884,8 @@ function captureRootRunTermination(input: {
             close: Deferred.succeed(ingestionDone, undefined),
           }),
           startTurn: input.startTurn ?? (() => Effect.void),
+          ...(input.compactThread === undefined ? {} : { compactThread: input.compactThread }),
+          ...(input.isShuttingDown === undefined ? {} : { isShuttingDown: input.isShuttingDown }),
         } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
         run: {
           id: ids.runId,
@@ -3779,6 +3911,9 @@ function captureRootRunTermination(input: {
         attemptId: ids.attemptId,
         providerTurnOrdinal: 1,
         shouldFinalizeRun: input.shouldFinalizeRun,
+        ...(input.shouldStartProviderTurn === undefined
+          ? {}
+          : { shouldStartProviderTurn: input.shouldStartProviderTurn }),
         ...(input.hasUnpairedRunInterruptRequest === undefined
           ? {}
           : {
@@ -3786,7 +3921,7 @@ function captureRootRunTermination(input: {
             }),
         message: {
           messageId: MessageId.make(`message:${input.key}`),
-          text: "interrupt projection",
+          text: input.messageText ?? "interrupt projection",
           attachments: [],
           createdBy: "user",
           creationSource: "web",
@@ -3809,6 +3944,7 @@ function captureRootRunTermination(input: {
     yield* Deferred.await(ingestionDone);
     return {
       written: yield* Ref.get(writtenItems),
+      finalEvents: yield* Ref.get(finalEvents),
       observed: yield* Ref.get(observed),
       submittedEffects: yield* Ref.get(submittedEffects),
       committedEffects: yield* Ref.get(committedEffects),
