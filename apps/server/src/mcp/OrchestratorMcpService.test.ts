@@ -11,6 +11,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   type OrchestrationV2ThreadProjection,
   type ServerProvider,
@@ -93,6 +94,7 @@ describe("OrchestratorMcpService", () => {
         messages: [],
         subagents: [],
         providerThreads: [],
+        runtimeRequests: [],
       } as unknown as OrchestrationV2ThreadProjection;
       let hasNestedWork = true;
       const layerDependencies = Layer.mergeAll(
@@ -219,6 +221,7 @@ describe("OrchestratorMcpService", () => {
         messages: [],
         subagents: [],
         providerThreads: [],
+        runtimeRequests: [],
         turnItems: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
@@ -303,6 +306,7 @@ describe("OrchestratorMcpService", () => {
         messages: [],
         subagents: [],
         providerThreads: [],
+        runtimeRequests: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
         NodeServices.layer,
@@ -379,6 +383,7 @@ describe("OrchestratorMcpService", () => {
         messages: [],
         subagents: [],
         providerThreads: [],
+        runtimeRequests: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
         NodeServices.layer,
@@ -458,6 +463,7 @@ describe("OrchestratorMcpService", () => {
         messages: [],
         subagents: [],
         providerThreads: [],
+        runtimeRequests: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
         NodeServices.layer,
@@ -544,6 +550,7 @@ describe("OrchestratorMcpService", () => {
         messages: [],
         subagents: [],
         providerThreads: [],
+        runtimeRequests: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
         NodeServices.layer,
@@ -646,6 +653,7 @@ describe("OrchestratorMcpService", () => {
               appOwnedTask("node:mcp-cancel-grandchild-below", childThreadId, grandchildThreadId),
             ],
             providerThreads: [],
+            runtimeRequests: [],
           },
         ],
         [
@@ -657,6 +665,7 @@ describe("OrchestratorMcpService", () => {
             messages: [],
             subagents: [],
             providerThreads: [],
+            runtimeRequests: [],
           },
         ],
       ]) as unknown as ReadonlyMap<ThreadId, OrchestrationV2ThreadProjection>;
@@ -873,6 +882,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     messages: [],
     subagents: [],
     providerThreads: [],
+    runtimeRequests: [],
     turnItems: [],
   } as unknown as OrchestrationV2ThreadProjection;
 
@@ -1160,6 +1170,130 @@ describe("OrchestratorMcpService provider resolution", () => {
           Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(layerDependencies))),
         );
       }),
+  );
+
+  it.effect("returns a blocking wait with the child's question and hands off delivery", () =>
+    Effect.gen(function* () {
+      const requestId = RuntimeRequestId.make("request:mcp-question");
+      const question = {
+        id: "approach",
+        header: "Approach",
+        question: "Which approach?",
+        options: [{ label: "Small", description: "Keep it small." }],
+      };
+      const task = {
+        id: taskId,
+        threadId: parentThreadId,
+        runId: parentRunId,
+        parentNodeId,
+        origin: "app_owned",
+        createdBy: "agent",
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        providerThreadId: null,
+        childThreadId,
+        nativeTaskRef: null,
+        prompt: "Fix the bug.",
+        title: null,
+        model: "gpt-5.4",
+        status: "running",
+        result: null,
+        startedAt: null,
+        completedAt: null,
+      };
+      const askingChild = {
+        ...childProjection,
+        runtimeRequests: [
+          // Answered and unanswerable questions are not the parent's to answer.
+          {
+            id: RuntimeRequestId.make("request:mcp-answered"),
+            kind: "user_input",
+            status: "resolved",
+            responseCapability: { type: "live" },
+          },
+          {
+            id: RuntimeRequestId.make("request:mcp-expired"),
+            kind: "user_input",
+            status: "pending",
+            responseCapability: { type: "not_resumable", reason: "restarted" },
+          },
+          {
+            id: requestId,
+            kind: "user_input",
+            status: "pending",
+            responseCapability: { type: "live" },
+          },
+        ],
+        turnItems: [
+          { type: "user_input_request", requestId, questions: [question] },
+          {
+            type: "user_input_request",
+            requestId: RuntimeRequestId.make("request:mcp-expired"),
+            questions: [question],
+          },
+        ],
+      } as unknown as OrchestrationV2ThreadProjection;
+      const dispatched = yield* Ref.make<ReadonlyArray<{ readonly type: string }>>([]);
+      let delegated = false;
+      const layerDependencies = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadRecords: (threadId) =>
+            Effect.succeed(
+              threadId === parentThreadId ? parentProjection(delegated ? [task] : []) : askingChild,
+            ),
+          getThreadEventSequence: () => Effect.succeed(1),
+          delegatedTaskResultPending: () => Effect.succeed(false),
+          dispatch: (command) =>
+            Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  delegated = true;
+                }),
+              ),
+              Effect.as({
+                sequence: 1,
+                storedEvents: [
+                  {
+                    sequence: 1,
+                    commandId: null,
+                    event: { type: "subagent.updated", payload: task },
+                  },
+                ],
+              } as never),
+            ),
+        }),
+        providerRegistryLayer([
+          providerSnapshot({
+            instanceId: codexInstanceId,
+            driver: ProviderDriverKind.make("codex"),
+            model: "gpt-5.4",
+          }),
+        ]),
+        adapterRegistryLayer([codexInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const result = yield* service.delegateTask(scope, {
+          task: "Fix the bug.",
+          mode: "wait",
+          clientRequestId: "delegate-question-1",
+        });
+        assert.equal(result.status, "running");
+        assert.isFalse(result.waitTimedOut);
+        assert.deepEqual(result.pendingQuestions, [{ requestId, questions: [question] }]);
+        // The parent is no longer blocked, so later questions and the result
+        // reach it as notifications.
+        assert.deepEqual(
+          (yield* Ref.get(dispatched)).map((command) => command.type),
+          ["delegated_task.request", "delegated_task.wake-policy"],
+        );
+      }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(layerDependencies))));
+    }),
   );
 
   it.effect("resolves a driverKind target to a capable Antigravity instance", () =>
