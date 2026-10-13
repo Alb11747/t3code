@@ -716,9 +716,25 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         providerSettingsForm: { control: "switch", clearWhenEmpty: "omit" },
       }),
     ),
+    promptSuggestions: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({
+        title: "Prompt suggestions",
+        description:
+          "Suggest a next prompt in the empty composer after each turn. Press Right Arrow or Tab to use it.",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
   },
   {
-    order: ["binaryPath", "homePath", "autoCompactWindow", "uncachedColdCompaction", "launchArgs"],
+    order: [
+      "binaryPath",
+      "homePath",
+      "autoCompactWindow",
+      "uncachedColdCompaction",
+      "promptSuggestions",
+      "launchArgs",
+    ],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
