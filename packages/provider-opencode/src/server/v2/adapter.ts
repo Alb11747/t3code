@@ -4206,13 +4206,14 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         Effect.gen(function* () {
           const nativeId = providerThread.nativeThreadRef?.nativeId;
           const state = nativeId == null ? undefined : threads.get(nativeId);
-          if (
-            nativeId == null ||
-            state === undefined ||
-            state.active !== undefined ||
-            hasBackground(state)
-          ) {
-            return;
+          if (nativeId == null || state === undefined) return;
+          // Success lets the manager drop native credential ownership; a busy
+          // native must fail instead of reporting a successful no-op.
+          if (state.active !== undefined || hasBackground(state)) {
+            return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+              driver: OPENCODE_PROVIDER,
+              detail: `Cannot unload OpenCode session ${nativeId} while it is still working`,
+            });
           }
           threads.delete(nativeId);
           for (const [child, owner] of childOwners) {
