@@ -219,7 +219,9 @@ Stop on a thread also stops the subagents it delegated to.
 
 Subagent threads started by the agent can't take messages; message the parent
 thread instead. When such a subagent needs an approval or an answer, the parent
-thread asks for it.
+thread asks for it. Questions from tasks delegated through T3 also go to the
+parent agent, which answers routine ones itself and asks you for the rest. You
+can still answer any of them yourself first.
 
 Expand a tool call in the conversation to see its full command and output.
 Summaries shorten shell wrappers and can still describe the latest call after it
