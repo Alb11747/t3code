@@ -18,6 +18,7 @@ describe("ProviderSettingsForm helpers", () => {
       "homePath",
       "shadowHomePath",
       "launchArgs",
+      "promptSuggestions",
     ]);
   });
 
@@ -118,6 +119,7 @@ describe("ProviderSettingsForm helpers", () => {
       "autoCompactWindow",
       "launchArgs",
       "uncachedColdCompaction",
+      "promptSuggestions",
     ]);
   });
 
