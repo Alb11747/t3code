@@ -672,7 +672,7 @@ export const layerWithOptions = (
           ? requeueClaim(effect, cause)
           : terminalizeClaim(effect, cause);
 
-      const runOnce = (excludeRestartContinuations = false) =>
+      const runOnce = (excludeRestartContinuations = false, releaseWorkerOnLease = true) =>
         Effect.gen(function* () {
           const claimExit = yield* Effect.exit(
             outbox.claimNext({ workerId, leaseDurationMs, excludeRestartContinuations }),
@@ -792,6 +792,11 @@ export const layerWithOptions = (
           // stops holding this worker slot, though: a provider that never
           // answers would otherwise take every slot and stall all threads.
           const settlement = yield* Effect.forkIn(settle, workerScope);
+          if (!releaseWorkerOnLease) {
+            return yield* Fiber.join(settlement).pipe(
+              Effect.onInterrupt(() => Fiber.interrupt(settlement)),
+            );
+          }
           const settled = yield* Fiber.await(settlement).pipe(
             Effect.timeoutOption(Duration.millis(leaseDurationMs)),
             Effect.onInterrupt(() => Fiber.interrupt(settlement)),
@@ -832,7 +837,9 @@ export const layerWithOptions = (
         drain: (maxEffects = Number.MAX_SAFE_INTEGER) =>
           Effect.gen(function* () {
             let completed = 0;
-            while (completed < maxEffects && (yield* runOnce())) {
+            // Drain is a completion milestone; unlike the daemon, it must wait
+            // for a claimed effect even when its worker lease expires.
+            while (completed < maxEffects && (yield* runOnce(false, false))) {
               completed += 1;
             }
             return completed;
