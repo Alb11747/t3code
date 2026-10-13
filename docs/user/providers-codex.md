@@ -92,6 +92,19 @@ in the thread on web, desktop, or mobile. Some tools offer access for one reques
 the current session, or permanently. See [Permission modes](./permission-modes.md)
 for command and file approvals.
 
+## Composer predictions
+
+Turn on **Composer predictions** in the Codex provider settings to predict your
+next prompt when a turn finishes. On web and desktop the prediction appears in
+the empty composer. Press **Right Arrow** or **Tab** to put it in the composer,
+where you can edit it before you send, or **Esc** to dismiss it. The prediction
+disappears when you send your next message.
+
+This needs ChatGPT sign-in through the Codex CLI, including when you use a
+custom provider such as a proxy. T3-managed ChatGPT sign-in does not support
+predictions yet. Codex does not always have a prediction. Whether predictions
+count against usage is unverified.
+
 ## Codex says I hit a usage limit
 
 When Codex stops on a usage limit, the thread names the window that ran out and
