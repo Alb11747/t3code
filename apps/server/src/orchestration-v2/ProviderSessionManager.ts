@@ -2236,8 +2236,11 @@ export const layerWithOptions = (
             ),
           );
         const resumeNativeThread = (
-          input: Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeThread"]>[0],
+          input: Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeThread"]>[0] & {
+            readonly threadId: ThreadId;
+          },
           staleMcpCredential: boolean,
+          mcpCredentialId: string | undefined,
         ) => {
           // Codex keeps its MCP clients in a loaded native conversation.
           // A resume alone retains the revoked token; unload only this
@@ -2256,7 +2259,21 @@ export const layerWithOptions = (
                 ),
               )
             : Effect.void;
-          return unload.pipe(Effect.andThen(runtime.resumeThread(input)));
+          return unload.pipe(
+            // Resume may consume the config before its interruptible wait returns.
+            // Retain that ownership even when acceptance is never published.
+            Effect.andThen(
+              markProviderThreadLoaded({
+                runtime,
+                providerSessionId,
+                threadId: input.threadId,
+                providerThread: input.providerThread,
+                mcpCredentialId,
+                providerThreadKey: undefined,
+              }),
+            ),
+            Effect.andThen(runtime.resumeThread(input)),
+          );
         };
         return {
           ...runtime,
@@ -2327,7 +2344,11 @@ export const layerWithOptions = (
                 ),
                 Effect.flatMap(({ loaded, staleMcpCredential }) => {
                   if (loaded) return Effect.succeed(input.providerThread);
-                  return resumeNativeThread(input, staleMcpCredential);
+                  return resumeNativeThread(
+                    { ...input, threadId },
+                    staleMcpCredential,
+                    prepared.mcpCredentialId,
+                  );
                 }),
                 Effect.tap((providerThread) =>
                   markProviderThreadLoaded({
@@ -2386,6 +2407,7 @@ export const layerWithOptions = (
                   : yield* resumeNativeThread(
                       { providerThread: input.providerThread, threadId },
                       staleMcpCredential,
+                      prepared.mcpCredentialId,
                     );
                 // Rollback has no selection/policy; a default resume establishes
                 // credential ownership without validating the next turn's load key.
@@ -2484,6 +2506,7 @@ export const layerWithOptions = (
                         runtimePolicy: input.runtimePolicy,
                       },
                       staleMcpCredential,
+                      prepared.mcpCredentialId,
                     )
                   : input.providerThread;
                 yield* markProviderThreadLoaded({

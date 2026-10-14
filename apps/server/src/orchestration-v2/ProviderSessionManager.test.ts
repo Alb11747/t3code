@@ -346,6 +346,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly backgroundTasksEndWithProcess?: boolean;
     readonly hangSessionScopeClose?: boolean;
     readonly startTurn?: Effect.Effect<void>;
+    readonly afterResume?: Effect.Effect<void>;
     readonly rollbackThread?: ProviderAdapter.ProviderAdapterV2SessionRuntime["rollbackThread"];
     readonly beforeUnload?: Effect.Effect<void>;
     readonly beforeClose?: Effect.Effect<void>;
@@ -465,6 +466,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
                         ),
                       ),
               ),
+              Effect.andThen(options.afterResume ?? Effect.void),
               Effect.as(threadInput.providerThread),
             ),
           startTurn: () => options.startTurn ?? Effect.void,
@@ -543,6 +545,7 @@ function layerTest(input: {
   readonly backgroundTasksEndWithProcess?: boolean;
   readonly hangSessionScopeClose?: boolean;
   readonly startTurn?: Effect.Effect<void>;
+  readonly afterResume?: Effect.Effect<void>;
   readonly rollbackThread?: ProviderAdapter.ProviderAdapterV2SessionRuntime["rollbackThread"];
   readonly beforeUnload?: Effect.Effect<void>;
   readonly beforeClose?: Effect.Effect<void>;
@@ -586,6 +589,7 @@ function layerTest(input: {
           ? {}
           : { hangSessionScopeClose: input.hangSessionScopeClose }),
         ...(input.startTurn === undefined ? {} : { startTurn: input.startTurn }),
+        ...(input.afterResume === undefined ? {} : { afterResume: input.afterResume }),
         ...(input.rollbackThread === undefined ? {} : { rollbackThread: input.rollbackThread }),
         ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
         ...(input.beforeClose === undefined ? {} : { beforeClose: input.beforeClose }),
@@ -3115,6 +3119,121 @@ it.effect.each(["open", "refresh"] as const)(
       yield* effect.pipe(
         Effect.provide(
           layerTest({ state, idleTimeoutMs: 60_000, pauseIssue: { armed, issued, resume } }),
+        ),
+      );
+    }),
+);
+
+it.effect.each(["resume", "start", "rollback"] as const)(
+  "ProviderSessionManagerV2 retains accepted native MCP ownership when %s is interrupted",
+  (operation) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const resumedConfigs = yield* Ref.make<
+        ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+      >([]);
+      const residentConfig = yield* Ref.make<
+        McpProviderSession.McpProviderSessionConfig | undefined
+      >(undefined);
+      const accepted = yield* Deferred.make<void>();
+      const settingsLayer = ServerSettings.layerTest({
+        enableAgentBrowserAccess: true,
+        enableAgentDeviceAccess: true,
+      });
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const settings = yield* ServerSettings.ServerSettingsService;
+        const configs = yield* McpProviderSessions.McpProviderSessions;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`interrupted-native-${operation}`);
+        const providerSessionId = yield* ids.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread = makeProviderThread({
+          idAllocator: ids,
+          threadId,
+          providerSessionId,
+          now,
+        });
+        const resumeInput = { providerThread, modelSelection, runtimePolicy };
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const runId = ids.derive.run({ threadId, ordinal: 1 });
+        const firstCall =
+          operation === "resume"
+            ? runtime.resumeThread(resumeInput)
+            : operation === "rollback"
+              ? runtime.rollbackThread({
+                  providerThread,
+                  target: {
+                    type: "thread_start",
+                    checkpointId: CheckpointId.make("interrupted-native-checkpoint"),
+                    appRunOrdinal: 0,
+                  },
+                  providerThreadTurns: [],
+                })
+              : runtime.startTurn({
+                  appThread: (yield* projectionStore.getThreadProjection(threadId)).thread,
+                  threadId,
+                  runId,
+                  runOrdinal: 1,
+                  providerTurnOrdinal: 1,
+                  attemptId: ids.derive.runAttempt({ runId, attemptOrdinal: 1 }),
+                  rootNodeId: ids.derive.rootNode({ runId }),
+                  providerThread,
+                  message: {
+                    createdBy: "user",
+                    creationSource: "web",
+                    messageId: yield* ids.allocate.message({ threadId, ordinal: 1 }),
+                    text: "Continue the retained native thread",
+                    attachments: [],
+                  },
+                  modelSelection,
+                  runtimePolicy,
+                });
+        const pending = yield* firstCall.pipe(Effect.asVoid, Effect.forkChild);
+        yield* Deferred.await(accepted);
+        yield* Fiber.interrupt(pending);
+
+        yield* settings.updateSettings({
+          enableAgentBrowserAccess: false,
+          enableAgentDeviceAccess: false,
+        });
+        yield* runtime.resumeThread(resumeInput);
+        const refreshed = (yield* configs.read(threadId))!;
+        assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, ["native-thread"]);
+        assert.deepEqual(yield* Ref.get(residentConfig), refreshed);
+      }).pipe(
+        Effect.provide(
+          Layer.merge(
+            settingsLayer,
+            layerTest({
+              state,
+              idleTimeoutMs: 60_000,
+              serverSettingsLayer: settingsLayer,
+              resumeMcpConfigs: resumedConfigs,
+              beforeUnload: Ref.set(residentConfig, undefined),
+              afterResume: Effect.gen(function* () {
+                const config = (yield* Ref.get(resumedConfigs)).at(-1)!;
+                // A loaded Codex conversation retains its first MCP client until unload.
+                yield* Ref.update(residentConfig, (current) => current ?? config);
+                if (yield* Deferred.succeed(accepted, undefined)) {
+                  return yield* Effect.never;
+                }
+              }),
+            }),
+          ),
         ),
       );
     }),
