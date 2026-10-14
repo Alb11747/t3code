@@ -27,11 +27,13 @@ import {
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -574,6 +576,7 @@ export const layer: Layer.Layer<
 > = Layer.effect(
   RunExecutionServiceV2,
   Effect.gen(function* () {
+    const scope = yield* Effect.scope;
     const checkpointService = yield* CheckpointService.CheckpointServiceV2;
     const eventSink = yield* EventSink.EventSinkV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -593,6 +596,7 @@ export const layer: Layer.Layer<
       readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
       readonly openRunOwnedSubagents?: OpenRunOwnedSubagentProjection;
       readonly terminal: ProviderTerminalEvent;
+      readonly completedAt?: DateTime.Utc;
       readonly failureItemPersisted: boolean;
       readonly refreshAfterTurn: Effect.Effect<void>;
       readonly writeIfRunCurrent?: {
@@ -601,7 +605,7 @@ export const layer: Layer.Layer<
       };
     }) =>
       Effect.gen(function* () {
-        const completedAt = yield* DateTime.now;
+        const completedAt = input.completedAt ?? (yield* DateTime.now);
         const finalizedAttempt: OrchestrationV2RunAttempt | null = {
           ...input.attempt,
           status: input.terminal.status,
@@ -1327,64 +1331,79 @@ export const layer: Layer.Layer<
                 yield* finalizeRootRun(terminal);
               }),
             ),
-            // Server shutdown interrupts the subscription and leaves the run to
-            // restart recovery; every other failure fails the run.
-            Effect.catchCauseIf(
-              (cause) => !Cause.hasInterruptsOnly(cause),
-              (cause) =>
-                Ref.get(rootRunFinalized).pipe(
-                  Effect.flatMap((finalized) =>
-                    Effect.logWarning("orchestration V2 provider event ingestion failed", {
-                      runId: input.run.id,
-                      cause,
-                    }).pipe(
-                      Effect.andThen(
-                        finalized
-                          ? Effect.void
-                          : Ref.get(latestProviderThread).pipe(
-                              Effect.flatMap((providerThread) =>
-                                Ref.get(latestTurnItemOrdinal).pipe(
-                                  Effect.flatMap((latestItemOrdinal) =>
-                                    Ref.get(openRunOwnedSubagents).pipe(
-                                      Effect.flatMap((openSubagents) =>
-                                        writeFinalRunEvents({
-                                          run: input.run,
-                                          rootNode: input.rootNode,
-                                          checkpointScope: input.checkpointScope,
-                                          providerThread,
-                                          attempt: input.attempt,
-                                          writeIfRunCurrent: {
-                                            activeAttemptId: input.attempt.id,
-                                            expectedStatus: "running",
-                                          },
-                                          openRunOwnedSubagents: openSubagents,
-                                          terminal: makeFailedTerminalEvent(
-                                            makeProviderFailure({
-                                              cause: Cause.squash(cause),
-                                              class: "unknown",
-                                            }),
-                                            latestItemOrdinal + 1,
-                                          ),
-                                          failureItemPersisted: false,
-                                          refreshAfterTurn,
-                                        }),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                      ),
-                      Effect.mapError(
-                        (writeCause) =>
-                          new RunExecutionIngestError({
+            Effect.catchCause((cause) =>
+              Effect.gen(function* () {
+                if (Cause.hasInterruptsOnly(cause)) return yield* Effect.failCause(cause);
+                yield* Effect.logWarning("orchestration V2 provider event ingestion failed", {
+                  runId: input.run.id,
+                  cause,
+                });
+                if (yield* Ref.get(rootRunFinalized)) return;
+                const providerThread = yield* Ref.get(latestProviderThread);
+                const latestItemOrdinal = yield* Ref.get(latestTurnItemOrdinal);
+                const openSubagents = yield* Ref.get(openRunOwnedSubagents);
+                const completedAt = yield* DateTime.now;
+                let nextRetryWarningAt = completedAt;
+                // Once ingestion fails there will be no later consumer to
+                // settle this run. Keep its failure until storage recovers or
+                // the atomic ownership gate rejects this attempt.
+                yield* writeFinalRunEvents({
+                  run: input.run,
+                  rootNode: input.rootNode,
+                  checkpointScope: input.checkpointScope,
+                  providerThread,
+                  attempt: input.attempt,
+                  // The failure may be the ownership read itself.
+                  writeIfRunCurrent: {
+                    activeAttemptId: input.attempt.id,
+                    expectedStatus: "running",
+                  },
+                  openRunOwnedSubagents: openSubagents,
+                  completedAt,
+                  terminal: makeFailedTerminalEvent(
+                    makeProviderFailure({ cause: Cause.squash(cause), class: "unknown" }),
+                    latestItemOrdinal + 1,
+                  ),
+                  failureItemPersisted: false,
+                  refreshAfterTurn,
+                }).pipe(
+                  Effect.exit,
+                  Effect.flatMap((exit) =>
+                    Effect.gen(function* () {
+                      if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) {
+                        return yield* exit;
+                      }
+                      const now = yield* DateTime.now;
+                      if (DateTime.isGreaterThanOrEqualTo(now, nextRetryWarningAt)) {
+                        yield* Effect.logWarning(
+                          "orchestration V2 run failure finalization retry",
+                          {
                             runId: input.run.id,
-                            cause: { ingest: cause, write: writeCause },
-                          }),
+                            attemptId: input.attempt.id,
+                            cause: exit.cause,
+                          },
+                        );
+                        // Persistent storage failures must not flood the same disk.
+                        nextRetryWarningAt = DateTime.add(now, { minutes: 10 });
+                      }
+                      return yield* Effect.fail(exit.cause);
+                    }),
+                  ),
+                  // SQL commits can fail as defects, not only typed errors.
+                  Effect.retry({
+                    schedule: Schedule.exponential("1 second").pipe(
+                      Schedule.modifyDelay(({ duration }) =>
+                        Effect.succeed(Duration.min(duration, Duration.seconds(30))),
                       ),
                     ),
-                  ),
-                ),
+                  }),
+                  // Startup can interrupt the consumer and then fail its own
+                  // terminal write. Recovery survives that consumer until the
+                  // ownership gate rejects it or the service shuts down.
+                  Effect.forkIn(scope),
+                  Effect.flatMap(Fiber.join),
+                );
+              }),
             ),
             Effect.ensuring(eventSubscription.close),
             Effect.forkDetach,
