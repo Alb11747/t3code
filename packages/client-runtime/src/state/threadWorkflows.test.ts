@@ -4,6 +4,7 @@ import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import {
   canDetachThreadProviderSession,
   canForkProjectedAssistantItem,
+  canForkProjectedCompactionItem,
   deriveThreadQueueWorkflowState,
   resolveLatestMergeBackRun,
   threadSupportsProviderHandoff,
@@ -30,7 +31,55 @@ const capabilities = (input?: {
     context: { supportsFullThreadHandoff: input?.portableFork ?? false },
   }) as never;
 
+const compactionForkInput = () =>
+  ({
+    projectedItem: {
+      sourceThreadId: "source-thread",
+      item: { type: "compaction", runId: "compact-run", status: "completed" },
+    },
+    support: {
+      run: { id: "compact-run", status: "completed" },
+      providerTurn: { nativeTurnRef: { nativeId: "native-compact-turn", strength: "strong" } },
+      providerSession: { capabilities: capabilities({ nativeFork: true }) },
+    },
+  }) as unknown as Parameters<typeof canForkProjectedCompactionItem>[0];
+
 describe("thread workflows", () => {
+  it("forks paged compactions without source control records while respecting live run status", () => {
+    const input = compactionForkInput();
+    const projectedItem = {
+      ...input.projectedItem,
+      compactionForkSupport: {
+        runStatus: input.support.run!.status,
+        nativeTurnRef: input.support.providerTurn!.nativeTurnRef,
+        capabilities: input.support.providerSession!.capabilities,
+      },
+    };
+    const support = { run: null, providerTurn: null, providerSession: null };
+    expect(canForkProjectedCompactionItem({ projectedItem, support })).toBe(true);
+    expect(
+      canForkProjectedCompactionItem({
+        projectedItem,
+        support: { ...support, run: { ...input.support.run!, status: "running" } },
+      }),
+    ).toBe(false);
+    expect(
+      canForkProjectedCompactionItem({
+        projectedItem: {
+          ...projectedItem,
+          compactionForkSupport: {
+            ...projectedItem.compactionForkSupport,
+            nativeTurnRef: {
+              ...projectedItem.compactionForkSupport.nativeTurnRef!,
+              strength: "weak",
+            },
+          },
+        },
+        support,
+      }),
+    ).toBe(false);
+  });
+
   it("allows a completed thread to switch providers after its session detaches", () => {
     const projection = {
       thread: {
@@ -381,6 +430,120 @@ describe("thread workflows", () => {
         projectedItem: {
           item: { type: "assistant_message", runId: "run", status: "running" },
         } as never,
+      }),
+    ).toBe(false);
+  });
+
+  it("forks a compaction-only turn without requiring an assistant response", () => {
+    const input = compactionForkInput();
+    expect(canForkProjectedCompactionItem(input)).toBe(true);
+    for (const status of ["waiting", "interrupted", "failed", "cancelled"] as const) {
+      expect(
+        canForkProjectedCompactionItem({
+          ...input,
+          support: { ...input.support, run: { ...input.support.run!, status } },
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it("waits for the containing run to finish even when automatic compaction has completed", () => {
+    const input = compactionForkInput();
+    expect(
+      canForkProjectedCompactionItem({
+        ...input,
+        support: { ...input.support, run: { ...input.support.run!, status: "running" } },
+      }),
+    ).toBe(false);
+    expect(
+      canForkProjectedCompactionItem({
+        ...input,
+        projectedItem: {
+          ...input.projectedItem,
+          item: { ...input.projectedItem.item, status: "running" },
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("does not offer compaction forks without a source run or after rollback", () => {
+    const input = compactionForkInput();
+    expect(
+      canForkProjectedCompactionItem({ ...input, support: { ...input.support, run: null } }),
+    ).toBe(false);
+    expect(
+      canForkProjectedCompactionItem({
+        ...input,
+        support: { ...input.support, run: { ...input.support.run!, status: "rolled_back" } },
+      }),
+    ).toBe(false);
+  });
+
+  it("requires an exact native compaction boundary instead of relying on a changing source head", () => {
+    const input = compactionForkInput();
+    expect(
+      canForkProjectedCompactionItem({
+        ...input,
+        support: { ...input.support, providerSession: null },
+      }),
+    ).toBe(true);
+    expect(
+      canForkProjectedCompactionItem({
+        ...input,
+        support: {
+          ...input.support,
+          providerTurn: {
+            ...input.support.providerTurn!,
+            nativeTurnRef: { ...input.support.providerTurn!.nativeTurnRef!, nativeId: null },
+          },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      canForkProjectedCompactionItem({
+        ...input,
+        support: {
+          ...input.support,
+          providerTurn: {
+            ...input.support.providerTurn!,
+            nativeTurnRef: {
+              ...input.support.providerTurn!.nativeTurnRef!,
+              strength: "weak",
+            },
+          },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      canForkProjectedCompactionItem({
+        ...input,
+        support: { ...input.support, providerTurn: null, providerSession: null },
+      }),
+    ).toBe(false);
+  });
+
+  it("allows portable compaction forks but hides actions for an incapable provider", () => {
+    const input = compactionForkInput();
+    expect(
+      canForkProjectedCompactionItem({
+        ...input,
+        support: {
+          ...input.support,
+          providerTurn: null,
+          providerSession: {
+            ...input.support.providerSession!,
+            capabilities: capabilities({ portableFork: true }),
+          },
+        },
+      }),
+    ).toBe(true);
+    expect(
+      canForkProjectedCompactionItem({
+        ...input,
+        support: {
+          ...input.support,
+          providerSession: { ...input.support.providerSession!, capabilities: capabilities() },
+        },
       }),
     ).toBe(false);
   });
