@@ -12,6 +12,7 @@ export function TimelineSystemDivider(props: {
   readonly showDetailSeparator?: boolean;
   readonly actionLabel?: string;
   readonly onAction?: () => void;
+  readonly children?: ReactNode;
 }) {
   const Icon = props.icon;
   const content = (
@@ -59,6 +60,7 @@ export function TimelineSystemDivider(props: {
       ) : (
         <span className="flex min-w-0 flex-wrap items-center justify-center gap-1.5 rounded-full px-2 py-1">
           {content}
+          {props.children}
         </span>
       )}
       <span aria-hidden="true" className="h-px flex-1 bg-border/70" />

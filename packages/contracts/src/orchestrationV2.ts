@@ -1615,12 +1615,20 @@ const projectedTurnItemArray = <Row extends Schema.Top, Item extends Schema.Top>
     ),
   );
 
+/** Fork evidence retained when a compaction outlives its source's snapshot window. */
+export const OrchestrationV2CompactionForkSupport = Schema.Struct({
+  runStatus: OrchestrationV2Run.fields.status,
+  nativeTurnRef: OrchestrationV2ProviderTurn.fields.nativeTurnRef,
+  capabilities: Schema.optionalKey(OrchestrationV2ProviderCapabilities),
+});
+
 export const OrchestrationV2ProjectedTurnItem = Schema.Struct({
   position: NonNegativeInt,
   visibility: Schema.Literals(["local", "inherited", "synthetic"]),
   sourceThreadId: ThreadId,
   sourceItemId: TurnItemId,
   item: OrchestrationV2TurnItem,
+  compactionForkSupport: Schema.optionalKey(OrchestrationV2CompactionForkSupport),
 });
 export type OrchestrationV2ProjectedTurnItem = typeof OrchestrationV2ProjectedTurnItem.Type;
 

@@ -11,7 +11,10 @@ import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { useViewabilityAmount, type LegendListRef } from "@legendapp/list/react-native";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
-import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
+import {
+  canForkProjectedAssistantItem,
+  canForkProjectedCompactionItem,
+} from "@t3tools/client-runtime/state/thread-workflows";
 import {
   type OrchestrationMessageContext,
   ThreadId,
@@ -317,7 +320,7 @@ async function waitForThreadShell(
   });
 }
 
-function AssistantForkButton(props: {
+function TurnForkButton(props: {
   readonly environmentId: EnvironmentId;
   readonly iconColor: ColorValue;
   readonly projectedItem: OrchestrationV2ProjectedTurnItem;
@@ -328,13 +331,16 @@ function AssistantForkButton(props: {
     sourceThreadId: props.projectedItem.sourceThreadId,
     sourceItemId: props.projectedItem.sourceItemId,
   });
-  const forkFromRun = useAtomCommand(threadEnvironment.forkFromRun, "fork from response");
+  const forkFromRun = useAtomCommand(threadEnvironment.forkFromRun, "fork conversation");
   const navigation = useNavigation();
   const [busy, setBusy] = useState(false);
-  const canFork = canForkProjectedAssistantItem({
-    projectedItem: props.projectedItem,
-    capabilities: support.providerSession?.capabilities,
-  });
+  const isCompaction = props.projectedItem.item.type === "compaction";
+  const canFork = isCompaction
+    ? canForkProjectedCompactionItem({ projectedItem: props.projectedItem, support })
+    : canForkProjectedAssistantItem({
+        projectedItem: props.projectedItem,
+        capabilities: support.providerSession?.capabilities,
+      });
   const runId = props.projectedItem.item.runId;
 
   if (!canFork || runId === null) return null;
@@ -342,7 +348,9 @@ function AssistantForkButton(props: {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel="Fork from this response"
+      accessibilityLabel={isCompaction ? "Fork after this turn" : "Fork from this response"}
+      accessibilityState={{ disabled: busy, busy }}
+      hitSlop={isCompaction ? 10 : undefined}
       disabled={busy}
       onPress={() => {
         const targetThreadId = ThreadId.make(uuidv4());
@@ -375,7 +383,11 @@ function AssistantForkButton(props: {
           })
           .finally(() => setBusy(false));
       }}
-      className="h-7 w-7 items-center justify-center disabled:opacity-40"
+      className={
+        isCompaction
+          ? "min-h-7 flex-row items-center justify-center gap-1 px-1 active:opacity-60 disabled:opacity-40"
+          : "h-7 w-7 items-center justify-center disabled:opacity-40"
+      }
     >
       {busy ? (
         <ActivityIndicator size="small" />
@@ -387,6 +399,11 @@ function AssistantForkButton(props: {
           type="monochrome"
         />
       )}
+      {isCompaction ? (
+        <Text className="font-t3-medium text-xs text-foreground-muted">
+          {busy ? "Forking…" : "Fork"}
+        </Text>
+      ) : null}
     </Pressable>
   );
 }
@@ -1669,7 +1686,14 @@ function renderFeedEntry(
         icon="arrow.down.right.and.arrow.up.left"
         iconColor={iconSubtleColor}
         active={active}
-      />
+      >
+        <TurnForkButton
+          environmentId={props.environmentId}
+          iconColor={iconSubtleColor}
+          projectedItem={entry.activities[0]!.projectedItem}
+          sourceTitle={props.threadTitle}
+        />
+      </ThreadContextDivider>
     );
   }
 
@@ -1962,7 +1986,7 @@ function renderFeedEntry(
               iconSize={13}
             />
             {message.projectedItem ? (
-              <AssistantForkButton
+              <TurnForkButton
                 environmentId={props.environmentId}
                 iconColor={iconSubtleColor}
                 projectedItem={message.projectedItem}
