@@ -2135,7 +2135,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                 modelSelection: openInput.modelSelection,
                 runtimePolicy: openInput.runtimePolicy,
                 threadId: openInput.threadId,
-                mcpSession: yield* mcpSessions.read(openInput.threadId),
+                mcpSession: yield* mcpSessions.read(openInput.threadId, adapterOptions.instanceId),
               }),
               threadId: openInput.threadId,
               providerSessionId: input.providerSessionId,
@@ -2246,7 +2246,9 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               modelSelection: turnInput.modelSelection,
               runtimePolicy: turnInput.runtimePolicy,
             });
-            const mcpServers = cursorMcpServers(yield* mcpSessions.read(turnInput.threadId));
+            const mcpServers = cursorMcpServers(
+              yield* mcpSessions.read(turnInput.threadId, adapterOptions.instanceId),
+            );
             const message = yield* resolveUserMessage(turnInput, mcpServers);
             const pendingUpdates: Array<InteractionUpdate> = [];
             let context: ActiveCursorTurn | null = null;

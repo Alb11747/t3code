@@ -1723,7 +1723,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 ) {
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const readMcpSession = (threadId: ThreadId | null) =>
-    threadId === null ? Effect.succeed(undefined) : mcpSessions.read(threadId);
+    threadId === null
+      ? Effect.succeed(undefined)
+      : mcpSessions.read(threadId, adapterOptions.instanceId);
   const { clientFactory, crypto, fileSystem, idAllocator, serverConfig } = adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests;
   const promptSuggestions = adapterOptions.promptSuggestions ?? { publish: () => Effect.void };
@@ -6794,7 +6796,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>,
         ) =>
           Effect.gen(function* () {
-            const mcpSession = yield* mcpSessions.read(turnInput.threadId);
+            const mcpSession = yield* mcpSessions.read(
+              turnInput.threadId,
+              adapterOptions.instanceId,
+            );
             return yield* buildCodexTurnStartParams({
               nativeThreadId: yield* getNativeThreadId(turnInput.providerThread),
               codexInput,
@@ -7069,7 +7074,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }),
           ensureThread: (threadInput) =>
             ensureInitialized.pipe(
-              Effect.andThen(mcpSessions.read(threadInput.threadId)),
+              Effect.andThen(mcpSessions.read(threadInput.threadId, adapterOptions.instanceId)),
               Effect.flatMap((mcpSession) =>
                 client.request(
                   "thread/start",
@@ -7893,7 +7898,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       ? {}
                       : { lastTurnId: boundary.lastTurnId }),
                     ...codexThreadRuntimeParams({
-                      mcpSession: yield* mcpSessions.read(threadInput.targetThreadId),
+                      mcpSession: yield* mcpSessions.read(
+                        threadInput.targetThreadId,
+                        adapterOptions.instanceId,
+                      ),
                       ...(threadInput.modelSelection === undefined
                         ? {}
                         : { modelSelection: threadInput.modelSelection }),
