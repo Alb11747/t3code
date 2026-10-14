@@ -5,6 +5,7 @@ import type {
   OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import { copySorted } from "@t3tools/shared/Array";
+import type { V2ItemSupport } from "./itemSupport.ts";
 
 type Projection = OrchestrationV2ThreadProjection;
 type Run = Projection["runs"][number];
@@ -170,18 +171,67 @@ export function canForkProjectedAssistantItem(input: {
   if (item.type !== "assistant_message" || item.runId === null || item.status !== "completed") {
     return false;
   }
-  if (input.capabilities === undefined) {
+  return providerSupportsFork(input.capabilities);
+}
+
+/** Compaction forks at the end of its containing run, including automatic compaction. */
+export function canForkProjectedCompactionItem(input: {
+  readonly projectedItem: OrchestrationV2ProjectedTurnItem;
+  readonly support: Pick<V2ItemSupport, "run" | "providerTurn" | "providerSession">;
+}): boolean {
+  const { item } = input.projectedItem;
+  const { run, providerTurn, providerSession } = input.support;
+  const retained = input.projectedItem.compactionForkSupport;
+  const runStatus = run?.status ?? retained?.runStatus;
+  if (item.type !== "compaction" || item.status !== "completed" || runStatus === undefined) {
+    return false;
+  }
+  // Mirrors the server's forkable source statuses: a run that stopped after
+  // compaction still forks with whatever it finished.
+  switch (runStatus) {
+    case "completed":
+    case "waiting":
+    case "failed":
+    case "interrupted":
+    case "cancelled":
+      break;
+    default:
+      return false;
+  }
+
+  const capabilities = providerSession?.capabilities ?? retained?.capabilities;
+  const nativeTurnRef =
+    providerTurn === null ? retained?.nativeTurnRef : providerTurn.nativeTurnRef;
+  // Native compaction forks need an exact retained turn boundary. In
+  // particular, Claude /compact turns become forkable when the adapter records
+  // the command echo; older markers with weak cursors stay hidden. Portable
+  // forks use the bounded run transcript instead.
+  if (
+    (capabilities === undefined || providerSupportsNativeFork(capabilities)) &&
+    (nativeTurnRef?.strength !== "strong" || nativeTurnRef.nativeId === null)
+  ) {
+    return false;
+  }
+
+  return providerSupportsFork(capabilities);
+}
+
+function providerSupportsFork(capabilities?: OrchestrationV2ProviderCapabilities): boolean {
+  if (capabilities === undefined) {
     // Historical and inherited rows may outlive their provider-session record.
     // Keep the portable server-side fallback available when capability evidence
     // is absent; a known incapable provider is rejected below.
     return true;
   }
-  const capabilities = input.capabilities;
-  const canForkNatively =
+  return providerSupportsNativeFork(capabilities) || capabilities.context.supportsFullThreadHandoff;
+}
+
+function providerSupportsNativeFork(capabilities: OrchestrationV2ProviderCapabilities): boolean {
+  return (
     capabilities.threads.canForkThread &&
     capabilities.threads.canForkFromTurn &&
-    capabilities.identity.nativeThreadIds === "strong";
-  return canForkNatively || capabilities.context.supportsFullThreadHandoff;
+    capabilities.identity.nativeThreadIds === "strong"
+  );
 }
 
 export function canDetachThreadProviderSession(projection: Projection): boolean {
