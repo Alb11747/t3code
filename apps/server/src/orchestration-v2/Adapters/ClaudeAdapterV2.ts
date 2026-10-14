@@ -3143,6 +3143,8 @@ interface ActiveClaudeTurnContext {
   readonly nativeThreadId: string;
   readonly nativeTurnId: string;
   nativeMessageCursor: string | null;
+  compactBoundarySeen: boolean;
+  nativeMessageCursorIsCompactionEcho: boolean;
   readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
   readonly providerTurnOrdinal: number;
   readonly startedAt: DateTime.Utc;
@@ -4456,7 +4458,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           nativeTurnRef: {
             driver: CLAUDE_PROVIDER,
             nativeId: input.context.nativeMessageCursor ?? input.context.nativeTurnId,
-            strength: "weak",
+            strength: input.context.nativeMessageCursorIsCompactionEcho ? "strong" : "weak",
           },
           ordinal: input.context.providerTurnOrdinal,
           status: input.status,
@@ -7377,6 +7379,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (message.parent_tool_use_id === null) {
               // Subagent uuids exist only in the sidechain transcript, so resume and fork cannot target them.
               context.nativeMessageCursor = message.uuid;
+              context.nativeMessageCursorIsCompactionEcho = false;
               context.latestAssistantRateLimited = message.error === "rate_limit";
               if (message.error === "authentication_failed") {
                 context.authenticationFailureMessage = claudeSignedOutMessage({
@@ -7385,6 +7388,21 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 });
               }
             }
+          }
+
+          if (
+            message.type === "user" &&
+            input.replayed !== true &&
+            context.compactBoundarySeen &&
+            message.parent_tool_use_id === null &&
+            message.uuid !== undefined &&
+            typeof message.message.content === "string" &&
+            message.message.content.startsWith("<local-command-stdout>")
+          ) {
+            // Claude replays the persisted command echo after the summary. Its
+            // wrapper identifies the fork point without depending on localized text.
+            context.nativeMessageCursor = message.uuid;
+            context.nativeMessageCursorIsCompactionEcho = true;
           }
 
           if (
@@ -7431,6 +7449,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               (message.subtype === "status" && message.status === "compacting"))
           ) {
             if (message.subtype === "status" && context.compaction?.status === "running") return;
+            if (message.subtype === "compact_boundary" && input.replayed !== true)
+              context.compactBoundarySeen = true;
             const now = yield* DateTime.now;
             const nativeItemId = message.uuid;
             const compaction =
@@ -9087,6 +9107,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               nativeThreadId,
               nativeTurnId,
               nativeMessageCursor: null,
+              compactBoundarySeen: false,
+              nativeMessageCursorIsCompactionEcho: false,
               providerTurnId,
               providerTurnOrdinal,
               startedAt,
