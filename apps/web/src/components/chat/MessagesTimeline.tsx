@@ -41,7 +41,10 @@ import { useAtomValue } from "@effect/atom-react";
 import { environmentThreadDetails } from "../../state/threads";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import { Link } from "@tanstack/react-router";
-import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
+import {
+  canForkProjectedAssistantItem,
+  canForkProjectedCompactionItem,
+} from "@t3tools/client-runtime/state/thread-workflows";
 import { notificationChildThreadId } from "@t3tools/client-runtime/state/thread-execution";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import {
@@ -2669,7 +2672,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
   );
 }
 
-function AssistantForkButton({
+function TurnForkButton({
   projectedItem,
 }: {
   readonly projectedItem: NonNullable<Extract<TimelineRow, { kind: "message" }>["projectedItem"]>;
@@ -2681,10 +2684,14 @@ function AssistantForkButton({
     sourceThreadId: projectedItem.sourceThreadId,
     sourceItemId: projectedItem.sourceItemId,
   });
-  const canFork = canForkProjectedAssistantItem({
-    projectedItem,
-    capabilities: support.providerSession?.capabilities,
-  });
+  const isCompaction = projectedItem.item.type === "compaction";
+  const canFork = isCompaction
+    ? canForkProjectedCompactionItem({ projectedItem, support })
+    : canForkProjectedAssistantItem({
+        projectedItem,
+        capabilities: support.providerSession?.capabilities,
+      });
+  const label = isCompaction ? "Fork after this turn" : "Fork from this response";
 
   if (!canFork || projectedItem.item.runId === null) return null;
   const runId = projectedItem.item.runId;
@@ -2704,13 +2711,15 @@ function AssistantForkButton({
                 .onForkFromRun({ sourceThreadId: projectedItem.sourceThreadId, runId })
                 .finally(() => setBusy(false));
             }}
-            aria-label="Fork from this response"
+            aria-label={label}
+            aria-busy={busy}
           />
         }
       >
-        <GitForkIcon className={cn("size-3", busy && "animate-pulse")} />
+        <GitForkIcon aria-hidden="true" className="size-3" />
+        {isCompaction ? (busy ? "Forking…" : "Fork") : null}
       </TooltipTrigger>
-      <TooltipPopup side="top">Fork from this response</TooltipPopup>
+      <TooltipPopup side="top">{label}</TooltipPopup>
     </Tooltip>
   );
 }
@@ -2772,7 +2781,7 @@ function AssistantMessageMeta({
         streaming={copyStreaming}
       />
       {projectedItem?.item.type === "assistant_message" ? (
-        <AssistantForkButton projectedItem={projectedItem} />
+        <TurnForkButton projectedItem={projectedItem} />
       ) : null}
       {!message.streaming && (
         <Tooltip>
@@ -2979,6 +2988,9 @@ function V2EventTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "event"
         timestampFormat={ctx.timestampFormat}
         runs={ctx.runs}
         onOpenThread={ctx.onOpenThread}
+        compactionAction={
+          item.type === "compaction" ? <TurnForkButton projectedItem={row.projectedItem} /> : null
+        }
       />
     );
   }
