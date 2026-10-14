@@ -24,6 +24,7 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
+  RunId,
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
@@ -536,6 +537,8 @@ describe("orchestration v2 provider switching", () => {
     "deferred-failed-compact-stale-telemetry",
     "deferred-compact-fresh-telemetry",
     "deferred-compact-fresh-thread-telemetry",
+    "deferred-native-compact-fresh-thread-prefix-telemetry",
+    "deferred-native-compact-cleared-thread-capacity-telemetry",
     "deferred-auto-compact-stale-telemetry",
     "deferred-failed-auto-compact-stale-telemetry",
     "deferred-rolled-back-auto-compact-fallback",
@@ -604,7 +607,12 @@ describe("orchestration v2 provider switching", () => {
         const clock = yield* Clock.Clock;
         const fixedTime = yield* clock.currentTimeMillis;
         const nativeCompaction = automaticCompaction || scenario.includes("-native-compact-");
-        const threadCompactionTelemetry = scenario === "deferred-compact-fresh-thread-telemetry";
+        const threadCompactionTelemetry =
+          scenario === "deferred-compact-fresh-thread-telemetry" ||
+          scenario === "deferred-native-compact-fresh-thread-prefix-telemetry" ||
+          scenario === "deferred-native-compact-cleared-thread-capacity-telemetry";
+        const threadUsagePrefix = scenario.includes("-thread-prefix-");
+        const clearedThreadCapacity = scenario.includes("-cleared-thread-capacity-");
         const watermarkCompactionTelemetry = scenario.includes("-watermark-");
         const markerOnlyCompaction =
           scenario.includes("-marker-") && !scenario.includes("-summary-");
@@ -615,7 +623,7 @@ describe("orchestration v2 provider switching", () => {
           scenario === "deferred-compact-fresh-telemetry" ||
           scenario === "deferred-native-compact-fresh-telemetry" ||
           matchedWatermark ||
-          threadCompactionTelemetry;
+          (threadCompactionTelemetry && !clearedThreadCapacity);
         const cursorCompaction = compactionScenario && !compactionTelemetry;
         const failedCompactRun = scenario.includes("-failed-");
         const failedCompaction = failedCompactRun && !automaticCompaction;
@@ -646,7 +654,12 @@ describe("orchestration v2 provider switching", () => {
           }),
           makeTestAdapter({
             instanceId: fallbackSelection.instanceId,
-            driver: cursorCompaction ? CURSOR_DRIVER : CLAUDE_DRIVER,
+            driver:
+              threadUsagePrefix || clearedThreadCapacity
+                ? ProviderDriverKind.make("muse")
+                : cursorCompaction
+                  ? CURSOR_DRIVER
+                  : CLAUDE_DRIVER,
             capabilities: cursorCompaction
               ? CursorProviderCapabilitiesV2
               : ClaudeProviderCapabilitiesV2,
@@ -688,9 +701,12 @@ describe("orchestration v2 provider switching", () => {
               : {}),
             ...(threadCompactionTelemetry
               ? {
+                  ...(threadUsagePrefix || clearedThreadCapacity
+                    ? { tokenUsageByRunOrdinal: { 2: { usedTokens: 30_000, maxTokens: 32_000 } } }
+                    : {}),
                   contextUsageByRunOrdinal: {
                     2: { usedTokens: 30_000, maxTokens: 32_000 },
-                    3: { usedTokens: 6_000, maxTokens: 32_000 },
+                    3: clearedThreadCapacity ? null : { usedTokens: 6_000, maxTokens: 32_000 },
                   },
                 }
               : compactionTelemetry
@@ -1330,18 +1346,21 @@ describe("orchestration v2 provider switching", () => {
                   recoveredUsage?.usedTokens,
                   failedCompaction
                     ? 30_000
-                    : threadCompactionTelemetry
-                      ? 6_000
-                      : freshCompactionTelemetry
-                        ? 100
-                        : undefined,
+                    : clearedThreadCapacity
+                      ? undefined
+                      : threadCompactionTelemetry
+                        ? 6_000
+                        : freshCompactionTelemetry
+                          ? 100
+                          : undefined,
                 );
               } else assert.isNull(recoveredUsage);
               if (
                 failedCompaction ||
                 rolledBackCompaction ||
                 highCompactionMarker ||
-                summaryOnlyCompaction
+                summaryOnlyCompaction ||
+                clearedThreadCapacity
               ) {
                 assert.equal(recoveredHandoff.delivery?.status, "pending");
                 assert.isTrue(recoveredHandoff.delivery?.deferred);
@@ -1955,6 +1974,19 @@ describe("orchestration v2 provider switching", () => {
     "accepted-cancelled-interrupted",
     "accepted-cancelled-interrupted-native-history",
     "accepted-cancelled-running-tool",
+    "accepted-cancelled-running-pi-usage-only",
+    "accepted-cancelled-running-pi-usage-only-recovered",
+    "accepted-cancelled-running-pi-usage-only-strong-interrupted-zero",
+    "uncertain-cancelled-running-pi-usage-only-zero",
+    "uncertain-cancelled-running-pi-usage-only-interrupted",
+    "uncertain-cancelled-running-pi-usage-only-failed",
+    "uncertain-cancelled-running-pi-usage-only-other-root",
+    "uncertain-cancelled-running-pi-usage-only-other-native",
+    "accepted-cancelled-running-child-created-only",
+    "uncertain-cancelled-running-child-created-only-app-owned",
+    "uncertain-cancelled-running-child-created-only-other-root",
+    "uncertain-cancelled-running-child-created-only-other-run",
+    "uncertain-cancelled-running-child-created-only-other-driver",
     "accepted-cancelled-running-tool-native-history",
     "accepted-cancelled-running-tool-node-only",
     "uncertain-cancelled-running-tool-node-only-other-turn",
@@ -2021,12 +2053,16 @@ describe("orchestration v2 provider switching", () => {
           const recoveredOccupancy = attempts.includes("-occupancy");
           const omittedOccupancy = attempts.includes("-omitted-history");
           const nodeOnly = attempts.includes("-node-only");
+          const piUsageOnly = attempts.includes("-pi-usage-only");
+          const childCreatedOnly = attempts.includes("-child-created-only");
           let contextWindow = 26_000;
           const providerRequest =
             attempts.includes("-approval") || attempts.includes("-user-input");
           const runtimeRequestOnly = attempts.includes("-request-only");
           const providerEvidence =
             nodeOnly ||
+            piUsageOnly ||
+            childCreatedOnly ||
             providerRequest ||
             attempts.includes("-thread-created") ||
             attempts.includes("-secret-request") ||
@@ -2113,20 +2149,77 @@ describe("orchestration v2 provider switching", () => {
               const existing = yield* orchestrator.getThreadProjection(threadId);
               const firstRun = existing.runs.at(-1)!;
               const occurredAt = yield* DateTime.now;
-              const turnStatus = attempts.includes("-failed")
-                ? "failed"
-                : attempts.includes("-interrupted")
-                  ? "interrupted"
-                  : attempts.includes("-running") ||
-                      attempts.includes("-message") ||
-                      attempts.includes("-empty")
-                    ? "running"
-                    : "completed";
+              const turnStatus =
+                piUsageOnly && attempts.endsWith("-recovered")
+                  ? "cancelled"
+                  : attempts.includes("-failed")
+                    ? "failed"
+                    : attempts.includes("-interrupted")
+                      ? "interrupted"
+                      : attempts.includes("-running") ||
+                          attempts.includes("-message") ||
+                          attempts.includes("-empty")
+                        ? "running"
+                        : "completed";
               const firstOutput = existing.turnItems.find(
                 (item) => item.runId === firstRun.id && item.type === "assistant_message",
               );
               yield* (yield* EventSink.EventSinkV2).write({
                 events: [
+                  ...(piUsageOnly
+                    ? existing.providerThreads.map((thread) => ({
+                        id: EventId.make("resume-fallback:pi-thread"),
+                        type: "provider-thread.updated" as const,
+                        threadId,
+                        occurredAt,
+                        payload: {
+                          ...thread,
+                          driver: ProviderDriverKind.make("pi"),
+                          nativeThreadRef: {
+                            ...thread.nativeThreadRef!,
+                            driver: ProviderDriverKind.make("pi"),
+                          },
+                        },
+                      }))
+                    : []),
+                  ...(childCreatedOnly
+                    ? [
+                        {
+                          id: EventId.make("resume-fallback:child-created-only"),
+                          type: "thread.created" as const,
+                          threadId: ThreadId.make("resume-fallback:child"),
+                          runId: attempts.endsWith("-other-run")
+                            ? RunId.make("resume-fallback:other-run")
+                            : firstRun.id,
+                          nodeId: attempts.endsWith("-other-root")
+                            ? NodeId.make("resume-fallback:other-root")
+                            : firstRun.rootNodeId!,
+                          driver: attempts.endsWith("-other-driver")
+                            ? ProviderDriverKind.make("pi")
+                            : CLAUDE_DRIVER,
+                          providerInstanceId: CLAUDE_MODEL_SELECTION.instanceId,
+                          occurredAt,
+                          payload: {
+                            ...existing.thread,
+                            id: ThreadId.make("resume-fallback:child"),
+                            createdBy: "agent" as const,
+                            creationSource: attempts.endsWith("-app-owned")
+                              ? ("mcp" as const)
+                              : ("provider" as const),
+                            activeProviderThreadId: null,
+                            lineage: {
+                              ...existing.thread.lineage,
+                              parentThreadId: threadId,
+                              relationshipToParent: "subagent" as const,
+                            },
+                            forkedFrom: {
+                              type: "node" as const,
+                              nodeId: NodeId.make("resume-fallback:uncommitted-subagent-node"),
+                            },
+                          },
+                        },
+                      ]
+                    : []),
                   {
                     id: EventId.make("resume-fallback:accepted-cancelled"),
                     type: "run.updated",
@@ -2147,6 +2240,29 @@ describe("orchestration v2 provider switching", () => {
                       payload: {
                         ...turn,
                         status: turnStatus,
+                        ...(piUsageOnly
+                          ? {
+                              nodeId: attempts.endsWith("-other-root")
+                                ? NodeId.make("resume-fallback:other-root")
+                                : turn.nodeId,
+                              nativeTurnRef: {
+                                driver: ProviderDriverKind.make("pi"),
+                                nativeId: attempts.includes("-strong-")
+                                  ? "pi-user-entry"
+                                  : attempts.endsWith("-other-native")
+                                    ? "other-native"
+                                    : `${turn.providerThreadId}:attempt:${turn.runAttemptId}`,
+                                strength: attempts.includes("-strong-")
+                                  ? ("strong" as const)
+                                  : ("weak" as const),
+                              },
+                              tokenUsage: {
+                                usedTokens: attempts.endsWith("-zero") ? 0 : 100,
+                                maxTokens: 32_000,
+                                updatedAt: DateTime.formatIso(occurredAt),
+                              },
+                            }
+                          : {}),
                         ...(runtimeRequestOnly && attempts.endsWith("-retried")
                           ? { ordinal: turn.ordinal + 1 }
                           : {}),

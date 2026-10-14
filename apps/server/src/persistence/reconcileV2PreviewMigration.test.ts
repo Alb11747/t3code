@@ -45,6 +45,7 @@ describe("V2 preview upgrade", () => {
         [62, "ThreadFailureLookupIndex"],
         [63, "CompletedCompactionIndex"],
         [64, "CompactMessageIndex"],
+        [65, "RunCreatedThreadIndex"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -132,6 +133,7 @@ describe("V2 preview upgrade", () => {
         [62, "ThreadFailureLookupIndex"],
         [63, "CompletedCompactionIndex"],
         [64, "CompactMessageIndex"],
+        [65, "RunCreatedThreadIndex"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

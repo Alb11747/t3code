@@ -480,6 +480,7 @@ function piApprovalRequestKind(title: string): "command" | "file-change" {
 interface PiThreadState {
   providerThread: OrchestrationV2ProviderThread;
   activeTurn: ActivePiTurn | null;
+  contextUsageResetAt: DateTime.Utc | null;
 }
 
 interface PiWake {
@@ -782,6 +783,15 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           Effect.orElseSucceed(() => undefined),
         );
 
+      // Serial Pi events can share a clock tick. Keep post-compaction evidence
+      // after its boundary, including subsequent turns and consecutive resets.
+      const contextEvidenceTime = DateTime.now.pipe(
+        Effect.map((time) => {
+          const boundary = threadState?.contextUsageResetAt;
+          return boundary == null ? time : DateTime.max(time, DateTime.addDuration(boundary, 1));
+        }),
+      );
+
       /**
        * Pi attaches the current message's cumulative usage to every streaming
        * update (0.84.2+). Emit it on the running turn only when the total
@@ -803,7 +813,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           const inputTokens = nonNegativeInteger(usage, "input");
           const cachedInputTokens = nonNegativeInteger(usage, "cacheRead");
           const outputTokens = nonNegativeInteger(usage, "output");
-          const updatedAt = yield* DateTime.now;
+          const updatedAt = yield* contextEvidenceTime;
           yield* emit({
             type: "provider_turn.updated",
             driver: PI_PROVIDER,
@@ -919,7 +929,11 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           readonly afterTokenCount?: number;
         } = {},
       ) {
-        const emittedAt = yield* DateTime.now;
+        const emittedAt = yield* status === "completed" ? contextEvidenceTime : DateTime.now;
+        if (status === "completed" && threadState !== null) {
+          threadState.contextUsageResetAt = emittedAt;
+          turn.lastLiveUsedTokens = null;
+        }
         const completedAt = status === "running" ? null : emittedAt;
         yield* emitItemNode(
           turn,
@@ -1628,7 +1642,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         const treeRefs =
           turn.stopTreeRefs !== undefined ? turn.stopTreeRefs : yield* captureTurnTreeRefs();
         const tokenUsage = readUsage
-          ? yield* readTokenUsage(turn.latestCompactionAfterTokens, completedAt)
+          ? yield* readTokenUsage(turn.latestCompactionAfterTokens, yield* contextEvidenceTime)
           : undefined;
         const failure = interrupted ? null : (turn.rejectedPromptFailure ?? turn.failure);
         yield* emit({
@@ -2315,6 +2329,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             "Cannot switch Pi threads while native work is awaiting a turn",
           );
         }
+        const previousThreadState = threadState;
         const existing = threadInput.existingProviderThread;
         const resumeId = existing?.nativeThreadRef?.nativeId;
         const needsNewSession = resumeId == null && registrationAttempted;
@@ -2406,7 +2421,14 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                 createdAt,
                 updatedAt: createdAt,
               };
-        threadState = { providerThread, activeTurn: null };
+        threadState = {
+          providerThread,
+          activeTurn: null,
+          contextUsageResetAt:
+            previousThreadState?.providerThread.nativeThreadRef?.nativeId === nativeId
+              ? previousThreadState.contextUsageResetAt
+              : null,
+        };
         // Baseline the session-tree leaf so the first turn's user entry can
         // be located with a `since` cursor instead of a full entry scan.
         const baselineEntries = yield* request({ type: "get_entries" }).pipe(

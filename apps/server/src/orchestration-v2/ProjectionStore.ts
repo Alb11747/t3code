@@ -33,6 +33,7 @@ import type {
   OrchestrationV2TurnItem,
   ProjectId,
   ProviderInstanceId,
+  ProviderDriverKind,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -305,6 +306,12 @@ export interface ProjectionRecordFilter {
   readonly turnItemStatuses?: ReadonlyArray<OrchestrationV2TurnItem["status"]>;
   readonly runtimeRequestProviderTurnIds?: ReadonlyArray<ProviderTurnId>;
 }
+export interface ProjectionCreatedThreadReceipt {
+  readonly rootNodeId: NodeId;
+  readonly driver: ProviderDriverKind | null;
+  readonly providerInstanceId: ProviderInstanceId | null;
+  readonly thread: OrchestrationV2AppThread;
+}
 export type ProjectionRecordField = Exclude<
   keyof OrchestrationV2ThreadProjection,
   "thread" | "updatedAt" | "visibleTurnItems"
@@ -374,6 +381,11 @@ export interface ProjectionStoreV2Shape {
     fields: ReadonlyArray<K>,
     filter?: ProjectionRecordFilter,
   ) => Effect.Effect<ProjectionRecords<K>, ProjectionStoreV2Error>;
+  readonly getRunCreatedThreads: (
+    threadId: ThreadId,
+    runId: RunId,
+    rootNodeIds: ReadonlyArray<NodeId>,
+  ) => Effect.Effect<ReadonlyArray<ProjectionCreatedThreadReceipt>, ProjectionStoreV2Error>;
 
   readonly apply: (
     event: OrchestrationV2DomainEvent,
@@ -4779,6 +4791,46 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.mapError((cause) => new ProjectionStoreReadError({ threadId, cause })),
       );
 
+    const getRunCreatedThreads: ProjectionStoreV2Shape["getRunCreatedThreads"] = (
+      threadId,
+      runId,
+      rootNodeIds,
+    ) =>
+      sql<
+        PayloadRow & {
+          readonly root_node_id: NodeId;
+          readonly driver: ProviderDriverKind | null;
+          readonly provider_instance_id: ProviderInstanceId | null;
+        }
+      >`
+        -- ACP and Muse can commit the child thread before its parent node/item.
+        -- The ingestion metadata still names the exact owning run and root node.
+        SELECT payload_json,
+          json_extract(metadata_json, '$.nodeId') AS root_node_id,
+          json_extract(metadata_json, '$.driver') AS driver,
+          json_extract(metadata_json, '$.providerInstanceId') AS provider_instance_id
+        FROM orchestration_events
+        WHERE application_event_version = 2 AND aggregate_kind = 'thread'
+          AND event_type = 'thread.created'
+          AND json_extract(metadata_json, '$.runId') = ${runId}
+          AND json_extract(metadata_json, '$.nodeId') IN (SELECT value FROM json_each(${encodeIdList(rootNodeIds)}))
+          AND json_extract(payload_json, '$.lineage.parentThreadId') = ${threadId}
+      `.pipe(
+        Effect.flatMap((rows) =>
+          Effect.forEach(rows, (row) =>
+            decodeThreadPayload(row.payload_json).pipe(
+              Effect.map((thread) => ({
+                rootNodeId: row.root_node_id,
+                driver: row.driver,
+                providerInstanceId: row.provider_instance_id,
+                thread,
+              })),
+            ),
+          ),
+        ),
+        Effect.mapError(controlReadError(threadId)),
+      );
+
     const getThreadRecords: ProjectionStoreV2Shape["getThreadRecords"] = (
       threadId,
       fields,
@@ -5981,6 +6033,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getNextTurnItemOrdinal,
       getTurnItem,
       getThreadRecords,
+      getRunCreatedThreads,
       getRuntimeRequest,
       getPlan,
       getProviderControlContext,
@@ -6003,6 +6056,9 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
   Effect.gen(function* () {
     const replayState = yield* Ref.make(makeProjectionReplayState());
     const sequence = yield* Ref.make(0);
+    const createdThreadsByRun = yield* Ref.make(
+      new Map<RunId, ReadonlyArray<ProjectionCreatedThreadReceipt>>(),
+    );
 
     const service: ProjectionStoreV2Shape = {
       apply: (event) =>
@@ -6023,6 +6079,24 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
 
           if (result) {
             return yield* result;
+          }
+          if (
+            event.type === "thread.created" &&
+            event.runId !== undefined &&
+            event.nodeId !== undefined
+          ) {
+            const { runId, nodeId } = event;
+            yield* Ref.update(createdThreadsByRun, (current) =>
+              new Map(current).set(runId, [
+                ...(current.get(runId) ?? []),
+                {
+                  rootNodeId: nodeId,
+                  driver: event.driver ?? null,
+                  providerInstanceId: event.providerInstanceId ?? null,
+                  thread: event.payload,
+                },
+              ]),
+            );
           }
           yield* Ref.update(sequence, (current) => current + 1);
         }),
@@ -6275,6 +6349,16 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
               ),
             ]),
           ]),
+        ),
+      getRunCreatedThreads: (threadId, runId, rootNodeIds) =>
+        Ref.get(createdThreadsByRun).pipe(
+          Effect.map((receipts) =>
+            (receipts.get(runId) ?? []).filter(
+              (receipt) =>
+                receipt.thread.lineage.parentThreadId === threadId &&
+                rootNodeIds.includes(receipt.rootNodeId),
+            ),
+          ),
         ),
       getThreadRecords: (threadId, fields, filter) =>
         Effect.gen(function* () {

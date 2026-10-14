@@ -3438,6 +3438,186 @@ describe("PiAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
+  it.effect.each([
+    { status: "completed", delay: 0, count: 1 },
+    { status: "completed", delay: 10, count: 1 },
+    { status: "completed", delay: 0, count: 2 },
+    { status: "failed", delay: 0, count: 1 },
+    { status: "cancelled", delay: 0, count: 1 },
+  ] as const)(
+    "orders live usage after compaction $status, delay=$delay, count=$count",
+    (scenario) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        fake.queueState({ model: { provider: "anthropic", id: "test", contextWindow: 200_000 } });
+        const { runtime, takeEvent } = yield* openRuntime(fake);
+        const providerThread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* startTurn(runtime, providerThread);
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({ type: "agent_start" });
+        const clockTime = yield* DateTime.now;
+        let previousBoundary = clockTime;
+        for (let index = 0; index < scenario.count; index++) {
+          yield* fake.emit({ type: "compaction_start", reason: "threshold" });
+          yield* takeEvent(
+            (event) => event.type === "turn_item.updated" && event.turnItem.type === "compaction",
+          );
+          yield* fake.emit({
+            type: "compaction_end",
+            result: scenario.status === "completed" ? { estimatedTokensAfter: 3_400 } : null,
+            aborted: scenario.status === "cancelled",
+          });
+          const marker = yield* takeEvent(
+            (event) => event.type === "turn_item.updated" && event.turnItem.type === "compaction",
+          );
+          if (marker.type !== "turn_item.updated" || marker.turnItem.type !== "compaction") return;
+          assert.equal(marker.turnItem.status, scenario.status);
+          const boundary = marker.turnItem.completedAt!;
+          if (index > 0) assert.isTrue(DateTime.isGreaterThan(boundary, previousBoundary));
+          previousBoundary = boundary;
+          if (scenario.delay > 0) yield* TestClock.adjust(Duration.millis(scenario.delay));
+          yield* fake.emit({
+            type: "message_update",
+            usage: {
+              totalTokens: 3_500 + index,
+              input: 3_000,
+              cacheRead: 100,
+              output: 400 + index,
+            },
+          });
+          const live = yield* takeEvent(
+            (event) =>
+              event.type === "provider_turn.updated" && event.providerTurn.tokenUsage !== undefined,
+          );
+          if (live.type !== "provider_turn.updated") return;
+          assert.equal(live.providerTurn.status, "running");
+          const usage = live.providerTurn.tokenUsage!;
+          assert.equal(usage.usedTokens, 3_500 + index);
+          assert.equal(usage.inputTokens, 3_000);
+          assert.equal(usage.cachedInputTokens, 100);
+          assert.equal(usage.outputTokens, 400 + index);
+          const reportedAt = DateTime.makeUnsafe(usage.updatedAt);
+          if (scenario.status === "completed") {
+            assert.isTrue(DateTime.isGreaterThan(reportedAt, boundary));
+          } else {
+            assert.isTrue(DateTime.Equivalence(reportedAt, clockTime));
+          }
+          if (scenario.delay > 0)
+            assert.isTrue(DateTime.Equivalence(reportedAt, yield* DateTime.now));
+        }
+        yield* fake.emit({ type: "agent_settled" });
+        const terminal = yield* takeEvent((event) => event.type === "turn.terminal");
+        assert.isTrue(terminal.type === "turn.terminal" && terminal.status === "completed");
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect(
+    "keeps compaction ordering through settlement and the next turn, then resets on replacement",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const model = { provider: "anthropic", id: "test", contextWindow: 200_000 };
+        fake.queueState({ model });
+        const { runtime, takeEvent } = yield* openRuntime(fake);
+        const providerThread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* startTurn(runtime, providerThread);
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({ type: "agent_start" });
+        const takeUsage = () =>
+          takeEvent(
+            (event) =>
+              event.type === "provider_turn.updated" && event.providerTurn.tokenUsage !== undefined,
+          );
+        yield* fake.emit({ type: "message_update", usage: { totalTokens: 3_500 } });
+        yield* takeUsage();
+        yield* fake.emit({ type: "compaction_start", reason: "threshold" });
+        yield* takeEvent(
+          (event) => event.type === "turn_item.updated" && event.turnItem.type === "compaction",
+        );
+        yield* fake.emit({ type: "compaction_end", result: { estimatedTokensAfter: 3_400 } });
+        const marker = yield* takeEvent(
+          (event) => event.type === "turn_item.updated" && event.turnItem.type === "compaction",
+        );
+        if (marker.type !== "turn_item.updated" || marker.turnItem.type !== "compaction") return;
+        const boundary = marker.turnItem.completedAt!;
+        // The same count now describes the new context, so the old deduplication
+        // watermark must not hide its post-compaction provenance.
+        yield* fake.emit({ type: "message_update", usage: { totalTokens: 3_500 } });
+        const live = yield* takeUsage();
+        if (live.type !== "provider_turn.updated") return;
+        assert.isTrue(
+          DateTime.isGreaterThan(
+            DateTime.makeUnsafe(live.providerTurn.tokenUsage!.updatedAt),
+            boundary,
+          ),
+        );
+        fake.queueStats({
+          contextUsage: { tokens: 3_600, contextWindow: 200_000 },
+          tokens: { input: 9_000, cacheRead: 200, output: 600 },
+        });
+        yield* fake.emit({ type: "agent_settled" });
+        const settled = yield* takeUsage();
+        if (settled.type !== "provider_turn.updated") return;
+        assert.equal(settled.providerTurn.status, "completed");
+        assert.deepEqual(settled.providerTurn.tokenUsage, {
+          usedTokens: 3_600,
+          maxTokens: 200_000,
+          inputTokens: 9_000,
+          cachedInputTokens: 200,
+          outputTokens: 600,
+          updatedAt: DateTime.formatIso(DateTime.addDuration(boundary, 1)),
+        });
+        yield* takeEvent((event) => event.type === "turn.terminal");
+
+        fake.queueState({ model });
+        const resumed = yield* runtime.resumeThread({
+          providerThread,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* startTurn(runtime, resumed, "default", [], "Next turn", undefined, 2);
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({ type: "message_update", usage: { totalTokens: 3_700 } });
+        const next = yield* takeUsage();
+        if (next.type !== "provider_turn.updated") return;
+        assert.isTrue(
+          DateTime.isGreaterThan(
+            DateTime.makeUnsafe(next.providerTurn.tokenUsage!.updatedAt),
+            boundary,
+          ),
+        );
+        yield* fake.emit({ type: "agent_settled" });
+        yield* takeEvent((event) => event.type === "turn.terminal");
+
+        fake.queueState({ model });
+        const replacement = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+          existingProviderThread: { ...providerThread, nativeThreadRef: null },
+        });
+        yield* startTurn(runtime, replacement, "default", [], "Replacement turn", undefined, 3);
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({ type: "message_update", usage: { totalTokens: 100 } });
+        const fresh = yield* takeUsage();
+        if (fresh.type !== "provider_turn.updated") return;
+        assert.equal(
+          fresh.providerTurn.tokenUsage!.updatedAt,
+          DateTime.formatIso(yield* DateTime.now),
+        );
+        yield* fake.emit({ type: "agent_settled" });
+        yield* takeEvent((event) => event.type === "turn.terminal");
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
   it.effect("uses distinct compaction IDs for first turns in separate threads", () =>
     Effect.gen(function* () {
       const firstFake = yield* makeFakePi;

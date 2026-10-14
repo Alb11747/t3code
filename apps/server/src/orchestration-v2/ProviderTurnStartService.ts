@@ -705,7 +705,19 @@ export const layer: Layer.Layer<
         );
         const acceptedCancelledAttempts = new Set(
           [...cancelledRootTurns.values()].flatMap((turn) =>
-            turn.status === "completed" ? [turn.runAttemptId!] : [],
+            // Pi's strong ref names this turn's native user entry. With its
+            // synthetic weak ref, only running usage (or its recovery-cancelled
+            // snapshot) proves admission; terminal session stats do not.
+            turn.status === "completed" ||
+            (turn.nativeTurnRef?.driver === "pi" &&
+              (turn.nativeTurnRef.strength === "strong" ||
+                (turn.nativeTurnRef.strength === "weak" &&
+                  (turn.status === "running" || turn.status === "cancelled") &&
+                  turn.nativeTurnRef.nativeId ===
+                    `${turn.providerThreadId}:attempt:${turn.runAttemptId}` &&
+                  (turn.tokenUsage?.usedTokens ?? 0) > 0)))
+              ? [turn.runAttemptId!]
+              : [],
           ),
         );
         const acceptedCancelledRunIds = new Set(
@@ -720,6 +732,9 @@ export const layer: Layer.Layer<
           sourceRunId: RunId,
         ) {
           checkedCancelledRunIds.add(sourceRunId);
+          const sourceRootTurns = [...cancelledRootTurns.values()].filter(
+            (turn) => cancelledAttempts.get(turn.runAttemptId!)!.runId === sourceRunId,
+          );
           // Provider nodes, messages and requests can commit before their
           // turn item. Read only the requested cancelled run's evidence.
           const { nodes, turnItems, messages, runtimeRequests } =
@@ -729,11 +744,7 @@ export const layer: Layer.Layer<
               {
                 nodeRunId: sourceRunId,
                 turnItemRunId: sourceRunId,
-                runtimeRequestProviderTurnIds: [...cancelledRootTurns.values()]
-                  .filter(
-                    (turn) => cancelledAttempts.get(turn.runAttemptId!)!.runId === sourceRunId,
-                  )
-                  .map((turn) => turn.id),
+                runtimeRequestProviderTurnIds: sourceRootTurns.map((turn) => turn.id),
                 messageRunIds: [sourceRunId],
                 messageRoles: ["assistant"],
                 turnItemTypes: [
@@ -757,6 +768,27 @@ export const layer: Layer.Layer<
                 ],
               },
             );
+          for (const receipt of yield* projectionStore.getRunCreatedThreads(
+            input.threadId,
+            sourceRunId,
+            sourceRootTurns.map((turn) => turn.nodeId),
+          )) {
+            const turn = sourceRootTurns.find((turn) => turn.nodeId === receipt.rootNodeId)!;
+            const sourceAttempt = cancelledAttempts.get(turn.runAttemptId!)!;
+            const sourceThread = projection.providerThreads.find(
+              (thread) => thread.id === turn.providerThreadId,
+            )!;
+            if (
+              receipt.thread.createdBy !== "agent" ||
+              receipt.thread.creationSource !== "provider" ||
+              receipt.thread.lineage.relationshipToParent !== "subagent" ||
+              receipt.driver !== sourceThread.driver ||
+              receipt.providerInstanceId !== sourceAttempt.providerInstanceId
+            )
+              continue;
+            acceptedCancelledAttempts.add(sourceAttempt.id);
+            acceptedCancelledRunIds.add(sourceRunId);
+          }
           for (const node of nodes) {
             const turn =
               node.providerTurnId === null
@@ -1254,7 +1286,13 @@ export const layer: Layer.Layer<
         sameNativeThread,
         sameSelection,
         reuseTelemetry,
-        previousUsage: staleAfterCompaction ? null : previousUsage,
+        // Muse clears its snapshot at compaction and publishes fresh thread
+        // usage before its turn update. Do not overwrite it with stale occupancy.
+        previousUsage: staleAfterCompaction
+          ? session.driver === "muse"
+            ? threadUsage
+            : null
+          : previousUsage,
         knownModelWindow,
       });
       const runningProviderThread: OrchestrationV2ProviderThread = {
