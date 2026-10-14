@@ -23,7 +23,7 @@ import type {
   VcsStatusResult,
   VcsStatusStreamEvent,
 } from "@t3tools/contracts";
-import { GitManagerError } from "@t3tools/contracts";
+import { GitCommandError, GitManagerError } from "@t3tools/contracts";
 
 import * as VcsStatusBroadcaster from "./VcsStatusBroadcaster.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
@@ -213,6 +213,302 @@ describe("VcsStatusBroadcaster", () => {
     },
   );
 
+  it.effect("an explicit refresh scans local status once when auto-pull skips a dirty tree", () => {
+    const state = {
+      currentLocalStatus: {
+        ...baseLocalStatus,
+        isDefaultRef: true,
+        refName: "main",
+        hasWorkingTreeChanges: true,
+      },
+      currentRemoteStatus: { ...baseRemoteStatus, behindCount: 2 },
+      localStatusCalls: 0,
+      remoteStatusCalls: 0,
+      localInvalidationCalls: 0,
+      remoteInvalidationCalls: 0,
+    };
+
+    return Effect.gen(function* () {
+      const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+      const status = yield* broadcaster.refreshStatus("/repo");
+
+      assert.equal(status.behindCount, 2);
+      assert.equal(state.localStatusCalls, 1);
+    }).pipe(
+      Effect.provide(
+        layerTestFor(state).pipe(
+          Layer.provide(
+            Layer.succeed(VcsStatusBroadcaster.VcsAutoPullPolicy, {
+              isEnabled: () => Effect.succeed(true),
+            }),
+          ),
+        ),
+      ),
+    );
+  });
+
+  it.effect.each(["explicit", "background"] as const)(
+    "%s refresh skips auto-pull for edits made while policy resolves",
+    (refresh) => {
+      const policyStarted = Deferred.makeUnsafe<void>();
+      const releasePolicy = Deferred.makeUnsafe<void>();
+      const remotePublished = Deferred.makeUnsafe<void>();
+      let local: VcsStatusLocalResult = {
+        ...baseLocalStatus,
+        isDefaultRef: true,
+        refName: "main",
+      };
+      let pullCalls = 0;
+      let localReads = 0;
+      const layerTest = VcsStatusBroadcaster.layer.pipe(
+        Layer.provideMerge(NodeServices.layer),
+        Layer.provide(layerBackgroundPolicy(() => true)),
+        Layer.provide(
+          Layer.succeed(VcsStatusBroadcaster.VcsAutoPullPolicy, {
+            isEnabled: () =>
+              Deferred.succeed(policyStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releasePolicy)),
+                Effect.as(true),
+              ),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(GitWorkflowService.GitWorkflowService)({
+            localStatus: () =>
+              Effect.sync(() => {
+                localReads += 1;
+                return local;
+              }),
+            remoteStatus: () => Effect.succeed({ ...baseRemoteStatus, behindCount: 2 }),
+            invalidateLocalStatus: () => Effect.void,
+            invalidateRemoteStatus: () => Effect.void,
+            invalidateStatus: () => Effect.void,
+            pullCurrentBranch: () =>
+              Effect.sync(() => {
+                pullCalls += 1;
+                return { status: "pulled" as const, refName: "main", upstreamRef: "origin/main" };
+              }),
+          }),
+        ),
+      );
+
+      return Effect.gen(function* () {
+        const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+        const work =
+          refresh === "explicit"
+            ? broadcaster.refreshStatus("/repo")
+            : Stream.runForEach(broadcaster.streamStatus({ cwd: "/repo" }), (event) =>
+                event._tag === "remoteUpdated" ||
+                (event._tag === "snapshot" && event.remote !== null)
+                  ? Deferred.succeed(remotePublished, undefined).pipe(Effect.asVoid)
+                  : Effect.void,
+              );
+        const fiber = yield* work.pipe(Effect.forkScoped);
+        yield* Deferred.await(policyStarted);
+        local = { ...local, hasWorkingTreeChanges: true };
+        yield* Deferred.succeed(releasePolicy, undefined);
+        if (refresh === "explicit") {
+          yield* Fiber.join(fiber);
+        } else {
+          yield* Deferred.await(remotePublished);
+        }
+        assert.equal(pullCalls, 0);
+        // The background stream also reads its initial local snapshot.
+        assert.equal(localReads, refresh === "explicit" ? 1 : 2);
+      }).pipe(Effect.scoped, Effect.provide(layerTest));
+    },
+  );
+
+  it.effect(
+    "background refresh publishes remote changes when the optional pull guard scan fails",
+    () => {
+      let guardScanFails = false;
+      let remote = { ...baseRemoteStatus, behindCount: 2 };
+      let pullCalls = 0;
+      const outcome = Deferred.makeUnsafe<"updated" | "failed">();
+      const warnings: Array<ReadonlyArray<unknown>> = [];
+      const logger = Logger.make(({ message }) => {
+        if (Array.isArray(message)) warnings.push(message);
+        if (Array.isArray(message) && message[0] === "VCS remote status refresh failed") {
+          Deferred.doneUnsafe(outcome, Effect.succeed("failed"));
+        }
+      });
+      const layerTest = VcsStatusBroadcaster.layer.pipe(
+        Layer.provideMerge(NodeServices.layer),
+        Layer.provide(layerBackgroundPolicy(() => true)),
+        Layer.provide(
+          Layer.succeed(VcsStatusBroadcaster.VcsAutoPullPolicy, {
+            isEnabled: () => Effect.succeed(true),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(GitWorkflowService.GitWorkflowService)({
+            localStatus: () =>
+              Effect.suspend(() =>
+                guardScanFails
+                  ? Effect.fail(
+                      new GitManagerError({
+                        operation: "test",
+                        cwd: "/repo",
+                        detail: "guard scan failed",
+                      }),
+                    )
+                  : Effect.succeed({ ...baseLocalStatus, isDefaultRef: true, refName: "main" }),
+              ),
+            remoteStatus: () => Effect.sync(() => remote),
+            invalidateLocalStatus: () => Effect.void,
+            invalidateRemoteStatus: () => Effect.void,
+            pullCurrentBranch: () =>
+              Effect.sync(() => {
+                pullCalls += 1;
+                return { status: "pulled" as const, refName: "main", upstreamRef: "origin/main" };
+              }),
+          }),
+        ),
+      );
+      return Effect.gen(function* () {
+        const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+        yield* broadcaster.getStatus({ cwd: "/repo" });
+        const subscribed = yield* Deferred.make<void>();
+        yield* Stream.runForEach(broadcaster.streamStatus({ cwd: "/repo" }), (event) =>
+          event._tag === "snapshot"
+            ? Deferred.succeed(subscribed, undefined).pipe(Effect.asVoid)
+            : event._tag === "remoteUpdated"
+              ? Deferred.succeed(outcome, "updated").pipe(Effect.asVoid)
+              : Effect.void,
+        ).pipe(Effect.forkScoped);
+        yield* Deferred.await(subscribed);
+        guardScanFails = true;
+        remote = { ...remoteStatusWithPr, behindCount: 2 };
+        yield* TestClock.adjust(Duration.minutes(1));
+        assert.equal(yield* Deferred.await(outcome), "updated");
+        assert.equal(pullCalls, 0);
+        assert.deepStrictEqual((yield* broadcaster.getStatus({ cwd: "/repo" })).pr, remote.pr);
+        assert.deepStrictEqual(
+          warnings.find((message) => message[0] === "Automatic project pull guard scan failed"),
+          [
+            "Automatic project pull guard scan failed",
+            { cwdLength: "/repo".length, errorTag: "GitManagerError" },
+          ],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            layerTest,
+            TestClock.layer(),
+            Logger.layer([logger], { mergeWithExisting: true }),
+          ),
+        ),
+      );
+    },
+  );
+
+  it.effect.each(["pull", "post-pull remote read", "recovery scan"] as const)(
+    "background refresh handles failure at %s",
+    (failure) => {
+      let local = { ...baseLocalStatus, isDefaultRef: true, refName: "main" };
+      const afterPull = { ...local, hasWorkingTreeChanges: true };
+      let pullCalls = 0;
+      const outcome = Deferred.makeUnsafe<"updated" | "failed">();
+      const warnings: Array<ReadonlyArray<unknown>> = [];
+      const logger = Logger.make(({ message }) => {
+        if (Array.isArray(message)) warnings.push(message);
+        if (Array.isArray(message) && message[0] === "VCS remote status refresh failed") {
+          Deferred.doneUnsafe(outcome, Effect.succeed("failed"));
+        }
+      });
+      const layerTest = VcsStatusBroadcaster.layer.pipe(
+        Layer.provideMerge(NodeServices.layer),
+        Layer.provide(layerBackgroundPolicy(() => true)),
+        Layer.provide(
+          Layer.succeed(VcsStatusBroadcaster.VcsAutoPullPolicy, {
+            isEnabled: () => Effect.succeed(true),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(GitWorkflowService.GitWorkflowService)({
+            localStatus: () =>
+              Effect.suspend(() =>
+                failure === "recovery scan" && pullCalls > 0
+                  ? Effect.fail(
+                      new GitManagerError({
+                        operation: "test",
+                        cwd: "/repo",
+                        detail: "recovery scan failed",
+                      }),
+                    )
+                  : Effect.succeed(local),
+              ),
+            remoteStatus: () =>
+              Effect.suspend(() =>
+                failure === "post-pull remote read" && pullCalls > 0
+                  ? Effect.fail(
+                      new GitManagerError({
+                        operation: "test",
+                        cwd: "/repo",
+                        detail: "post-pull read failed",
+                      }),
+                    )
+                  : Effect.succeed({ ...baseRemoteStatus, behindCount: 2 }),
+              ),
+            invalidateLocalStatus: () => Effect.void,
+            invalidateRemoteStatus: () => Effect.void,
+            invalidateStatus: () => Effect.void,
+            pullCurrentBranch: () =>
+              Effect.suspend(() => {
+                pullCalls += 1;
+                local = afterPull;
+                return failure !== "post-pull remote read"
+                  ? Effect.fail(
+                      new GitCommandError({
+                        operation: "test",
+                        command: "pull",
+                        cwd: "/repo",
+                        detail: "pull failed",
+                      }),
+                    )
+                  : Effect.succeed({
+                      status: "pulled" as const,
+                      refName: "main",
+                      upstreamRef: "origin/main",
+                    });
+              }),
+          }),
+        ),
+      );
+      return Effect.gen(function* () {
+        const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+        yield* Stream.runForEach(broadcaster.streamStatus({ cwd: "/repo" }), (event) =>
+          event._tag === "remoteUpdated" || (event._tag === "snapshot" && event.remote !== null)
+            ? Deferred.succeed(outcome, "updated").pipe(Effect.asVoid)
+            : Effect.void,
+        ).pipe(Effect.forkScoped);
+        assert.equal(
+          yield* Deferred.await(outcome),
+          failure === "recovery scan" ? "failed" : "updated",
+        );
+        assert.equal(pullCalls, 1);
+        assert.deepStrictEqual(
+          warnings.find((message) => message[0] === "Automatic project pull failed"),
+          [
+            "Automatic project pull failed",
+            {
+              cwdLength: "/repo".length,
+              errorTag: failure === "post-pull remote read" ? "GitManagerError" : "GitCommandError",
+            },
+          ],
+        );
+        if (failure !== "recovery scan") {
+          assert.isTrue((yield* broadcaster.getStatus({ cwd: "/repo" })).hasWorkingTreeChanges);
+        }
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(Layer.merge(layerTest, Logger.layer([logger], { mergeWithExisting: true }))),
+      );
+    },
+  );
+
   it.effect("reuses the cached VCS status across repeated reads", () => {
     const state = {
       currentLocalStatus: baseLocalStatus,
@@ -341,6 +637,7 @@ describe("VcsStatusBroadcaster", () => {
               }
               return remoteStatusWithPr;
             }),
+          invalidateLocalStatus: () => Effect.void,
           invalidateStatus: () => Effect.void,
         }),
       ),
@@ -417,7 +714,8 @@ describe("VcsStatusBroadcaster", () => {
       });
       assert.equal(state.localStatusCalls, 2);
       assert.equal(state.remoteStatusCalls, 2);
-      assert.equal(state.localInvalidationCalls, 1);
+      // Once up front, and once more after the fetch.
+      assert.equal(state.localInvalidationCalls, 2);
       assert.equal(state.remoteInvalidationCalls, 1);
     }).pipe(Effect.provide(layerTestFor(state)));
   });
