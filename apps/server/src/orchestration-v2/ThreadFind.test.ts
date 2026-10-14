@@ -4,6 +4,11 @@ import {
   MessageId,
   PlanId,
   RunId,
+  NodeId,
+  ProviderTurnId,
+  ProviderThreadId,
+  ProviderSessionId,
+  ProviderDriverKind,
   RuntimeRequestId,
   TurnItemId,
   type OrchestrationV2TurnItem,
@@ -29,6 +34,7 @@ import * as ProjectStore from "./ProjectStore.ts";
 import * as EventStore from "./EventStore.ts";
 import { encodeThreadHistoryCursor, selectHistoryPageFromCursor } from "./threadHistoryPaging.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 
 const layerTest = Layer.mergeAll(EventStore.layer, ProjectionStore.layer, ProjectStore.layer).pipe(
   Layer.provideMerge(SqlitePersistence.layerMemory),
@@ -199,6 +205,146 @@ const setup = Effect.gen(function* () {
 });
 
 describe("V2 thread find", () => {
+  it.effect.each([false, true])(
+    "retains compaction fork evidence in bounded, paged, and inherited history (session: %s)",
+    (withSession) =>
+      Effect.gen(function* () {
+        const projection = yield* setup;
+        const providerTurnId = ProviderTurnId.make("turn:compact");
+        const providerThreadId = ProviderThreadId.make("provider-thread:compact");
+        const nodeId = NodeId.make("node:compact");
+        const driver = ProviderDriverKind.make("codex");
+        const nativeTurnRef = {
+          driver,
+          nativeId: "native:compact",
+          strength: "strong",
+        } as const;
+        const capabilities = {
+          ...CodexProviderCapabilitiesV2,
+          context: { ...CodexProviderCapabilitiesV2.context, maxRecommendedHandoffChars: null },
+        };
+        if (withSession) {
+          const providerSessionId = ProviderSessionId.make("session:compact");
+          yield* commit([
+            {
+              id: EventId.make("session:compact:attached"),
+              type: "provider-session.attached",
+              threadId,
+              driver,
+              occurredAt: at(1),
+              payload: {
+                id: providerSessionId,
+                driver,
+                providerInstanceId,
+                status: "ready",
+                cwd: "/workspace",
+                model: "gpt-6",
+                capabilities,
+                createdAt: at(1),
+                updatedAt: at(1),
+                lastError: null,
+              },
+            },
+            {
+              id: EventId.make("provider-thread:compact:updated"),
+              type: "provider-thread.updated",
+              threadId,
+              driver,
+              occurredAt: at(1),
+              payload: {
+                id: providerThreadId,
+                driver,
+                providerInstanceId,
+                providerSessionId,
+                appThreadId: threadId,
+                ownerNodeId: null,
+                nativeThreadRef: null,
+                nativeConversationHeadRef: null,
+                status: "active",
+                firstRunOrdinal: null,
+                lastRunOrdinal: null,
+                handoffIds: [],
+                forkedFrom: null,
+                createdAt: at(1),
+                updatedAt: at(1),
+              },
+            },
+          ]);
+        }
+        yield* commit([
+          {
+            id: EventId.make("turn:compact:completed"),
+            type: "provider-turn.updated",
+            threadId,
+            nodeId,
+            driver,
+            occurredAt: at(1),
+            payload: {
+              id: providerTurnId,
+              providerThreadId,
+              nodeId,
+              runAttemptId: null,
+              nativeTurnRef,
+              ordinal: 1,
+              status: "completed",
+              startedAt: at(1),
+              completedAt: at(2),
+            },
+          },
+        ]);
+        const compact: OrchestrationV2TurnItem = {
+          ...item("compact", 1, ""),
+          type: "compaction",
+          driver,
+          providerThreadId,
+          providerTurnId,
+        };
+        const laterRunId = RunId.make("run:later");
+        yield* commit([run(threadId, laterRunId, 2)]);
+        yield* putItems([compact, { ...item("later", 2, "later"), runId: laterRunId }]);
+        const recent = yield* projection.getThreadSnapshotWindow(threadId, { rowLimit: 1 });
+        assert.equal(
+          recent.projection.runs.some((run) => run.id === runId),
+          false,
+        );
+        const page = yield* projection.getThreadHistoryPage(
+          threadId,
+          encodeThreadHistoryCursor({
+            snapshotSequence: recent.snapshotSequence,
+            sourceThreadId: threadId,
+            sourceItemId: "later",
+            position: 1,
+          }),
+        );
+        const expected = {
+          runStatus: "completed",
+          nativeTurnRef,
+          ...(withSession ? { capabilities } : {}),
+        } as const;
+        assert.deepEqual(
+          page.items.find((row) => row.sourceItemId === compact.id)?.compactionForkSupport,
+          expected,
+        );
+        const oldWindow = yield* projection.getThreadSnapshotWindow(threadId, {
+          rowLimit: 1,
+          anchorItemId: compact.id,
+        });
+        assert.deepEqual(oldWindow.projection.visibleTurnItems[0]?.compactionForkSupport, expected);
+        const childId = ThreadId.make("thread:compact-child");
+        const child = thread(childId, projectId);
+        if (child.type !== "thread.created") return;
+        yield* commit([
+          { ...child, payload: { ...child.payload, forkedFrom: { type: "run", threadId, runId } } },
+        ]);
+        const inherited = yield* projection.getThreadSnapshotWindow(childId, { rowLimit: 2 });
+        assert.deepEqual(
+          inherited.projection.visibleTurnItems.find((row) => row.sourceItemId === compact.id)
+            ?.compactionForkSupport,
+          expected,
+        );
+      }).pipe(Effect.provide(layerTest)),
+  );
+
   it.effect("delivers the reading-position match before parsing the remaining history", () =>
     Effect.gen(function* () {
       const projection = yield* setup;
