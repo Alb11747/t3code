@@ -401,56 +401,67 @@ export const make = Effect.gen(function* () {
     return yield* refreshLocalStatusCore(cwd);
   });
 
+  const isAutoPullEnabled = (policyCwds: ReadonlyArray<string>) =>
+    Effect.forEach(policyCwds, autoPullPolicy.isEnabled, { concurrency: "unbounded" }).pipe(
+      Effect.map((enabled) => enabled.some(Boolean)),
+    );
+
   const maybeAutoPull = Effect.fn("VcsStatusBroadcaster.maybeAutoPull")(function* (
     cwd: string,
     remote: VcsStatusRemoteResult | null,
-    policyCwds: ReadonlyArray<string>,
+    autoPullEnabled: boolean,
+    /** Local status read after fetch and policy resolution; omit to read a fresh one. */
+    freshLocal?: VcsStatusLocalResult,
   ) {
-    let pullAttempted = false;
-    return yield* Effect.gen(function* () {
-      const autoPullEnabled = (yield* Effect.forEach(policyCwds, autoPullPolicy.isEnabled, {
-        concurrency: "unbounded",
-      })).some(Boolean);
-      if (
-        remote === null ||
-        !remote.hasUpstream ||
-        remote.aheadCount > 0 ||
-        remote.behindCount <= 0 ||
-        !autoPullEnabled
-      ) {
-        return null;
-      }
+    if (
+      remote === null ||
+      !remote.hasUpstream ||
+      remote.aheadCount > 0 ||
+      remote.behindCount <= 0 ||
+      !autoPullEnabled
+    ) {
+      return null;
+    }
 
-      yield* workflow.invalidateLocalStatus(cwd);
-      const local = yield* workflow.localStatus({ cwd });
-      if (!local.isRepo || !local.isDefaultRef || local.hasWorkingTreeChanges) return null;
+    const local =
+      freshLocal ??
+      (yield* workflow.invalidateLocalStatus(cwd).pipe(
+        Effect.andThen(workflow.localStatus({ cwd })),
+        // No pull has run yet; skip it if its optional guard scan fails.
+        Effect.catch((error) =>
+          Effect.logWarning("Automatic project pull guard scan failed", {
+            cwdLength: cwd.length,
+            errorTag: error._tag,
+          }).pipe(Effect.as(null)),
+        ),
+      ));
+    if (local === null || !local.isRepo || !local.isDefaultRef || local.hasWorkingTreeChanges)
+      return null;
 
-      pullAttempted = true;
+    const refreshed = yield* Effect.gen(function* () {
       yield* workflow.pullCurrentBranch(cwd);
       yield* workflow.invalidateStatus(cwd);
-      const [refreshedLocal, refreshedRemote] = yield* Effect.all(
+      const [local, remote] = yield* Effect.all(
         [workflow.localStatus({ cwd }), workflow.remoteStatus({ cwd }, { refreshUpstream: false })],
         { concurrency: "unbounded" },
       );
-      yield* updateCachedStatus(cwd, refreshedLocal, refreshedRemote, { publish: true });
-      return { local: refreshedLocal, remote: refreshedRemote };
+      return { local, remote };
     }).pipe(
+      // A pull can change files before failing, including during its post-pull status reads.
+      // Reconcile local status instead of retaining the snapshot taken before the attempt.
       Effect.catch((error) =>
-        Effect.gen(function* () {
-          yield* Effect.logWarning("Automatic project pull failed", {
-            cwdLength: cwd.length,
-            errorTag: error._tag,
-          });
-          if (!pullAttempted) return null;
-          // A pull or its follow-up reads can fail after local state has changed.
-          // Let a failed reconciliation reach the caller instead of publishing old status.
-          yield* workflow.invalidateLocalStatus(cwd);
-          const local = yield* workflow.localStatus({ cwd });
-          yield* updateCachedStatus(cwd, local, remote, { publish: true });
-          return { local, remote };
-        }),
+        Effect.logWarning("Automatic project pull failed", {
+          cwdLength: cwd.length,
+          errorTag: error._tag,
+        }).pipe(
+          Effect.andThen(workflow.invalidateLocalStatus(cwd)),
+          Effect.andThen(workflow.localStatus({ cwd })),
+          Effect.map((local) => ({ local, remote })),
+        ),
       ),
     );
+    yield* updateCachedStatus(cwd, refreshed.local, refreshed.remote, { publish: true });
+    return refreshed;
   });
 
   const refreshRemoteStatus = Effect.fn("VcsStatusBroadcaster.refreshRemoteStatus")(function* (
@@ -468,17 +479,17 @@ export const make = Effect.gen(function* () {
         }
         const previousRemote = (yield* getCachedStatus(cwd))?.remote?.value;
         const remote = yield* workflow.remoteStatus({ cwd }, options);
-        const pulled = yield* maybeAutoPull(cwd, remote, options?.policyCwds ?? [cwd]);
-        if (pulled !== null) return pulled.remote;
-        if (
+        const autoPullEnabled = yield* isAutoPullEnabled(options?.policyCwds ?? [cwd]);
+        const local =
           remote &&
           (!previousRemote ||
             previousRemote.aheadCount !== remote.aheadCount ||
             previousRemote.behindCount !== remote.behindCount ||
             previousRemote.aheadOfDefaultCount !== remote.aheadOfDefaultCount)
-        ) {
-          yield* refreshLocalStatusCore(cwd);
-        }
+            ? yield* refreshLocalStatusCore(cwd)
+            : undefined;
+        const pulled = yield* maybeAutoPull(cwd, remote, autoPullEnabled, local);
+        if (pulled !== null) return pulled.remote;
         return yield* updateCachedRemoteStatus(cwd, remote, { publish: true });
       }),
     );
@@ -496,8 +507,13 @@ export const make = Effect.gen(function* () {
         yield* workflow.invalidateStatus(cwd);
         // Local after remote: the fetch can move the base that the Changes totals compare with.
         const remote = yield* workflow.remoteStatus({ cwd });
+        // Resolve policy before scanning: edits made during the lookup must block auto-pull.
+        const autoPullEnabled = yield* isAutoPullEnabled([rawCwd]);
+        // A concurrent local refresh may have cached a snapshot during the fetch; auto-pull's
+        // clean-tree check needs a scan taken now.
+        yield* workflow.invalidateLocalStatus(cwd);
         const local = yield* workflow.localStatus({ cwd });
-        const pulled = yield* maybeAutoPull(cwd, remote, [rawCwd]);
+        const pulled = yield* maybeAutoPull(cwd, remote, autoPullEnabled, local);
         if (pulled !== null) return mergeGitStatusParts(pulled.local, pulled.remote);
         return yield* updateCachedStatus(cwd, local, remote, { publish: true });
       }),
