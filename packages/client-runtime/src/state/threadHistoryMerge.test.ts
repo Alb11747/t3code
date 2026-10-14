@@ -1,4 +1,4 @@
-import type { OrchestrationV2ProjectedTurnItem } from "@t3tools/contracts";
+import { ProviderDriverKind, type OrchestrationV2ProjectedTurnItem } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 
@@ -11,10 +11,12 @@ import {
   shouldShowLoadEarlierControl,
 } from "./threadHistoryMerge.ts";
 import { applyOrchestrationV2ProjectionEvent } from "./orchestrationV2Projection.ts";
+import { canForkProjectedCompactionItem } from "./threadWorkflows.ts";
+import { resolveV2ItemSupport } from "./itemSupport.ts";
 
 const NOW = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");
 
-function row(index: number): OrchestrationV2ProjectedTurnItem {
+function row(index: number) {
   const id = `item-${index}` as never;
   return {
     position: index,
@@ -41,10 +43,46 @@ function row(index: number): OrchestrationV2ProjectedTurnItem {
       completedAt: NOW,
       updatedAt: NOW,
     },
-  };
+  } satisfies OrchestrationV2ProjectedTurnItem;
 }
 
 describe("threadHistoryMerge", () => {
+  it("keeps older compactions forkable after paging without source control records", () => {
+    const recent = row(2);
+    const compact: OrchestrationV2ProjectedTurnItem = {
+      ...row(0),
+      item: {
+        ...row(0).item,
+        type: "compaction",
+        driver: ProviderDriverKind.make("codex"),
+        runId: "old-run" as never,
+      },
+      compactionForkSupport: {
+        runStatus: "completed",
+        nativeTurnRef: {
+          driver: ProviderDriverKind.make("codex"),
+          strength: "strong",
+          nativeId: "native:old",
+        },
+      },
+    };
+    const projection = mergeOlderHistoryIntoProjection(
+      {
+        ...v2Projection,
+        runs: [],
+        providerTurns: [],
+        providerSessions: [],
+        turnItems: [recent.item],
+        visibleTurnItems: [recent],
+      },
+      [compact],
+    );
+    const projectedItem = projection.visibleTurnItems[0]!;
+    const support = resolveV2ItemSupport(projection, compact.sourceItemId);
+    expect(support.run).toBeNull();
+    expect(canForkProjectedCompactionItem({ projectedItem, support })).toBe(true);
+  });
+
   it("fills activity around partial messages in canonical order and preserves live edits", () => {
     const initial = { ...v2Projection, turnItems: [row(4).item], visibleTurnItems: [row(4)] };
     const preview = [row(1), row(3)];
