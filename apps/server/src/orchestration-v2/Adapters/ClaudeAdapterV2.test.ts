@@ -2455,6 +2455,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     });
 
   const makeWakeHarnessWithOptions = (options?: {
+    readonly forkSession?: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape["forkSession"];
     readonly close?: (sdkMessages: Queue.Queue<SDKMessage>) => Effect.Effect<void>;
     readonly interrupt?: Effect.Effect<void>;
     readonly stopTask?: (
@@ -2590,7 +2591,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 close: options?.close?.(sdkMessages) ?? Effect.void,
               };
             }),
-          forkSession: () => Effect.die("unused forkSession"),
+          forkSession: options?.forkSession ?? (() => Effect.die("unused forkSession")),
           subagentLaunchToolUseId: () => Effect.succeed(options?.subagentLaunchToolUseId ?? null),
           assertComplete: Effect.void,
         },
@@ -4800,6 +4801,145 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
         ),
       ),
+  );
+
+  const compactBoundary = claudeSdkFrame({
+    type: "system",
+    subtype: "compact_boundary",
+    compact_metadata: { trigger: "manual", pre_tokens: 1500, post_tokens: 400 },
+    uuid: "compact-boundary",
+    session_id: WAKE_NATIVE_SESSION,
+  });
+  const compactEcho = {
+    type: "user",
+    message: {
+      role: "user",
+      content: "<local-command-stdout>Context shortened</local-command-stdout>",
+    },
+    parent_tool_use_id: null,
+    uuid: "compact-echo",
+    session_id: WAKE_NATIVE_SESSION,
+    isReplay: true,
+  };
+  it.effect.each([
+    { name: "root echo after the boundary", frames: [compactBoundary, compactEcho], strong: true },
+    { name: "boundary without an echo", frames: [compactBoundary], strong: false },
+    { name: "earlier turn's echo", frames: [compactEcho], strong: false },
+    { name: "echo before the boundary", frames: [compactEcho, compactBoundary], strong: false },
+    {
+      name: "subagent echo",
+      frames: [compactBoundary, { ...compactEcho, parent_tool_use_id: "subagent-tool" }],
+      strong: false,
+    },
+    {
+      name: "unrelated replay after the boundary",
+      frames: [compactBoundary, { ...compactEcho, message: { role: "user", content: "/compact" } }],
+      strong: false,
+    },
+    {
+      name: "root echo followed by a subagent reply",
+      frames: [
+        compactBoundary,
+        compactEcho,
+        {
+          ...makeAssistantTextFrame({ uuid: "subagent-assistant", text: "Background." }),
+          parent_tool_use_id: "subagent-tool",
+        },
+      ],
+      strong: true,
+    },
+    {
+      name: "assistant continuing after compaction",
+      frames: [
+        compactBoundary,
+        compactEcho,
+        makeAssistantTextFrame({ uuid: "continued-assistant", text: "Continuing." }),
+      ],
+      strong: false,
+      nativeId: "continued-assistant",
+    },
+  ])("records an exact compaction fork point only for $name", ({ frames, strong, nativeId }) =>
+    Effect.gen(function* () {
+      const forkCalls: Array<ClaudeAdapterV2.ClaudeAgentSdkSessionForkInput> = [];
+      const harness = yield* makeWakeHarnessWithOptions({
+        close: Queue.shutdown,
+        forkSession: (input) =>
+          Effect.sync(() => {
+            forkCalls.push(input);
+            return { sessionId: "compacted-fork" };
+          }),
+      });
+      const now = yield* DateTime.now;
+      // A previous compaction must not qualify a replay on the next turn.
+      for (const [index, turnFrames] of [[compactBoundary, compactEcho], frames].entries()) {
+        yield* harness.runtime.compactThread!(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make(`compact-fork-${index}`),
+            providerTurnOrdinal: index + 1,
+            text: "/compact",
+            attachments: [],
+          }),
+        );
+        for (const frame of turnFrames) {
+          yield* Queue.offer(harness.sdkMessages, claudeSdkFrame(frame));
+        }
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({ uuid: `result-${index}`, result: "" }),
+        );
+        yield* Queue.take(harness.terminalReceipts);
+      }
+      const completed = harness.events.findLast((event) => event.type === "provider_turn.updated");
+      assert.equal(completed?.type, "provider_turn.updated");
+      if (completed?.type !== "provider_turn.updated") return;
+      const compactTurn = completed.providerTurn;
+      assert.deepEqual(compactTurn.nativeTurnRef, {
+        driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+        nativeId: nativeId ?? (strong ? "compact-echo" : "turn:compact-fork-1"),
+        strength: strong ? "strong" : "weak",
+      });
+      if (strong) {
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("after-compact"),
+            providerTurnOrdinal: 3,
+            text: "Continue",
+            attachments: [],
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeAssistantTextFrame({ uuid: "later-assistant", text: "Later." }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({ uuid: "later-result", result: "Later." }),
+        );
+        yield* Queue.take(harness.terminalReceipts);
+        yield* harness.runtime.forkThread!({
+          sourceProviderThread: harness.providerThread,
+          sourceProviderTurns: harness.events.flatMap((event) =>
+            event.type === "provider_turn.updated" && event.providerTurn.status === "completed"
+              ? [event.providerTurn]
+              : [],
+          ),
+          providerTurnId: compactTurn.id,
+          targetThreadId: ThreadId.make("compact-fork-target"),
+        });
+        assert.equal(forkCalls[0]?.options.upToMessageId, "compact-echo");
+      }
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+      ),
+    ),
   );
 
   describe("cold compaction prompt caching", () => {
