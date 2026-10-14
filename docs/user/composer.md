@@ -237,6 +237,12 @@ Provider commands must start the message to run. T3 Code commands such as
 Send `/compact` in an existing conversation to reduce context usage when the
 provider supports it. Web and desktop also offer compaction from the context meter.
 
+Use **Fork** beside a completed compaction to branch after its turn finishes,
+when the provider supports that boundary. Automatic compaction forks include the
+rest of the containing turn. With Claude, only `/compact` markers offer Fork, and
+markers from older versions of T3 Code don't; after an automatic compaction, fork
+from the assistant reply instead.
+
 ## Goals
 
 With Codex and Claude, send `/goal` followed by what "done" means, for example

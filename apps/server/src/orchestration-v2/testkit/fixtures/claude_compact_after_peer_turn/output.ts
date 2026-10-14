@@ -1,5 +1,9 @@
 import { assert } from "@effect/vitest";
-import type { OrchestrationV2ThreadProjection, ProviderReplayTranscript } from "@t3tools/contracts";
+import {
+  ProviderDriverKind,
+  type OrchestrationV2ThreadProjection,
+  type ProviderReplayTranscript,
+} from "@t3tools/contracts";
 
 import type { OrchestratorV2ScenarioResult } from "../../OrchestratorScenario.ts";
 import { assertSemanticProjectionIntegrity, projectionFor } from "../shared.ts";
@@ -29,6 +33,15 @@ export function assertClaudeCompactAfterPeerTurnOutput(
 ) {
   const projection = projectionFor(result, transcript.scenario);
   assertSemanticProjectionIntegrity(projection);
+  const compaction = projection.turnItems.find((item) => item.type === "compaction");
+  assert.deepEqual(
+    projection.providerTurns.find((turn) => turn.id === compaction?.providerTurnId)?.nativeTurnRef,
+    {
+      driver: ProviderDriverKind.make("claudeAgent"),
+      nativeId: "947bf546-b12e-4883-abb9-d2d208701877",
+      strength: "strong",
+    },
+  );
   const runs = claudeCompactRuns(projection);
   assert.deepEqual(runs.slice(0, 2), [
     {

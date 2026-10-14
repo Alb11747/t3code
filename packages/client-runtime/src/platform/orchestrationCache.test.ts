@@ -160,13 +160,17 @@ describe("orchestration cache envelopes", () => {
     }),
   );
 
-  it("rejects thread snapshots saved before queued-run items were kept, but not shells", () => {
+  it.each([3, 4])("rejects old thread cache version %i but keeps shell caches", (version) => {
+    // 3 lost queued-run items; 4 lacks inherited compaction fork evidence.
     const staleThread = encodeStoredThreadSnapshotJson({
       schemaVersion: ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
       environmentId,
       threadId: v2ThreadId,
       snapshot: { snapshotSequence: 4, projection: v2Projection },
-    }).replace(`"schemaVersion":${ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION}`, `"schemaVersion":3`);
+    }).replace(
+      `"schemaVersion":${ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION}`,
+      `"schemaVersion":${version}`,
+    );
     expect(() => decodeStoredThreadSnapshotJson(staleThread)).toThrow();
     const shell = encodeStoredShellSnapshot({
       schemaVersion: ORCHESTRATION_CACHE_SCHEMA_VERSION,
