@@ -593,12 +593,15 @@ export const layerWithOptions = (
           );
         });
 
-      const closeSubscribers = (entry: LiveSessionEntry) =>
+      // Server shutdown interrupts subscribers rather than ending them: a
+      // cleanly ended stream without a terminal fails its run, while an
+      // interrupted one leaves run settlement to restart recovery.
+      const interruptSubscribers = (entry: LiveSessionEntry) =>
         Effect.gen(function* () {
           const subscribers = yield* Ref.getAndSet(entry.eventSubscribers, new Map());
           yield* Effect.forEach(
             subscribers.values(),
-            (queue) => Queue.clear(queue).pipe(Effect.andThen(Queue.end(queue))),
+            (queue) => Queue.clear(queue).pipe(Effect.andThen(Queue.interrupt(queue))),
             { discard: true },
           );
         });
@@ -1078,7 +1081,7 @@ export const layerWithOptions = (
                   if (input.gracefulSubscribers === true) {
                     yield* endSubscribers(entry);
                   } else if (input.reason === "server_shutdown") {
-                    yield* closeSubscribers(entry);
+                    yield* interruptSubscribers(entry);
                   } else {
                     yield* failSubscribers(
                       entry,
@@ -1822,7 +1825,6 @@ export const layerWithOptions = (
         return {
           ...runtime,
           subscribeEvents,
-          isShuttingDown: Effect.sync(() => shutdownSignal.received),
           events: Stream.unwrap(
             subscribeEvents.pipe(Effect.map((subscription) => subscription.events)),
           ),
@@ -2129,7 +2131,6 @@ export const layerWithOptions = (
       // 5 s after it asks it to stop, and a busy server can hold 15 sessions.
       const sessionScopes = yield* Scope.make("parallel");
       const shutdown = Effect.gen(function* () {
-        shutdownSignal.received = true;
         const activeSessions = [...(yield* Ref.get(sessions)).values()];
         yield* Effect.forEach(
           activeSessions,

@@ -3789,13 +3789,12 @@ it.effect("fails the run when its event stream ends without a root terminal", ()
   }),
 );
 
-it.effect("leaves the run to restart recovery when shutdown ends its event stream", () =>
+it.effect("leaves the run to restart recovery when shutdown interrupts its event stream", () =>
   Effect.gen(function* () {
     const { written, observed } = yield* captureRootRunTermination({
       key: "stream-end:shutdown",
       shouldFinalizeRun: () => Effect.succeed(true),
-      isShuttingDown: Effect.succeed(true),
-      events: () => Stream.empty,
+      events: () => Stream.failCause(Cause.interrupt()),
     });
     assert.deepEqual(written, []);
     assert.deepEqual(observed, []);
@@ -3883,7 +3882,6 @@ function captureRootRunTermination(input: {
   >;
   readonly startTurn?: ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"];
   readonly refreshAfterTurn?: Effect.Effect<void>;
-  readonly isShuttingDown?: Effect.Effect<boolean>;
   readonly shouldStartProviderTurn?: RunExecutionService.RunExecutionServiceV2StartRootRunInput["shouldStartProviderTurn"];
   readonly appContext?: ReturnType<McpAppModelContext.McpAppModelContext["Service"]["forThread"]>;
 }) {
@@ -4007,7 +4005,6 @@ function captureRootRunTermination(input: {
             close: Deferred.succeed(ingestionDone, undefined),
           }),
           startTurn: input.startTurn ?? (() => Effect.void),
-          ...(input.isShuttingDown === undefined ? {} : { isShuttingDown: input.isShuttingDown }),
         } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
         run: {
           id: ids.runId,

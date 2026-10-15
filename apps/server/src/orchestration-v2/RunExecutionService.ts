@@ -1316,11 +1316,8 @@ export const layer: Layer.Layer<
               Effect.gen(function* () {
                 const terminal = yield* Ref.get(terminalEvent);
                 if (terminal === null) {
-                  // Shutdown deliberately closes subscriptions before recovery
-                  // settles runs; every other end must leave a terminal result.
-                  if (yield* input.session.isShuttingDown ?? Effect.succeed(false)) {
-                    return;
-                  }
+                  // A session release interrupts or fails the stream; a clean
+                  // end without a terminal means the run would never settle.
                   return yield* new RunExecutionIngestError({
                     runId: input.run.id,
                     cause: new ProviderAdapter.ProviderAdapterEventStreamError({
@@ -1333,62 +1330,66 @@ export const layer: Layer.Layer<
                 yield* finalizeRootRun(terminal);
               }),
             ),
-            Effect.catchCause((cause) =>
-              Ref.get(rootRunFinalized).pipe(
-                Effect.flatMap((finalized) =>
-                  Effect.logWarning("orchestration V2 provider event ingestion failed", {
-                    runId: input.run.id,
-                    cause,
-                  }).pipe(
-                    Effect.andThen(
-                      finalized
-                        ? Effect.void
-                        : Ref.get(latestProviderThread).pipe(
-                            Effect.flatMap((providerThread) =>
-                              Ref.get(latestTurnItemOrdinal).pipe(
-                                Effect.flatMap((latestItemOrdinal) =>
-                                  Ref.get(openRunOwnedSubagents).pipe(
-                                    Effect.flatMap((openSubagents) =>
-                                      writeFinalRunEvents({
-                                        run: input.run,
-                                        rootNode: input.rootNode,
-                                        checkpointScope: input.checkpointScope,
-                                        providerThread,
-                                        attempt: input.attempt,
-                                        // The failure may be the ownership
-                                        // read itself, so check in the write.
-                                        writeIfRunCurrent: {
-                                          activeAttemptId: input.attempt.id,
-                                          expectedStatus: "running",
-                                        },
-                                        openRunOwnedSubagents: openSubagents,
-                                        terminal: makeFailedTerminalEvent(
-                                          makeProviderFailure({
-                                            cause: Cause.squash(cause),
-                                            class: "unknown",
-                                          }),
-                                          latestItemOrdinal + 1,
-                                        ),
-                                        failureItemPersisted: false,
-                                        refreshAfterTurn,
-                                      }),
+            // Server shutdown interrupts the subscription and leaves the run to
+            // restart recovery; every other failure fails the run.
+            Effect.catchCauseIf(
+              (cause) => !Cause.hasInterruptsOnly(cause),
+              (cause) =>
+                Ref.get(rootRunFinalized).pipe(
+                  Effect.flatMap((finalized) =>
+                    Effect.logWarning("orchestration V2 provider event ingestion failed", {
+                      runId: input.run.id,
+                      cause,
+                    }).pipe(
+                      Effect.andThen(
+                        finalized
+                          ? Effect.void
+                          : Ref.get(latestProviderThread).pipe(
+                              Effect.flatMap((providerThread) =>
+                                Ref.get(latestTurnItemOrdinal).pipe(
+                                  Effect.flatMap((latestItemOrdinal) =>
+                                    Ref.get(openRunOwnedSubagents).pipe(
+                                      Effect.flatMap((openSubagents) =>
+                                        writeFinalRunEvents({
+                                          run: input.run,
+                                          rootNode: input.rootNode,
+                                          checkpointScope: input.checkpointScope,
+                                          providerThread,
+                                          attempt: input.attempt,
+                                          // The failure may be the ownership
+                                          // read itself, so check in the write.
+                                          writeIfRunCurrent: {
+                                            activeAttemptId: input.attempt.id,
+                                            expectedStatus: "running",
+                                          },
+                                          openRunOwnedSubagents: openSubagents,
+                                          terminal: makeFailedTerminalEvent(
+                                            makeProviderFailure({
+                                              cause: Cause.squash(cause),
+                                              class: "unknown",
+                                            }),
+                                            latestItemOrdinal + 1,
+                                          ),
+                                          failureItemPersisted: false,
+                                          refreshAfterTurn,
+                                        }),
+                                      ),
                                     ),
                                   ),
                                 ),
                               ),
                             ),
-                          ),
-                    ),
-                    Effect.mapError(
-                      (writeCause) =>
-                        new RunExecutionIngestError({
-                          runId: input.run.id,
-                          cause: { ingest: cause, write: writeCause },
-                        }),
+                      ),
+                      Effect.mapError(
+                        (writeCause) =>
+                          new RunExecutionIngestError({
+                            runId: input.run.id,
+                            cause: { ingest: cause, write: writeCause },
+                          }),
+                      ),
                     ),
                   ),
                 ),
-              ),
             ),
             Effect.ensuring(eventSubscription.close),
             Effect.forkDetach,
