@@ -39,6 +39,22 @@ describe("cliRelease", () => {
     );
   });
 
+  it.each([".fork", ".fork.3"])(
+    "resolves %s archives and release checks from the fork",
+    (suffix) => {
+      const version = `0.0.46-nightly.20261015.3176${suffix}`;
+      expect(cliReleaseIndexPageUrl(1, version)).toBe(
+        "https://api.github.com/repos/Alb11747/t3code/releases?per_page=100&page=1",
+      );
+      expect(cliReleaseDownloadBaseUrl(version)).toBe(
+        `https://github.com/Alb11747/t3code/releases/download/v${version}`,
+      );
+      expect(cliReleaseDownloadBaseUrl(version, "https://mirror.example/t3/")).toBe(
+        `https://mirror.example/t3/v${version}`,
+      );
+    },
+  );
+
   it("parses sha256sum output including binary-mode markers", () => {
     const checksums = parseChecksums(
       [
@@ -64,6 +80,7 @@ describe("cliRelease", () => {
   it("derives the release channel from the version alone", () => {
     expect(cliReleaseChannelOf("1.2.3")).toBe("stable");
     expect(cliReleaseChannelOf("1.2.3-nightly.20260911.4")).toBe("nightly");
+    expect(cliReleaseChannelOf("1.2.3-nightly.20260911.4.fork.2")).toBe("nightly");
     expect(cliReleaseChannelOf("1.2.3-preview.20260911.4")).toBe("preview");
     expect(cliReleaseChannelOf("1.2.3-rc.1")).toBe("stable");
   });
