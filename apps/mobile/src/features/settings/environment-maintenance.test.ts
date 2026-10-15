@@ -160,6 +160,22 @@ describe("environment maintenance access", () => {
 describe("environment release checks", () => {
   const signal = new AbortController().signal;
 
+  it("finds fork updates in the fork feed for a fork server", async () => {
+    const version = "0.0.46-nightly.20261015.3176.fork.3";
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(async () => Response.json([{ tag_name: `v${version}` }]));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await findEnvironmentUpdate("0.0.46-nightly.20261014.3132.fork.1", signal)).toBe(
+      version,
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.github.com/repos/Alb11747/t3code/releases?per_page=100&page=1",
+      { signal },
+    );
+    expect(await findEnvironmentUpdate(version, signal)).toBeNull();
+  });
+
   it("keeps stable hosts on stable releases and ignores drafts", async () => {
     vi.stubGlobal(
       "fetch",
