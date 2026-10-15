@@ -14,6 +14,8 @@ const testState = vi.hoisted(() => ({
   continueThreadsAfterServerUpdate: false,
   session: null as AsyncResult.AsyncResult<AuthSessionState, Error> | null,
   sessionAtom: Symbol("session"),
+  configAtom: Symbol("config"),
+  serverVersion: "0.0.30",
 }));
 
 vi.mock("~/hooks/useCopyToClipboard", () => ({
@@ -32,13 +34,22 @@ vi.mock("~/hooks/useSettings", () => ({
 }));
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => testState.session }));
 vi.mock("~/rpc/atomRegistry", () => ({
-  appAtomRegistry: { get: () => testState.session },
+  appAtomRegistry: {
+    get: (atom: symbol) =>
+      atom === testState.configAtom
+        ? { environment: { serverVersion: testState.serverVersion } }
+        : testState.session,
+  },
 }));
 vi.mock("~/state/session", () => ({
   environmentSession: { sessionStateAtom: () => testState.sessionAtom },
 }));
 vi.mock("~/state/server", () => ({
-  serverEnvironment: { updateServer: Symbol("updateServer") },
+  serverEnvironment: {
+    updateServer: Symbol("updateServer"),
+    configValueAtom: () => testState.configAtom,
+  },
+  updateOutdatedServer: Symbol("updateOutdatedServer"),
 }));
 vi.mock("~/state/use-atom-command", () => ({
   useAtomCommand: () => testState.updateServer,
@@ -55,6 +66,7 @@ import {
 } from "~/confirmDialog";
 import {
   ServerUpdateAction,
+  OutdatedServerUpdateAction,
   ServerUpdateProgress,
   ServerUpdatesAction,
   type ServerUpdateTarget,
@@ -103,6 +115,79 @@ describe("ServerUpdateAction", () => {
     testState.clipboard.mockReset();
     testState.continueThreadsAfterServerUpdate = false;
     testState.session = AsyncResult.success(currentSession);
+    testState.serverVersion = "0.0.30";
+  });
+
+  it("preserves the full fork version when updating a standalone fork server", async () => {
+    const fork = "0.0.46-nightly.20261015.3176.fork.3";
+    testState.serverVersion = "0.0.46-nightly.20261014.3132.fork.1";
+    testState.updateServer.mockResolvedValue(AsyncResult.success({ targetVersion: fork }));
+    const action = ServerUpdateAction({
+      environmentId: "env-test" as EnvironmentId,
+      serverLabel: "Test server",
+      selfUpdate: "boot-service",
+      targetVersion: fork,
+    }) as ActionElement;
+    action.props.onClick?.();
+    await flushPromises();
+    expect(testState.updateServer).toHaveBeenCalledWith({
+      environmentId: "env-test",
+      input: { targetVersion: fork },
+    });
+  });
+
+  it("requests the upstream version when updating a standalone server from a fork client", async () => {
+    const upstream = "0.0.46-nightly.20261015.3176";
+    testState.updateServer.mockResolvedValue(AsyncResult.success({ targetVersion: upstream }));
+    const action = ServerUpdateAction({
+      environmentId: "env-test" as EnvironmentId,
+      serverLabel: "Test server",
+      selfUpdate: "boot-service",
+      targetVersion: `${upstream}.fork.1`,
+    }) as ActionElement;
+    action.props.onClick?.();
+    await flushPromises();
+    expect(testState.updateServer).toHaveBeenCalledWith({
+      environmentId: "env-test",
+      input: { targetVersion: upstream },
+    });
+  });
+
+  it("requests the upstream version from a host too old to connect normally", async () => {
+    const upstream = "0.0.46-nightly.20261015.3176";
+    testState.updateServer.mockResolvedValue(AsyncResult.success({ targetVersion: upstream }));
+    const action = OutdatedServerUpdateAction({
+      environmentId: "env-test" as EnvironmentId,
+      serverLabel: "Test server",
+      fromVersion: "0.0.40",
+      targetVersion: `${upstream}.fork.1`,
+    }) as ActionElement;
+    action.props.onClick?.();
+    await flushPromises();
+    expect(testState.updateServer).toHaveBeenCalledWith({
+      environmentId: "env-test",
+      fromVersion: "0.0.40",
+      input: { targetVersion: upstream },
+    });
+  });
+
+  it("keeps an outdated fork host on fork releases", async () => {
+    const fork = "0.0.46-nightly.20261015.3176.fork.3";
+    const fromVersion = "0.0.46-nightly.20261014.3132.fork.1";
+    testState.updateServer.mockResolvedValue(AsyncResult.success({ targetVersion: fork }));
+    const action = OutdatedServerUpdateAction({
+      environmentId: "env-test" as EnvironmentId,
+      serverLabel: "Test server",
+      fromVersion,
+      targetVersion: fork,
+    }) as ActionElement;
+    action.props.onClick?.();
+    await flushPromises();
+    expect(testState.updateServer).toHaveBeenCalledWith({
+      environmentId: "env-test",
+      fromVersion,
+      input: { targetVersion: fork },
+    });
   });
 
   it.each([
