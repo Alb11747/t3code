@@ -2099,15 +2099,17 @@ export const layerWithOptions = (
                 }).pipe(logReleaseFailure(entry.runtime.providerSessionId));
                 return;
               }
-              const cause = Exit.isFailure(exit)
-                ? exit.cause
-                : Cause.fail(
-                    new ProviderAdapter.ProviderAdapterEventStreamError({
-                      driver: entry.runtime.driver,
-                      providerSessionId: entry.runtime.providerSessionId,
-                      cause: "Provider event stream ended unexpectedly.",
-                    }),
-                  );
+              // Subscribers read an interrupt as server shutdown, so keep it for that.
+              const cause =
+                Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)
+                  ? exit.cause
+                  : Cause.fail(
+                      new ProviderAdapter.ProviderAdapterEventStreamError({
+                        driver: entry.runtime.driver,
+                        providerSessionId: entry.runtime.providerSessionId,
+                        cause: "Provider event stream ended unexpectedly.",
+                      }),
+                    );
               yield* publishToSubscribers(entry.eventSubscribers, {
                 type: "failure",
                 cause,
