@@ -1258,6 +1258,22 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
 });
 
 describe("ClaudeAdapterV2 executable path", () => {
+  it.effect("does not mutate the shared host environment when defaulting the API timeout", () => {
+    const sharedEnvironment = { PATH: "/test/bin" };
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { apiTimeoutEnvironment } = yield* captureSdkExecutablePaths("claude");
+        assert.deepEqual(apiTimeoutEnvironment, ["3600000"]);
+        assert.deepEqual(sharedEnvironment, { PATH: "/test/bin" });
+      }),
+    ).pipe(
+      Effect.provideService(HostProcess.Environment, sharedEnvironment),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    );
+  });
+
   it.effect.each([
     { source: "the default", environment: [], hostEnvironment: {}, expected: "3600000" },
     {
@@ -7988,6 +8004,84 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ),
         );
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("settles a deferred wake whose init was consumed by an intervening prompt", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+        const start = (
+          attemptId: string,
+          providerTurnOrdinal: number,
+          messageCreationSource: "server" | "provider" = "server",
+        ) =>
+          harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make(attemptId),
+              text: "Check the completed background work.",
+              attachments: [],
+              providerTurnOrdinal,
+              messageCreatedBy: "agent",
+              messageCreationSource,
+            }),
+          );
+
+        yield* start("attempt-stale-init-first", 1);
+        yield* harness.offerAndWait(wakeTaskStarted);
+        // The native background command completes during the original turn.
+        yield* harness.offerAndWait(wakeNotification);
+        yield* harness.offerAndWait(turnOneResult);
+        yield* Queue.take(harness.terminalReceipts);
+
+        // Claude opens its native wake and starts answering while the T3
+        // continuation is still queued.
+        yield* harness.offerAndWait(wakeTurnInit);
+        yield* Queue.take(harness.continuationReceipts);
+        yield* harness.offerAndWait(wakeAssistant);
+
+        // A normal queued completion message gets to the native process first.
+        yield* start("attempt-stale-init-intervening", 2);
+        const combinedResult = claudeSdkFrame({
+          ...makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000121",
+            result: "The wake and completion message were handled together.",
+            numTurns: 7,
+            origin: { kind: "task-notification" },
+          }),
+          user_message_uuid: harness.promptUuid(1),
+        });
+        yield* harness.offerAndWait(combinedResult);
+        const combinedTerminal = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(combinedTerminal.status, "completed");
+
+        // The delayed continuation still shows the wake's buffered output, but
+        // must not wait for a result the intervening turn already received: it
+        // settles at once, so the next start is accepted instead of failing
+        // with "still active".
+        yield* start("attempt-stale-init-continuation", 3, "provider");
+        const continuationTerminal = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(continuationTerminal.status, "completed");
+        yield* awaitUntil(
+          () =>
+            harness.events.some(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "assistant_message" &&
+                event.turnItem.text === WAKE_ASSISTANT_TEXT,
+            ),
+          "buffered wake output replayed",
+        );
+        yield* start("attempt-stale-init-probe", 4);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
