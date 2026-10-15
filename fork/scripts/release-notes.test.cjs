@@ -6,12 +6,13 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { buildReleaseNotes, previousReleaseTag } = require("./release-notes.cjs");
+const { nextForkVersion } = require("./release-version.cjs");
 const {
   normalizeDesktopUpdateReleaseNotes,
 } = require("../../apps/desktop/src/updates/releaseNotes.ts");
 
-const previousTag = "v0.0.46-nightly.20261010.14";
-const currentTag = "v0.0.46-nightly.20261010.15";
+const previousTag = "v0.0.46-nightly.20261010.3000.fork.14";
+const currentTag = "v0.0.46-nightly.20261010.3000.fork.15";
 const release = (tag_name, overrides = {}) => ({
   tag_name,
   published_at: "2026-10-10T10:13:15Z",
@@ -54,12 +55,12 @@ test("uses the newest earlier published nightly, ignoring drafts, future tags an
   assert.equal(
     previousReleaseTag(
       [
-        release("v0.0.46-nightly.20261010.9", { published_at: "2026-10-11T00:00:00Z" }),
+        release("v0.0.46-nightly.20261010.3000.fork.9", { published_at: "2026-10-11T00:00:00Z" }),
         release(previousTag),
         release(currentTag),
-        release("v0.0.46-nightly.20261010.16"),
-        release("v0.0.46-nightly.20261010.13", { draft: true }),
-        release("v0.0.46-nightly.20261010.12", { published_at: null }),
+        release("v0.0.46-nightly.20261010.3000.fork.16"),
+        release("v0.0.46-nightly.20261010.3000.fork.13", { draft: true }),
+        release("v0.0.46-nightly.20261010.3000.fork.12", { published_at: null }),
         release("v0.0.46-preview.20261010.14"),
         release("v0.0.46"),
       ],
@@ -69,6 +70,84 @@ test("uses the newest earlier published nightly, ignoring drafts, future tags an
   );
   assert.equal(previousReleaseTag([], currentTag), null);
   assert.throws(() => previousReleaseTag([], "not-a-nightly"), /Invalid fork nightly tag/);
+});
+
+test("orders .fork below .fork.<n>, upstream nightly first, and ignores other tags", () => {
+  const releases = [
+    release("v0.0.46-nightly.20261014.57"),
+    release("v0.0.46-nightly.20261013.3080.fork.3"),
+    release("v0.0.46-nightly.20261014.3132.fork"),
+    release("v0.0.46-nightly.20261014.3132.fork.1"),
+  ];
+  assert.equal(
+    previousReleaseTag(releases, "v0.0.46-nightly.20261015.3150.fork"),
+    "v0.0.46-nightly.20261014.3132.fork.1",
+  );
+  assert.equal(
+    previousReleaseTag(releases, "v0.0.46-nightly.20261014.3132.fork.1"),
+    "v0.0.46-nightly.20261014.3132.fork",
+  );
+  assert.equal(
+    previousReleaseTag(releases, "v0.0.46-nightly.20261014.3132.fork"),
+    "v0.0.46-nightly.20261013.3080.fork.3",
+  );
+});
+
+test("names a rebase-only release .fork and counts fork changes per upstream nightly", () => {
+  const upstream = "v0.0.46-nightly.20261014.3132";
+  const older = [release("v0.0.46-nightly.20261013.3080.fork.2")];
+  assert.equal(nextForkVersion(older, upstream, false), "0.0.46-nightly.20261014.3132.fork");
+  assert.equal(nextForkVersion(older, upstream, true), "0.0.46-nightly.20261014.3132.fork.1");
+  const onUpstream = [
+    release("v0.0.46-nightly.20261014.3132.fork"),
+    release("v0.0.46-nightly.20261014.3132.fork.1"),
+  ];
+  assert.equal(nextForkVersion(onUpstream, upstream, true), "0.0.46-nightly.20261014.3132.fork.2");
+  assert.equal(
+    nextForkVersion([release("v0.0.46-nightly.20261014.3132.fork")], upstream, true),
+    "0.0.46-nightly.20261014.3132.fork.1",
+  );
+  assert.equal(
+    nextForkVersion(onUpstream, "v0.0.46-nightly.20261015.3150", false),
+    "0.0.46-nightly.20261015.3150.fork",
+  );
+  assert.throws(() => nextForkVersion([], "v0.0.46", true), /Invalid upstream nightly tag/);
+});
+
+test("ignores drafts when counting and refuses a rebuild with nothing new", () => {
+  const upstream = "v0.0.46-nightly.20261014.3132";
+  const cancelled = [release("v0.0.46-nightly.20261014.3132.fork.4", { draft: true })];
+  assert.equal(nextForkVersion(cancelled, upstream, true), "0.0.46-nightly.20261014.3132.fork.1");
+  assert.throws(
+    () => nextForkVersion([release("v0.0.46-nightly.20261014.3132.fork.1")], upstream, false),
+    /nothing to release/,
+  );
+  // A manual sync onto upstream main past the released nightly still ships.
+  assert.equal(
+    nextForkVersion([release("v0.0.46-nightly.20261014.3132.fork")], upstream, false, true),
+    "0.0.46-nightly.20261014.3132.fork.1",
+  );
+});
+
+test("refuses a fork version that installed copies would treat as older", () => {
+  for (const newest of [
+    "v0.0.46-nightly.20261015.3150.fork",
+    "v0.0.47-nightly.20261013.3080.fork.1",
+  ]) {
+    assert.throws(
+      () => nextForkVersion([release(newest)], "v0.0.46-nightly.20261014.3132", true),
+      /does not sort above the newest fork release/,
+    );
+  }
+  // A leftover draft does not block the release.
+  assert.equal(
+    nextForkVersion(
+      [release("v0.0.47-nightly.20261013.3080.fork.1", { draft: true })],
+      "v0.0.46-nightly.20261014.3132",
+      true,
+    ),
+    "0.0.46-nightly.20261014.3132.fork.1",
+  );
 });
 
 test("includes new upstream and fork changes without repeating rebased carried patches", (t) => {
@@ -84,7 +163,10 @@ test("includes new upstream and fork changes without repeating rebased carried p
   assert.match(body, /Upstream: fix: upstream change/);
   assert.match(body, /Fork: feat: new fork patch/);
   assert.doesNotMatch(body, /carried patch/);
-  assert.match(body, /github.com\/example\/fork\/releases\/tag\/v0.0.46-nightly.20261010.14/);
+  assert.match(
+    body,
+    /github.com\/example\/fork\/releases\/tag\/v0.0.46-nightly.20261010.3000.fork.14/,
+  );
   const normalized = normalizeDesktopUpdateReleaseNotes(body, currentTag.slice(1), "nightly");
   assert.equal(normalized.releaseNotes[0].totalItems, 2);
   assert.match(normalized.releaseNotes[0].items[0], /^Fork: feat: new fork patch/);
@@ -183,13 +265,13 @@ test("reports a fork patch absorbed upstream only as an upstream change", (t) =>
 test("covers all changes after the previous published release when builds were skipped", (t) => {
   const { git, commit, notes } = fixture(t);
   commit("first.txt", "first\n", "feat: first unpublished patch");
-  git("tag", "v0.0.46-nightly.20261010.15");
+  git("tag", "v0.0.46-nightly.20261010.3000.fork.15");
   commit("second.txt", "second\n", "feat: second unpublished patch");
   // A tag alone (for example, from a failed build) is not a published release.
   const body = buildReleaseNotes({
     cwd: git("rev-parse", "--show-toplevel"),
     releases: [release(previousTag)],
-    currentTag: "v0.0.46-nightly.20261010.17",
+    currentTag: "v0.0.46-nightly.20261010.3000.fork.17",
     repository: "example/fork",
     upstreamRef: "upstream",
   });
@@ -213,7 +295,7 @@ test("combines per-release deltas when an installed client skips a release", (t)
   const firstNotes = notes();
   git("tag", currentTag);
   commit("second.txt", "second\n", "feat: second new fork patch");
-  const nextTag = "v0.0.46-nightly.20261010.16";
+  const nextTag = "v0.0.46-nightly.20261010.3000.fork.16";
   const secondNotes = buildReleaseNotes({
     cwd: git("rev-parse", "--show-toplevel"),
     releases: [[release(previousTag)], [release(currentTag)]],

@@ -2,9 +2,9 @@ name: Fork release
 
 # Builds and publishes the fork's desktop apps (Linux x64 AppImage, Windows x64
 # installer) as a GitHub prerelease that installed copies pick up through the
-# in-app updater. Versions use upstream's nightly format
-# (<base>-nightly.<date>.<run>), so installs follow the nightly update channel,
-# and the build's update feed points at this repository (GITHUB_REPOSITORY).
+# in-app updater. Versions extend the upstream nightly they're built on (see the
+# version step), so installs follow the nightly update channel, and the build's
+# update feed points at this repository (GITHUB_REPOSITORY).
 #
 # Upstream's release.yml also deploys services, publishes npm/AUR packages and
 # signs builds with upstream's credentials. It is disabled in this fork; this
@@ -124,27 +124,37 @@ jobs:
             args:
               - --filter=@t3tools/scripts...
 
-      # The last version field counts the day's published releases, not workflow
-      # runs, so cancelled and failed runs leave no gaps in version numbers.
+      # Versions are the upstream nightly the fork is built on plus `.fork` or
+      # `.fork.<n>`; fork/scripts/release-version.cjs explains the numbering.
       - id: meta
         name: Resolve release version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          date="$(date -u +%Y%m%d)"
+          git fetch --no-tags --quiet https://github.com/pingdotgg/t3code.git main
+          base=$(git merge-base HEAD FETCH_HEAD)
+          # The newest upstream nightly at or below the fork's upstream base.
+          # Annotated tags also list their peeled commit (`^{}`), which is the
+          # one present locally.
+          upstream_tag=""
+          while read -r sha ref; do
+            if git merge-base --is-ancestor "$sha" "$base" 2>/dev/null; then
+              upstream_tag=${ref#refs/tags/}
+              break
+            fi
+          done < <(git ls-remote --tags https://github.com/pingdotgg/t3code.git 'v*-nightly.*' \
+            | sed 's/\^{}$//' | sort -k2,2 -V -r)
+          [[ -n $upstream_tag ]] || { echo "::error::No upstream nightly found under $base."; exit 1; }
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
             > "$RUNNER_TEMP/fork-releases.json"
-          number=$(jq --arg date "$date" '
-            [.[][].tag_name | capture("-nightly\\.\($date)\\.(?<n>[0-9]+)$").n | tonumber]
-            | (max // 0) + 1' "$RUNNER_TEMP/fork-releases.json")
-          node scripts/resolve-nightly-release.ts \
-            --date "$date" \
-            --run-number "$number" \
-            --sha "$GITHUB_SHA" \
-            --github-output
-          version="$(sed -n 's/^version=//p' "$GITHUB_OUTPUT" | tail -1)"
-          echo "name=T3 Code Fork $version (${GITHUB_SHA::12})" >> "$GITHUB_OUTPUT"
+          version=$(node fork/scripts/release-version.cjs \
+            "$RUNNER_TEMP/fork-releases.json" "$upstream_tag" "$GITHUB_REPOSITORY" FETCH_HEAD)
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "name=T3 Code Fork $version (${GITHUB_SHA::12})"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Write release notes
         env:

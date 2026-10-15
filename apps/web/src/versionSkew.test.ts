@@ -17,6 +17,7 @@ import {
   resolveServerConfigVersionMismatch,
   resolveServerSelfUpdateCapability,
   resolveVersionMismatch,
+  serverUpdateTargetVersion,
   serverUpdateGuidance,
   supportsDesktopAppUpdate,
 } from "./versionSkew";
@@ -25,6 +26,72 @@ const MISMATCH_HINT =
   "Version mismatch. Try syncing the client and server to the same T3 Code version.";
 
 describe("versionSkew", () => {
+  it("keeps fork versions for desktop feeds and upstream versions for server installs", () => {
+    const upstream = "0.0.46-nightly.20261015.3176";
+    const fork = `${upstream}.fork.1`;
+    expect(serverUpdateTargetVersion(fork, "desktop-managed")).toBe(fork);
+    expect(serverUpdateTargetVersion(fork, "boot-service")).toBe(upstream);
+    expect(serverUpdateTargetVersion(`${upstream}.fork`, "respawn")).toBe(upstream);
+    expect(serverUpdateTargetVersion(upstream)).toBe(upstream);
+    expect(serverUpdateTargetVersion("0.0.46")).toBe("0.0.46");
+    expect(manualServerUpdateCommand(fork)).toBe(`npx t3@${upstream}`);
+    expect(manualServerUpdateCommand(fork, { kind: "npm-global", prefix: "/opt/node" })).toBe(
+      `npm install --global --prefix '/opt/node' t3@${upstream}`,
+    );
+  });
+
+  it.each([".fork", ".fork.1"])("keeps a standalone %s server on fork releases", (suffix) => {
+    const fork = "0.0.46-nightly.20261015.3176.fork.3";
+    const olderFork = `0.0.46-nightly.20261014.3132${suffix}`;
+    expect(serverUpdateTargetVersion(fork, "boot-service", olderFork)).toBe(fork);
+    expect(serverUpdateTargetVersion(fork, null, olderFork)).toBe(fork);
+    branding.APP_VERSION = fork;
+    const environment = {
+      environmentId: EnvironmentId.make("server"),
+      label: "server",
+      platform: { os: "linux", arch: "x64" } as const,
+      serverVersion: olderFork,
+      capabilities: { repositoryIdentity: true, serverSelfUpdate: "boot-service" as const },
+    };
+    expect(resolveServerConfigVersionMismatch({ environment })).toMatchObject({
+      clientVersion: fork,
+    });
+    expect(
+      resolveServerConfigVersionMismatch({
+        environment: { ...environment, serverVersion: "0.0.46-nightly.20261015.3176.fork.2" },
+      }),
+    ).toMatchObject({ clientVersion: fork });
+    expect(
+      resolveServerConfigVersionMismatch({ environment: { ...environment, serverVersion: fork } }),
+    ).toBeNull();
+  });
+
+  it("does not keep offering an upstream server its client's fork-only patches", () => {
+    const upstream = "0.0.46-nightly.20261015.3176";
+    branding.APP_VERSION = `${upstream}.fork.1`;
+    const environment = {
+      environmentId: EnvironmentId.make("server"),
+      label: "server",
+      platform: { os: "linux", arch: "x64" } as const,
+      serverVersion: upstream,
+      capabilities: { repositoryIdentity: true, serverSelfUpdate: "boot-service" as const },
+    };
+    expect(resolveServerConfigVersionMismatch({ environment })).toBeNull();
+    expect(
+      resolveServerConfigVersionMismatch({
+        environment: { ...environment, serverVersion: "0.0.46-nightly.20261014.3100" },
+      }),
+    ).toMatchObject({ clientVersion: upstream });
+    expect(
+      resolveServerConfigVersionMismatch({
+        environment: {
+          ...environment,
+          capabilities: { repositoryIdentity: true, serverSelfUpdate: "desktop-managed" },
+        },
+      }),
+    ).toMatchObject({ clientVersion: branding.APP_VERSION });
+  });
+
   it("updates only the proven npm prefix and safely quotes its path", () => {
     expect(manualServerUpdateCommand("0.0.45", { kind: "npm-global", prefix: "/opt/node" })).toBe(
       "npm install --global --prefix '/opt/node' t3@0.0.45",
