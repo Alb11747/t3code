@@ -3479,7 +3479,7 @@ export interface ClaudeAdapterV2Options {
   readonly scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>;
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
   /** Store for the composer's suggested next prompt; defaults to dropping it. */
-  readonly promptSuggestions?: Pick<typeof PromptSuggestions.PromptSuggestions.Service, "publish">;
+  readonly promptSuggestions?: Omit<typeof PromptSuggestions.PromptSuggestions.Service, "stream">;
   readonly continuationRequests?: {
     readonly offer: (
       request: ProviderContinuationRequests.ProviderContinuationRequest,
@@ -3499,7 +3499,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   const continuationRequests = adapterOptions.continuationRequests ?? {
     offer: () => Effect.void,
   };
-  const promptSuggestions = adapterOptions.promptSuggestions ?? { publish: () => Effect.void };
+  const promptSuggestions =
+    adapterOptions.promptSuggestions ?? PromptSuggestions.PromptSuggestions.defaultValue();
 
   const userInvocableSkillNames = (cwd: string | null) =>
     discoverClaudeSkills(
@@ -3656,15 +3657,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         // Native threads whose last turn completed with nothing after it yet.
         // Only these may take the prompt suggestion that follows a `result`.
         const promptSuggestionEligibleNativeThreads = new Set<string>();
-        // The app thread each native thread's published suggestion belongs to;
-        // one session can serve several app threads.
-        const promptSuggestionThreadByNativeThread = new Map<string, ThreadId>();
+        // The app thread and run that last claimed suggestions through each
+        // native thread; one session can serve several app threads.
+        const promptSuggestionClaimByNativeThread = new Map<
+          string,
+          { readonly threadId: ThreadId; readonly runId: RunId }
+        >();
         const revokePromptSuggestion = Effect.fnUntraced(function* (nativeThreadId: string) {
           promptSuggestionEligibleNativeThreads.delete(nativeThreadId);
-          const threadId = promptSuggestionThreadByNativeThread.get(nativeThreadId);
-          if (threadId === undefined) return;
-          promptSuggestionThreadByNativeThread.delete(nativeThreadId);
-          yield* promptSuggestions.publish(threadId, null);
+          const claim = promptSuggestionClaimByNativeThread.get(nativeThreadId);
+          if (claim === undefined) return;
+          promptSuggestionClaimByNativeThread.delete(nativeThreadId);
+          yield* promptSuggestions.clear(claim.threadId, claim.runId);
         });
         // Subagent frames can precede the task_started that registers their
         // subagent (the same race rememberPendingClaudeSubagentLaunch covers).
@@ -6943,7 +6947,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               promptSuggestionEligibleNativeThreads.has(nativeThreadId) &&
               (yield* Ref.get(activeTurn)) === null
             ) {
-              promptSuggestionThreadByNativeThread.set(nativeThreadId, settled.input.threadId);
               yield* promptSuggestions.publish(settled.input.threadId, {
                 id: message.uuid,
                 runId: settled.input.runId,
@@ -8792,7 +8795,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const startedAt = yield* DateTime.now;
             const nativeThreadId = yield* getNativeThreadId(turnInput.providerThread);
             yield* revokePromptSuggestion(nativeThreadId);
-            yield* promptSuggestions.publish(turnInput.threadId, null);
+            promptSuggestionClaimByNativeThread.set(nativeThreadId, {
+              threadId: turnInput.threadId,
+              runId: turnInput.runId,
+            });
+            yield* promptSuggestions.claim(turnInput.threadId, turnInput.runId);
             const nativeTurnId = `turn:${turnInput.attemptId}`;
             // Fresh for every offer: Claude acks a prompt whose uuid its
             // transcript already holds without running a turn, and a session
@@ -9243,7 +9250,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
         const closeSession = Effect.fnUntraced(function* () {
           yield* Effect.forEach(
-            [...promptSuggestionThreadByNativeThread.keys()],
+            [...promptSuggestionClaimByNativeThread.keys()],
             revokePromptSuggestion,
             { discard: true },
           );

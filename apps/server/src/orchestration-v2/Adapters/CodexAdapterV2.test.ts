@@ -18,7 +18,6 @@ import {
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2TurnItem,
-  type PromptSuggestion,
   ProjectId,
   type ProviderApprovalDecision,
   ProviderInstanceId,
@@ -61,6 +60,7 @@ import packageJson from "../../../package.json" with { type: "json" };
 import * as ServerConfig from "../../config.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as PromptSuggestions from "../../provider/PromptSuggestions.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as EffectWorker from "../EffectWorker.ts";
 import * as Orchestrator from "../Orchestrator.ts";
@@ -2097,6 +2097,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     { action: "next turn", late: true },
     { action: "rollback", late: true },
     { action: "close", late: true },
+    { action: "provider switch", late: true },
   ] as const)("revokes composer predictions on $action (late=$late)", ({ action, late }) =>
     Effect.gen(function* () {
       const nativeThreadId = "prediction-thread";
@@ -2146,7 +2147,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ...(action === "next turn" ? nextTurn : []),
         ],
       });
-      const published: Array<PromptSuggestion | null> = [];
+      const store = yield* PromptSuggestions.make;
       const suggested = yield* Deferred.make<void>();
       const requested = yield* Deferred.make<void>();
       const responseReturned = yield* Deferred.make<void>();
@@ -2155,13 +2156,15 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const fetch: typeof globalThis.fetch = async (_url, init) => {
         if (init?.method === "GET") return Response.json({ is_enabled: true, prompt: "Predict" });
         signal = init?.signal;
-        Deferred.doneUnsafe(requested, Effect.void);
-        if (!late)
+        if (!late) {
+          Deferred.doneUnsafe(requested, Effect.void);
           return new Response(
             'data: {"type":"response.output_text.delta","delta":"{\\"suggestion\\":\\"Add tests\\"}"}\n\ndata: {"type":"response.completed"}\n\n',
           );
+        }
         const response = await new Promise<Response>((resolve) => {
           resolveResponse = resolve;
+          Deferred.doneUnsafe(requested, Effect.void);
         });
         Deferred.doneUnsafe(responseReturned, Effect.void);
         return response;
@@ -2176,13 +2179,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         {
           settings: { ...DEFAULT_CODEX_SETTINGS, promptSuggestions: true },
           promptSuggestions: {
+            ...store,
             publish: (threadId, suggestion) =>
-              Effect.sync(() => {
-                assert.equal(threadId, ThreadId.make(`thread-${transcript.scenario}`));
-                published.push(suggestion);
-              }).pipe(
-                Effect.andThen(suggestion ? Deferred.succeed(suggested, undefined) : Effect.void),
-              ),
+              store
+                .publish(threadId, suggestion)
+                .pipe(Effect.andThen(Deferred.succeed(suggested, undefined))),
           },
         },
         (client) => ({
@@ -2221,13 +2222,37 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       yield* harness.runtime
         .startTurn(turnInput)
         .pipe(Effect.provideService(FetchHttpClient.Fetch, fetch));
+      const current = store.stream(harness.threadId).pipe(
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.map(([suggestion]) => suggestion),
+      );
+      const lateResponse = () =>
+        resolveResponse(
+          new Response(
+            'data: {"type":"response.output_text.delta","delta":"{\\"suggestion\\":\\"Too late\\"}"}\n\ndata: {"type":"response.completed"}\n\n',
+          ),
+        );
       yield* harness.firstTerminal;
       yield* Deferred.await(requested);
       if (!late) {
         yield* Deferred.await(suggested);
-        assert.equal(published.at(-1)?.text, "Add tests");
-        assert.equal(published.at(-1)?.runId, turnInput.runId);
-        assert.match(published.at(-1)!.id, /^[0-9a-f-]{36}$/);
+        const suggestion = yield* current;
+        assert.equal(suggestion?.text, "Add tests");
+        assert.equal(suggestion?.runId, turnInput.runId);
+        assert.match(suggestion!.id, /^[0-9a-f-]{36}$/);
+      }
+      if (action === "provider switch") {
+        // Another provider's run takes the thread while this session stays open.
+        const newer = { id: "newer", runId: RunId.make("other-provider-run"), text: "Keep going" };
+        yield* store.claim(harness.threadId, newer.runId);
+        yield* store.publish(harness.threadId, newer);
+        lateResponse();
+        yield* Deferred.await(suggested);
+        assert.deepEqual(yield* current, newer, "A stale run must not publish");
+        yield* Scope.close(sessionScope, Exit.void);
+        assert.deepEqual(yield* current, newer, "A stale run must not clear");
+        return;
       }
       if (action === "next turn") {
         yield* harness.runtime.startTurn({
@@ -2249,20 +2274,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       } else {
         yield* Scope.close(sessionScope, Exit.void);
       }
-      assert.isNull(published.at(-1));
+      assert.isNull(yield* current);
       if (late) {
         assert.isTrue(signal?.aborted);
-        resolveResponse(
-          new Response(
-            'data: {"type":"response.output_text.delta","delta":"{\\"suggestion\\":\\"Too late\\"}"}\n\ndata: {"type":"response.completed"}\n\n',
-          ),
-        );
+        lateResponse();
         yield* Deferred.await(responseReturned);
         yield* Effect.yieldNow;
-        assert.isTrue(
-          published.every((value) => value === null),
-          "Late results must not publish",
-        );
+        assert.isNull(yield* current, "Late results must not publish");
       }
     }).pipe(
       Effect.scoped,
@@ -2943,7 +2961,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect("does not publish an abandoned turn after suspended prediction cleanup", () =>
+  it.effect("does not publish an abandoned turn after a suspended suggestion claim", () =>
     Effect.gen(function* () {
       const nativeThreadId = "cancelled-registration-thread";
       const abandonedTurnId = "cancelled-registration-turn";
@@ -2993,7 +3011,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const releaseCleanup = yield* Deferred.make<void>();
       const retryRegistered = yield* Deferred.make<void>();
       const registeredTurns = new Set<string>();
-      let cleanupCount = 0;
+      let claimCount = 0;
       const harness = yield* makeCodexReplayHarness(
         transcript,
         (event) =>
@@ -3007,13 +3025,14 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         undefined,
         {
           promptSuggestions: {
-            publish: (_threadId, suggestion) =>
+            publish: () => Effect.void,
+            clear: () => Effect.void,
+            // Hold the first claim, made once the native response starts
+            // registration, until the retry has started.
+            claim: () =>
               Effect.gen(function* () {
-                if (suggestion !== null) return;
-                cleanupCount++;
-                // The first cleanup belongs to the public entry point; hold the
-                // second, after the native response starts registration.
-                if (cleanupCount === 2) {
+                claimCount++;
+                if (claimCount === 1) {
                   yield* Deferred.succeed(cleanupStarted, undefined);
                   yield* Deferred.await(releaseCleanup);
                 }
