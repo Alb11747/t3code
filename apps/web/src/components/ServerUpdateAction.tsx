@@ -26,7 +26,7 @@ import { useEnvironmentSettings } from "~/hooks/useSettings";
 import { serverEnvironment, updateOutdatedServer } from "~/state/server";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { manualServerUpdateCommand } from "~/versionSkew";
+import { manualServerUpdateCommand, serverUpdateTargetVersion } from "~/versionSkew";
 import { Button } from "./ui/button";
 import { toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
@@ -83,7 +83,12 @@ export function useServerUpdate() {
     const result = await updateServer({
       environmentId,
       input: {
-        targetVersion,
+        targetVersion: serverUpdateTargetVersion(
+          targetVersion,
+          selfUpdate,
+          appAtomRegistry.get(serverEnvironment.configValueAtom(environmentId))?.environment
+            .serverVersion,
+        ),
         ...(target.threadContinuation && target.continueThreadsAfterServerUpdate
           ? { continueRunningThreads: true }
           : {}),
@@ -352,7 +357,7 @@ export function OutdatedServerUpdateAction({
     pendingUpdateEnvironmentIds.add(environmentId);
     const result = await update({
       environmentId,
-      input: { targetVersion },
+      input: { targetVersion: serverUpdateTargetVersion(targetVersion, null, fromVersion) },
       ...(fromVersion === undefined ? {} : { fromVersion }),
     });
     pendingUpdateEnvironmentIds.delete(environmentId);

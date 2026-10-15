@@ -2,9 +2,12 @@ const { execFileSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
 const { readFileSync } = require("node:fs");
 
+// Fork releases are `<upstream nightly>.fork` (patches rebased, nothing new) or
+// `.fork.<n>` (the nth fork change on that nightly). As in semver, `.fork`
+// sorts below `.fork.1` on the same nightly. Other tags are not fork releases.
 function nightlyVersion(tag) {
-  const match = /^v(\d+)\.(\d+)\.(\d+)-nightly\.(\d+)\.(\d+)$/.exec(tag);
-  return match ? match.slice(1).map(Number) : null;
+  const match = /^v(\d+)\.(\d+)\.(\d+)-nightly\.(\d+)\.(\d+)\.fork(?:\.(\d+))?$/.exec(tag);
+  return match ? match.slice(1).map((part) => Number(part ?? 0)) : null;
 }
 
 function compareVersions(left, right) {
@@ -32,7 +35,9 @@ function previousReleaseTag(releases, currentTag) {
   return candidates[0]?.tag_name ?? null;
 }
 
-function buildReleaseNotes({ cwd, releases, currentTag, repository, upstreamRef }) {
+// Upstream and fork changes in HEAD since previousTag (null for the first
+// release). Rebased copies of patches already in previousTag don't count.
+function releaseChanges({ cwd, previousTag, repository, upstreamRef }) {
   const gitOutput = (...args) =>
     execFileSync("git", args, {
       cwd,
@@ -118,8 +123,6 @@ function buildReleaseNotes({ cwd, releases, currentTag, repository, upstreamRef 
   }
   const head = git("rev-parse", "HEAD");
   const base = git("merge-base", head, upstreamRef);
-  const previousTag = previousReleaseTag(releases, currentTag);
-  const lines = [];
   let previousBase = null;
   let previousPatches = null;
 
@@ -129,9 +132,6 @@ function buildReleaseNotes({ cwd, releases, currentTag, repository, upstreamRef 
     // A rewind needs explicit release notes; silently listing a forward range
     // would describe changes that were actually removed.
     git("merge-base", "--is-ancestor", previousBase, base);
-    lines.push(
-      `### Since [${previousTag}](https://github.com/${repository}/releases/tag/${previousTag})`,
-    );
     previousPatches = new Map();
     for (const sha of git("rev-list", `${previousBase}..${previousHead}`)
       .split("\n")
@@ -141,13 +141,7 @@ function buildReleaseNotes({ cwd, releases, currentTag, repository, upstreamRef 
       matches.push(sha);
       previousPatches.set(signature, matches);
     }
-  } else {
-    lines.push("### Initial fork release");
   }
-  lines.push(
-    `### Built from upstream [${base.slice(0, 12)}](https://github.com/pingdotgg/t3code/commit/${base})`,
-    "",
-  );
 
   function changes(from, to, source, commitRepository, include = () => true) {
     const commits = git("log", "--reverse", "--format=%H%x09%s", `${from}..${to}`);
@@ -172,6 +166,24 @@ function buildReleaseNotes({ cwd, releases, currentTag, repository, upstreamRef 
     const matches = previousPatches.get(patchSignature(sha)) ?? [];
     return !matches.some((previous) => previous === sha || sameLocations(previous, sha));
   });
+  return { head, base, upstreamChanges, forkChanges };
+}
+
+function buildReleaseNotes({ cwd, releases, currentTag, repository, upstreamRef }) {
+  const previousTag = previousReleaseTag(releases, currentTag);
+  const { head, base, upstreamChanges, forkChanges } = releaseChanges({
+    cwd,
+    previousTag,
+    repository,
+    upstreamRef,
+  });
+  const lines = [
+    previousTag
+      ? `### Since [${previousTag}](https://github.com/${repository}/releases/tag/${previousTag})`
+      : "### Initial fork release",
+    `### Built from upstream [${base.slice(0, 12)}](https://github.com/pingdotgg/t3code/commit/${base})`,
+    "",
+  ];
   if (upstreamChanges.length) lines.push("### Upstream changes", ...upstreamChanges, "");
   // The desktop popover keeps the last eight items and shows them newest first.
   // Put fork changes last so they remain visible when upstream has a busy cut.
@@ -186,7 +198,13 @@ function buildReleaseNotes({ cwd, releases, currentTag, repository, upstreamRef 
   return `${lines.join("\n")}\n`;
 }
 
-module.exports = { buildReleaseNotes, previousReleaseTag };
+module.exports = {
+  buildReleaseNotes,
+  compareVersions,
+  nightlyVersion,
+  previousReleaseTag,
+  releaseChanges,
+};
 
 if (require.main === module) {
   const [releasesFile, currentTag, repository, upstreamRef] = process.argv.slice(2);
