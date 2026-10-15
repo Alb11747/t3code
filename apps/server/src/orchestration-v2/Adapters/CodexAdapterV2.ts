@@ -1694,7 +1694,7 @@ export interface CodexAdapterV2Options {
   readonly environment: NodeJS.ProcessEnv;
   readonly clientFactory: CodexAppServerClientFactoryShape;
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
-  readonly promptSuggestions?: Pick<typeof PromptSuggestions.PromptSuggestions.Service, "publish">;
+  readonly promptSuggestions?: Omit<typeof PromptSuggestions.PromptSuggestions.Service, "stream">;
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
   readonly crypto: Crypto.Crypto;
   readonly fileSystem: FileSystem.FileSystem;
@@ -1721,7 +1721,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
       : mcpSessions.read(threadId, adapterOptions.instanceId);
   const { clientFactory, crypto, fileSystem, idAllocator, serverConfig } = adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests;
-  const promptSuggestions = adapterOptions.promptSuggestions ?? { publish: () => Effect.void };
+  const promptSuggestions =
+    adapterOptions.promptSuggestions ?? PromptSuggestions.PromptSuggestions.defaultValue();
   const composerPredictions = yield* makeCodexComposerPredictions.pipe(
     Effect.provide(FetchHttpClient.layer),
   );
@@ -1840,6 +1841,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           new Map<ProviderThreadId, Extract<OrchestrationV2TurnItem, { type: "error" }>>(),
         );
         const activeTurns = yield* Ref.make(new Map<string, ActiveCodexTurnContext>());
+        // The latest root turn per app thread, which holds its suggestion claim.
         // Identity guards late predictions even if the HTTP request outlives interruption.
         const predictions = new Map<
           ThreadId,
@@ -1847,9 +1849,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         >();
         const revokePrediction = Effect.fnUntraced(function* (threadId: ThreadId) {
           const prediction = predictions.get(threadId);
+          if (prediction === undefined) return;
           predictions.delete(threadId);
-          yield* promptSuggestions.publish(threadId, null);
-          if (prediction?.fiber) yield* Fiber.interrupt(prediction.fiber);
+          yield* promptSuggestions.clear(threadId, prediction.context.input.runId);
+          if (prediction.fiber) yield* Fiber.interrupt(prediction.fiber);
         });
         yield* Effect.addFinalizer(() =>
           Effect.forEach(predictions.keys(), revokePrediction, { discard: true }),
@@ -2124,6 +2127,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               itemPositions: new Map(),
             };
             yield* revokePrediction(input.turnInput.threadId);
+            // Recorded before claiming so a later revoke releases the claim
+            // even if this start is abandoned.
+            predictions.set(input.turnInput.threadId, { context });
+            yield* promptSuggestions.claim(input.turnInput.threadId, input.turnInput.runId);
             // Cleanup may suspend while the public start caller is cancelled.
             // Do not publish the native turn that its run has already abandoned.
             if (isAbandoned()) return context;
@@ -2134,7 +2141,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             });
             beginTurnTokenUsage(context);
             endSessionApprovalsOnModeChange(context);
-            predictions.set(input.turnInput.threadId, { context });
             yield* Ref.update(activeTurns, (current) => {
               const updated = new Map(current);
               updated.set(input.nativeTurnId, context);
