@@ -1,4 +1,18 @@
 const CLI_RELEASE_REPOSITORY = "pingdotgg/t3code";
+const FORK_RELEASE_REPOSITORY = "Alb11747/t3code";
+const FORK_VERSION_PATTERN = /^(\d+\.\d+\.\d+-(?:nightly|preview)\.\d{8}\.\d+)\.fork(?:\.\d+)?$/;
+
+/** The npm/upstream version corresponding to a fork release. */
+export function upstreamCliReleaseVersion(version: string): string {
+  return version.replace(FORK_VERSION_PATTERN, "$1");
+}
+
+function cliReleaseRepository(version: string): string {
+  return upstreamCliReleaseVersion(version) === version
+    ? CLI_RELEASE_REPOSITORY
+    : FORK_RELEASE_REPOSITORY;
+}
+
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";
 
@@ -45,13 +59,10 @@ export function cliArchiveFileName(version: string, platformKey: CliArchivePlatf
   return `t3-${version}-${platformKey}.${platformKey.startsWith("win32") ? "zip" : "tar.gz"}`;
 }
 
-const CLI_RELEASE_DEFAULT_BASE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/releases/download`;
-
-export function cliReleaseDownloadBaseUrl(
-  version: string,
-  baseUrl: string | undefined = CLI_RELEASE_DEFAULT_BASE_URL,
-): string {
-  return `${(baseUrl?.trim() || CLI_RELEASE_DEFAULT_BASE_URL).replace(/\/+$/, "")}/v${version}`;
+/** Directory that `releases/download/<tag>/<asset>` lives under. */
+export function cliReleaseDownloadBaseUrl(version: string, baseUrl?: string): string {
+  const defaultBaseUrl = `https://github.com/${cliReleaseRepository(version)}/releases/download`;
+  return `${(baseUrl?.trim() || defaultBaseUrl).replace(/\/+$/, "")}/v${version}`;
 }
 
 export function parseChecksums(text: string): ReadonlyMap<string, string> {
@@ -73,7 +84,7 @@ export const CLI_RELEASE_CHANNELS: ReadonlyArray<CliReleaseChannel> = [
 ];
 
 export function cliReleaseChannelOf(version: string): CliReleaseChannel {
-  const channel = /^[^-+]+-(nightly|preview)\.\d{8}\.\d+$/.exec(version)?.[1];
+  const channel = /^[^-+]+-(nightly|preview)\.\d{8}\.\d+(?:\.fork(?:\.\d+)?)?$/.exec(version)?.[1];
   return channel === "nightly" || channel === "preview" ? channel : "stable";
 }
 
@@ -81,8 +92,8 @@ export function cliReleaseChannelOf(version: string): CliReleaseChannel {
  * Callers walk pages until a channel match turns up; a busy nightly train can push the newest
  * preview or stable release past any single page.
  */
-export function cliReleaseIndexPageUrl(page: number): string {
-  return `https://api.github.com/repos/${CLI_RELEASE_REPOSITORY}/releases?per_page=100&page=${page}`;
+export function cliReleaseIndexPageUrl(page: number, currentVersion = ""): string {
+  return `https://api.github.com/repos/${cliReleaseRepository(currentVersion)}/releases?per_page=100&page=${page}`;
 }
 
 /**
