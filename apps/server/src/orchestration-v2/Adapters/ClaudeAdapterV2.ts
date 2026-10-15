@@ -3737,7 +3737,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const wakeBuffers = yield* Ref.make(
           new Map<
             string,
-            { readonly messages: ReadonlyArray<SDKMessage>; readonly detail: string | null }
+            {
+              readonly messages: ReadonlyArray<SDKMessage>;
+              readonly detail: string | null;
+              // A user turn already ran the buffered wake to its result.
+              readonly settled: boolean;
+            }
           >(),
         );
         // Background work that ended and has not been named by a wake offer yet,
@@ -3799,6 +3804,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           });
         const clearWakeReports = (nativeThreadId: string) =>
           takeWakeReports(nativeThreadId).pipe(Effect.asVoid);
+        // A user turn ran the wake to its result. Its work is reported there, but
+        // whatever Claude emitted before that turn began (its `init`, sometimes
+        // output) stays buffered. A continuation still queued replays it and
+        // would wait for a result that already arrived, so mark it settled.
+        const settleWakeInUserTurn = (nativeThreadId: string) =>
+          Effect.gen(function* () {
+            yield* clearWakeReports(nativeThreadId);
+            yield* Ref.update(wakeBuffers, (current) => {
+              const entry = current.get(nativeThreadId);
+              if (entry === undefined || entry.settled) return current;
+              return new Map(current).set(nativeThreadId, { ...entry, settled: true });
+            });
+          });
         // Last roster entry per opaque task. An empty roster level can land before
         // the task's notification, and the wake still needs to name the task.
         const lastKnownOpaqueTasks = yield* Ref.make(
@@ -6592,6 +6610,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             updated.set(wakeInput.nativeThreadId, {
               messages: [...(existing?.messages ?? []), message],
               detail: notificationSummary ?? existing?.detail ?? null,
+              // A new wake's `init` reopens the buffer for its own result.
+              settled: !isWakeTurnStart && (existing?.settled ?? false),
             });
             return updated;
           });
@@ -7956,7 +7976,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             !isClaudeProviderContinuationTurn(context.input)
           ) {
             // This user turn ran the wake itself, so no offer will name its work.
-            yield* clearWakeReports(liveQuery.nativeThreadId);
+            yield* settleWakeInUserTurn(liveQuery.nativeThreadId);
             yield* Effect.logInfo("orchestration-v2.claude-task-notification-result-accepted", {
               providerTurnId: context.providerTurnId,
               num_turns: message.num_turns,
@@ -8245,7 +8265,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             // runs. The prompt's own turn ends it with an echoing result.
             if (isClaudeTaskNotificationOriginResult(message)) {
               // This turn showed the wake, so no offer will name its work.
-              yield* clearWakeReports(liveQuery.nativeThreadId);
+              yield* settleWakeInUserTurn(liveQuery.nativeThreadId);
             }
             yield* Effect.logInfo("orchestration-v2.claude-result-for-other-turn", {
               providerTurnId: context.providerTurnId,
@@ -9027,7 +9047,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 yield* attachTurn;
                 // Exit and interrupt cleanup can run during transcript reads.
                 // Keep pending outcomes visible until replay applies them.
-                const drained = (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ?? [];
+                const buffer = (yield* Ref.get(wakeBuffers)).get(nativeThreadId);
+                const drained = buffer?.messages ?? [];
                 yield* Ref.update(requestedContinuations, (current) => {
                   const updated = new Set(current);
                   updated.delete(nativeThreadId);
@@ -9086,14 +9107,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   return;
                 }
                 // A drained `init` means Claude began the wake turn, so its output
-                // may still be on the way: stay open for it.
+                // may still be on the way: stay open for it, unless a user turn
+                // already received its result.
                 const hasNativeWakeFrame = drained.some(
                   (entry) =>
                     entry.type === "user" ||
                     entry.type === "assistant" ||
                     isClaudeTurnStartMessage(entry),
                 );
-                if (hasOpaqueTaskNotification && !hasNativeWakeFrame) {
+                if (
+                  buffer?.settled === true ||
+                  (hasOpaqueTaskNotification && !hasNativeWakeFrame)
+                ) {
                   const completedAt = yield* DateTime.now;
                   yield* finalizeActiveTurn({ context, status: "completed", completedAt });
                 }
