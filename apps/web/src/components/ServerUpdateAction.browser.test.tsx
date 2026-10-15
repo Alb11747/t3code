@@ -17,6 +17,7 @@ const testState = vi.hoisted(() => ({
   clipboard: vi.fn(),
   continueThreadsAfterServerUpdate: false,
   sessionAtom: null as unknown,
+  configAtom: null as unknown,
 }));
 
 vi.mock(import("~/hooks/useCopyToClipboard"), async (original) => ({
@@ -53,6 +54,16 @@ vi.mock(import("~/state/use-atom-command"), async (original) => ({
   ...(await original()),
   useAtomCommand: (() => testState.updateServer) as never,
 }));
+vi.mock(import("~/state/server"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    serverEnvironment: {
+      ...actual.serverEnvironment,
+      configValueAtom: (() => testState.configAtom) as never,
+    },
+  };
+});
 vi.mock(import("./ui/toast"), async (original) => {
   const actual = await original();
   return { ...actual, toastManager: { ...actual.toastManager, add: testState.toast } };
@@ -68,6 +79,7 @@ import {
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import {
   ServerUpdateAction,
+  OutdatedServerUpdateAction,
   ServerUpdateProgress,
   ServerUpdatesAction,
   type ServerUpdateTarget,
@@ -145,6 +157,7 @@ beforeEach(() => {
   testState.continueThreadsAfterServerUpdate = false;
   sessionAtom = Atom.make<SessionResult>(AsyncResult.success(currentSession));
   testState.sessionAtom = sessionAtom;
+  testState.configAtom = Atom.make({ environment: { serverVersion: "0.0.30" } });
   resetConfirmDialogForTests();
   container = document.createElement("div");
   document.body.append(container);
@@ -159,6 +172,52 @@ afterEach(async () => {
 });
 
 describe("ServerUpdateAction", () => {
+  it("preserves the full fork version when updating a standalone fork server", async () => {
+    const fork = "0.0.46-nightly.20261015.3176.fork.3";
+    testState.configAtom = Atom.make({
+      environment: { serverVersion: "0.0.46-nightly.20261014.3132.fork.1" },
+    });
+    testState.updateServer.mockResolvedValue(success("boot-service", fork));
+    await renderAction({ targetVersion: fork });
+    await click("Update");
+    expect(testState.updateServer).toHaveBeenCalledWith({
+      environmentId: "env-test",
+      input: { targetVersion: fork },
+    });
+  });
+
+  it("requests the upstream version when updating a standalone server from a fork client", async () => {
+    const upstream = "0.0.46-nightly.20261015.3176";
+    testState.updateServer.mockResolvedValue(success("boot-service", upstream));
+    await renderAction({ targetVersion: `${upstream}.fork.1` });
+    await click("Update");
+    expect(testState.updateServer).toHaveBeenCalledWith({
+      environmentId: "env-test",
+      input: { targetVersion: upstream },
+    });
+  });
+
+  it.each([
+    ["0.0.40", "0.0.46-nightly.20261015.3176"],
+    ["0.0.46-nightly.20261014.3132.fork.1", "0.0.46-nightly.20261015.3176.fork.3"],
+  ])("updates an outdated host on its release channel (%s)", async (fromVersion, targetVersion) => {
+    testState.updateServer.mockResolvedValue(success("boot-service", targetVersion));
+    await render(
+      <OutdatedServerUpdateAction
+        environmentId={"env-test" as EnvironmentId}
+        serverLabel="Test server"
+        fromVersion={fromVersion}
+        targetVersion="0.0.46-nightly.20261015.3176.fork.3"
+      />,
+    );
+    await click();
+    expect(testState.updateServer).toHaveBeenCalledWith({
+      environmentId: "env-test",
+      fromVersion,
+      input: { targetVersion },
+    });
+  });
+
   it.each([
     { serverUpdateScope: undefined, scopes: ["orchestration:operate"], allowed: true },
     { serverUpdateScope: undefined, scopes: ["orchestration:read"], allowed: false },

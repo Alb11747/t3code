@@ -1,10 +1,11 @@
 name: Fork release
 
 # Builds and publishes the fork's desktop apps (Linux x64 AppImage, Windows x64
-# installer) as a GitHub prerelease that installed copies pick up through the
-# in-app updater. Versions use upstream's nightly format
-# (<base>-nightly.<date>.<run>), so installs follow the nightly update channel,
-# and the build's update feed points at this repository (GITHUB_REPOSITORY).
+# installer) and CLI archives (Linux/Windows x64 and arm64, macOS arm64) as a
+# GitHub prerelease. Installed desktop copies pick it up through the in-app
+# updater. Versions extend the upstream nightly they're built on (see the
+# version step), so installs follow the nightly update channel, and the build's
+# update feed points at this repository (GITHUB_REPOSITORY).
 #
 # Upstream's release.yml also deploys services, publishes npm/AUR packages and
 # signs builds with upstream's credentials. It is disabled in this fork; this
@@ -124,27 +125,37 @@ jobs:
             args:
               - --filter=@t3tools/scripts...
 
-      # The last version field counts the day's published releases, not workflow
-      # runs, so cancelled and failed runs leave no gaps in version numbers.
+      # Versions are the upstream nightly the fork is built on plus `.fork` or
+      # `.fork.<n>`; fork/scripts/release-version.cjs explains the numbering.
       - id: meta
         name: Resolve release version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          date="$(date -u +%Y%m%d)"
+          git fetch --no-tags --quiet https://github.com/pingdotgg/t3code.git main
+          base=$(git merge-base HEAD FETCH_HEAD)
+          # The newest upstream nightly at or below the fork's upstream base.
+          # Annotated tags also list their peeled commit (`^{}`), which is the
+          # one present locally.
+          upstream_tag=""
+          while read -r sha ref; do
+            if git merge-base --is-ancestor "$sha" "$base" 2>/dev/null; then
+              upstream_tag=${ref#refs/tags/}
+              break
+            fi
+          done < <(git ls-remote --tags https://github.com/pingdotgg/t3code.git 'v*-nightly.*' \
+            | sed 's/\^{}$//' | sort -k2,2 -V -r)
+          [[ -n $upstream_tag ]] || { echo "::error::No upstream nightly found under $base."; exit 1; }
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
             > "$RUNNER_TEMP/fork-releases.json"
-          number=$(jq --arg date "$date" '
-            [.[][].tag_name | capture("-nightly\\.\($date)\\.(?<n>[0-9]+)$").n | tonumber]
-            | (max // 0) + 1' "$RUNNER_TEMP/fork-releases.json")
-          node scripts/resolve-nightly-release.ts \
-            --date "$date" \
-            --run-number "$number" \
-            --sha "$GITHUB_SHA" \
-            --github-output
-          version="$(sed -n 's/^version=//p' "$GITHUB_OUTPUT" | tail -1)"
-          echo "name=T3 Code Fork $version (${GITHUB_SHA::12})" >> "$GITHUB_OUTPUT"
+          version=$(node fork/scripts/release-version.cjs \
+            "$RUNNER_TEMP/fork-releases.json" "$upstream_tag" "$GITHUB_REPOSITORY" FETCH_HEAD)
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "name=T3 Code Fork $version (${GITHUB_SHA::12})"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Write release notes
         env:
@@ -267,9 +278,138 @@ jobs:
       resource_key: win32-x64
       cli_archive: true
 
+  # ARM remotes use the same fork release feed as x64. Package their CLI
+  # archives on native runners without building additional desktop installers.
+  cli_arm64:
+    name: CLI ${{ matrix.resource_key }}
+    needs: [preflight, build_bundle]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: mac
+            rust_target: aarch64-apple-darwin
+            resource_key: darwin-arm64
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            rust_target: aarch64-unknown-linux-gnu
+            resource_key: linux-arm64
+          - runner: windows-11-arm
+            platform: win
+            rust_target: aarch64-pc-windows-msvc
+            resource_key: win32-arm64
+    defaults:
+      run:
+        shell: bash
+    env:
+      T3CODE_CLERK_PUBLISHABLE_KEY: ${{ vars.CLERK_PUBLISHABLE_KEY }}
+      T3CODE_CLERK_JWT_TEMPLATE: ${{ vars.CLERK_JWT_TEMPLATE }}
+      T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: ${{ vars.CLERK_CLI_OAUTH_CLIENT_ID }}
+      T3CODE_RELAY_URL: ${{ vars.RELAY_URL }}
+    steps:
+      # Match release-desktop's checkout: no credentials or submodule cleanup
+      # for the orphaned gitlinks in the excluded .repos tree.
+      - name: Checkout
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout --detach FETCH_HEAD
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: ${{ matrix.platform != 'win' }}
+          run-install: false
+
+      - name: Install CLI dependencies
+        run: vp install --filter=t3... --filter=@t3tools/scripts...
+
+      - name: Align package versions to release version
+        run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
+
+      # Extract at apps/ to retain server/dist/client from the checked bundle.
+      - name: Download JS bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: js-bundle
+          path: apps
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install Spectre-mitigated MSVC libs
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -products * -latest -property installationPath
+          $setupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $proc = Start-Process -FilePath $setupExe `
+            -ArgumentList "modify", "--installPath", "`"$installPath`"", "--add", `
+            "Microsoft.VisualStudio.Component.VC.Runtimes.ARM64.Spectre", "--quiet", "--norestart" `
+            -Wait -PassThru -NoNewWindow
+          if ($null -eq $proc -or $proc.ExitCode -ne 0) {
+            $code = if ($null -ne $proc) { $proc.ExitCode } else { 1 }
+            Write-Error "Visual Studio Installer failed with exit code $code"
+            exit $code
+          }
+
+      - name: Build resource monitor
+        run: cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target "${{ matrix.rust_target }}"
+
+      - name: Build CLI single-executable
+        env:
+          # Keep in step with SEA_NODE_VERSION in apps/server/vite.config.ts.
+          VP_NODE_VERSION: "26.8.2"
+          T3CODE_TELEMETRY_CHANNEL: dev
+        run: node apps/server/scripts/cli.ts build-exe --verbose
+
+      - name: Stage resource monitor for the CLI archive
+        run: |
+          set -euo pipefail
+          binary_name="t3-resource-monitor"
+          if [[ "${{ matrix.platform }}" == "win" ]]; then
+            binary_name="${binary_name}.exe"
+          fi
+          target_dir="$RUNNER_TEMP/cli-resource-monitor/${{ matrix.resource_key }}"
+          mkdir -p "$target_dir"
+          cp "native/resource-monitor/target/${{ matrix.rust_target }}/release/${binary_name}" "$target_dir/$binary_name"
+
+      # The archive script signs macOS binaries ad hoc without credentials.
+      - name: Build CLI archive
+        run: |
+          node scripts/build-cli-archive.ts \
+            --platform "${{ matrix.platform }}" \
+            --arch arm64 \
+            --version "${{ needs.preflight.outputs.version }}" \
+            --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" \
+            --output-dir release-cli
+
+      - name: Smoke-test CLI archive
+        run: node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "${{ needs.preflight.outputs.version }}"
+
+      - name: Upload CLI archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-${{ matrix.platform }}-arm64
+          path: release-cli/*
+          if-no-files-found: error
+          retention-days: 1
+
   release:
     name: Publish GitHub release
-    needs: [preflight, checks, desktop_linux_x64, desktop_win_x64]
+    needs: [preflight, checks, desktop_linux_x64, desktop_win_x64, cli_arm64]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -294,6 +434,8 @@ jobs:
       # The Windows job suffixes its updater manifest with the arch so x64 and
       # arm64 cannot collide; with x64 only, restore the name the updater reads.
       - name: Prepare release assets
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
           cd release-assets
@@ -301,9 +443,14 @@ jobs:
           for manifest in *-win-x64.yml; do
             mv "$manifest" "${manifest%-win-x64.yml}.yml"
           done
-          # Installed apps update only if both installers and both nightly
-          # feeds are attached, so refuse to publish without them.
-          for required in '*.AppImage' '*.exe' nightly.yml nightly-linux.yml; do
+          # Require both desktop installers/feeds and all five CLI archives
+          # before checksumming or publishing a release used by remote installs.
+          for required in '*.AppImage' '*.exe' nightly.yml nightly-linux.yml \
+            "t3-${RELEASE_VERSION}-linux-x64.tar.gz" \
+            "t3-${RELEASE_VERSION}-win32-x64.zip" \
+            "t3-${RELEASE_VERSION}-darwin-arm64.tar.gz" \
+            "t3-${RELEASE_VERSION}-linux-arm64.tar.gz" \
+            "t3-${RELEASE_VERSION}-win32-arm64.zip"; do
             compgen -G "$required" > /dev/null || { echo "Missing release asset: $required" >&2; exit 1; }
           done
           sha256sum t3-*.tar.gz t3-*.zip > SHA256SUMS
