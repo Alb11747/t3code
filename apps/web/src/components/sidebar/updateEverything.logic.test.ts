@@ -68,6 +68,32 @@ function machine(
 }
 
 describe("collectServerUpdateTargets", () => {
+  it.each([".fork", ".fork.1"])(
+    "uses upstream server releases for a desktop update ending in %s",
+    (suffix) => {
+      const upstream = "0.0.46-nightly.20261015.3176";
+      const fork = `${upstream}${suffix}`;
+      const { targets, skipped } = collectServerUpdateTargets(
+        [
+          machine("older-service", "0.0.46-nightly.20261014.3100", "boot-service"),
+          machine("fork-service", "0.0.46-nightly.20261014.3132.fork.1", "boot-service"),
+          machine("current-fork-service", fork, "boot-service"),
+          machine("current-service", upstream, "boot-service"),
+          machine("newer-service", "0.0.46-nightly.20261015.3177", "boot-service"),
+          machine("other-desktop", "0.0.46-nightly.20261014.3100.fork", "desktop-managed"),
+        ],
+        fork,
+      );
+
+      expect(targets.map((target) => [target.serverLabel, target.targetVersion])).toEqual([
+        ["older-service", upstream],
+        ["fork-service", fork],
+        ["other-desktop", fork],
+      ]);
+      expect(skipped).toEqual([]);
+    },
+  );
+
   it("updates remote servers that can move to the target and names every skipped one", () => {
     const { targets, skipped } = collectServerUpdateTargets(
       [

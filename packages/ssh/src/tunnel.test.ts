@@ -98,6 +98,21 @@ function commandArgs(command: ChildProcess.Command): ReadonlyArray<string> {
 }
 
 const ARCHIVE = { archiveVersion: "1.2.3-preview.20260911.4" } as const;
+
+it("bootstraps a fork archive from the fork feed and honors an explicit mirror", () => {
+  const archiveVersion = "0.0.46-nightly.20261015.3176.fork.3";
+  const script = SshTunnel.buildRemoteT3RunnerScript({ archiveVersion });
+  assert.include(script, `T3_ARCHIVE_VERSION='${archiveVersion}'`);
+  assert.include(
+    script,
+    "T3_RELEASE_BASE_URL='https://github.com/Alb11747/t3code/releases/download'",
+  );
+  const mirrored = SshTunnel.buildRemoteT3RunnerScript({
+    archiveVersion,
+    releaseBaseUrl: "https://mirror.example/t3/",
+  });
+  assert.include(mirrored, "T3_RELEASE_BASE_URL='https://mirror.example/t3'");
+});
 const NODE_SCRIPT = {
   nodeScriptPath: "/Users/julius/Development/Work/codething-mvp/apps/server/dist/bin.mjs",
 } as const;
