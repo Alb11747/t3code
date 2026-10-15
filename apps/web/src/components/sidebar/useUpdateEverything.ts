@@ -42,8 +42,8 @@ export type ReportLocalUpdateError = (title: string, description: string) => voi
 /**
  * The remote half of the sidebar update button: outdated providers on every
  * connected machine, and servers behind the version this client runs or is
- * about to install (`localUpdateVersion`). Servers that install from npm appear
- * only once npm confirms that version. `run` performs the whole pass, including
+ * about to install (`localUpdateVersion`). Standalone servers use its upstream
+ * version and appear only once npm confirms it. `run` performs the whole pass, including
  * this app's own download and install when given. It updates quietly, tracks
  * each machine in the run state, and reports one summary toast at the end.
  * This app relaunches once every server restarts into its update, after a
@@ -92,7 +92,7 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
       .map((server) => ({
         environmentId: server.environmentId,
         label: server.serverLabel,
-        reason: `t3@${targetVersion} is not on npm yet`,
+        reason: `t3@${server.targetVersion} is not on npm yet`,
       })),
   ];
   const restarts = collectRestartingMachines(machines, servers, localUpdateVersion !== null);

@@ -5,6 +5,7 @@ import { cliReleaseChannelOf } from "@t3tools/shared/cliRelease";
 import {
   resolveServerSelfUpdateCapability,
   resolveVersionMismatch,
+  serverUpdateTargetVersion,
   supportsDesktopAppUpdate,
   supportsServerUpdateThreadContinuation,
 } from "~/versionSkew";
@@ -71,7 +72,8 @@ export interface SkippedMachine {
 }
 
 /**
- * The servers that "update everything" moves to `targetVersion`: connected,
+ * The servers that "update everything" moves to `targetVersion` (the upstream
+ * version for standalone servers): connected,
  * permitted, able to update over RPC, behind the target, and on its release
  * channel. Every other behind server comes back in `skipped` with a reason for
  * the confirmation; a machine that never connected has an unknown version, so
@@ -88,10 +90,12 @@ export function collectServerUpdateTargets(
   const skipped: SkippedMachine[] = [];
   for (const machine of machines) {
     const config = machine.serverConfig;
+    const selfUpdate = resolveServerSelfUpdateCapability(config);
+    const serverTargetVersion = serverUpdateTargetVersion(targetVersion, selfUpdate);
     if (machine.hostedByThisApp) continue;
     if (
       config !== null &&
-      resolveVersionMismatch(config.environment.serverVersion, targetVersion) === null
+      resolveVersionMismatch(config.environment.serverVersion, serverTargetVersion) === null
     ) {
       continue;
     }
@@ -109,7 +113,6 @@ export function collectServerUpdateTargets(
       skip("already updating");
       continue;
     }
-    const selfUpdate = resolveServerSelfUpdateCapability(config);
     const desktopAppUpdate = supportsDesktopAppUpdate(config);
     if (selfUpdate === null) {
       skip("needs a manual update");
@@ -122,7 +125,7 @@ export function collectServerUpdateTargets(
     const serverVersion = config.environment.serverVersion;
     if (
       selfUpdate !== "desktop-managed" &&
-      cliReleaseChannelOf(serverVersion) !== cliReleaseChannelOf(targetVersion)
+      cliReleaseChannelOf(serverVersion) !== cliReleaseChannelOf(serverTargetVersion)
     ) {
       skip(`on the ${cliReleaseChannelOf(serverVersion)} channel`);
       continue;
@@ -135,7 +138,7 @@ export function collectServerUpdateTargets(
       desktopAppUpdate,
       threadContinuation: supportsServerUpdateThreadContinuation(config),
       continueThreadsAfterServerUpdate: config.settings.continueThreadsAfterServerUpdate ?? false,
-      targetVersion,
+      targetVersion: serverTargetVersion,
     });
   }
   return { targets, skipped };

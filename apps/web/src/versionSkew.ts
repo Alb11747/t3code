@@ -94,7 +94,20 @@ export function resolveVersionMismatch(
 export function resolveServerConfigVersionMismatch(
   serverConfig: Pick<ServerConfig, "environment"> | null | undefined,
 ): VersionMismatch | null {
-  return resolveVersionMismatch(serverConfig?.environment.serverVersion);
+  return resolveVersionMismatch(
+    serverConfig?.environment.serverVersion,
+    serverUpdateTargetVersion(APP_VERSION, resolveServerSelfUpdateCapability(serverConfig)),
+  );
+}
+
+/** Only desktop apps use fork releases; standalone servers install upstream t3. */
+export function serverUpdateTargetVersion(
+  version: string,
+  capability?: ServerSelfUpdateCapability | null,
+): string {
+  return capability === "desktop-managed"
+    ? version
+    : version.replace(/^(\d+\.\d+\.\d+-(?:nightly|preview)\.\d{8}\.\d+)\.fork(?:\.\d+)?$/, "$1");
 }
 
 /** The update path the connected server offers, or null when it only
@@ -126,6 +139,7 @@ export function manualServerUpdateCommand(
   targetVersion: string,
   installation?: ServerInstallation,
 ): string {
+  targetVersion = serverUpdateTargetVersion(targetVersion);
   if (installation?.kind === "npm-global") {
     const prefix = `'${installation.prefix.replaceAll("'", "'\\''")}'`;
     return `npm install --global --prefix ${prefix} t3@${targetVersion}`;

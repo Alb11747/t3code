@@ -10,8 +10,8 @@ const version = "0.0.46-nightly.20261012.3021";
 const fetchMock = vi.fn<typeof fetch>();
 vi.stubGlobal("fetch", fetchMock);
 
-async function settledCheck() {
-  const atom = npmReleasePublishedAtom(version);
+async function settledCheck(targetVersion = version) {
+  const atom = npmReleasePublishedAtom(targetVersion);
   const registry = AtomRegistry.make();
   const unmount = registry.mount(atom);
   try {
@@ -27,6 +27,19 @@ async function settledCheck() {
 }
 
 describe("npmReleasePublishedAtom", () => {
+  it.each([".fork", ".fork.1"])(
+    "checks the published upstream package for %s desktop updates",
+    async (suffix) => {
+      fetchMock.mockImplementation(async () => Response.json({ version }));
+
+      const result = await settledCheck(`${version}${suffix}`);
+
+      const request = new Request(fetchMock.mock.calls[0]?.[0] ?? "", fetchMock.mock.calls[0]?.[1]);
+      expect(request.url).toBe(`https://registry.npmjs.org/t3/${version}`);
+      expect(AsyncResult.getOrElse(result, () => false)).toBe(true);
+    },
+  );
+
   afterEach(() => {
     fetchMock.mockReset();
   });
