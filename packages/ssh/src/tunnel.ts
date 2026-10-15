@@ -815,10 +815,12 @@ export function buildRemoteT3RunnerScript(input?: RemoteT3RunnerOptions): string
   if (archiveVersion !== "" && !EXACT_ARCHIVE_VERSION.test(archiveVersion)) {
     throw new SshInvalidArchiveVersionError({ archiveVersion });
   }
-  const releaseBaseUrl = cliReleaseDownloadBaseUrl("", input?.releaseBaseUrl ?? undefined).replace(
-    /\/v$/u,
-    "",
+  // Strip the `/v<version>` the helper appends: the script builds URLs itself.
+  const taggedReleaseUrl = cliReleaseDownloadBaseUrl(
+    archiveVersion,
+    input?.releaseBaseUrl ?? undefined,
   );
+  const releaseBaseUrl = taggedReleaseUrl.slice(0, -`/v${archiveVersion}`.length);
   return stripTrailingNewlines(
     applyScriptPlaceholders(REMOTE_RUNNER_SCRIPT, {
       T3_NODE_SCRIPT_PATH: shellSingleQuote(nodeScriptPath),

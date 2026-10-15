@@ -3,8 +3,16 @@ import * as Effect from "effect/Effect";
 import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 import { AsyncResult, Atom } from "effect/reactivity";
 
-export const npmReleasePublishedAtom = Atom.family((version: string) =>
-  Atom.make(
+import { serverUpdateTargetVersion } from "~/versionSkew";
+
+/**
+ * Whether `t3@<version>` is published on npm. A 404 is false; network and
+ * registry errors stay unknown. Both re-check every few minutes, so a release
+ * that lands later shows up without a reload.
+ */
+export const npmReleasePublishedAtom = Atom.family((targetVersion: string) => {
+  const version = serverUpdateTargetVersion(targetVersion);
+  return Atom.make(
     Effect.gen(function* () {
       const response = yield* HttpClient.get(
         `https://registry.npmjs.org/t3/${encodeURIComponent(version)}`,
@@ -25,8 +33,8 @@ export const npmReleasePublishedAtom = Atom.family((version: string) =>
     Atom.withRefresh("5 minutes"),
     Atom.keepAlive,
     Atom.withLabel(`npm-release-published:${version}`),
-  ),
-);
+  );
+});
 
 const NO_VERSION_ATOM = Atom.make(AsyncResult.success(false)).pipe(
   Atom.withLabel("npm-release-published:none"),

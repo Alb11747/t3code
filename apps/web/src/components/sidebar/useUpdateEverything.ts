@@ -9,9 +9,15 @@ import { useNpmReleasePublished } from "~/state/npmRelease";
 import { environmentIdsKey } from "~/state/environmentAtomList";
 import { environmentUpdateStatesAtom } from "~/state/server";
 import { environmentSessionStatesAtom } from "~/state/session";
+import { serverUpdateTargetVersion } from "~/versionSkew";
 import { getProviderUpdateRunOutcome } from "../ProviderUpdateLaunchNotification.logic";
 import { useProviderUpdates } from "../ProviderUpdatesAction";
-import { canUpdateServer, type ServerUpdateOutcome, useServerUpdate } from "../ServerUpdateAction";
+import {
+  canUpdateServer,
+  type ServerUpdateOutcome,
+  type ServerUpdateTarget,
+  useServerUpdate,
+} from "../ServerUpdateAction";
 import {
   closeFinishedUpdateRun,
   collectRestartingMachines,
@@ -58,13 +64,15 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
     machines,
     targetVersion,
   );
-  // A desktop-managed server installs from its own app's update feed, so only
-  // servers that download t3 from npm wait for npm to publish the version.
-  const needsNpm = behindServers.some((server) => server.selfUpdate !== "desktop-managed");
+  // Fork archives follow the desktop release feed, not npm publication.
+  const needsNpmPublication = (server: ServerUpdateTarget) =>
+    server.selfUpdate !== "desktop-managed" &&
+    serverUpdateTargetVersion(server.targetVersion) === server.targetVersion;
+  const needsNpm = behindServers.some(needsNpmPublication);
   const published = useNpmReleasePublished(needsNpm ? targetVersion : null);
   const servers = published
     ? behindServers
-    : behindServers.filter((server) => server.selfUpdate === "desktop-managed");
+    : behindServers.filter((server) => !needsNpmPublication(server));
   const skipped: ReadonlyArray<SkippedMachine> = [
     ...unreachable,
     ...behindServers
@@ -72,7 +80,7 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
       .map((server) => ({
         environmentId: server.environmentId,
         label: server.serverLabel,
-        reason: `t3@${targetVersion} is not on npm yet`,
+        reason: `t3@${server.targetVersion} is not on npm yet`,
       })),
   ];
   const restarts = collectRestartingMachines(machines, servers, localUpdateVersion !== null);

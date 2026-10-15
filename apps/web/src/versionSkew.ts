@@ -6,6 +6,7 @@ import type {
 } from "@t3tools/contracts";
 import type { ServerUpdateState } from "@t3tools/client-runtime/state/server";
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
+import { upstreamCliReleaseVersion } from "@t3tools/shared/cliRelease";
 import * as Schema from "effect/Schema";
 
 import { APP_VERSION } from "./branding";
@@ -80,7 +81,26 @@ export function resolveVersionMismatch(
 export function resolveServerConfigVersionMismatch(
   serverConfig: Pick<ServerConfig, "environment"> | null | undefined,
 ): VersionMismatch | null {
-  return resolveVersionMismatch(serverConfig?.environment.serverVersion);
+  return resolveVersionMismatch(
+    serverConfig?.environment.serverVersion,
+    serverUpdateTargetVersion(
+      APP_VERSION,
+      resolveServerSelfUpdateCapability(serverConfig),
+      serverConfig?.environment.serverVersion,
+    ),
+  );
+}
+
+/** Keep fork servers on fork releases; an upstream server still needs the npm version. */
+export function serverUpdateTargetVersion(
+  version: string,
+  capability?: ServerSelfUpdateCapability | null,
+  serverVersion?: string,
+): string {
+  return capability === "desktop-managed" ||
+    (serverVersion !== undefined && upstreamCliReleaseVersion(serverVersion) !== serverVersion)
+    ? version
+    : upstreamCliReleaseVersion(version);
 }
 
 export function resolveServerSelfUpdateCapability(
@@ -105,6 +125,7 @@ export function manualServerUpdateCommand(
   targetVersion: string,
   installation?: ServerInstallation,
 ): string {
+  targetVersion = serverUpdateTargetVersion(targetVersion);
   if (installation?.kind === "npm-global") {
     const prefix = `'${installation.prefix.replaceAll("'", "'\\''")}'`;
     return `npm install --global --prefix ${prefix} t3@${targetVersion}`;
