@@ -1222,6 +1222,7 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
 ) {
   const executablePaths: Array<string | undefined> = [];
   const taskToolEnvironment: Array<string | undefined> = [];
+  const apiTimeoutEnvironment: Array<string | undefined> = [];
   const adapter = yield* ClaudeAdapterV2.createClaudeAdapterV2(
     {
       instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
@@ -1243,6 +1244,7 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
         Effect.sync(() => {
           executablePaths.push(input.options.pathToClaudeCodeExecutable);
           taskToolEnvironment.push(input.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS);
+          apiTimeoutEnvironment.push(input.options.env?.API_TIMEOUT_MS);
           return {
             messages: Stream.never,
             offer: () => Effect.void,
@@ -1282,10 +1284,41 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
       attachments: [],
     }),
   );
-  return { executablePaths, taskToolEnvironment };
+  return { executablePaths, taskToolEnvironment, apiTimeoutEnvironment };
 });
 
 describe("ClaudeAdapterV2 executable path", () => {
+  it.effect.each([
+    { source: "the default", environment: [], hostEnvironment: {}, expected: "3600000" },
+    {
+      source: "an instance override",
+      environment: [{ name: "API_TIMEOUT_MS", value: "1200000", sensitive: false }],
+      hostEnvironment: { API_TIMEOUT_MS: "1800000" },
+      expected: "1200000",
+    },
+    {
+      source: "a host override",
+      environment: [],
+      hostEnvironment: { API_TIMEOUT_MS: "1800000" },
+      expected: "1800000",
+    },
+  ])("allows proxy-held requests while respecting $source for the API timeout", (testCase) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { apiTimeoutEnvironment } = yield* captureSdkExecutablePaths(
+          "claude",
+          testCase.environment,
+        );
+        assert.deepEqual(apiTimeoutEnvironment, [testCase.expected]);
+      }),
+    ).pipe(
+      Effect.provideService(HostProcess.Environment, testCase.hostEnvironment),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
   it.effect.each([
     { source: "the default", environment: [], hostEnvironment: {}, expected: undefined },
     {
