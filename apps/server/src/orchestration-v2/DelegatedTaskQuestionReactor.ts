@@ -136,6 +136,8 @@ const make = Effect.gen(function* () {
       );
       if (
         task === undefined ||
+        ["completed", "failed", "cancelled", "interrupted"].includes(task.status) ||
+        task.completionDelivery?.state === "disposed" ||
         parent.thread.archivedAt !== null ||
         parent.thread.deletedAt !== null
       ) {
