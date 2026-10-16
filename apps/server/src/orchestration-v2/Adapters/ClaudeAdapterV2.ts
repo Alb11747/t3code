@@ -9795,7 +9795,12 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     const promptSuggestions = yield* PromptSuggestions.PromptSuggestions;
     const baseEnvironment = yield* mergeProviderInstanceEnvironment(environment, hostEnvironment);
-    const claudeEnvironment = yield* makeClaudeEnvironment(config, baseEnvironment);
+    // Allow proxy holds up to 59 minutes. The proxy also caps holds by the client's
+    // X-Stainless-Timeout (~9.5 minutes by default), so the default merely shortens holds.
+    const claudeEnvironment = {
+      API_TIMEOUT_MS: "3600000",
+      ...(yield* makeClaudeEnvironment(config, baseEnvironment)),
+    };
     const path = yield* Path.Path;
     const crypto = yield* Crypto.Crypto;
     const binaryPath = yield* resolveClaudeSdkExecutablePath(
