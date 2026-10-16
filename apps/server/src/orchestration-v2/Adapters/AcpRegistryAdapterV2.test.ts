@@ -226,6 +226,8 @@ describe("AcpRegistryAdapterV2", () => {
           }),
         })
         .pipe(Effect.scoped);
+      // The agent records its replay status before sending each frame, so it is
+      // final once the last answer arrives. The script must be consumed exactly.
       yield* makeAcpReplayCompletenessAssertion(fileSystem, statusPath, transcript);
     });
 
