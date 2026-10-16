@@ -2054,6 +2054,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         payload: updatedTask,
       });
 
+      yield* cancelQueuedDelegatedQuestions({
+        command,
+        events,
+        projection,
+        now,
+        taskIds: [task.id],
+      });
+
       const parentRun =
         task.runId === null
           ? undefined
@@ -2134,6 +2142,36 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     });
 
+  // Question notices belong to their task just like completion deliveries.
+  const cancelQueuedDelegatedQuestions = (input: {
+    readonly command: OrchestrationV2ServerCommand;
+    readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
+    readonly projection: Pick<
+      OrchestrationV2ThreadProjection,
+      "runs" | "messages" | "nodes" | "attempts"
+    >;
+    readonly now: DateTime.Utc;
+    readonly taskIds?: ReadonlyArray<OrchestrationV2Subagent["id"]>;
+  }) =>
+    Effect.forEach(
+      input.projection.runs.filter((run) => {
+        if (run.status !== "queued") return false;
+        const message = input.projection.messages.find(
+          (candidate) => candidate.id === run.userMessageId,
+        );
+        const source = message?.notification?.source;
+        return (
+          message?.creationSource === "server" &&
+          message.id.startsWith("message:delegated-task-question:") &&
+          source?.kind === "delegated_task" &&
+          (input.taskIds === undefined ||
+            source.taskIds.some((taskId) => input.taskIds!.includes(taskId)))
+        );
+      }),
+      (run) => emitQueuedRunCancellation({ ...input, run }),
+      { discard: true },
+    );
+
   const disposeDelegatedCompletionCohort = (input: {
     readonly command: OrchestrationV2ServerCommand;
     readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
@@ -2213,6 +2251,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           projection: input.projection,
           run: deliveryRun,
           now: input.now,
+        });
+      }
+      if (input.cancelQueuedDelivery !== false) {
+        yield* cancelQueuedDelegatedQuestions({
+          ...input,
+          taskIds: tasks.map((task) => task.id),
         });
       }
     });
@@ -4937,11 +4981,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           taskIds: delivery.taskIds,
         };
       }
-      // Route durable mailbox deliveries under the thread lock, using the live
-      // session's capabilities. Never interrupt/restart a turn for a notification.
+      // Route mailbox deliveries and child questions using the live session's
+      // capabilities. Never interrupt/restart a turn for a notification.
+      const mailboxTaskIds =
+        delegatedCompletion?.taskIds ??
+        (command.creationSource === "server" &&
+        command.messageId.startsWith("message:delegated-task-question:") &&
+        command.notification?.source.kind === "delegated_task"
+          ? command.notification.source.taskIds
+          : undefined);
       if (
-        delegatedCompletion !== undefined &&
-        delegatedCompletion.taskIds.every(
+        mailboxTaskIds !== undefined &&
+        mailboxTaskIds.every(
           (id) => projection.subagents.find((task) => task.id === id)?.completionWake === "always",
         )
       ) {
@@ -9094,6 +9145,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           now: input.now,
         });
       }
+      // Also cover earlier cohorts whose parent run is no longer available.
+      yield* cancelQueuedDelegatedQuestions({
+        command: input.command,
+        events: input.events,
+        projection: yield* getProjectionWithPendingEvents(thread.id, input.events),
+        now: input.now,
+      });
     });
 
   const dispatchBackgroundWorkSettle = (
@@ -11538,7 +11596,55 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     Effect.gen(function* () {
       const dispatch = threadDispatch.withLock(
         commandThreadId(command),
-        dispatchWithReceiptEffect(command),
+        Effect.gen(function* () {
+          if (
+            command.type !== "message.dispatch" ||
+            command.creationSource !== "server" ||
+            !command.messageId.startsWith("message:delegated-task-question:") ||
+            command.notification?.source.kind !== "delegated_task"
+          ) {
+            return yield* dispatchWithReceiptEffect(command);
+          }
+          const source = command.notification.source;
+          const parent = yield* projectionStore
+            .getThreadRecords(command.threadId, ["subagents"])
+            .pipe(mapDispatchError(command));
+          const task = parent.subagents.find(
+            (candidate) =>
+              candidate.origin === "app_owned" &&
+              candidate.childThreadId === source.childThreadId &&
+              source.taskIds.includes(candidate.id),
+          );
+          // Serialize with Stop, task_cancel and archive: the reactor's earlier
+          // read must never revive a task whose delivery was dropped.
+          if (
+            task === undefined ||
+            isTerminalDelegatedTaskStatus(task.status) ||
+            task.completionDelivery?.state === "disposed" ||
+            parent.thread.archivedAt !== null ||
+            parent.thread.deletedAt !== null
+          ) {
+            return {
+              sequence: yield* eventSink
+                .latestSequence({ threadId: command.threadId })
+                .pipe(mapDispatchError(command)),
+              storedEvents: [],
+            };
+          }
+          // Accepted notices deduplicate; a rejected dispatch can retry later.
+          let notice = command;
+          for (let attempt = 1; ; attempt++) {
+            const receipt = yield* commandReceipts
+              .getByCommandId(notice.commandId)
+              .pipe(mapDispatchError(command));
+            if (Option.isNone(receipt) || receipt.value.status !== "rejected") break;
+            notice = {
+              ...command,
+              commandId: CommandId.make(`${command.commandId}:${attempt}`),
+            };
+          }
+          return yield* dispatchWithReceiptEffect(notice);
+        }),
       );
       if (
         command.type !== "message.dispatch" ||
