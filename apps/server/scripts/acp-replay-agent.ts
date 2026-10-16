@@ -140,7 +140,17 @@ function stopWithFailure(detail: string, actual?: unknown): void {
 
 function advance(): void {
   cursor += 1;
+  // A clean recorded exit waits on nothing, so it counts in the same write;
+  // otherwise a transcript ending in an answer then an exit would publish the
+  // exit only after the client has seen that answer.
+  while (isCleanExit(transcript.entries[cursor])) cursor += 1;
   writeStatus();
+}
+
+function isCleanExit(entry: ReplayEntry | undefined): boolean {
+  return (
+    entry?.type === "runtime_exit" && (entry.status === "success" || entry.status === "cancelled")
+  );
 }
 
 function send(message: JsonRpcMessage): void {
@@ -182,42 +192,40 @@ function materializeInbound(value: unknown): unknown {
   );
 }
 
-function emitInbound(recorded: LogicalFrame): void {
+function inboundMessage(recorded: LogicalFrame): JsonRpcMessage | undefined {
   const frame = materializeInbound(recorded) as LogicalFrame;
   switch (frame.kind) {
     case "notification":
-      send({
+      return {
         jsonrpc: "2.0",
         method: frame.method,
         ...(frame.params === undefined ? {} : { params: frame.params }),
-      });
-      return;
+      };
     case "request": {
       const id = nextAgentRequestId;
       nextAgentRequestId += 1;
       pendingAgentRequestMethods.set(String(id), frame.method);
-      send({
+      return {
         jsonrpc: "2.0",
         id,
         method: frame.method,
         ...(frame.params === undefined ? {} : { params: frame.params }),
         headers: [],
-      });
-      return;
+      };
     }
     case "response": {
       const id = pendingClientRequestId(frame.method);
       if (id === undefined) {
         stopWithFailure(`No pending client request for ${frame.method}`, frame);
-        return;
+        return undefined;
       }
       pendingClientRequestIds.delete(frame.method);
-      send({
+      return {
         jsonrpc: "2.0",
         id,
         ...(frame.result === undefined ? {} : { result: frame.result }),
         ...(frame.error === undefined ? {} : { error: frame.error }),
-      });
+      };
     }
   }
 }
@@ -227,7 +235,7 @@ function flushInbound(): void {
     const entry = transcript.entries[cursor];
     if (entry === undefined || entry.type === "expect_outbound") return;
     if (entry.type === "runtime_exit") {
-      if (entry.status !== "success" && entry.status !== "cancelled") {
+      if (!isCleanExit(entry)) {
         stopWithFailure(`Recorded runtime exit was ${entry.status ?? "unknown"}`, entry.error);
         return;
       }
@@ -244,9 +252,12 @@ function flushInbound(): void {
       stopWithFailure("Invalid emit_inbound logical ACP frame", entry.frame);
       return;
     }
-    emitInbound(frame);
-    if (stopped) return;
+    const message = inboundMessage(frame);
+    if (message === undefined) return;
+    // Record progress before sending: the test can read the status as soon as
+    // it sees this frame, such as right after the transcript's last answer.
     advance();
+    send(message);
   }
 }
 
