@@ -810,6 +810,7 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
       });
       yield* reactor.handle(parentCompleted);
       if (state === "disposed") {
+        yield* reactor.handle(question);
         assert.equal(
           (yield* projections.getThreadRecords(parentThreadId, ["messages"])).messages.length,
           2,
