@@ -14,6 +14,7 @@ const testState = vi.hoisted(() => ({
   clipboard: vi.fn(),
   continueThreadsAfterServerUpdate: false,
   sessionAtom: null as unknown,
+  serverVersion: "0.0.30",
 }));
 
 vi.mock(import("~/hooks/useCopyToClipboard"), async (original) => ({
@@ -46,6 +47,18 @@ vi.mock(import("~/state/session"), async (original) => {
     },
   };
 });
+vi.mock(import("~/state/server"), async (original) => {
+  const actual = await original();
+  const { Atom } = await import("effect/reactivity");
+  return {
+    ...actual,
+    serverEnvironment: {
+      ...actual.serverEnvironment,
+      configValueAtom: (() =>
+        Atom.make({ environment: { serverVersion: testState.serverVersion } })) as never,
+    },
+  };
+});
 vi.mock(import("~/state/use-atom-command"), async (original) => ({
   ...(await original()),
   useAtomCommand: (() => testState.updateServer) as never,
@@ -64,6 +77,7 @@ import {
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import {
   ServerUpdateAction,
+  OutdatedServerUpdateAction,
   ServerUpdateProgress,
   ServerUpdatesAction,
   type ServerUpdateTarget,
@@ -137,6 +151,7 @@ beforeEach(() => {
   testState.toast.mockReset();
   testState.clipboard.mockReset();
   testState.continueThreadsAfterServerUpdate = false;
+  testState.serverVersion = "0.0.30";
   sessionAtom = Atom.make<SessionResult>(AsyncResult.success(currentSession));
   testState.sessionAtom = sessionAtom;
   resetConfirmDialogForTests();
@@ -153,6 +168,72 @@ afterEach(async () => {
 });
 
 describe("ServerUpdateAction", () => {
+  it("preserves the full fork version when updating a standalone fork server", async () => {
+    const fork = "0.0.46-nightly.20261015.3176.fork.3";
+    testState.serverVersion = "0.0.46-nightly.20261014.3132.fork.1";
+    testState.updateServer.mockResolvedValue(AsyncResult.success({ targetVersion: fork }));
+    await renderAction({
+      targetVersion: fork,
+    });
+    await click("Update");
+    expect(testState.updateServer).toHaveBeenCalledWith({
+      environmentId: "env-test",
+      input: { targetVersion: fork },
+    });
+  });
+
+  it("requests the upstream version when updating a standalone server from a fork client", async () => {
+    const upstream = "0.0.46-nightly.20261015.3176";
+    testState.updateServer.mockResolvedValue(AsyncResult.success({ targetVersion: upstream }));
+    await renderAction({
+      targetVersion: `${upstream}.fork.1`,
+    });
+    await click("Update");
+    expect(testState.updateServer).toHaveBeenCalledWith({
+      environmentId: "env-test",
+      input: { targetVersion: upstream },
+    });
+  });
+
+  it("requests the upstream version from a host too old to connect normally", async () => {
+    const upstream = "0.0.46-nightly.20261015.3176";
+    testState.updateServer.mockResolvedValue(AsyncResult.success({ targetVersion: upstream }));
+    await render(
+      <OutdatedServerUpdateAction
+        environmentId={"env-test" as EnvironmentId}
+        serverLabel="Test server"
+        fromVersion="0.0.40"
+        targetVersion={`${upstream}.fork.1`}
+      />,
+    );
+    await click("Update");
+    expect(testState.updateServer).toHaveBeenCalledWith({
+      environmentId: "env-test",
+      fromVersion: "0.0.40",
+      input: { targetVersion: upstream },
+    });
+  });
+
+  it("keeps an outdated fork host on fork releases", async () => {
+    const fork = "0.0.46-nightly.20261015.3176.fork.3";
+    const fromVersion = "0.0.46-nightly.20261014.3132.fork.1";
+    testState.updateServer.mockResolvedValue(AsyncResult.success({ targetVersion: fork }));
+    await render(
+      <OutdatedServerUpdateAction
+        environmentId={"env-test" as EnvironmentId}
+        serverLabel="Test server"
+        fromVersion={fromVersion}
+        targetVersion={fork}
+      />,
+    );
+    await click("Update");
+    expect(testState.updateServer).toHaveBeenCalledWith({
+      environmentId: "env-test",
+      fromVersion,
+      input: { targetVersion: fork },
+    });
+  });
+
   it.each([
     { serverUpdateScope: undefined, scopes: ["orchestration:operate"], allowed: true },
     { serverUpdateScope: undefined, scopes: ["orchestration:read"], allowed: false },

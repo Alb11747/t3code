@@ -14,6 +14,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -30,6 +31,7 @@ import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
 const threadId = ThreadId.make("thread:effect-worker-restart");
@@ -903,4 +905,142 @@ it.effect.each(["confirmed", "unconfirmed", "failed"] as const)(
         outcome === "confirmed" ? ["stop-child", "settle-child"] : ["stop-child"],
       );
     }),
+);
+
+it.effect("frees a worker from an effect that outlives its lease", () =>
+  Effect.gen(function* () {
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const wedgedThreadIds = [1, 2, 3, 4].map((index) =>
+      ThreadId.make(`thread:effect-worker-wedged-${index}`),
+    );
+    const otherThreadId = ThreadId.make("thread:effect-worker-other-provider");
+    // Sorted ahead of the other thread's start, so the wedged starts take every worker first.
+    const wedgedEffectIds = wedgedThreadIds.map((_, index) => `effect:a-wedged-start-${index}`);
+    const followUpEffectId = "effect:c-wedged-follow-up";
+    yield* outbox.enqueue([
+      ...wedgedThreadIds.map((wedgedThreadId, index) => ({
+        id: wedgedEffectIds[index]!,
+        commandId: CommandId.make(`command:effect-worker-wedged-${index}`),
+        threadId: wedgedThreadId,
+        request: {
+          type: "provider-turn.start" as const,
+          runId: RunId.make(`run:effect-worker-wedged-${index}`),
+        },
+      })),
+      {
+        id: "effect:b-other-start",
+        commandId: CommandId.make("command:effect-worker-other-provider"),
+        threadId: otherThreadId,
+        request: { type: "provider-turn.start", runId: RunId.make("run:effect-worker-other") },
+      },
+      {
+        id: followUpEffectId,
+        commandId: CommandId.make("command:effect-worker-wedged-follow-up"),
+        threadId: wedgedThreadIds[0]!,
+        request: { type: "terminal.cleanup" },
+      },
+    ]);
+
+    const providerAnswers = yield* Deferred.make<void>();
+    const allStartsReached = yield* Deferred.make<void>();
+    const otherStartReached = yield* Deferred.make<void>();
+    const followUpReached = yield* Deferred.make<void>();
+    const wedgedStarts = yield* Ref.make(0);
+    const executed = yield* Ref.make<ReadonlyArray<string>>([]);
+    const layerExecutor = Layer.succeed(
+      EffectWorker.OrchestrationEffectExecutorV2,
+      EffectWorker.OrchestrationEffectExecutorV2.of({
+        execute: (effect) =>
+          Effect.gen(function* () {
+            if (wedgedEffectIds.includes(effect.id)) {
+              const count = yield* Ref.updateAndGet(wedgedStarts, (value) => value + 1);
+              if (count === 4) yield* Deferred.succeed(allStartsReached, undefined);
+              yield* Deferred.await(providerAnswers);
+            }
+            yield* Ref.update(executed, (ids) => [...ids, effect.id]);
+            if (effect.id === "effect:b-other-start") {
+              yield* Deferred.succeed(otherStartReached, undefined);
+            }
+            if (effect.id === followUpEffectId) {
+              yield* Deferred.succeed(followUpReached, undefined);
+            }
+          }),
+      }),
+    );
+    const layerWorker = EffectWorker.layerWithOptions({ workerId: "wedged-provider-worker" }).pipe(
+      Layer.provide(Layer.merge(Layer.succeed(EffectOutbox.EffectOutboxV2, outbox), layerExecutor)),
+    );
+    yield* EffectWorker.runDaemonWithOptions({ concurrency: 4 }).pipe(
+      Effect.provide(layerWorker),
+      Effect.forkScoped,
+    );
+    const statusOf = (effectId: string) =>
+      outbox.get(effectId).pipe(Effect.map(Option.map((effect) => effect.status)));
+
+    yield* Deferred.await(allStartsReached);
+    assert.deepEqual(yield* Ref.get(executed), []);
+
+    yield* TestClock.adjust("30 seconds");
+    yield* Deferred.await(otherStartReached);
+    // The wedged threads keep their order: nothing runs behind a start still in flight.
+    assert.deepEqual(yield* statusOf(wedgedEffectIds[0]!), Option.some("running"));
+    assert.deepEqual(yield* statusOf(followUpEffectId), Option.some("pending"));
+
+    yield* Deferred.succeed(providerAnswers, undefined);
+    yield* outbox.notifyAvailable();
+    yield* Deferred.await(followUpReached);
+    assert.deepEqual(yield* statusOf(wedgedEffectIds[0]!), Option.some("succeeded"));
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+        TestClock.layer(),
+      ),
+    ),
+  ),
+);
+
+it.effect("drain waits for settlement after an effect outlives its lease", () =>
+  Effect.gen(function* () {
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const effectId = "effect:drain-long-execution";
+    yield* outbox.enqueue([
+      {
+        id: effectId,
+        commandId: CommandId.make("command:drain-long-execution"),
+        threadId,
+        request: { type: "terminal.cleanup" },
+      },
+    ]);
+    const reached = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const drained = yield* Deferred.make<void>();
+    const layerWorker = EffectWorker.layerWithOptions({ leaseDurationMs: 1_000 }).pipe(
+      Layer.provide(
+        Layer.merge(
+          Layer.succeed(EffectOutbox.EffectOutboxV2, outbox),
+          Layer.succeed(
+            EffectWorker.OrchestrationEffectExecutorV2,
+            EffectWorker.OrchestrationEffectExecutorV2.of({
+              execute: () =>
+                Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release))),
+            }),
+          ),
+        ),
+      ),
+    );
+    const draining = yield* Effect.gen(function* () {
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      return yield* worker.drain(1).pipe(Effect.tap(() => Deferred.succeed(drained, undefined)));
+    }).pipe(Effect.provide(layerWorker), Effect.forkScoped);
+    yield* Deferred.await(reached);
+    yield* TestClock.adjust("1 second");
+    assert.isFalse(yield* Deferred.isDone(drained));
+    yield* Deferred.succeed(release, undefined);
+    assert.equal(yield* Fiber.join(draining), 1);
+    assert.deepEqual(
+      yield* outbox.get(effectId).pipe(Effect.map(Option.map((effect) => effect.status))),
+      Option.some("succeeded"),
+    );
+  }).pipe(Effect.provide(EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)))),
 );

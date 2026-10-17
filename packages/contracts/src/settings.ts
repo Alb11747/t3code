@@ -599,13 +599,22 @@ export const CodexSettings = makeProviderSettingsSchema(
         description: "Additional CLI arguments passed to codex app-server on session start.",
       }),
     ),
+    promptSuggestions: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({
+        title: "Composer predictions",
+        description:
+          "After each turn, predict your next prompt with ChatGPT's composer prediction service and show it in the empty composer (Right Arrow or Tab to use it). Needs ChatGPT sign-in; whether it counts against usage is unverified.",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
     customModels: Schema.Array(CustomModelSetting).pipe(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
   },
   {
-    order: ["binaryPath", "homePath", "shadowHomePath", "launchArgs"],
+    order: ["binaryPath", "homePath", "shadowHomePath", "launchArgs", "promptSuggestions"],
   },
 );
 export type CodexSettings = typeof CodexSettings.Type;
@@ -663,9 +672,34 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    uncachedColdCompaction: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({
+        title: "Skip cache writes on cold compaction",
+        description:
+          "Compact threads idle 70+ minutes without prompt caching, so the history the summary replaces isn't cached again. Saves usage only if any gateway or proxy forwards uncached requests unchanged.",
+        providerSettingsForm: { control: "switch", clearWhenEmpty: "omit" },
+      }),
+    ),
+    promptSuggestions: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({
+        title: "Prompt suggestions",
+        description:
+          "Suggest a next prompt in the empty composer after each turn. Press Right Arrow or Tab to use it.",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
   },
   {
-    order: ["binaryPath", "homePath", "autoCompactWindow", "launchArgs"],
+    order: [
+      "binaryPath",
+      "homePath",
+      "autoCompactWindow",
+      "launchArgs",
+      "uncachedColdCompaction",
+      "promptSuggestions",
+    ],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;

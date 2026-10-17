@@ -244,6 +244,7 @@ export const layer: Layer.Layer<
         (handoff) =>
           handoff.status === "ready" &&
           (handoff.targetRunId === run.id ||
+            (handoff.deferred === true && handoff.toProviderThreadId === run.providerThreadId) ||
             (handoff.toProviderThreadId === run.providerThreadId &&
               projection.runs.some(
                 (source) =>
@@ -1061,6 +1062,18 @@ export const layer: Layer.Layer<
           !deliveredAttemptIds.has(source.activeAttemptId),
       );
       const missedRunIds = new Set(missedRuns.map((source) => source.id));
+      // Deferred history is still delivered below; do not allocate another
+      // recovery handoff for the same missed input on every low-budget turn.
+      const deferredItemIds = new Set(
+        effectiveHandoffs.flatMap((handoff) =>
+          handoff.deferred === true
+            ? [
+                ...(handoff.history?.messages.map((message) => message.itemId) ?? []),
+                ...(handoff.history?.omittedItemIds ?? []),
+              ]
+            : [],
+        ),
+      );
       const missedItems =
         missedRunIds.size === 0
           ? []
@@ -1069,6 +1082,7 @@ export const layer: Layer.Layer<
                 item.runId !== null &&
                 missedRunIds.has(item.runId) &&
                 !coveredItemIds.has(item.id) &&
+                !deferredItemIds.has(item.id) &&
                 historicalMessage(item) !== null,
             );
       const startWithHandoffs = (
@@ -1202,6 +1216,16 @@ export const layer: Layer.Layer<
         !noteContinuation
           ? session
           : makeDeliverySession(session, startWithHandoffs);
+      // Lets adapters judge whether the provider's prompt cache has expired.
+      let lastProviderTurnActivityAt: DateTime.Utc | undefined;
+      for (const turn of projection.providerTurns) {
+        const activityAt = turn.completedAt ?? turn.startedAt;
+        if (turn.providerThreadId !== providerThread.id || activityAt === null) continue;
+        lastProviderTurnActivityAt =
+          lastProviderTurnActivityAt === undefined
+            ? activityAt
+            : DateTime.max(lastProviderTurnActivityAt, activityAt);
+      }
       return runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,
@@ -1232,6 +1256,7 @@ export const layer: Layer.Layer<
           (legacyInputRunIds.size > 0 &&
             sameNativeThread &&
             !acceptedAttempts.some((source) => source.nativeThreadId !== undefined)),
+        ...(lastProviderTurnActivityAt === undefined ? {} : { lastProviderTurnActivityAt }),
         shouldStartProviderTurn: runControls.shouldStartProviderTurn,
         shouldFinalizeRun: runControls.shouldFinalizeRun,
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,

@@ -57,6 +57,30 @@ history for that message. The cache lasts about an hour on a Claude
 subscription and 5 minutes with an API key, Bedrock, or Vertex. See [commands and skills](./composer.md#commands-and-skills) for using
 composer commands.
 
+Compacting a thread after its prompt cache expired normally writes the whole old
+history back to the cache, even though the summary replaces it. Turn on **Skip
+cache writes on cold compaction** in the Claude provider settings to compact
+without prompt caching when the thread's last turn ended at least 70 minutes ago
+and Claude is no longer running for it. Your next message turns caching back on,
+which starts Claude once more. Other compactions are unchanged. This saves usage
+only if every gateway or proxy between Claude Code and Anthropic forwards
+requests without cache markers unchanged; some add their own. These compactions
+send `X-CPA-Prompt-Cache-Mode: explicit`, which a CLIProxyAPI build that honors
+the header uses to skip its own markers. If another thread kept the same history
+cached, that history costs ordinary input instead of a cheap cache read.
+
+## Prompt suggestions
+
+Turn on **Prompt suggestions** in the Claude provider settings to have Claude
+suggest your next prompt when a turn finishes. On web and desktop the
+suggestion appears in the empty composer. Press **Right Arrow** or **Tab** to
+put it in the composer, where you can edit it before you send, or **Esc** to
+hide it. The suggestion disappears when you send your next message.
+
+Claude does not always have a suggestion, for example in plan mode, after an
+error, or when you are close to a usage limit. A thread where Claude is
+already running starts suggesting once Claude restarts for it.
+
 ## Usage limits
 
 If your Claude subscription runs out of usage mid-turn, the thread shows which

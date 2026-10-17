@@ -143,6 +143,12 @@ describe("Pi MCP tool exposure", () => {
     const start = bridge.handlers.get("before_agent_start");
     assert.isDefined(start);
     const prompt = await start!({ systemPrompt: "Pi system prompt" }, discoveryContext);
+    assert.isTrue(prompt.systemPrompt.startsWith("Pi system prompt\n\n"));
+    assert.include(
+      prompt.systemPrompt,
+      "relative file links resolve from this thread's workspace root",
+    );
+    assert.include(prompt.systemPrompt, "Use absolute paths for files outside the workspace.");
     assert.include(prompt.systemPrompt, "orchestrator_capabilities");
     assert.equal(bridge.servers.length, 0);
     assert.equal(bridge.tools.length, 8);
