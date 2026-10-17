@@ -51,7 +51,12 @@ if resolving a conflict requires that, report failure for local resolution.
 6. Run focused package typechecks and tests for the files touched. If dependencies
    are needed, try `corepack pnpm install --frozen-lockfile`; an install failure
    may be recorded as a skipped check, with its reason. Do not weaken tests or
-   change unrelated code. Run `git diff --check` and
+   change unrelated code. Run `corepack pnpm exec vp fmt --check`, which CI's
+   Quality job also enforces; format any files it lists with
+   `corepack pnpm exec vp fmt <files>` and fold each change into the commit that
+   introduced those lines (`git commit --fixup=<sha>`, then
+   `GIT_SEQUENCE_EDITOR=: git rebase --autosquash` onto the pinned upstream SHA).
+   Run `git diff --check` and
    `git diff --check "$(jq -r .upstream_sha "$FORK_RESOLVER_HOME/request.json")" HEAD`.
    Inspect the candidate diff/history and confirm no unresolved index entries,
    no rebase state, a clean checkout, and linear history above the pinned base.
