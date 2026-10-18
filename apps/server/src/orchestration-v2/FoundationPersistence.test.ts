@@ -20,8 +20,10 @@ import {
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
+  ProviderTurnId,
   RunAttemptId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -2311,6 +2313,233 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         reason: "Test cleanup.",
       });
     }),
+  );
+
+  const steerRequest = {
+    type: "provider-turn.steer",
+    providerSessionId: ProviderSessionId.make("session:boundary-order"),
+    providerThreadId: ProviderThreadId.make("provider-thread:boundary-order"),
+    providerTurnId: ProviderTurnId.make("provider-turn:boundary-order"),
+    messageId: MessageId.make("message:boundary-order"),
+  } as const;
+  const boundaryOrderCandidates = [
+    { request: { ...steerRequest }, bypass: true },
+    { request: { ...steerRequest, type: "provider-turn.interrupt" }, bypass: true },
+    {
+      request: {
+        ...steerRequest,
+        type: "provider-turn.restart",
+        interruptedAttemptId: RunAttemptId.make("attempt:boundary-order"),
+        runId: RunId.make("run:boundary-order"),
+      },
+      bypass: true,
+    },
+    {
+      request: {
+        type: "runtime-request.respond",
+        providerSessionId: steerRequest.providerSessionId,
+        requestId: RuntimeRequestId.make("request:boundary-order"),
+      },
+      bypass: true,
+    },
+    { request: { ...steerRequest, waitForBoundary: true }, bypass: false },
+    {
+      request: { type: "provider-turn.start", runId: RunId.make("run:boundary-order") },
+      bypass: false,
+    },
+    {
+      request: {
+        type: "checkpoint.capture",
+        runId: RunId.make("run:boundary-order"),
+        scopeId: CheckpointScopeId.make("scope:boundary-order"),
+      },
+      bypass: false,
+    },
+    {
+      request: {
+        type: "provider-thread.rollback",
+        providerThreadId: steerRequest.providerThreadId,
+        checkpointId: CheckpointId.make("checkpoint:boundary-order"),
+        scopeId: CheckpointScopeId.make("scope:boundary-order"),
+      },
+      bypass: false,
+    },
+    { request: { type: "terminal.cleanup" }, bypass: false },
+  ] satisfies ReadonlyArray<{
+    request: EffectOutbox.OrchestrationEffectRequestV2;
+    bypass: boolean;
+  }>;
+
+  it.effect.each(
+    (["running", "pending"] as const).flatMap((status) =>
+      boundaryOrderCandidates.map(({ request, bypass }) => ({
+        status,
+        request,
+        bypass,
+        name: `${bypass ? "allows" : "blocks"} ${request.type}${"waitForBoundary" in request ? " at a boundary" : ""} behind a ${status} boundary steer`,
+      })),
+    ),
+  )("boundary steer ordering: $name", ({ status, request, bypass }) =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const now = yield* DateTime.now;
+      const commandId = CommandId.make("command:boundary-order");
+      const threadId = ThreadId.make("thread:boundary-order");
+      const workerId = "boundary-worker";
+      const future = DateTime.add(now, { seconds: 5 });
+      yield* outbox.enqueue([
+        {
+          id: "boundary",
+          commandId,
+          threadId,
+          request: { ...steerRequest, waitForBoundary: true },
+        },
+      ]);
+      const boundary = Option.getOrThrow(
+        yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 }),
+      );
+      assert.deepEqual(boundary.request, { ...steerRequest, waitForBoundary: true });
+      if (status === "pending") {
+        yield* outbox.retry({
+          effectId: boundary.id,
+          workerId,
+          error: "Waiting for a boundary.",
+          delayMs: 5_000,
+        });
+      }
+      yield* outbox.enqueue([{ id: "candidate", commandId, threadId, request }]);
+      const nextAt = yield* outbox.nextClaimableAt;
+      if (bypass) {
+        assert.equal(DateTime.formatIso(Option.getOrThrow(nextAt)), DateTime.formatIso(now));
+      } else if (status === "pending") {
+        assert.equal(DateTime.formatIso(Option.getOrThrow(nextAt)), DateTime.formatIso(future));
+      } else {
+        assert.isTrue(Option.isNone(nextAt));
+      }
+      const claimed = yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 });
+      assert.equal(Option.getOrUndefined(claimed)?.id, bypass ? "candidate" : undefined);
+      if (bypass) yield* outbox.succeed({ effectId: "candidate", workerId });
+      yield* outbox.cancelUnsettled({
+        threadId,
+        effectTypes: ["provider-turn.steer"],
+        messageIds: [steerRequest.messageId],
+        reason: "Boundary settled.",
+      });
+      if (!bypass && request.type !== "provider-turn.steer") {
+        assert.equal(
+          Option.getOrThrow(yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 })).id,
+          "candidate",
+        );
+      }
+    }).pipe(Effect.provide(Layer.fresh(layerEffectOutboxProvided))),
+  );
+
+  it.effect("keeps immediate controls behind ordinary steers and intervening effects", () =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const commandId = CommandId.make("command:ordinary-steer-order");
+      const threadId = ThreadId.make("thread:ordinary-steer-order");
+      const workerId = "ordinary-steer-worker";
+      yield* outbox.enqueue([{ id: "ordinary", commandId, threadId, request: steerRequest }]);
+      yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 });
+      yield* outbox.enqueue([
+        {
+          id: "boundary",
+          commandId,
+          threadId,
+          request: { ...steerRequest, waitForBoundary: true },
+        },
+        { id: "cleanup", commandId, threadId, request: { type: "terminal.cleanup" } },
+        {
+          id: "interrupt",
+          commandId,
+          threadId,
+          request: { ...steerRequest, type: "provider-turn.interrupt" },
+        },
+      ]);
+      assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 })));
+      yield* outbox.succeed({ effectId: "ordinary", workerId });
+      assert.equal(
+        Option.getOrThrow(yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 })).id,
+        "boundary",
+      );
+      assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 })));
+      yield* outbox.succeed({ effectId: "boundary", workerId });
+      assert.equal(
+        Option.getOrThrow(yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 })).id,
+        "cleanup",
+      );
+      assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 })));
+      yield* outbox.succeed({ effectId: "cleanup", workerId });
+      assert.equal(
+        Option.getOrThrow(yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 })).id,
+        "interrupt",
+      );
+    }).pipe(Effect.provide(Layer.fresh(layerEffectOutboxProvided))),
+  );
+
+  it.effect(
+    "cancels selected messages while preserving replacement commands and other effects",
+    () =>
+      Effect.gen(function* () {
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const threadId = ThreadId.make("thread:message-cancellation");
+        const commandId = CommandId.make("command:message-cancellation");
+        const replacementCommandId = CommandId.make("command:message-cancellation:replacement");
+        const messageId = MessageId.make("message:cancelled");
+        yield* outbox.enqueue([
+          { id: "running", commandId, threadId, request: { ...steerRequest, messageId } },
+        ]);
+        assert.equal(
+          Option.getOrThrow(
+            yield* outbox.claimNext({ workerId: "cancel-worker", leaseDurationMs: 30_000 }),
+          ).id,
+          "running",
+        );
+        yield* outbox.enqueue([
+          { id: "pending", commandId, threadId, request: { ...steerRequest, messageId } },
+          { id: "other-message", commandId, threadId, request: steerRequest },
+          {
+            id: "replacement",
+            commandId: replacementCommandId,
+            threadId,
+            request: { ...steerRequest, messageId },
+          },
+          {
+            id: "other-thread",
+            commandId,
+            threadId: ThreadId.make("thread:message-cancellation:other"),
+            request: { ...steerRequest, messageId },
+          },
+          { id: "cleanup", commandId, threadId, request: { type: "terminal.cleanup" } },
+        ]);
+        const cancellation = {
+          threadId,
+          effectTypes: ["provider-turn.steer", "terminal.cleanup"],
+          exceptCommandId: replacementCommandId,
+          reason: "Message removed.",
+        } as const;
+        assert.deepEqual(yield* outbox.cancelUnsettled({ ...cancellation, messageIds: [] }), []);
+        assert.deepEqual(
+          (yield* outbox.cancelUnsettled({ ...cancellation, messageIds: [messageId] })).toSorted(),
+          ["pending", "running"],
+        );
+        for (const id of ["other-message", "replacement", "other-thread", "cleanup"]) {
+          assert.equal(Option.getOrThrow(yield* outbox.get(id)).status, "pending");
+        }
+        assert.deepEqual((yield* outbox.cancelUnsettled(cancellation)).toSorted(), [
+          "cleanup",
+          "other-message",
+        ]);
+        assert.deepEqual(
+          yield* outbox.cancelUnsettled({
+            threadId,
+            effectTypes: ["provider-turn.steer"],
+            reason: "Legacy cancellation.",
+          }),
+          ["replacement"],
+        );
+      }).pipe(Effect.provide(Layer.fresh(layerEffectOutboxProvided))),
   );
 
   it.effect("prunes settled effects past retention in batches and keeps the rest", () =>

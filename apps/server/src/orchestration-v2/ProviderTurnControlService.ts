@@ -16,9 +16,13 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import {
+  delegatedCompletionWakeDetail,
+  isTerminalDelegatedTaskStatus,
+} from "./NotificationMailbox.ts";
 
 const yieldToRuntime = Effect.yieldNow.pipe(
   Effect.andThen(
@@ -38,6 +42,8 @@ export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnCon
     operation: Schema.Literals(["interrupt", "restart", "steer"]),
     providerTurnId: ProviderTurnId,
     turnCompleted: Schema.optional(Schema.Boolean),
+    deferToQueue: Schema.optional(Schema.Boolean),
+    deliveryCancelled: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
@@ -65,6 +71,7 @@ export interface ProviderTurnControlServiceV2Shape {
     readonly providerThreadId: ProviderThreadId;
     readonly providerTurnId: ProviderTurnId;
     readonly messageId: MessageId;
+    readonly isCurrent?: Effect.Effect<boolean, unknown>;
   }) => Effect.Effect<void, ProviderTurnControlError>;
   readonly interruptAndAwaitTerminal: (input: {
     readonly threadId: ThreadId;
@@ -323,21 +330,26 @@ export const layer: Layer.Layer<
         Effect.gen(function* () {
           const context = yield* projections.getProviderControlContext(input.threadId, input);
           const ownership = context.message?.delegatedCompletion;
-          if (ownership !== undefined) {
-            const projection = yield* projections.getThreadRecords(input.threadId, ["runs"], {
-              runIds: [ownership.parentRunId],
-            });
-            const cohort = projection.runs.find(
-              (run) => run.id === ownership.parentRunId,
-            )?.delegatedCompletion;
-            if (
-              cohort?.disposition !== "open" ||
-              cohort.delivery?.messageId !== input.messageId ||
-              cohort.delivery.generation !== ownership.generation ||
-              cohort.delivery.taskIds.length === 0
-            )
-              return;
-          }
+          const completionTaskIds =
+            ownership === undefined
+              ? undefined
+              : Effect.gen(function* () {
+                  const projection = yield* projections.getThreadRecords(input.threadId, ["runs"], {
+                    runIds: [ownership.parentRunId],
+                  });
+                  const cohort = projection.runs.find(
+                    (run) => run.id === ownership.parentRunId,
+                  )?.delegatedCompletion;
+                  if (
+                    cohort?.disposition !== "open" ||
+                    cohort.delivery?.messageId !== input.messageId ||
+                    cohort.delivery.generation !== ownership.generation ||
+                    cohort.delivery.taskIds.length === 0
+                  )
+                    return null;
+                  return cohort.delivery.taskIds;
+                });
+          if (completionTaskIds !== undefined && (yield* completionTaskIds) === null) return;
           const loaded = yield* load({ ...input, operation: "steer" });
           if (Option.isNone(loaded.session)) return;
           const { message, run } = loaded.context;
@@ -349,18 +361,57 @@ export const layer: Layer.Layer<
               cause: "The persisted steering message or target run is missing.",
             });
           }
+          const text = projectComposerContextForProvider({
+            text: message.text,
+            records: message.context?.records ?? [],
+          });
+          const resolveMessageText = Effect.gen(function* () {
+            if (input.isCurrent !== undefined && !(yield* input.isCurrent)) return undefined;
+            const source = message.notification?.source;
+            if (
+              message.id.startsWith("message:delegated-task-question:") &&
+              source?.kind === "delegated_task"
+            ) {
+              const parent = yield* projections.getThreadRecords(input.threadId, ["subagents"]);
+              const task = parent.subagents.find(
+                (candidate) =>
+                  candidate.origin === "app_owned" &&
+                  candidate.childThreadId === source.childThreadId &&
+                  source.taskIds.includes(candidate.id),
+              );
+              if (
+                task === undefined ||
+                isTerminalDelegatedTaskStatus(task.status) ||
+                task.completionDelivery?.state === "disposed" ||
+                parent.thread.archivedAt !== null ||
+                parent.thread.deletedAt !== null
+              )
+                return undefined;
+            }
+            if (completionTaskIds === undefined) return text;
+            const taskIds = yield* completionTaskIds;
+            return taskIds === null ? undefined : delegatedCompletionWakeDetail(taskIds);
+          });
           yield* loaded.session.value
             .steerTurn({
               threadId: input.threadId,
               runId: run.id,
               providerThread: loaded.providerThread,
               providerTurnId: loaded.providerTurn.id,
+              resolveMessageText: resolveMessageText.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapter.ProviderAdapterSteerRunError({
+                      driver: loaded.providerThread.driver,
+                      providerThreadId: loaded.providerThread.id,
+                      providerTurnId: loaded.providerTurn.id,
+                      cause,
+                    }),
+                ),
+              ),
               message: {
                 messageId: message.id,
-                text: projectComposerContextForProvider({
-                  text: message.text,
-                  records: message.context?.records ?? [],
-                }),
+                text,
                 attachments: message.attachments,
                 createdBy: message.createdBy,
                 creationSource: message.creationSource,
@@ -375,6 +426,14 @@ export const layer: Layer.Layer<
             .pipe(
               Effect.catch((cause) =>
                 Effect.gen(function* () {
+                  if ((yield* resolveMessageText) === undefined) {
+                    return yield* new ProviderTurnControlError({
+                      threadId: input.threadId,
+                      operation: "steer",
+                      providerTurnId: input.providerTurnId,
+                      deliveryCancelled: true,
+                    });
+                  }
                   const current = yield* projections.getProviderControlContext(
                     input.threadId,
                     input,
@@ -384,11 +443,21 @@ export const layer: Layer.Layer<
                     operation: "steer",
                     providerTurnId: input.providerTurnId,
                     turnCompleted: current.providerTurn?.status === "completed",
+                    deferToQueue:
+                      cause._tag === "ProviderAdapterSteerRunError" && cause.deferToQueue === true,
                     cause,
                   });
                 }),
               ),
             );
+          if (input.isCurrent !== undefined && !(yield* input.isCurrent)) {
+            return yield* new ProviderTurnControlError({
+              threadId: input.threadId,
+              operation: "steer",
+              providerTurnId: input.providerTurnId,
+              deliveryCancelled: true,
+            });
+          }
         }).pipe(
           Effect.mapError((cause) =>
             isProviderTurnControlError(cause)

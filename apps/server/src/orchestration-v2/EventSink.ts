@@ -10,6 +10,7 @@ import {
   RuntimeRequestId,
   NodeId,
   type ProjectId,
+  type MessageId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -149,6 +150,7 @@ export interface EventSinkV2Shape {
     readonly cancelUnsettledEffects?: {
       readonly effectTypes: ReadonlyArray<EffectOutbox.OrchestrationEffectRequestV2["type"]>;
       readonly reason: string;
+      readonly messageIds?: ReadonlyArray<MessageId>;
     };
   }) => Effect.Effect<
     {
@@ -627,6 +629,7 @@ const layerBase: Layer.Layer<
               : yield* effectOutbox.cancelUnsettled({
                   threadId: input.threadId,
                   ...input.cancelUnsettledEffects,
+                  exceptCommandId: input.commandId,
                 });
           return { receipt, storedEvents, committed: true as const, cancelledEffectIds };
         }),
