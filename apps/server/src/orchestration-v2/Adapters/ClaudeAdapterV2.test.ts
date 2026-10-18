@@ -2939,6 +2939,138 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   });
 
   it.effect.each([
+    "PostToolBatch",
+    "slow boundary",
+    "Stop",
+    "timeout",
+    "cancelled",
+    "completed",
+    "withdrawn",
+    "refreshed",
+    "aborted",
+  ] as const)("delivers agent messages at a safe boundary or defers them (%s)", (scenario) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({ close: Queue.shutdown });
+        const allocator = yield* IdAllocator.IdAllocatorV2;
+        const hookAbort = new AbortController();
+        const attemptId = RunAttemptId.make("attempt-agent-boundary");
+        const input = makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId,
+          text: "Work through the task.",
+          attachments: [],
+        });
+        yield* harness.runtime.startTurn(input);
+        const turn = {
+          threadId: harness.threadId,
+          runId: input.runId,
+          providerThread: harness.providerThread,
+          providerTurnId: allocator.derive.providerTurn({
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeTurnId: `turn:${attemptId}`,
+          }),
+        };
+        const steering = yield* harness.runtime
+          .steerTurn({
+            ...turn,
+            ...(scenario === "withdrawn" || scenario === "refreshed" || scenario === "aborted"
+              ? {
+                  resolveMessageText: Effect.sync(() => {
+                    if (scenario === "aborted") hookAbort.abort();
+                    return scenario === "withdrawn" ? undefined : "Remaining task completed.";
+                  }),
+                }
+              : {}),
+            message: {
+              createdBy: "agent",
+              creationSource: "mcp",
+              messageId: MessageId.make("agent-boundary-update"),
+              text: "The review found a missing check.",
+              attachments: [],
+            },
+          })
+          .pipe(Effect.forkScoped);
+        // Flush runnable fibers; the steer is now waiting on its boundary.
+        yield* TestClock.adjust("0 millis");
+        const event = scenario === "Stop" ? "Stop" : "PostToolBatch";
+        const hook = harness.getOpenedOptions()?.hooks?.[event]?.[0]?.hooks[0];
+        assert.isDefined(hook);
+        const boundary =
+          event === "Stop"
+            ? { hook_event_name: "Stop" as const, stop_hook_active: false }
+            : { hook_event_name: "PostToolBatch" as const, tool_calls: [] };
+        const hookInput = {
+          ...boundary,
+          session_id: WAKE_NATIVE_SESSION,
+          transcript_path: "transcript.jsonl",
+          cwd: "/repo",
+        };
+        const callHook = (child = false, signal = hookAbort.signal) =>
+          Effect.promise(() =>
+            hook!({ ...hookInput, ...(child ? { agent_id: "child" } : {}) }, undefined, {
+              signal,
+            }),
+          );
+        assert.deepEqual(yield* callHook(true), {});
+        if (scenario === "timeout") {
+          yield* TestClock.adjust("1 minute");
+        } else if (scenario === "cancelled") {
+          yield* harness.runtime.interruptTurn(turn);
+        } else if (scenario === "completed") {
+          yield* harness.offerAndWait(
+            makeResultFrame({ uuid: "boundary-completed", result: "Done" }),
+          );
+        } else {
+          if (scenario === "slow boundary") yield* TestClock.adjust("40 seconds");
+          const output = yield* callHook();
+          assert.deepEqual(
+            output,
+            scenario === "withdrawn" || scenario === "aborted"
+              ? {}
+              : {
+                  hookSpecificOutput: {
+                    hookEventName: event,
+                    additionalContext:
+                      scenario === "refreshed"
+                        ? "New message from another agent:\nRemaining task completed."
+                        : "New message from another agent:\nThe review found a missing check.",
+                  },
+                },
+          );
+          if (scenario === "aborted") {
+            assert.deepEqual(yield* callHook(false, new AbortController().signal), {
+              hookSpecificOutput: {
+                hookEventName: event,
+                additionalContext: "New message from another agent:\nRemaining task completed.",
+              },
+            });
+          }
+        }
+        if (
+          scenario === "timeout" ||
+          scenario === "completed" ||
+          scenario === "cancelled" ||
+          scenario === "withdrawn"
+        ) {
+          const error = yield* Fiber.join(steering).pipe(Effect.flip);
+          assert.equal(error._tag, "ProviderAdapterSteerRunDeferredError");
+        } else {
+          yield* Fiber.join(steering);
+        }
+        assert.deepEqual(yield* callHook(), {});
+        assert.equal(harness.offeredMessages.length, 1);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect.each([
     { isError: false, title: "Check weather" },
     { isError: true, title: "Check weather" },
     { isError: false, title: undefined },
