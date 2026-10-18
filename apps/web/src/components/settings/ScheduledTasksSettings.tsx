@@ -199,7 +199,7 @@ export function scheduleLabel(schedule: ScheduledTaskSchedule): string {
       : weekdays.length === 5 && weekdays.every((day) => day >= 1 && day <= 5)
         ? "Weekdays"
         : weekdays.map((day) => WEEKDAY_LABELS[day]).join(", ");
-  return `${days} at ${schedule.timeOfDay}`;
+  return `${days} at ${schedule.timeOfDay} (${schedule.timeZone ?? "server local"})`;
 }
 
 /**
@@ -1574,6 +1574,9 @@ function ScheduledTaskEditorForm({
                     </Toggle>
                   ))}
                 </ToggleGroup>
+                <p className="w-full break-words text-xs text-muted-foreground">
+                  Time zone: {draft.timeZone ?? "server local"}.
+                </p>
               </div>
             ) : (
               <div className="flex items-center gap-2">

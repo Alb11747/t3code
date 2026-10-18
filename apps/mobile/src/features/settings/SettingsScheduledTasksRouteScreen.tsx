@@ -100,7 +100,7 @@ function describeSchedule(task: ScheduledTask): string {
   if (task.schedule.type === "webhook") return "On webhook";
   if (task.schedule.type === "interval") return formatScheduledTaskInterval(task.schedule.everyMs);
   const days = task.schedule.weekdays?.length ? repeatLabel(task.schedule.weekdays) : "Every day";
-  return `${days} at ${formatTime(task.schedule.timeOfDay)}`;
+  return `${days} at ${formatTime(task.schedule.timeOfDay)} (${task.schedule.timeZone ?? "server local"})`;
 }
 
 function formatTime(value: string): string {
@@ -1001,7 +1001,9 @@ function TaskForm({
         </SettingsSection>
         {draft.schedule.mode === "fixed_time" ? (
           <Text className="px-2 text-sm text-foreground-muted">
-            Time uses the environment's time zone, which may differ from your phone's.
+            {draft.schedule.timeZone
+              ? `Time uses ${draft.schedule.timeZone}, which may differ from your phone's time zone.`
+              : "Time uses the server's local time zone, which may differ from your phone's."}
           </Text>
         ) : null}
       </View>

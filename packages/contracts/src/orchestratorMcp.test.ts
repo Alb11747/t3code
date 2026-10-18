@@ -5,6 +5,8 @@ import {
   OrchestratorMcpCreateThreadsInput,
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
+  OrchestratorMcpScheduleTaskInput,
+  OrchestratorMcpUpdateScheduledTaskInput,
   OrchestratorMcpThreadInterruptInput,
   OrchestratorMcpThreadListInput,
   OrchestratorMcpThreadReadInput,
@@ -15,6 +17,10 @@ import {
 const decodeCreateThreadsInput = Schema.decodeUnknownSync(OrchestratorMcpCreateThreadsInput);
 const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 const decodeDelegateTaskResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
+const decodeScheduleTaskInput = Schema.decodeUnknownSync(OrchestratorMcpScheduleTaskInput);
+const decodeUpdateScheduledTaskInput = Schema.decodeUnknownSync(
+  OrchestratorMcpUpdateScheduledTaskInput,
+);
 const decodeThreadInterruptInput = Schema.decodeUnknownSync(OrchestratorMcpThreadInterruptInput);
 const decodeThreadListInput = Schema.decodeUnknownSync(OrchestratorMcpThreadListInput);
 const decodeThreadReadInput = Schema.decodeUnknownSync(OrchestratorMcpThreadReadInput);
@@ -22,6 +28,32 @@ const decodeThreadSendInput = Schema.decodeUnknownSync(OrchestratorMcpThreadSend
 const decodeThreadWaitInput = Schema.decodeUnknownSync(OrchestratorMcpThreadWaitInput);
 
 describe("orchestrator MCP contracts", () => {
+  it.each([
+    [false, "UTC"],
+    [true, "UTC"],
+    [false, null],
+    [true, null],
+  ])(
+    "accepts timeZone in structured and JSON compatibility schedules: %s, %s",
+    (asJson, timeZone) => {
+      const schedule = { type: "fixed_time", timeOfDay: "04:00", timeZone };
+      const encodedSchedule = asJson ? JSON.stringify(schedule) : schedule;
+      expect(
+        decodeScheduleTaskInput({
+          title: "Dailies",
+          prompt: "Claim rewards.",
+          schedule: encodedSchedule,
+        }).schedule,
+      ).toEqual(schedule);
+      expect(
+        decodeUpdateScheduledTaskInput({
+          scheduledTaskId: "task-zone",
+          schedule: encodedSchedule,
+        }).schedule,
+      ).toEqual(schedule);
+    },
+  );
+
   it("accepts explicit worktree isolation and keeps shared delegation as the default", () => {
     expect(decodeDelegateTaskInput({ task: "Review changes" }).isolation).toBeUndefined();
     expect(

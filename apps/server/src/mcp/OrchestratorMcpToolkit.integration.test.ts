@@ -475,7 +475,9 @@ function scheduledTaskFromUpsert(input: ScheduledTaskUpsertInput): ScheduledTask
                     prefix: input.schedule.signature.prefix,
                   },
           }
-        : input.schedule,
+        : input.schedule.type === "fixed_time"
+          ? { ...input.schedule, timeZone: input.schedule.timeZone ?? undefined }
+          : input.schedule,
     projectId: input.projectId,
     threadId: input.threadId ?? null,
     workspaceStrategy: input.workspaceStrategy,
