@@ -10,6 +10,7 @@ import {
   RuntimeRequestId,
   NodeId,
   type ProjectId,
+  type MessageId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -140,6 +141,7 @@ export interface EventSinkV2Shape {
     readonly cancelUnsettledEffects?: {
       readonly effectTypes: ReadonlyArray<EffectOutbox.OrchestrationEffectRequestV2["type"]>;
       readonly reason: string;
+      readonly messageIds?: ReadonlyArray<MessageId>;
     };
   }) => Effect.Effect<
     {
@@ -580,7 +582,11 @@ const layerBase: Layer.Layer<
             commandId: input.commandId,
             events: normalized,
           });
-          const sequence = storedEvents.at(-1)?.sequence;
+          // No-op commands still commit receipts and cancellations atomically.
+          const sequence =
+            input.events.length === 0
+              ? yield* eventStore.latestSequence({ threadId: input.threadId })
+              : storedEvents.at(-1)?.sequence;
           if (sequence === undefined) {
             return yield* Effect.die(
               new Error(`Command ${input.commandId} produced no orchestration events.`),
@@ -604,6 +610,7 @@ const layerBase: Layer.Layer<
               : yield* effectOutbox.cancelUnsettled({
                   threadId: input.threadId,
                   ...input.cancelUnsettledEffects,
+                  exceptCommandId: input.commandId,
                 });
           return { receipt, storedEvents, committed: true as const, cancelledEffectIds };
         }),
