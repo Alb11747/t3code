@@ -937,6 +937,14 @@ export const layer = Layer.effect(
 
     const upsert: ScheduledTaskService["Service"]["upsert"] = (input) =>
       Effect.gen(function* () {
+        if (
+          input.schedule.type === "fixed_time" &&
+          input.schedule.timeZone != null &&
+          (/^[+-]/.test(input.schedule.timeZone) ||
+            Option.isNone(DateTime.zoneMakeNamed(input.schedule.timeZone)))
+        ) {
+          return yield* taskError("Schedule time zone must be an IANA name such as UTC.");
+        }
         const now = yield* localNow;
         const uuid =
           input.commandId === undefined
@@ -974,7 +982,21 @@ export const layer = Layer.effect(
                       },
                 maxDeliveryAgeMinutes: input.schedule.maxDeliveryAgeMinutes ?? null,
               }
-            : input.schedule;
+            : input.schedule.type === "fixed_time"
+              ? {
+                  type: "fixed_time",
+                  timeOfDay: input.schedule.timeOfDay,
+                  ...(input.schedule.weekdays ? { weekdays: input.schedule.weekdays } : {}),
+                  // Older clients discard unknown schedule fields before saving.
+                  ...(input.schedule.timeZone === undefined &&
+                  existingTask?.schedule.type === "fixed_time" &&
+                  existingTask.schedule.timeZone
+                    ? { timeZone: existingTask.schedule.timeZone }
+                    : input.schedule.timeZone != null
+                      ? { timeZone: input.schedule.timeZone }
+                      : {}),
+                }
+              : input.schedule;
         const webhook =
           input.schedule.type === "webhook"
             ? yield* Effect.gen(function* () {
