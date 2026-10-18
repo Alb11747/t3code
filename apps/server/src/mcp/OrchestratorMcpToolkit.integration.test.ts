@@ -99,6 +99,7 @@ const parentThreadId = ThreadId.make("thread:mcp-orchestrator-parent");
 const projectId = ProjectId.make("project:mcp-orchestrator");
 const codexInstanceId = ProviderInstanceId.make("codex");
 const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
+const safeSteeringInstanceId = ProviderInstanceId.make("codex-native-steering");
 const codexModel = "gpt-5.4";
 const claudeModel = "claude-sonnet-4-6";
 const parentPrompt = "Keep this parent turn active while orchestration tools are tested.";
@@ -575,6 +576,22 @@ describe("orchestrator MCP toolkit", () => {
                   : `Claude completed: ${turn.message.text}`,
               steerReceived: (steer) => steerReceivedGates.get(steer.message.text),
             }),
+            makeDeterministicAdapter({
+              instanceId: safeSteeringInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              capabilities: {
+                ...CodexProviderCapabilitiesV2,
+                turns: {
+                  ...CodexProviderCapabilitiesV2.turns,
+                  supportsActiveSteering: true,
+                  activeSteeringInterruptsTools: false,
+                },
+              },
+              capturedTurns,
+              shouldComplete: (turn) => turn.message.text !== cancellationPrompt,
+              response: (turn) => `Codex completed: ${turn.message.text}`,
+              steerReceived: (steer) => steerReceivedGates.get(steer.message.text),
+            }),
           ]);
           const continuationOffers = yield* Ref.make<
             ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
@@ -620,11 +637,16 @@ describe("orchestrator MCP toolkit", () => {
             },
             layerRegistry,
           ).pipe(Layer.provide(layerContinuationProbe));
+          const layerSettings = ServerSettings.layerTest({
+            providerInstances: {
+              [safeSteeringInstanceId]: { driver: "codex", enabled: true, config: {} },
+            },
+          });
           const layerOrchestration = Layer.merge(
             layerOrchestrator,
             ThreadManagementService.layer.pipe(
               Layer.provide(layerOrchestrator),
-              Layer.provide(ServerSettings.layerTest()),
+              Layer.provide(layerSettings),
               Layer.provide(
                 CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
               ),
@@ -652,6 +674,11 @@ describe("orchestrator MCP toolkit", () => {
               instanceId: claudeInstanceId,
               driver: ProviderDriverKind.make("claudeAgent"),
               model: claudeModel,
+            }),
+            makeProviderSnapshot({
+              instanceId: safeSteeringInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              model: codexModel,
             }),
             makeProviderSnapshot({
               instanceId: ProviderInstanceId.make("opencode"),
@@ -695,7 +722,7 @@ describe("orchestrator MCP toolkit", () => {
             Layer.provideMerge(layerOrchestration),
             Layer.provide(layerRegistry),
             Layer.provide(layerProviderRegistry),
-            Layer.provide(ServerSettings.layerTest()),
+            Layer.provide(layerSettings),
             Layer.provide(layerScheduledTaskStub),
             Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
             Layer.provide(
@@ -1981,11 +2008,11 @@ describe("orchestrator MCP toolkit", () => {
                 projection.runs.some((run) => run.id === runId && run.status === status),
               );
 
-            // Claude steers into the running turn, which then ends.
+            // Safe native steering joins the running turn without creating a task.
             const steerReceived = yield* Deferred.make<void>();
             steerReceivedGates.set(childSteerText, steerReceived);
             const steeredSend = yield* steerIntoUntaskedChildRun(
-              { providerInstanceId: claudeInstanceId, model: claudeModel },
+              { providerInstanceId: safeSteeringInstanceId, model: codexModel },
               "steer-untasked-run",
             );
             // A steer that misses the turn is sent again as its own run, so

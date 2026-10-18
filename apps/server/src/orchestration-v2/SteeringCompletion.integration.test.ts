@@ -18,14 +18,19 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import * as ThreadManagement from "./ThreadManagementService.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
@@ -513,10 +518,16 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
         };
       }),
   };
-  const layer = ProviderReplayHarness.layerWithRegistry(
+  const databaseLayer = SqlitePersistence.layerMemory;
+  const layerRuntime = ProviderReplayHarness.layerWithRegistry(
     { name },
     ProviderAdapterRegistry.layerSingle(adapter),
-    { runEffectWorker: false },
+    { runEffectWorker: false, databaseLayer },
+  );
+  const layer = ThreadManagement.layer.pipe(
+    Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(databaseLayer))),
+    Layer.provideMerge(layerRuntime),
   );
   const startFirstTurn = Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -581,26 +592,24 @@ it.effect.each([
         yield* Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threads = yield* ThreadManagement.ThreadManagementService;
           const threadId = yield* startFirstTurn;
           const first = started[0]!;
           const messageId = MessageId.make("message:update");
-          yield* orchestrator.dispatch({
-            type: "message.dispatch",
+          const result = yield* threads.sendToThread({
+            projectId: (yield* orchestrator.getThreadProjection(threadId)).thread.projectId,
             commandId: CommandId.make("update"),
             threadId,
             messageId,
             text: "progress update",
             attachments: [],
-            dispatchMode:
-              mode === "auto"
-                ? { type: "start_immediately" }
-                : { type: "steer_active", targetRunId: first.runId },
-            ...(mode === "auto" ? { deliveryIntent: "auto" as const } : {}),
+            mode,
             createdBy: actor,
             creationSource: actor === "agent" ? "mcp" : "web",
           });
           yield* worker.drain();
           const queued = actor === "agent" && interruptsTools;
+          assert.equal(result.delivery, queued ? "queued" : "steered");
           assert.deepEqual(steered, queued ? [] : ["progress update"]);
           assert.equal(started.length, 1);
           const pending = yield* orchestrator.getThreadProjection(threadId);
