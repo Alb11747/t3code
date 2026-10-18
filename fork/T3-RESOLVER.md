@@ -20,7 +20,7 @@ if resolving a conflict requires that, report failure for local resolution.
    ```bash
    export FORK_RESOLVER_HOME=/root/Local/Agents/Work/t3code-fork-resolver
    mkdir -p "$FORK_RESOLVER_HOME/tools"
-   for script in common.sh lazarus-gh.sh credential-helper.sh claim-request.sh prepare-rebase.sh publish-candidate.sh fail-request.sh; do
+   for script in common.sh lazarus-gh.sh credential-helper.sh claim-request.sh prepare-rebase.sh publish-candidate.sh settle-candidate.sh fail-request.sh; do
      git show "origin/main:fork/scripts/t3-resolver/$script" > "$FORK_RESOLVER_HOME/tools/$script"
    done
    ```
@@ -66,7 +66,16 @@ if resolving a conflict requires that, report failure for local resolution.
    `bash "$FORK_RESOLVER_HOME/tools/publish-candidate.sh" "$run_id" "$summary_file"`.
    It checks freshness, publishes only the candidate/mirror, comments on the
    issue, dispatches resume, and records `published`. Only report completion
-   after it succeeds. GitHub checks and human review still follow.
+   after it succeeds.
+8. If every check you ran passed and your summary leaves nothing for the
+   reviewer to decide (no skipped checks, no resolution you are unsure of),
+   run `bash "$FORK_RESOLVER_HOME/tools/settle-candidate.sh" "$run_id"`;
+   otherwise stop and leave the candidate for human review. The helper waits
+   up to an hour, outside your time limit, for GitHub checks and Codex's review
+   of the candidate, then dispatches promotion only if both are clean. Exit 0
+   means promotion was dispatched; exit 3 means it commented on the issue and
+   left the candidate for human review. Report which, with its reason; do not
+   try to fix the candidate after publishing.
 
 On any unrecoverable problem after claiming, including the time limit, write
 `$FORK_RESOLVER_HOME/logs/<run_id>-failure.md` with the reason and relevant check
