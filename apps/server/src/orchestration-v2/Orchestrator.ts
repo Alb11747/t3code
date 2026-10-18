@@ -4765,6 +4765,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               turn.status === "completed"))
         ) {
           dispatchMode = { type: "start_immediately" };
+        } else if (command.createdBy === "agent") {
+          const providerThread = projection.providerThreads.find(
+            (candidate) => candidate.id === target?.providerThreadId,
+          );
+          if (providerThread?.providerSessionId != null) {
+            const session = yield* providerSessions
+              .get(providerThread.providerSessionId)
+              .pipe(mapDispatchError(command));
+            if (
+              Option.isSome(session) &&
+              session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools ===
+                true
+            ) {
+              // Claude steering cancels pending tools, which appear as user refusals.
+              // Agent updates can wait for the durable queue's next-turn boundary.
+              dispatchMode = { type: "queue_after_active" };
+            }
+          }
         }
       }
       if (
