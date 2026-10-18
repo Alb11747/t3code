@@ -419,6 +419,7 @@ const composerSelection = {
 const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function* (
   name: string,
   canRestart = false,
+  activeSteeringInterruptsTools = false,
 ) {
   const cwd = yield* checkpointWorkspace(name);
   const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
@@ -430,6 +431,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
       ...CodexProviderCapabilitiesV2.turns,
       supportsActiveSteering: true,
       supportsSteeringByInterruptRestart: canRestart,
+      activeSteeringInterruptsTools,
     },
   };
   const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
@@ -560,6 +562,96 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
   });
   return { events, started, steered, layer, startFirstTurn };
 });
+
+it.effect.each([
+  { actor: "agent", mode: "auto", interruptsTools: true },
+  { actor: "agent", mode: "steer", interruptsTools: true },
+  { actor: "user", mode: "steer", interruptsTools: true },
+  { actor: "agent", mode: "auto", interruptsTools: false },
+] as const)(
+  "delivers $actor $mode messages safely (interruptsTools=$interruptsTools)",
+  ({ actor, mode, interruptsTools }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { events, started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+          `agent-steering-${actor}-${mode}-${interruptsTools}`,
+          false,
+          interruptsTools,
+        );
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threadId = yield* startFirstTurn;
+          const first = started[0]!;
+          const messageId = MessageId.make("message:update");
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("update"),
+            threadId,
+            messageId,
+            text: "progress update",
+            attachments: [],
+            dispatchMode:
+              mode === "auto"
+                ? { type: "start_immediately" }
+                : { type: "steer_active", targetRunId: first.runId },
+            ...(mode === "auto" ? { deliveryIntent: "auto" as const } : {}),
+            createdBy: actor,
+            creationSource: actor === "agent" ? "mcp" : "web",
+          });
+          yield* worker.drain();
+          const queued = actor === "agent" && interruptsTools;
+          assert.deepEqual(steered, queued ? [] : ["progress update"]);
+          assert.equal(started.length, 1);
+          const pending = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(pending.runs.find((run) => run.id === first.runId)?.status, "running");
+          if (!queued) return;
+          assert.equal(
+            pending.runs.find((run) => run.userMessageId === messageId)?.status,
+            "queued",
+          );
+
+          const completed = yield* orchestrator.streamDomainEvents.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "run.updated" &&
+                event.payload.id === first.runId &&
+                event.payload.status === "waiting",
+            ),
+            Stream.take(1),
+            Stream.runDrain,
+            Effect.forkScoped,
+          );
+          const turn = pending.providerTurns[0]!;
+          yield* Queue.offer(events, {
+            type: "provider_turn.updated",
+            driver,
+            providerTurn: { ...turn, status: "completed", completedAt: yield* DateTime.now },
+          });
+          yield* Queue.offer(events, {
+            type: "turn.terminal",
+            driver,
+            providerThreadId: turn.providerThreadId,
+            providerTurnId: turn.id,
+            runOrdinal: first.runOrdinal,
+            status: "completed",
+            failure: null,
+            threadDisposition: "reusable",
+          });
+          yield* Fiber.join(completed);
+          yield* worker.drain();
+          yield* orchestrator.resumeQueuedRuns;
+          yield* worker.drain();
+          assert.equal(started.length, 2);
+          assert.equal(started[1]?.message.messageId, messageId);
+          assert.equal(started[1]?.message.text, "progress update");
+          assert.deepEqual(steered, []);
+          const final = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(final.runs.find((run) => run.id === first.runId)?.status, "completed");
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
+);
 
 it.effect.each([{ canRestart: false }, { canRestart: true }])(
   "steers a changed turn-scoped selection into the running turn (canRestart=$canRestart)",
