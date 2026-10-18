@@ -424,6 +424,15 @@ ref, pinned upstream ancestry, and linear history. It always opens/updates a
 review PR, even with green checks. The PR links the issue containing T3's
 summary. Promotion closes the PR and tracking issue with a comment.
 
+When the resolver has no concerns about its own resolution, it settles the
+candidate itself with `t3-resolver/settle-candidate.sh`: it waits for the
+review PR's checks and Codex's review of that exact SHA, and dispatches
+promotion only if checks passed, Codex found nothing, and main is unchanged.
+Codex reviews automatically only when the PR opens, so for a reused PR the
+helper comments `@codex review` as the owner. Otherwise, including when Codex
+is out of review usage, it comments the reason on the tracking issue and the
+candidate waits for a person.
+
 To resolve a conflict locally (use the artifact's `upstream_sha` to reconstruct
 the original request, or omit `--onto` to sync to today's upstream):
 
@@ -471,7 +480,8 @@ and publishes a candidate after focused validation. It stops after about an
 hour on an unrecoverable problem, comments with the reason, and preserves state.
 It never pushes main. Repository content and dependencies can execute code or
 contain prompt injection; this personal root/SSH setup is not a credential
-sandbox. Human candidate review remains required.
+sandbox. Candidates with failing checks, Codex findings, or resolver concerns
+still need human review; clean ones promote themselves (_Syncing with upstream_).
 
 State defaults to `/root/Local/Agents/Work/t3code-fork-resolver` (override with
 `FORK_RESOLVER_HOME`): dedicated clone `repo/`, ledgers `requests/<run_id>.json`,
