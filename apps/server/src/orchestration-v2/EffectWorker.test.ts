@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  MessageId,
   NodeId,
   ProviderSessionId,
   ProviderThreadId,
@@ -26,6 +27,7 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
@@ -85,6 +87,7 @@ function layerExecutorFor(input: {
   readonly threads?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   readonly continueAfterRestart?: boolean;
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
+  readonly steer?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["steer"];
 }) {
   const record = (event: string) => Ref.update(input.events, (events) => [...events, event]);
   const layerDependencies = Layer.mergeAll(
@@ -92,7 +95,7 @@ function layerExecutorFor(input: {
       ProviderTurnControlService.ProviderTurnControlServiceV2,
       ProviderTurnControlService.ProviderTurnControlServiceV2.of({
         interrupt: input.interrupt ?? (() => Effect.void),
-        steer: () => Effect.void,
+        steer: input.steer ?? (() => Effect.void),
         interruptAndAwaitTerminal: (request) =>
           record(
             request.replacementProviderSessionId === undefined
@@ -907,6 +910,210 @@ it.effect.each(["confirmed", "unconfirmed", "failed"] as const)(
     }),
 );
 
+it.effect.each([
+  {
+    turnStatus: "interrupted",
+    sessionStatus: "ready",
+    boundary: true,
+    accepted: false,
+    queues: true,
+  },
+  {
+    turnStatus: "running",
+    sessionStatus: "stopped",
+    boundary: true,
+    accepted: false,
+    queues: true,
+  },
+  { turnStatus: "running", sessionStatus: "error", boundary: true, accepted: false, queues: true },
+  { turnStatus: "running", sessionStatus: "ready", boundary: true, accepted: false, queues: false },
+  {
+    turnStatus: "interrupted",
+    sessionStatus: "stopped",
+    boundary: false,
+    accepted: false,
+    queues: false,
+  },
+  {
+    turnStatus: "interrupted",
+    sessionStatus: "stopped",
+    boundary: true,
+    accepted: true,
+    queues: false,
+  },
+] as const)(
+  "replays boundary steering after recovery: $turnStatus/$sessionStatus boundary=$boundary accepted=$accepted",
+  ({ turnStatus, sessionStatus, boundary, accepted, queues }) =>
+    Effect.gen(function* () {
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const messageId = MessageId.make("message:recovered-boundary");
+      const request = {
+        type: "provider-turn.steer" as const,
+        providerSessionId: oldSessionId,
+        providerThreadId,
+        providerTurnId,
+        messageId,
+        ...(boundary ? { waitForBoundary: true as const } : {}),
+      };
+      const effect: EffectOutbox.OrchestrationEffectV2 = {
+        ...restartEffect(yield* DateTime.now, { type: "detach" }),
+        id: "effect:recovered-boundary",
+        request,
+      };
+      const layer = layerExecutorFor({
+        events,
+        steer: () =>
+          Ref.update(events, (items) => [...items, "steer"]).pipe(
+            Effect.andThen(
+              accepted
+                ? Effect.void
+                : new ProviderTurnControlService.ProviderTurnControlError({
+                    threadId,
+                    operation: "steer",
+                    providerTurnId,
+                  }),
+            ),
+          ),
+        threads: {
+          getThreadRecords: () =>
+            Effect.succeed({
+              providerTurns: [{ id: providerTurnId, status: turnStatus }],
+              providerSessions: [{ id: oldSessionId, status: sessionStatus }],
+              messages: [
+                {
+                  id: messageId,
+                  runId,
+                  text: "Preserve this delivery.",
+                  attachments: [],
+                  createdBy: "agent",
+                  creationSource: "server",
+                },
+              ],
+              runs: [{ id: runId }],
+            }) as never,
+          dispatch: (command) =>
+            Effect.sync(() => {
+              assert.equal(command.type, "message.dispatch");
+              if (command.type !== "message.dispatch") return assert.fail("Unexpected command.");
+              assert.equal(command.messageId, messageId);
+              assert.equal(command.commandId, `command:steer-follow-up:${effect.id}`);
+              assert.equal(command.steeringFallbackOfRunId, runId);
+              assert.equal(command.dispatchMode.type, "queue_after_active");
+              return { sequence: 0, storedEvents: [] };
+            }).pipe(Effect.tap(() => Ref.update(events, (items) => [...items, "queue"]))),
+        },
+      });
+      const exit = yield* EffectWorker.OrchestrationEffectExecutorV2.pipe(
+        Effect.flatMap((executor) => executor.execute(effect)),
+        Effect.provide(layer),
+        Effect.exit,
+      );
+      assert.equal(Exit.isSuccess(exit), queues || accepted);
+      assert.deepEqual(yield* Ref.get(events), queues ? ["steer", "queue"] : ["steer"]);
+    }),
+);
+
+it.effect.each(["completed", "running"] as const)(
+  "recovery queues a delegated question only while its child is active (%s)",
+  (childStatus) =>
+    Effect.gen(function* () {
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const messageId = MessageId.make("message:delegated-task-question:recovery");
+      const message = {
+        id: messageId,
+        runId,
+        text: "The child has a question.",
+        attachments: [],
+        createdBy: "agent",
+        creationSource: "server",
+        notification: {
+          source: {
+            kind: "delegated_task",
+            childThreadId: "child:question-recovery",
+            taskIds: ["task:question-recovery"],
+          },
+          outcome: "updated",
+          summary: "A question",
+        },
+      };
+      let queued = 0;
+      const control = yield* ProviderTurnControlService.ProviderTurnControlServiceV2.pipe(
+        Effect.provide(
+          ProviderTurnControlService.layer.pipe(
+            Layer.provide(
+              Layer.merge(
+                Layer.mock(ProjectionStore.ProjectionStoreV2)({
+                  getProviderControlContext: () =>
+                    Effect.succeed({
+                      providerThread: { id: providerThreadId, providerSessionId: oldSessionId },
+                      providerTurn: { id: providerTurnId, providerThreadId, status: "cancelled" },
+                      message,
+                      run: { id: runId },
+                    } as never),
+                  getThreadRecords: () =>
+                    Effect.succeed({
+                      thread: { archivedAt: null, deletedAt: null },
+                      subagents: [
+                        {
+                          id: "task:question-recovery",
+                          origin: "app_owned",
+                          childThreadId: "child:question-recovery",
+                          status: childStatus,
+                          completionDelivery: { state: "pending" },
+                        },
+                      ],
+                    } as never),
+                }),
+                Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+                  get: () => Effect.succeed(Option.none()),
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+      const effect: EffectOutbox.OrchestrationEffectV2 = {
+        ...restartEffect(yield* DateTime.now, { type: "detach" }),
+        id: "effect:recovered-question",
+        request: {
+          type: "provider-turn.steer",
+          providerSessionId: oldSessionId,
+          providerThreadId,
+          providerTurnId,
+          messageId,
+          waitForBoundary: true,
+        },
+      };
+      const layer = layerExecutorFor({
+        events,
+        steer: (input) => control.steer(input),
+        threads: {
+          getThreadRecords: () =>
+            Effect.succeed({
+              providerTurns: [{ id: providerTurnId, status: "cancelled" }],
+              providerSessions: [{ id: oldSessionId, status: "stopped" }],
+              messages: [message],
+              runs: [{ id: runId }],
+            } as never),
+          dispatch: (command) =>
+            Effect.sync(() => {
+              assert.equal(command.type, "message.dispatch");
+              if (command.type !== "message.dispatch") return assert.fail("Unexpected command.");
+              assert.equal(command.messageId, messageId);
+              assert.equal(command.steeringFallbackOfRunId, runId);
+              queued += 1;
+              return { sequence: 0, storedEvents: [] };
+            }),
+        },
+      });
+      yield* EffectWorker.OrchestrationEffectExecutorV2.pipe(
+        Effect.flatMap((executor) => executor.execute(effect)),
+        Effect.provide(layer),
+      );
+      assert.equal(queued, childStatus === "completed" ? 0 : 1);
+    }),
+);
+
 it.effect("frees a worker from an effect that outlives its lease", () =>
   Effect.gen(function* () {
     const outbox = yield* EffectOutbox.EffectOutboxV2;
@@ -1000,47 +1207,143 @@ it.effect("frees a worker from an effect that outlives its lease", () =>
   ),
 );
 
-it.effect("drain waits for settlement after an effect outlives its lease", () =>
-  Effect.gen(function* () {
-    const outbox = yield* EffectOutbox.EffectOutboxV2;
-    const effectId = "effect:drain-long-execution";
-    yield* outbox.enqueue([
-      {
-        id: effectId,
-        commandId: CommandId.make("command:drain-long-execution"),
-        threadId,
-        request: { type: "terminal.cleanup" },
-      },
-    ]);
-    const reached = yield* Deferred.make<void>();
-    const release = yield* Deferred.make<void>();
-    const drained = yield* Deferred.make<void>();
-    const layerWorker = EffectWorker.layerWithOptions({ leaseDurationMs: 1_000 }).pipe(
-      Layer.provide(
-        Layer.merge(
-          Layer.succeed(EffectOutbox.EffectOutboxV2, outbox),
-          Layer.succeed(
-            EffectWorker.OrchestrationEffectExecutorV2,
-            EffectWorker.OrchestrationEffectExecutorV2.of({
-              execute: () =>
-                Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release))),
-            }),
+it.effect.each(["delivered", "cancelled"] as const)(
+  "frees a worker immediately while boundary delivery is %s",
+  (outcome) =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const boundaryId = "effect:a-boundary-wait";
+      const otherId = "effect:b-other-start";
+      yield* outbox.enqueue([
+        {
+          id: boundaryId,
+          commandId: CommandId.make("command:boundary-wait"),
+          threadId,
+          request: {
+            type: "provider-turn.steer",
+            providerSessionId: oldSessionId,
+            providerThreadId,
+            providerTurnId,
+            messageId: MessageId.make("message:boundary-wait"),
+            waitForBoundary: true,
+          },
+        },
+        {
+          id: otherId,
+          commandId: CommandId.make("command:other-start"),
+          threadId: ThreadId.make("thread:other-start"),
+          request: { type: "provider-turn.start", runId },
+        },
+      ]);
+      const reached = yield* Deferred.make<void>();
+      const hook = yield* Deferred.make<void>();
+      const ended = yield* Deferred.make<void>();
+      const deliveries = yield* Ref.make(0);
+      const layerWorker = EffectWorker.layerWithOptions().pipe(
+        Layer.provide(
+          Layer.merge(
+            Layer.succeed(EffectOutbox.EffectOutboxV2, outbox),
+            Layer.succeed(
+              EffectWorker.OrchestrationEffectExecutorV2,
+              EffectWorker.OrchestrationEffectExecutorV2.of({
+                execute: (effect) =>
+                  effect.id === boundaryId
+                    ? Deferred.succeed(reached, undefined).pipe(
+                        Effect.andThen(Deferred.await(hook)),
+                        Effect.andThen(Ref.update(deliveries, (count) => count + 1)),
+                        Effect.ensuring(Deferred.succeed(ended, undefined)),
+                      )
+                    : Effect.void,
+              }),
+            ),
           ),
         ),
-      ),
-    );
-    const draining = yield* Effect.gen(function* () {
-      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-      return yield* worker.drain(1).pipe(Effect.tap(() => Deferred.succeed(drained, undefined)));
-    }).pipe(Effect.provide(layerWorker), Effect.forkScoped);
-    yield* Deferred.await(reached);
-    yield* TestClock.adjust("1 second");
-    assert.isFalse(yield* Deferred.isDone(drained));
-    yield* Deferred.succeed(release, undefined);
-    assert.equal(yield* Fiber.join(draining), 1);
-    assert.deepEqual(
-      yield* outbox.get(effectId).pipe(Effect.map(Option.map((effect) => effect.status))),
-      Option.some("succeeded"),
-    );
-  }).pipe(Effect.provide(EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)))),
+      );
+      yield* Effect.gen(function* () {
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        // No clock adjustment: runOnce must release capacity before its lease expires.
+        assert.isTrue(yield* worker.runOnce);
+        yield* Deferred.await(reached);
+        assert.equal(Option.getOrThrow(yield* outbox.get(boundaryId)).status, "running");
+        assert.isTrue(yield* worker.runOnce);
+        assert.equal(Option.getOrThrow(yield* outbox.get(otherId)).status, "succeeded");
+        assert.equal(yield* Ref.get(deliveries), 0);
+        if (outcome === "cancelled") {
+          const cancelled = yield* outbox.cancelUnsettled({
+            threadId,
+            effectTypes: ["provider-turn.steer"],
+            reason: "Stopped.",
+          });
+          yield* outbox.signalCancellations(cancelled);
+          assert.equal(Option.getOrThrow(yield* outbox.get(boundaryId)).status, "cancelled");
+        } else {
+          yield* Deferred.succeed(hook, undefined);
+        }
+        yield* outbox.awaitSettled(boundaryId);
+        yield* Deferred.await(ended);
+        const settled = Option.getOrThrow(yield* outbox.get(boundaryId));
+        assert.equal(settled.status, outcome === "cancelled" ? "cancelled" : "succeeded");
+        assert.equal(settled.attemptCount, 1);
+        assert.equal(yield* Ref.get(deliveries), outcome === "cancelled" ? 0 : 1);
+        assert.isFalse(yield* worker.runOnce);
+      }).pipe(Effect.provide(layerWorker));
+    }).pipe(Effect.provide(EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)))),
+);
+
+it.effect.each([false, true])(
+  "drain waits for settlement after an effect outlives its lease (boundary=%s)",
+  (boundary) =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const effectId = "effect:drain-long-execution";
+      yield* outbox.enqueue([
+        {
+          id: effectId,
+          commandId: CommandId.make("command:drain-long-execution"),
+          threadId,
+          request: boundary
+            ? {
+                type: "provider-turn.steer",
+                providerSessionId: oldSessionId,
+                providerThreadId,
+                providerTurnId,
+                messageId: MessageId.make("message:drain-boundary"),
+                waitForBoundary: true,
+              }
+            : { type: "terminal.cleanup" },
+        },
+      ]);
+      const reached = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const drained = yield* Deferred.make<void>();
+      const layerWorker = EffectWorker.layerWithOptions({ leaseDurationMs: 1_000 }).pipe(
+        Layer.provide(
+          Layer.merge(
+            Layer.succeed(EffectOutbox.EffectOutboxV2, outbox),
+            Layer.succeed(
+              EffectWorker.OrchestrationEffectExecutorV2,
+              EffectWorker.OrchestrationEffectExecutorV2.of({
+                execute: () =>
+                  Deferred.succeed(reached, undefined).pipe(
+                    Effect.andThen(Deferred.await(release)),
+                  ),
+              }),
+            ),
+          ),
+        ),
+      );
+      const draining = yield* Effect.gen(function* () {
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        return yield* worker.drain(1).pipe(Effect.tap(() => Deferred.succeed(drained, undefined)));
+      }).pipe(Effect.provide(layerWorker), Effect.forkScoped);
+      yield* Deferred.await(reached);
+      yield* TestClock.adjust("1 second");
+      assert.isFalse(yield* Deferred.isDone(drained));
+      yield* Deferred.succeed(release, undefined);
+      assert.equal(yield* Fiber.join(draining), 1);
+      assert.deepEqual(
+        yield* outbox.get(effectId).pipe(Effect.map(Option.map((effect) => effect.status))),
+        Option.some("succeeded"),
+      );
+    }).pipe(Effect.provide(EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)))),
 );

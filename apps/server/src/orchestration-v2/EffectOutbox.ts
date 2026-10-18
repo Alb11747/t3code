@@ -56,6 +56,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
     messageId: MessageId,
+    waitForBoundary: Schema.optional(Schema.Literal(true)),
   }),
   Schema.Struct({
     type: Schema.Literal("provider-turn.restart"),
@@ -210,6 +211,9 @@ export interface EffectOutboxV2Shape {
   readonly cancelUnsettled: (input: {
     readonly threadId: ThreadId;
     readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+    readonly messageIds?: ReadonlyArray<MessageId>;
+    readonly exceptCommandId?: CommandId;
+    readonly preserveBoundarySteers?: true;
     readonly reason: string;
   }) => Effect.Effect<ReadonlyArray<string>, EffectOutboxError>;
   readonly signalCancellations: (effectIds: ReadonlyArray<string>) => Effect.Effect<void>;
@@ -315,6 +319,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       ).pipe(Effect.asVoid);
     // An earlier effect waiting out a retry backoff still blocks later ones, so
     // a turn cannot start while a failed rollback is about to restore files.
+    // Boundary steers yield only to human steering and immediate turn controls.
     const claimableCandidatePredicate = (
       availableBefore?: string,
       excludeRestartContinuations = false,
@@ -330,6 +335,20 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           SELECT 1
           FROM orchestration_v2_effect_outbox AS active
           WHERE active.thread_id = candidate.thread_id
+            AND NOT (
+              active.rowid < candidate.rowid
+              AND active.effect_type = 'provider-turn.steer'
+              AND COALESCE(json_extract(active.payload_json, '$.waitForBoundary'), 0) = 1
+              AND (
+                candidate.effect_type IN (
+                  'provider-turn.interrupt', 'provider-turn.restart', 'runtime-request.respond'
+                )
+                OR (
+                  candidate.effect_type = 'provider-turn.steer'
+                  AND COALESCE(json_extract(candidate.payload_json, '$.waitForBoundary'), 0) != 1
+                )
+              )
+            )
             AND (
               active.status = 'running'
               OR (
@@ -438,9 +457,16 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               : new EffectOutboxError({ operation: "list", cause }),
           ),
         ),
-      cancelUnsettled: ({ threadId, effectTypes, reason }) =>
+      cancelUnsettled: ({
+        threadId,
+        effectTypes,
+        messageIds,
+        exceptCommandId,
+        preserveBoundarySteers,
+        reason,
+      }) =>
         Effect.gen(function* () {
-          if (effectTypes.length === 0) return [];
+          if (effectTypes.length === 0 || messageIds?.length === 0) return [];
           const now = DateTime.formatIso(yield* DateTime.now);
           const rows = yield* sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
@@ -454,6 +480,9 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE thread_id = ${threadId}
               AND status IN ('pending', 'running')
               AND effect_type IN ${sql.in(effectTypes)}
+              AND ${preserveBoundarySteers === true ? sql`NOT (effect_type = 'provider-turn.steer' AND COALESCE(json_extract(payload_json, '$.waitForBoundary'), 0) = 1)` : sql`1 = 1`}
+              AND ${messageIds === undefined ? sql`1 = 1` : sql`json_extract(payload_json, '$.messageId') IN ${sql.in(messageIds)}`}
+              AND ${exceptCommandId === undefined ? sql`1 = 1` : sql`command_id != ${exceptCommandId}`}
             RETURNING effect_id
           `;
           return rows.map(({ effect_id }) => effect_id);
@@ -493,6 +522,9 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         }),
       reconcileAfterProcessLoss: Effect.gen(function* () {
         const now = DateTime.formatIso(yield* DateTime.now);
+        // Boundary input can fall back to a durable follow-up after its native
+        // turn is lost. A crash between hook acceptance and SQL settlement can
+        // still replay input: the provider and this outbox cannot commit together.
         const cancelledRows = yield* sql<{ readonly effect_id: string }>`
           UPDATE orchestration_v2_effect_outbox
           SET
@@ -504,6 +536,10 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             last_error = 'Cancelled because the server process ended before the effect completed.'
           WHERE status IN ('pending', 'running')
             AND effect_type IN ${sql.in(PROCESS_BOUND_EFFECT_TYPES)}
+            AND NOT (
+              effect_type = 'provider-turn.steer'
+              AND COALESCE(json_extract(payload_json, '$.waitForBoundary'), 0) = 1
+            )
           RETURNING effect_id
         `;
         const requeuedRows = yield* sql<{ readonly effect_id: string }>`
@@ -516,7 +552,13 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             updated_at = ${now},
             last_error = 'Requeued after the previous server process ended.'
           WHERE status = 'running'
-            AND effect_type IN ${sql.in(REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS)}
+            AND (
+              effect_type IN ${sql.in(REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS)}
+              OR (
+                effect_type = 'provider-turn.steer'
+                AND COALESCE(json_extract(payload_json, '$.waitForBoundary'), 0) = 1
+              )
+            )
           RETURNING effect_id
         `;
         if (requeuedRows.length > 0) yield* notifyAvailable(requeuedRows.length);
