@@ -561,7 +561,15 @@ describe("orchestrator MCP toolkit", () => {
             makeDeterministicAdapter({
               instanceId: claudeInstanceId,
               driver: ProviderDriverKind.make("claudeAgent"),
-              capabilities: ClaudeProviderCapabilitiesV2,
+              capabilities: {
+                ...ClaudeProviderCapabilitiesV2,
+                turns: {
+                  ...ClaudeProviderCapabilitiesV2.turns,
+                  // This deterministic adapter steers without interrupting tools.
+                  // Real Claude uses boundary hooks, covered by SteeringCompletion.
+                  activeSteeringInterruptsTools: false,
+                },
+              },
               capturedTurns,
               shouldComplete: (turn) => turn.message.text !== cancellationPrompt,
               terminalGate: (turn) =>

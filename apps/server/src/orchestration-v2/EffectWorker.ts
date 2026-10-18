@@ -62,7 +62,7 @@ export function isNonRetryableProviderTurnControlFailure(
 export interface OrchestrationEffectExecutorV2Shape {
   readonly execute: (
     effect: EffectOutbox.OrchestrationEffectV2,
-    options?: { readonly willRetry: boolean },
+    options?: { readonly willRetry: boolean; readonly isCurrent?: Effect.Effect<boolean, unknown> },
   ) => Effect.Effect<void, OrchestrationEffectExecutionError>;
 }
 
@@ -222,6 +222,7 @@ export const layerExecutor: Layer.Layer<
           case "provider-turn.steer":
             return providerTurnControl
               .steer({
+                ...(options?.isCurrent === undefined ? {} : { isCurrent: options.isCurrent }),
                 threadId: effect.threadId,
                 providerSessionId: effect.request.providerSessionId,
                 providerThreadId: effect.request.providerThreadId,
@@ -248,15 +249,18 @@ export const layerExecutor: Layer.Layer<
                     });
                   }),
                 ),
-                Effect.catch((error) =>
+                Effect.as(undefined),
+                Effect.catchTags({
+                  ProviderTurnControlSteerCancelledError: () => Effect.void,
+                  ProviderTurnControlSteerDeferredError: (error) => Effect.succeed(error),
+                  ProviderTurnControlError: (error) =>
+                    error.turnCompleted ? Effect.succeed(error) : Effect.fail(error),
+                }),
+                Effect.flatMap((error) =>
                   Effect.gen(function* () {
-                    if (
-                      !("turnCompleted" in error) ||
-                      !error.turnCompleted ||
-                      effect.request.type !== "provider-turn.steer"
-                    ) {
-                      return yield* error;
-                    }
+                    if (error === undefined) return;
+                    if (effect.request.type !== "provider-turn.steer") return yield* error;
+                    const deferToQueue = error._tag === "ProviderTurnControlSteerDeferredError";
                     const projection = yield* threads.getThreadRecords(
                       effect.threadId,
                       ["messages", "runs"],
@@ -275,6 +279,7 @@ export const layerExecutor: Layer.Layer<
                         threadId: effect.threadId,
                         messageId: message.id,
                         text: message.text,
+                        ...(deferToQueue ? { steeringFallbackOfRunId: run.id } : {}),
                         ...(message.context ? { context: message.context } : {}),
                         attachments: message.attachments,
                         ...(message.delegatedCompletion === undefined
@@ -282,7 +287,7 @@ export const layerExecutor: Layer.Layer<
                           : { modelSelection: run.modelSelection }),
                         dispatchMode: {
                           type:
-                            message.delegatedCompletion === undefined
+                            message.delegatedCompletion === undefined && !deferToQueue
                               ? "start_immediately"
                               : "queue_after_active",
                         },
@@ -724,7 +729,10 @@ export const layerWithOptions = (
           if (cancelledBeforeExecution) return true;
 
           const execution = executor
-            .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
+            .execute(effect, {
+              willRetry: effect.attemptCount < maxAttempts,
+              isCurrent: wasCancelled(effect.id).pipe(Effect.map((cancelled) => !cancelled)),
+            })
             .pipe(Effect.as("executed" as const));
           const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
             Effect.ensuring(outbox.clearCancellation(effect.id)),
