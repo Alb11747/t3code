@@ -248,6 +248,19 @@ const legacyTask: ScheduledTask = {
 };
 
 describe("editing scheduled task branch settings", () => {
+  it.each([undefined, "UTC", "America/Toronto"])(
+    "preserves timeZone %s through an edit",
+    (timeZone) => {
+      const schedule = {
+        type: "fixed_time" as const,
+        timeOfDay: "04:00",
+        weekdays: [1, 3],
+        ...(timeZone ? { timeZone } : {}),
+      };
+      expect(scheduleFromDraft(taskToDraft({ ...legacyTask, schedule }))).toEqual(schedule);
+    },
+  );
+
   it("keeps an omitted origin flag on the local base branch", () => {
     const draft = taskToDraft(legacyTask);
     expect(draft.baseRef).toBe("release");
