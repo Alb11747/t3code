@@ -321,6 +321,19 @@ export class ProviderAdapterSteerRunError extends Schema.TaggedError<ProviderAda
   }
 }
 
+export class ProviderAdapterSteerRunDeferredError extends Schema.TaggedError<ProviderAdapterSteerRunDeferredError>()(
+  "ProviderAdapterSteerRunDeferredError",
+  {
+    driver: ProviderDriverKind,
+    providerThreadId: ProviderThreadId,
+    providerTurnId: ProviderTurnId,
+  },
+) {
+  override get message(): string {
+    return "Active-run steering was deferred to the message queue.";
+  }
+}
+
 export class ProviderAdapterInterruptError extends Schema.TaggedError<ProviderAdapterInterruptError>()(
   "ProviderAdapterInterruptError",
   {
@@ -395,6 +408,7 @@ export const ProviderAdapterV2Error = Schema.Union([
   ProviderAdapterTurnStartError,
   ProviderAdapterSteerRunUnsupportedError,
   ProviderAdapterSteerRunError,
+  ProviderAdapterSteerRunDeferredError,
   ProviderAdapterInterruptError,
   ProviderAdapterRuntimeRequestResponseError,
   ProviderAdapterEventStreamError,
@@ -449,6 +463,8 @@ export interface ProviderAdapterV2SteerInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly providerTurnId: ProviderTurnId;
   readonly message: ProviderAdapterV2TurnMessage;
+  /** Rechecks durable delivery ownership before a delayed boundary handoff. */
+  readonly resolveMessageText?: Effect.Effect<string | undefined, ProviderAdapterSteerRunError>;
 }
 
 export interface ProviderAdapterV2InterruptInput {
