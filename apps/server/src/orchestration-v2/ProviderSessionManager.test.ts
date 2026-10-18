@@ -15,6 +15,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderSessionId,
+  ProviderTurnId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -335,6 +336,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly backgroundTasksEndWithProcess?: boolean;
     readonly hangSessionScopeClose?: boolean;
     readonly startTurn?: Effect.Effect<void>;
+    readonly steerTurn?: Effect.Effect<void>;
     readonly beforeUnload?: Effect.Effect<void>;
     readonly spawnBeforeOpen?: boolean;
     readonly scopeCloseReached?: Deferred.Deferred<void>;
@@ -432,7 +434,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
               resumeCount: current.resumeCount + 1,
             })).pipe(Effect.as(threadInput.providerThread)),
           startTurn: () => options.startTurn ?? Effect.void,
-          steerTurn: () => Effect.void,
+          steerTurn: () => options.steerTurn ?? Effect.void,
           interruptTurn: () =>
             Ref.update(state, (current) => ({
               ...current,
@@ -485,6 +487,7 @@ function layerTest(input: {
   readonly backgroundTasksEndWithProcess?: boolean;
   readonly hangSessionScopeClose?: boolean;
   readonly startTurn?: Effect.Effect<void>;
+  readonly steerTurn?: Effect.Effect<void>;
   readonly beforeUnload?: Effect.Effect<void>;
   readonly spawnBeforeOpen?: boolean;
   readonly scopeCloseReached?: Deferred.Deferred<void>;
@@ -521,6 +524,7 @@ function layerTest(input: {
       ? {}
       : { hangSessionScopeClose: input.hangSessionScopeClose }),
     ...(input.startTurn === undefined ? {} : { startTurn: input.startTurn }),
+    ...(input.steerTurn === undefined ? {} : { steerTurn: input.steerTurn }),
     ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
     ...(input.spawnBeforeOpen === undefined ? {} : { spawnBeforeOpen: input.spawnBeforeOpen }),
     ...(input.scopeCloseReached === undefined
@@ -1396,6 +1400,86 @@ it.effect("ProviderSessionManagerV2 releases an idle session whose turn start wa
       ),
     );
   }),
+);
+
+it.effect.each([
+  { createdBy: "agent", supportsBoundary: true },
+  { createdBy: "user", supportsBoundary: true },
+  { createdBy: "agent", supportsBoundary: false },
+] as const)(
+  "ProviderSessionManagerV2 steering deadline: $createdBy supportsBoundary=$supportsBoundary",
+  ({ createdBy, supportsBoundary }) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const reached = yield* Deferred.make<void>();
+      const delivered = yield* Deferred.make<void>();
+      const settled = yield* Deferred.make<void>();
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-steering-deadline");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const steering = yield* runtime
+          .steerTurn({
+            threadId,
+            runId: idAllocator.derive.run({ threadId, ordinal: 1 }),
+            providerThread: makeProviderThread({ idAllocator, threadId, providerSessionId, now }),
+            providerTurnId: ProviderTurnId.make("provider-turn:steering-deadline"),
+            message: {
+              createdBy,
+              creationSource: createdBy === "agent" ? "server" : "web",
+              messageId: yield* idAllocator.allocate.message({ threadId, ordinal: 1 }),
+              text: "Deliver after the pending tool finishes.",
+              attachments: [],
+            },
+          })
+          .pipe(Effect.ensuring(Deferred.succeed(settled, undefined)), Effect.forkChild);
+        yield* Deferred.await(reached);
+        yield* TestClock.adjust("5 minutes");
+        if (createdBy === "agent" && supportsBoundary) {
+          assert.isFalse(yield* Deferred.isDone(settled));
+          yield* Deferred.succeed(delivered, undefined);
+          yield* Fiber.join(steering);
+        } else {
+          const exit = yield* Fiber.await(steering);
+          assert.isTrue(Exit.isFailure(exit));
+          if (Exit.isFailure(exit)) {
+            assert.include(Cause.pretty(exit.cause), "did not answer the steer within 2 minutes");
+          }
+        }
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 10 * 60_000,
+            capabilities: {
+              ...CodexCapabilities,
+              turns: {
+                ...CodexCapabilities.turns,
+                supportsNonInterruptingAgentSteering: supportsBoundary,
+              },
+            },
+            steerTurn: Deferred.succeed(reached, undefined).pipe(
+              Effect.andThen(Deferred.await(delivered)),
+            ),
+          }),
+        ),
+      );
+    }),
 );
 
 it.effect("ProviderSessionManagerV2 fails a turn start the provider never answers", () =>

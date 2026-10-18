@@ -1,4 +1,4 @@
-import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { HookCallback, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -24,6 +24,7 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -139,6 +140,7 @@ it.effect.each(deliveries)(
         const offers: SDKUserMessage[] = [];
         const nativeQueue: SDKUserMessage[] = [];
         const batchAbort = new AbortController();
+        let postToolBatch: HookCallback | undefined;
         const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
           instanceId: modelSelection.instanceId,
           settings,
@@ -150,8 +152,10 @@ it.effect.each(deliveries)(
           idAllocator: yield* IdAllocator.IdAllocatorV2,
           queryRunner: {
             allocateSessionId: Effect.succeed(sessionId),
-            open: () =>
-              Effect.succeed({
+            open: ({ options }) => {
+              postToolBatch = options.hooks?.PostToolBatch?.[0]?.hooks[0];
+              return Effect.succeed({
+                agentMessageBoundaryInstalled: true,
                 messages: Stream.fromQueue(sdkMessages),
                 offer: (message) =>
                   Effect.sync(() => {
@@ -170,7 +174,8 @@ it.effect.each(deliveries)(
                 stopTask: () => Effect.void,
                 interrupt: Effect.die("automatic delivery must never interrupt"),
                 close: Effect.void,
-              }),
+              });
+            },
             forkSession: () => Effect.die("unused"),
             subagentLaunchToolUseId: () => Effect.succeed(null),
             assertComplete: Effect.void,
@@ -390,7 +395,10 @@ it.effect.each(deliveries)(
             assert.ok(steer?.type === "user_message");
             assert.equal(steer.inputIntent, "promoted_queued_to_steer");
           }
-          yield* worker.drain();
+          const boundaryDelivery =
+            delivery === "child completion" ? yield* worker.drain().pipe(Effect.forkScoped) : null;
+          if (boundaryDelivery !== null) yield* TestClock.adjust("0 millis");
+          else yield* worker.drain();
           const explicitSteer =
             delivery === "user steering" || delivery === "promoted queued message";
           assert.equal(batchAbort.signal.aborted, explicitSteer);
@@ -404,13 +412,31 @@ it.effect.each(deliveries)(
           yield* Queue.offer(sdkMessages, toolResult("build", false));
           for (const id of statusIds)
             yield* Queue.offer(sdkMessages, toolResult(id, batchAbort.signal.aborted));
+          if (boundaryDelivery !== null) {
+            assert.isDefined(postToolBatch);
+            const output = yield* Effect.promise(() =>
+              postToolBatch!(
+                {
+                  hook_event_name: "PostToolBatch",
+                  session_id: sessionId,
+                  cwd,
+                  transcript_path: "transcript.jsonl",
+                  tool_calls: [],
+                },
+                undefined,
+                { signal: batchAbort.signal },
+              ),
+            );
+            assert.include(JSON.stringify(output), "task_status");
+            yield* Fiber.join(boundaryDelivery);
+          }
           if (explicitSteer) yield* Queue.offer(sdkMessages, result("aborted", true));
           yield* Queue.offer(sdkMessages, result("completed", false));
           yield* Fiber.join(finished);
           yield* worker.drain();
           yield* orchestrator.resumeQueuedRuns;
           yield* worker.drain();
-          if (!explicitSteer) {
+          if (delivery === "scheduled message") {
             const queued = (yield* orchestrator.getThreadProjection(threadId)).runs[1]!;
             const noticeFinished = yield* watch(
               (event) =>
@@ -418,18 +444,9 @@ it.effect.each(deliveries)(
                 event.payload.id === queued.id &&
                 event.payload.status === "waiting",
             );
-            const delivered =
-              delivery === "child completion"
-                ? yield* watch(
-                    (event) =>
-                      event.type === "subagent.updated" &&
-                      event.payload.completionDelivery?.state === "delivered",
-                  )
-                : null;
             yield* Queue.offer(sdkMessages, result("notice-completed", false));
             yield* Fiber.join(noticeFinished);
             yield* worker.drain();
-            if (delivered !== null) yield* Fiber.join(delivered);
           }
           const after = yield* orchestrator.getThreadProjection(threadId);
           const reads = after.turnItems.filter((item) =>
@@ -441,13 +458,13 @@ it.effect.each(deliveries)(
             assert.equal(read.toolNonExecutionKind, explicitSteer ? "cancelled" : undefined);
             assert.equal(read.type === "dynamic_tool" && read.output === refusal, explicitSteer);
           }
-          assert.equal(offers.length, 2);
+          assert.equal(offers.length, delivery === "child completion" ? 1 : 2);
           assert.equal(
             offers.filter((offer) => offer.priority === "now").length,
             explicitSteer ? 1 : 0,
           );
           if (!explicitSteer) {
-            assert.equal(after.runs.length, 2);
+            assert.equal(after.runs.length, delivery === "child completion" ? 1 : 2);
             if (delivery === "child completion") {
               assert.equal(after.messages.filter((message) => message.id === messageId).length, 1);
               assert.equal(after.subagents[0]?.completionDelivery?.state, "delivered");
@@ -461,7 +478,7 @@ it.effect.each(deliveries)(
           yield* orchestrator.recoverDelegatedTasks;
           yield* orchestrator.resumeQueuedRuns;
           yield* worker.drain();
-          assert.equal(offers.length, 2);
+          assert.equal(offers.length, delivery === "child completion" ? 1 : 2);
         }).pipe(
           Effect.provide(
             ProviderReplayHarness.layerWithRegistry(

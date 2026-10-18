@@ -1725,7 +1725,7 @@ export const layerWithOptions = (
             },
           });
         // A provider that stops answering fails its own requests instead of
-        // holding the effect that sent them. Every adapter returns once the
+        // holding the effect that sent them. Most operations return once the
         // provider accepts the request and streams the turn as events, so this
         // bounds the acceptance, never a running turn.
         const withinDeadline =
@@ -1898,12 +1898,21 @@ export const layerWithOptions = (
             : {
                 compactThread: (input) => compactThread(input).pipe(withinDeadline("compaction")),
               }),
-          steerTurn: (input) =>
-            observeActivity(providerSessionId, touchActivity(providerSessionId)).pipe(
+          steerTurn: (input) => {
+            const steering = runtime.steerTurn(input);
+            // Boundary steering completes on delivery, which can follow a long-running tool.
+            const awaitsBoundary =
+              input.message.createdBy === "agent" &&
+              runtime.providerSession.capabilities.turns.supportsNonInterruptingAgentSteering ===
+                true;
+            return observeActivity(providerSessionId, touchActivity(providerSessionId)).pipe(
               Effect.andThen(
-                runtime.steerTurn(input).pipe(withinDeadline("steer"), turnMetrics("steer")),
+                (awaitsBoundary ? steering : steering.pipe(withinDeadline("steer"))).pipe(
+                  turnMetrics("steer"),
+                ),
               ),
-            ),
+            );
+          },
           interruptTurn: (input) =>
             observeActivity(providerSessionId, touchActivity(providerSessionId)).pipe(
               Effect.andThen(

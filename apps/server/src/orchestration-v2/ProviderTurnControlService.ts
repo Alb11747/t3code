@@ -16,9 +16,13 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import {
+  delegatedCompletionWakeDetail,
+  isTerminalDelegatedTaskStatus,
+} from "./NotificationMailbox.ts";
 
 const yieldToRuntime = Effect.yieldNow.pipe(
   Effect.andThen(
@@ -44,6 +48,39 @@ export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnCon
 
 const isProviderTurnControlError = Schema.is(ProviderTurnControlError);
 
+export class ProviderTurnControlSteerDeferredError extends Schema.TaggedError<ProviderTurnControlSteerDeferredError>()(
+  "ProviderTurnControlSteerDeferredError",
+  {
+    threadId: ThreadId,
+    providerTurnId: ProviderTurnId,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return "Steering delivery was deferred to the message queue.";
+  }
+}
+
+export class ProviderTurnControlSteerCancelledError extends Schema.TaggedError<ProviderTurnControlSteerCancelledError>()(
+  "ProviderTurnControlSteerCancelledError",
+  {
+    threadId: ThreadId,
+    providerTurnId: ProviderTurnId,
+  },
+) {
+  override get message(): string {
+    return "Steering delivery was cancelled because the message is no longer current.";
+  }
+}
+
+const isProviderTurnControlSteerError = Schema.is(
+  Schema.Union([
+    ProviderTurnControlError,
+    ProviderTurnControlSteerDeferredError,
+    ProviderTurnControlSteerCancelledError,
+  ]),
+);
+
 export interface ProviderTurnControlServiceV2Shape {
   readonly interrupt: (input: {
     readonly subagent?: {
@@ -65,7 +102,13 @@ export interface ProviderTurnControlServiceV2Shape {
     readonly providerThreadId: ProviderThreadId;
     readonly providerTurnId: ProviderTurnId;
     readonly messageId: MessageId;
-  }) => Effect.Effect<void, ProviderTurnControlError>;
+    readonly isCurrent?: Effect.Effect<boolean, unknown>;
+  }) => Effect.Effect<
+    void,
+    | ProviderTurnControlError
+    | ProviderTurnControlSteerDeferredError
+    | ProviderTurnControlSteerCancelledError
+  >;
   readonly interruptAndAwaitTerminal: (input: {
     readonly threadId: ThreadId;
     readonly providerSessionId: ProviderSessionId;
@@ -323,20 +366,55 @@ export const layer: Layer.Layer<
         Effect.gen(function* () {
           const context = yield* projections.getProviderControlContext(input.threadId, input);
           const ownership = context.message?.delegatedCompletion;
-          if (ownership !== undefined) {
-            const projection = yield* projections.getThreadRecords(input.threadId, ["runs"], {
-              runIds: [ownership.parentRunId],
-            });
-            const cohort = projection.runs.find(
-              (run) => run.id === ownership.parentRunId,
-            )?.delegatedCompletion;
+          const completionTaskIds =
+            ownership === undefined
+              ? undefined
+              : Effect.gen(function* () {
+                  const projection = yield* projections.getThreadRecords(input.threadId, ["runs"], {
+                    runIds: [ownership.parentRunId],
+                  });
+                  const cohort = projection.runs.find(
+                    (run) => run.id === ownership.parentRunId,
+                  )?.delegatedCompletion;
+                  if (
+                    cohort?.disposition !== "open" ||
+                    cohort.delivery?.messageId !== input.messageId ||
+                    cohort.delivery.generation !== ownership.generation ||
+                    cohort.delivery.taskIds.length === 0
+                  )
+                    return null;
+                  return cohort.delivery.taskIds;
+                });
+          if (completionTaskIds !== undefined && (yield* completionTaskIds) === null) return;
+          const questionIsCurrent = Effect.gen(function* () {
+            const message = context.message;
+            const source = message?.notification?.source;
             if (
-              cohort?.disposition !== "open" ||
-              cohort.delivery?.messageId !== input.messageId ||
-              cohort.delivery.generation !== ownership.generation ||
-              cohort.delivery.taskIds.length === 0
+              message?.id.startsWith("message:delegated-task-question:") !== true ||
+              source?.kind !== "delegated_task"
             )
-              return;
+              return true;
+            const parent = yield* projections.getThreadRecords(input.threadId, ["subagents"]);
+            const task = parent.subagents.find(
+              (candidate) =>
+                candidate.origin === "app_owned" &&
+                candidate.childThreadId === source.childThreadId &&
+                source.taskIds.includes(candidate.id),
+            );
+            return (
+              task !== undefined &&
+              !isTerminalDelegatedTaskStatus(task.status) &&
+              task.completionDelivery?.state !== "disposed" &&
+              parent.thread.archivedAt === null &&
+              parent.thread.deletedAt === null
+            );
+          });
+          // Recovery may reject a retired target before reaching the hook resolver.
+          if (!(yield* questionIsCurrent)) {
+            return yield* new ProviderTurnControlSteerCancelledError({
+              threadId: input.threadId,
+              providerTurnId: input.providerTurnId,
+            });
           }
           const loaded = yield* load({ ...input, operation: "steer" });
           if (Option.isNone(loaded.session)) return;
@@ -349,18 +427,37 @@ export const layer: Layer.Layer<
               cause: "The persisted steering message or target run is missing.",
             });
           }
+          const text = projectComposerContextForProvider({
+            text: message.text,
+            records: message.context?.records ?? [],
+          });
+          const resolveMessageText = Effect.gen(function* () {
+            if (input.isCurrent !== undefined && !(yield* input.isCurrent)) return undefined;
+            if (!(yield* questionIsCurrent)) return undefined;
+            if (completionTaskIds === undefined) return text;
+            const taskIds = yield* completionTaskIds;
+            return taskIds === null ? undefined : delegatedCompletionWakeDetail(taskIds);
+          });
           yield* loaded.session.value
             .steerTurn({
               threadId: input.threadId,
               runId: run.id,
               providerThread: loaded.providerThread,
               providerTurnId: loaded.providerTurn.id,
+              resolveMessageText: resolveMessageText.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapter.ProviderAdapterSteerRunError({
+                      driver: loaded.providerThread.driver,
+                      providerThreadId: loaded.providerThread.id,
+                      providerTurnId: loaded.providerTurn.id,
+                      cause,
+                    }),
+                ),
+              ),
               message: {
                 messageId: message.id,
-                text: projectComposerContextForProvider({
-                  text: message.text,
-                  records: message.context?.records ?? [],
-                }),
+                text,
                 attachments: message.attachments,
                 createdBy: message.createdBy,
                 creationSource: message.creationSource,
@@ -375,6 +472,19 @@ export const layer: Layer.Layer<
             .pipe(
               Effect.catch((cause) =>
                 Effect.gen(function* () {
+                  if ((yield* resolveMessageText) === undefined) {
+                    return yield* new ProviderTurnControlSteerCancelledError({
+                      threadId: input.threadId,
+                      providerTurnId: input.providerTurnId,
+                    });
+                  }
+                  if (cause._tag === "ProviderAdapterSteerRunDeferredError") {
+                    return yield* new ProviderTurnControlSteerDeferredError({
+                      threadId: input.threadId,
+                      providerTurnId: input.providerTurnId,
+                      cause,
+                    });
+                  }
                   const current = yield* projections.getProviderControlContext(
                     input.threadId,
                     input,
@@ -389,9 +499,15 @@ export const layer: Layer.Layer<
                 }),
               ),
             );
+          if (input.isCurrent !== undefined && !(yield* input.isCurrent)) {
+            return yield* new ProviderTurnControlSteerCancelledError({
+              threadId: input.threadId,
+              providerTurnId: input.providerTurnId,
+            });
+          }
         }).pipe(
           Effect.mapError((cause) =>
-            isProviderTurnControlError(cause)
+            isProviderTurnControlSteerError(cause)
               ? cause
               : new ProviderTurnControlError({
                   threadId: input.threadId,
