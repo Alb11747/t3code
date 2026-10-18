@@ -16,6 +16,79 @@ import * as ScheduledTaskService from "./ScheduledTaskService.ts";
 
 const decodeUpsertInput = Schema.decodeUnknownEffect(ScheduledTaskUpsertInput);
 
+it.effect("recalculates zone-only edits and preserves zones omitted by older clients", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(
+      DateTime.toEpochMillis(DateTime.makeUnsafe("2026-03-08T03:00:00.000Z")),
+    );
+    const layerDependencies = Layer.mergeAll(
+      NodeCrypto.layer,
+      Scheduler.layer,
+      Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+      Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+      Layer.mock(SecretRequests.SecretRequests)({}),
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const input = yield* decodeUpsertInput({
+        title: "Dailies",
+        prompt: "Claim daily rewards.",
+        enabled: true,
+        schedule: { type: "fixed_time", timeOfDay: "04:00", timeZone: "UTC" },
+        projectId: "project-time-zone",
+        workspaceStrategy: { type: "root" },
+        modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      });
+      const created = (yield* service.upsert(input)).task;
+      expect(created.nextRunAt).toBe("2026-03-08T04:00:00.000Z");
+      const changed = (yield* service.upsert({
+        ...input,
+        id: created.id,
+        schedule: { type: "fixed_time", timeOfDay: "04:00", timeZone: "America/Toronto" },
+      })).task;
+      expect(changed.nextRunAt).toBe("2026-03-08T08:00:00.000Z");
+      const legacyEdit = (yield* service.upsert({
+        ...input,
+        id: created.id,
+        title: "Edited on old mobile",
+        schedule: { type: "fixed_time", timeOfDay: "04:00" },
+      })).task;
+      expect(legacyEdit.schedule).toEqual(changed.schedule);
+      expect(legacyEdit.nextRunAt).toBe(changed.nextRunAt);
+      expect((yield* service.list()).tasks[0]?.schedule).toEqual(changed.schedule);
+      const changedTime = (yield* service.upsert({
+        ...input,
+        id: created.id,
+        schedule: { type: "fixed_time", timeOfDay: "05:00" },
+      })).task;
+      expect(changedTime.schedule).toEqual({
+        type: "fixed_time",
+        timeOfDay: "05:00",
+        timeZone: "America/Toronto",
+      });
+      expect(changedTime.nextRunAt).toBe("2026-03-08T09:00:00.000Z");
+      for (const timeZone of ["Not/AZone", "+05:00"]) {
+        const invalidSchedule = { type: "fixed_time", timeOfDay: "04:00", timeZone } as const;
+        const failure = yield* service
+          .upsert({ ...input, schedule: invalidSchedule })
+          .pipe(Effect.flip);
+        expect(failure.message).toBe("Schedule time zone must be an IANA name such as UTC.");
+        const editFailure = yield* service
+          .upsert({
+            ...input,
+            id: created.id,
+            schedule: invalidSchedule,
+          })
+          .pipe(Effect.flip);
+        expect(editFailure.message).toBe(failure.message);
+      }
+      expect((yield* service.list()).tasks).toEqual([changedTime]);
+    }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 it.effect("rejects a stale form save after deletion while preserving explicit-id creates", () =>
   Effect.gen(function* () {
     const layerDependencies = Layer.mergeAll(

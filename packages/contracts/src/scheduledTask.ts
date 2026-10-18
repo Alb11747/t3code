@@ -43,6 +43,13 @@ const ScheduledTaskFixedTimeSchedule = Schema.Struct({
     description: "Select a fixed local wall-clock time.",
   }),
   timeOfDay: TimeOfDay,
+  // The server validates zone names on writes. Clients with older time-zone
+  // databases must still be able to read and resave server-supported zones.
+  timeZone: Schema.optional(
+    TrimmedNonEmptyString.annotate({
+      description: "IANA time zone, including UTC. Omit to use the server's local time zone.",
+    }),
+  ),
   weekdays: Schema.optional(
     Schema.Array(
       Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 })).annotate({

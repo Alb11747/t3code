@@ -19,6 +19,19 @@ import {
 } from "./scheduledTaskDraft";
 
 describe("scheduleDraftForTask", () => {
+  it.each([undefined, "UTC", "America/Toronto"])(
+    "preserves timeZone %s through an edit",
+    (timeZone) => {
+      const schedule = {
+        type: "fixed_time" as const,
+        timeOfDay: "04:00",
+        weekdays: [1, 3],
+        ...(timeZone ? { timeZone } : {}),
+      };
+      expect(scheduleFromDraft(scheduleDraftForTask({ schedule }))).toEqual(schedule);
+    },
+  );
+
   it("opens legacy sub-minute schedules at the writable minimum", () => {
     const draft = scheduleDraftForTask({ schedule: { type: "interval", everyMs: 30_000 } });
     expect(draft.intervalMinutes).toBe("1");

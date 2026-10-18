@@ -2229,6 +2229,18 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
     );
 
+    it.effect("returns the fixed-time zone to agents listing scheduled tasks", () =>
+      Effect.gen(function* () {
+        const upserted = yield* Ref.make(0);
+        const schedule = { type: "fixed_time", timeOfDay: "04:00", timeZone: "UTC" } as const;
+        const listed = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.flatMap((mcp) => mcp.listScheduledTasks(supervisedClient, { projectId })),
+          Effect.provide(service([task({ schedule, webhook: undefined })], null, upserted)),
+        );
+        assert.deepEqual(listed.tasks[0]?.schedule, schedule);
+      }),
+    );
+
     it.effect("never shows a read-only client a webhook URL", () =>
       Effect.gen(function* () {
         const upserted = yield* Ref.make(0);
