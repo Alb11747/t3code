@@ -66,7 +66,10 @@ Open **Settings → Scheduled tasks** to create recurring tasks or manage existi
 ones across your connected environments. Use the settings filter to narrow the
 list by environment or project. Each task runs on the environment you choose,
 using its project, model, and workspace settings. Fixed-time schedules use that
-environment's time zone, which may differ from your phone's.
+environment's time zone by default, which may differ from your phone's. Agents
+can specify an IANA `timeZone` in a fixed-time schedule, such as
+`{type:"fixed_time", timeOfDay:"04:00", timeZone:"UTC"}` for 04:00 UTC daily.
+Editing the task keeps its configured time zone.
 
 You can edit, pause, resume, run immediately, or delete a task from the list.
 Webhook tasks only run when their URL is called, so they can't be run
