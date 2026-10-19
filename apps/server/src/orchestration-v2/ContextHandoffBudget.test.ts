@@ -672,135 +672,68 @@ describe("handoff delivery", () => {
   );
 
   it.effect.each([true, false])(
-    "retries deferred history until it fits, delivering once (native=%s)",
+    "retains deferred history until an interrupted send is confirmed (native=%s)",
     (native) =>
       Effect.gen(function* () {
         let durable = handoff;
-        let calls = 0;
-        const persisted: OrchestrationV2ContextHandoff[] = [];
         const input = {
-          providerThread,
+          providerThread: native ? providerThread : { ...providerThread, nativeThreadRef: null },
           alreadyDeliveredItemIds: new Set<string>(),
-          inject: () =>
-            Effect.sync(() => {
-              calls++;
-              return native;
-            }),
           persist: (value: OrchestrationV2ContextHandoff) =>
             Effect.sync(() => {
               durable = decodePersistedHandoff(encodeHandoff(value));
-              persisted.push(durable);
             }),
         };
-        const first = yield* deliverContextHandoffs({ ...input, handoffs: [durable], budget: 0 });
-        assert.equal(first.context, "");
-        yield* first.delivered;
-        yield* first.unsent;
-        assert.equal(durable.deferred, true);
-        assert.isUndefined(persisted[0]!.delivery);
-        assert.equal(calls, 0);
-        assert.lengthOf(persisted, 1);
-
-        const stillTooSmall = yield* deliverContextHandoffs({
+        const deferred = yield* deliverContextHandoffs({
           ...input,
           handoffs: [durable],
           budget: 0,
         });
-        assert.equal(stillTooSmall.context, "");
+        assert.equal(deferred.context, "");
         assert.equal(durable.deferred, true);
-        assert.equal(calls, 0);
-        assert.lengthOf(persisted, 1);
+        assert.isUndefined(durable.delivery);
 
-        const fits = yield* deliverContextHandoffs({
-          ...input,
-          handoffs: [durable],
-          budget: 16_000,
-        });
-        assert.equal(durable.deferred, native ? undefined : true);
-        assert.equal(fits.context === "", native);
-        if (!native) assert.include(fits.context, messages[0]!.text);
-        yield* fits.delivered;
-        assert.isUndefined(durable.deferred);
-        assert.equal(durable.delivery?.status, native ? "injected" : "inline");
-        const writes = persisted.length;
-        const later = yield* deliverContextHandoffs({
-          ...input,
-          handoffs: [durable],
-          budget: 16_000,
-        });
-        assert.equal(later.context, "");
-        yield* later.delivered;
-        assert.equal(calls, 1);
-        assert.lengthOf(persisted, writes);
-      }),
-  );
-
-  it.effect("stops retrying deferred history sent inline before the native thread exists", () =>
-    Effect.gen(function* () {
-      let durable: OrchestrationV2ContextHandoff = { ...handoff, deferred: true };
-      const delivery = yield* deliverContextHandoffs({
-        handoffs: [durable],
-        providerThread: { ...providerThread, nativeThreadRef: null },
-        budget: 16_000,
-        alreadyDeliveredItemIds: new Set(),
-        persist: (value) =>
-          Effect.sync(() => {
-            durable = decodePersistedHandoff(encodeHandoff(value));
-          }),
-      });
-      assert.include(delivery.context, messages[0]!.text);
-      assert.equal(durable.deferred, true);
-      yield* delivery.delivered;
-      assert.isUndefined(durable.deferred);
-    }),
-  );
-
-  it.effect.each([true, false])(
-    "retains deferred history through an interrupted send (native=%s)",
-    (native) =>
-      Effect.gen(function* () {
-        let durable: OrchestrationV2ContextHandoff = { ...handoff, deferred: true };
-        const persist = (value: OrchestrationV2ContextHandoff) =>
-          Effect.sync(() => {
-            durable = decodePersistedHandoff(encodeHandoff(value));
-          });
         const send = deliverContextHandoffs({
+          ...input,
           handoffs: [durable],
-          providerThread: native ? providerThread : { ...providerThread, nativeThreadRef: null },
           budget: 16_000,
-          alreadyDeliveredItemIds: new Set(),
           ...(native ? { inject: () => Effect.fail("lost injection acknowledgement") } : {}),
-          persist,
         });
         if (native) {
           assert.equal(yield* send.pipe(Effect.flip), "lost injection acknowledgement");
           assert.equal(durable.delivery?.status, "pending");
         } else {
-          const delivery = yield* send;
-          assert.include(delivery.context, messages[0]!.text);
+          assert.include((yield* send).context, messages[0]!.text);
           assert.isUndefined(durable.delivery);
         }
         assert.equal(durable.deferred, true);
 
         let injectedText = "";
-        yield* deliverContextHandoffs({
+        const recovered = yield* deliverContextHandoffs({
+          ...input,
           handoffs: [durable],
-          providerThread: {
-            ...providerThread,
-            nativeThreadRef: { ...providerThread.nativeThreadRef!, nativeId: "native:replacement" },
-          },
           budget: 16_000,
-          alreadyDeliveredItemIds: new Set(),
-          inject: (history) =>
-            Effect.sync(() => {
-              injectedText = history.messages.map((message) => message.text).join("\n");
-              return true;
-            }),
-          persist,
+          ...(native
+            ? {
+                providerThread: {
+                  ...providerThread,
+                  nativeThreadRef: {
+                    ...providerThread.nativeThreadRef!,
+                    nativeId: "native:replacement",
+                  },
+                },
+                inject: (history: ProviderAdapter.ProviderAdapterV2HistoricalContext) =>
+                  Effect.sync(() => {
+                    injectedText = history.messages.map((message) => message.text).join("\n");
+                    return true;
+                  }),
+              }
+            : {}),
         });
-        assert.include(injectedText, messages[0]!.text);
+        assert.include(native ? injectedText : recovered.context, messages[0]!.text);
+        yield* recovered.delivered;
         assert.isUndefined(durable.deferred);
-        assert.equal(durable.delivery?.status, "injected");
+        if (native) assert.equal(durable.delivery?.status, "injected");
       }),
   );
 });

@@ -1190,13 +1190,12 @@ describe("orchestration v2 provider switching", () => {
       ),
   );
 
-  it.live.each([false, true])("reuses native sessions after refused turns (%s)", (deferred) =>
+  it.live("keeps the native session after turns refused before reaching the provider", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("refused-start-keeps-native");
         const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
         const refuseStarts = yield* Ref.make(0);
-        let modelWindow = 32_000;
         const generation = yield* Ref.make(0);
         const registry = ProviderAdapterRegistry.layerFromAdapters([
           makeTestAdapter({
@@ -1207,7 +1206,6 @@ describe("orchestration v2 provider switching", () => {
             responseByRunOrdinal: {},
             capturedTurns,
             refuseStarts,
-            ...(deferred ? { getModelContextWindow: () => modelWindow } : {}),
             nativeThreadGeneration: generation,
           }),
         ]);
@@ -1254,35 +1252,8 @@ describe("orchestration v2 provider switching", () => {
             worktreePath: null,
           });
           assert.equal(yield* run(1), "completed");
-          yield* Ref.set(refuseStarts, deferred ? 1 : 2);
+          yield* Ref.set(refuseStarts, 2);
           assert.equal(yield* run(2), "failed");
-          if (deferred) {
-            modelWindow = 16_000;
-            assert.equal(yield* run(3), "completed");
-            const first = (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs;
-            assert.lengthOf(first, 1);
-            assert.equal(first[0]!.deferred, true);
-            assert.equal(yield* run(4), "completed");
-            const later = (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs;
-            assert.lengthOf(later, 1);
-            assert.equal(later[0]!.id, first[0]!.id);
-            assert.equal(later[0]!.deferred, true);
-
-            modelWindow = 32_000;
-            assert.equal(yield* run(5), "completed");
-            const delivered = (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs;
-            assert.lengthOf(delivered, 1);
-            assert.equal(delivered[0]!.id, first[0]!.id);
-            assert.isUndefined(delivered[0]!.deferred);
-            assert.equal(delivered[0]!.delivery?.status, "inline");
-            const accepted = (yield* Ref.get(capturedTurns)).at(-1)!;
-            assert.equal(accepted.text.split("Request 2").length - 1, 1);
-            assert.equal(yield* run(6), "completed");
-            assert.notInclude((yield* Ref.get(capturedTurns)).at(-1)!.text, "Request 2");
-            assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).contextHandoffs, 1);
-            assert.equal(yield* Ref.get(generation), 1);
-            return;
-          }
           assert.equal(yield* run(3), "failed");
           assert.equal(yield* run(4), "completed");
 
@@ -1309,6 +1280,131 @@ describe("orchestration v2 provider switching", () => {
         );
       }),
     ),
+  );
+
+  it.live(
+    "defers missed-run history until after compaction without blocking or duplicating turns",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const cwd = yield* checkpointWorkspace("deferred-missed-run");
+          const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+          const refuseStarts = yield* Ref.make(0);
+          const generation = yield* Ref.make(0);
+          const registry = ProviderAdapterRegistry.layerFromAdapters([
+            makeTestAdapter({
+              instanceId: CLAUDE_MODEL_SELECTION.instanceId,
+              driver: CLAUDE_DRIVER,
+              capabilities: ClaudeProviderCapabilitiesV2,
+              modelSelection: CLAUDE_MODEL_SELECTION,
+              responseByRunOrdinal: {},
+              capturedTurns,
+              refuseStarts,
+              getModelContextWindow: () => 32_000,
+              tokenUsageByRunOrdinal: {
+                1: { usedTokens: 30_000, maxTokens: 32_000 },
+                5: { usedTokens: 100, maxTokens: 32_000 },
+              },
+              nativeThreadGeneration: generation,
+            }),
+          ]);
+          yield* Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+            const run = Effect.fn("run")(function* (ordinal: number, text = `Request ${ordinal}`) {
+              yield* orchestrator.dispatch({
+                type: "message.dispatch",
+                commandId: CommandId.make(`deferred-missed-run:${ordinal}`),
+                threadId,
+                messageId: MessageId.make(`deferred-missed-run:${ordinal}`),
+                createdBy: "user",
+                creationSource: "web",
+                text,
+                attachments: [],
+                modelSelection: CLAUDE_MODEL_SELECTION,
+                dispatchMode: { type: "start_immediately" },
+              });
+              yield* orchestrator.streamStoredEvents.pipe(
+                Stream.filter(
+                  ({ event }) =>
+                    event.type === "run.updated" &&
+                    event.payload.ordinal === ordinal &&
+                    (event.payload.status === "completed" || event.payload.status === "failed"),
+                ),
+                Stream.runHead,
+              );
+              yield* worker.drain();
+              return (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)?.status;
+            });
+            yield* orchestrator.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make("deferred-missed-run:create"),
+              threadId,
+              projectId,
+              createdBy: "user",
+              creationSource: "web",
+              title: "Refused start",
+              modelSelection: CLAUDE_MODEL_SELECTION,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+            });
+            assert.equal(yield* run(1), "completed");
+            yield* Ref.set(refuseStarts, 1);
+            assert.equal(yield* run(2), "failed");
+            assert.equal(yield* run(3), "completed");
+            assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, "Request 3");
+            const first = (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs;
+            assert.lengthOf(first, 1);
+            assert.equal(first[0]!.deferred, true);
+            assert.isUndefined(first[0]!.delivery);
+
+            assert.equal(yield* run(4), "completed");
+            assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, "Request 4");
+            assert.deepEqual(
+              (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs,
+              first,
+            );
+            assert.equal(yield* run(5, "/compact"), "completed");
+            const compacted = yield* orchestrator.getThreadProjection(threadId);
+            assert.deepEqual(compacted.contextHandoffs, first);
+            assert.equal(compacted.providerTurns.at(-1)?.tokenUsage?.usedTokens, 100);
+
+            assert.equal(yield* run(6), "completed");
+            const delivered = (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs;
+            assert.lengthOf(delivered, 1);
+            assert.equal(delivered[0]!.id, first[0]!.id);
+            assert.isUndefined(delivered[0]!.deferred);
+            assert.equal(delivered[0]!.delivery?.status, "inline");
+            const accepted = (yield* Ref.get(capturedTurns)).at(-1)!;
+            assert.equal(accepted.text.split("Request 2").length - 1, 1);
+            assert.isTrue(accepted.text.endsWith("Request 6"));
+
+            assert.equal(yield* run(7), "completed");
+            assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, "Request 7");
+            assert.deepEqual(
+              (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs,
+              delivered,
+            );
+            assert.equal(yield* Ref.get(generation), 1);
+          }).pipe(
+            Effect.provide(
+              ProviderReplayHarness.layerWithRegistry(
+                {
+                  name: "deferred-missed-run",
+                  runtimePolicyOverride: {
+                    cwd,
+                    approvalPolicy: "never",
+                    sandboxPolicy: { type: "readOnly" },
+                  },
+                },
+                registry,
+              ),
+            ),
+          );
+        }),
+      ),
   );
 
   it.live.each(
