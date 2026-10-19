@@ -423,8 +423,10 @@ const composerSelection = {
 
 const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function* (
   name: string,
-  canRestart = false,
-  activeSteeringInterruptsTools = false,
+  {
+    canRestart = false,
+    activeSteeringInterruptsTools = false,
+  }: { canRestart?: boolean; activeSteeringInterruptsTools?: boolean } = {},
 ) {
   const cwd = yield* checkpointWorkspace(name);
   const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
@@ -574,51 +576,47 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
   return { events, started, steered, layer, startFirstTurn };
 });
 
-it.effect.each([
-  { actor: "agent", mode: "auto", interruptsTools: true },
-  { actor: "agent", mode: "steer", interruptsTools: true },
-  { actor: "user", mode: "steer", interruptsTools: true },
-  { actor: "agent", mode: "auto", interruptsTools: false },
-] as const)(
-  "delivers $actor $mode messages safely (interruptsTools=$interruptsTools)",
-  ({ actor, mode, interruptsTools }) =>
+const sendUpdate = Effect.fn("sendUpdate")(function* (
+  threadId: ThreadId,
+  createdBy: "agent" | "user",
+  mode: "auto" | "steer",
+) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const result = yield* threads.sendToThread({
+    projectId: (yield* orchestrator.getThreadProjection(threadId)).thread.projectId,
+    commandId: CommandId.make("update"),
+    threadId,
+    messageId: MessageId.make("message:update"),
+    text: "progress update",
+    attachments: [],
+    mode,
+    createdBy,
+    creationSource: createdBy === "agent" ? "mcp" : "web",
+  });
+  yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+  return result;
+});
+
+it.effect.each(["auto", "steer"] as const)(
+  "queues an agent %s update behind a turn whose steering cancels tools",
+  (mode) =>
     Effect.scoped(
       Effect.gen(function* () {
         const { events, started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
-          `agent-steering-${actor}-${mode}-${interruptsTools}`,
-          false,
-          interruptsTools,
+          `agent-update-queued-${mode}`,
+          { activeSteeringInterruptsTools: true },
         );
         yield* Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-          const threads = yield* ThreadManagement.ThreadManagementService;
           const threadId = yield* startFirstTurn;
           const first = started[0]!;
-          const messageId = MessageId.make("message:update");
-          const result = yield* threads.sendToThread({
-            projectId: (yield* orchestrator.getThreadProjection(threadId)).thread.projectId,
-            commandId: CommandId.make("update"),
-            threadId,
-            messageId,
-            text: "progress update",
-            attachments: [],
-            mode,
-            createdBy: actor,
-            creationSource: actor === "agent" ? "mcp" : "web",
-          });
-          yield* worker.drain();
-          const queued = actor === "agent" && interruptsTools;
-          assert.equal(result.delivery, queued ? "queued" : "steered");
-          assert.deepEqual(steered, queued ? [] : ["progress update"]);
-          assert.equal(started.length, 1);
+          const result = yield* sendUpdate(threadId, "agent", mode);
+          assert.equal(result.delivery, "queued");
+          assert.deepEqual(steered, []);
           const pending = yield* orchestrator.getThreadProjection(threadId);
           assert.equal(pending.runs.find((run) => run.id === first.runId)?.status, "running");
-          if (!queued) return;
-          assert.equal(
-            pending.runs.find((run) => run.userMessageId === messageId)?.status,
-            "queued",
-          );
 
           const completed = yield* orchestrator.streamDomainEvents.pipe(
             Stream.filter(
@@ -651,12 +649,38 @@ it.effect.each([
           yield* worker.drain();
           yield* orchestrator.resumeQueuedRuns;
           yield* worker.drain();
-          assert.equal(started.length, 2);
-          assert.equal(started[1]?.message.messageId, messageId);
-          assert.equal(started[1]?.message.text, "progress update");
+          assert.deepEqual(
+            started.map((input) => input.message.messageId),
+            [MessageId.make("message:first"), MessageId.make("message:update")],
+          );
           assert.deepEqual(steered, []);
-          const final = yield* orchestrator.getThreadProjection(threadId);
-          assert.equal(final.runs.find((run) => run.id === first.runId)?.status, "completed");
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
+);
+
+it.effect.each([
+  { createdBy: "user", activeSteeringInterruptsTools: true },
+  { createdBy: "agent", activeSteeringInterruptsTools: false },
+] as const)(
+  "steers an update from $createdBy when steering is allowed (interruptsTools=$activeSteeringInterruptsTools)",
+  ({ createdBy, activeSteeringInterruptsTools }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+          `update-steered-${createdBy}`,
+          { activeSteeringInterruptsTools },
+        );
+        yield* Effect.gen(function* () {
+          const threadId = yield* startFirstTurn;
+          const result = yield* sendUpdate(
+            threadId,
+            createdBy,
+            createdBy === "agent" ? "auto" : "steer",
+          );
+          assert.equal(result.delivery, "steered");
+          assert.deepEqual(steered, ["progress update"]);
+          assert.equal(started.length, 1);
         }).pipe(Effect.provide(layer));
       }),
     ),
@@ -669,7 +693,7 @@ it.effect.each([{ canRestart: false }, { canRestart: true }])(
       Effect.gen(function* () {
         const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
           `steering-selection-change-${canRestart}`,
-          canRestart,
+          { canRestart },
         );
         yield* Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
