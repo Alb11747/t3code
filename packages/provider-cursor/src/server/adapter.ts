@@ -2343,14 +2343,18 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                       status,
                       ...(status === "failed"
                         ? {
-                            failure: makeProviderFailure({
-                              cause:
-                                transportFailure ?? (result as { readonly error?: unknown }).error,
-                              class:
-                                transportFailure === undefined
-                                  ? "provider_error"
-                                  : "transport_error",
-                            }),
+                            failure:
+                              transportFailure === undefined
+                                ? makeProviderFailure({
+                                    cause: result.error,
+                                    // makeProviderFailure never reads a cause's own text.
+                                    message: result.error?.message,
+                                    class: "provider_error",
+                                  })
+                                : makeProviderFailure({
+                                    cause: transportFailure,
+                                    class: "transport_error",
+                                  }),
                           }
                         : {}),
                     });
@@ -2366,7 +2370,13 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                       ...(context.interrupted
                         ? {}
                         : {
-                            failure: makeProviderFailure({ cause, class: "transport_error" }),
+                            failure: makeProviderFailure({
+                              cause,
+                              message: CursorAgentSdk.isCursorAgentSdkRunnerError(cause)
+                                ? CursorAgentSdk.cursorSdkFailureMessage(cause)
+                                : undefined,
+                              class: "transport_error",
+                            }),
                           }),
                     });
                   }
