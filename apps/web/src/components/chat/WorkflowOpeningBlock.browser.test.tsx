@@ -114,7 +114,11 @@ it("shows a short script as highlighted code with nothing to open", async () => 
     await getSyntaxHighlighterPromise("javascript");
   });
   expect(host.querySelector('[data-language="javascript"]')?.textContent).toContain("SCRIPTONLY");
-  await vi.waitFor(() => expect(host.querySelector(".chat-markdown-shiki")).not.toBeNull());
+  // The first JavaScript highlight loads its grammar, which can take over a
+  // second on small CI runners.
+  await vi.waitFor(() => expect(host.querySelector(".chat-markdown-shiki")).not.toBeNull(), {
+    timeout: 5_000,
+  });
   expect(foldToggle()).toBeUndefined();
 });
 
