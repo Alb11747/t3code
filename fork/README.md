@@ -429,9 +429,11 @@ candidate itself with `t3-resolver/settle-candidate.sh`: it waits for the
 review PR's checks and Codex's review of that exact SHA, and dispatches
 promotion only if checks passed, Codex found nothing, and main is unchanged.
 Codex reviews automatically only when the PR opens, so for a reused PR the
-helper comments `@codex review` as the owner. Otherwise, including when Codex
-is out of review usage, it comments the reason on the tracking issue and the
-candidate waits for a person.
+helper comments `@codex review` as the owner. When checks fail or Codex has
+findings, the helper reopens the request and the resolver fixes the cause in
+the responsible patch and publishes again, at most twice. Otherwise, including
+when Codex is out of review usage, it comments the reason on the tracking issue
+and the candidate waits for a person.
 
 To resolve a conflict locally (use the artifact's `upstream_sha` to reconstruct
 the original request, or omit `--onto` to sync to today's upstream):
@@ -480,7 +482,7 @@ and publishes a candidate after focused validation. It stops after about an
 hour on an unrecoverable problem, comments with the reason, and preserves state.
 It never pushes main. Repository content and dependencies can execute code or
 contain prompt injection; this personal root/SSH setup is not a credential
-sandbox. Candidates with failing checks, Codex findings, or resolver concerns
+sandbox. Candidates the resolver cannot make pass, or that it has concerns about,
 still need human review; clean ones promote themselves (_Syncing with upstream_).
 
 State defaults to `/root/Local/Agents/Work/t3code-fork-resolver` (override with
