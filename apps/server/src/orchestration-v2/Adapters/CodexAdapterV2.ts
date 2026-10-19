@@ -6194,10 +6194,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         ) =>
           Effect.gen(function* () {
             const threadId = yield* getNativeThreadId(turnInput.providerThread);
-            const mcpSession = yield* mcpSessions.read(
-              turnInput.threadId,
-              adapterOptions.instanceId,
-            );
+            const mcpSession = yield* readMcpSession(turnInput.threadId);
             const turnStartParams = yield* buildCodexTurnStartParams({
               nativeThreadId: threadId,
               codexInput,
@@ -6468,7 +6465,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }),
           ensureThread: (threadInput) =>
             ensureInitialized.pipe(
-              Effect.andThen(mcpSessions.read(threadInput.threadId, adapterOptions.instanceId)),
+              Effect.andThen(readMcpSession(threadInput.threadId)),
               Effect.flatMap((mcpSession) =>
                 client.request(
                   "thread/start",
@@ -7274,10 +7271,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       ? {}
                       : { lastTurnId: boundary.lastTurnId }),
                     ...codexThreadRuntimeParams({
-                      mcpSession: yield* mcpSessions.read(
-                        threadInput.targetThreadId,
-                        adapterOptions.instanceId,
-                      ),
+                      mcpSession: yield* readMcpSession(threadInput.targetThreadId),
                       ...(threadInput.modelSelection === undefined
                         ? {}
                         : { modelSelection: threadInput.modelSelection }),

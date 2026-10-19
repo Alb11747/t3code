@@ -14,10 +14,6 @@ export class McpProviderSessions extends Context.Service<
       threadId: ThreadId,
       providerInstanceId: ProviderInstanceId,
     ) => Effect.Effect<McpProviderSessionConfig | undefined>;
-    /**
-     * Clears the thread's credentials for every provider instance, or only the
-     * one whose credential id is `providerSessionId`.
-     */
     readonly clear: (threadId: ThreadId, providerSessionId?: string) => Effect.Effect<void>;
   }
 >()("@t3tools/provider-core/server/McpProviderSessions") {}

@@ -483,9 +483,6 @@ export const layerWithOptions = (
                     return { mcpCredentialId: existing.providerSessionId, issued: false };
                   }
                   dropMcpCredentialReservation(threadId, existing.providerSessionId);
-                  // Only this provider's credential rotates. Another provider's
-                  // session may still be attached to the thread with its MCP
-                  // client built around its own credential (#16565, #18852).
                   yield* mcpSessionRegistry.revokeProviderSession(existing.providerSessionId);
                 }
                 const credential = yield* mcpSessionRegistry.issue({
@@ -1069,8 +1066,6 @@ export const layerWithOptions = (
                           Array.from(current.values()).some(
                             (other) =>
                               other !== entry &&
-                              // Credentials are per provider instance, so only
-                              // a session of the same instance can reuse it.
                               ((other.runtime.instanceId === entry.runtime.instanceId &&
                                 other.attachedThreadIds.has(threadId)) ||
                                 other.mcpCredentialIdByThread.get(threadId) === mcpCredentialId),
