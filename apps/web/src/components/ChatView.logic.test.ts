@@ -1744,7 +1744,6 @@ describe("proactive completed diff guard", () => {
         resolveProactiveTurnDiffAction({
           checkpoint: changedCheckpoint,
           isGitRepo: true,
-          activeSurfaceKind: null,
         }),
       ).toBe(action);
     },
@@ -1764,41 +1763,37 @@ describe("proactive completed diff guard", () => {
       resolveProactiveTurnDiffAction({
         checkpoint: undefined,
         isGitRepo: true,
-        activeSurfaceKind: null,
       }),
     ).toBe("defer");
     expect(
       resolveProactiveTurnDiffAction({
         checkpoint: missingCheckpoint,
         isGitRepo: true,
-        activeSurfaceKind: null,
       }),
     ).toBe("defer");
     expect(
       resolveProactiveTurnDiffAction({
         checkpoint: changedCheckpoint,
         isGitRepo: undefined,
-        activeSurfaceKind: null,
       }),
     ).toBe("defer");
   });
 
-  it("keeps an active pull request above a completed turn diff", () => {
+  it("delegates a qualifying completed diff to the store while a pull request is active", () => {
     const changedCheckpoint = {
       status: "ready",
-      files: [{ path: "src/app.ts", kind: "modified", additions: 1, deletions: 0 }],
+      files: [{ path: "src/app.ts", kind: "modified", additions: 50, deletions: 0 }],
     } satisfies Pick<TurnDiffSummary, "status" | "files">;
 
     expect(
       resolveProactiveTurnDiffAction({
         checkpoint: changedCheckpoint,
         isGitRepo: true,
-        activeSurfaceKind: "pull-request",
       }),
-    ).toBe("ignore");
+    ).toBe("open");
   });
 
-  it("leaves an already open diff and its chosen scope alone", () => {
+  it("delegates a qualifying completion to the store while a diff is already open", () => {
     const largeCheckpoint = {
       status: "ready",
       files: Array.from({ length: 3 }, (_, index) => ({
@@ -1813,9 +1808,8 @@ describe("proactive completed diff guard", () => {
       resolveProactiveTurnDiffAction({
         checkpoint: largeCheckpoint,
         isGitRepo: true,
-        activeSurfaceKind: "diff",
       }),
-    ).toBe("ignore");
+    ).toBe("open");
   });
 });
 
@@ -1951,6 +1945,12 @@ describe("shouldRefocusComposerOnWindowFocus", () => {
 
   it.each(["IFRAME", "WEBVIEW"])("leaves a focused %s preview alone", (tagName) => {
     expect(shouldRefocusComposerOnWindowFocus(element(tagName))).toBe(false);
+  });
+
+  it("leaves a focused device screen alone", () => {
+    expect(shouldRefocusComposerOnWindowFocus(element("DIV", { within: "application" }))).toBe(
+      false,
+    );
   });
 
   it("leaves a focused terminal alone in the drawer and the right panel", () => {
