@@ -4837,7 +4837,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               turn.status === "completed"))
         ) {
           dispatchMode = { type: "start_immediately" };
-        } else if (command.createdBy === "agent") {
+        } else if (
+          command.createdBy === "agent" &&
+          // After Stop the steer must still fail below; queueing it instead would
+          // start the update on its own once the provider stops.
+          !(yield* stopReachedRun(command, command.threadId, targetRunId))
+        ) {
           const providerThread = projection.providerThreads.find(
             (candidate) => candidate.id === target?.providerThreadId,
           );

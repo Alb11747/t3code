@@ -1054,3 +1054,39 @@ it.effect("queues a plain send behind the stopped queue and releases its hold", 
     }),
   ),
 );
+
+it.effect.each(["auto", "steer"] as const)(
+  "rejects an agent %s update after Stop instead of queueing it behind the stopped run",
+  (mode) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+          `agent-update-after-stop-${mode}`,
+          { activeSteeringInterruptsTools: true },
+        );
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threadId = yield* startFirstTurn;
+          yield* orchestrator.dispatch({
+            type: "run.interrupt",
+            commandId: CommandId.make("stop"),
+            threadId,
+            runId: started[0]!.runId,
+            holdQueue: true,
+          });
+          // Nothing was queued before Stop, so a queued update would have no hold
+          // and would start on its own once the provider stops.
+          const error = yield* sendUpdate(threadId, "agent", mode).pipe(Effect.flip);
+          yield* worker.drain();
+
+          const projection = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(error._tag, "OrchestratorDispatchError");
+          assert.include(String(error.cause), "stopping");
+          assert.deepEqual(steered, []);
+          assert.equal(started.length, 1);
+          assert.isFalse(projection.runs.some((run) => run.status === "queued"));
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
+);
