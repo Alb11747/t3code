@@ -1336,6 +1336,7 @@ export const layer: Layer.Layer<
               (cause) => !Cause.hasInterruptsOnly(cause),
               (cause) =>
                 Effect.gen(function* () {
+                  const completedAt = yield* DateTime.now;
                   yield* Effect.logWarning("orchestration V2 provider event ingestion failed", {
                     runId: input.run.id,
                     cause,
@@ -1344,18 +1345,13 @@ export const layer: Layer.Layer<
                   const providerThread = yield* Ref.get(latestProviderThread);
                   const latestItemOrdinal = yield* Ref.get(latestTurnItemOrdinal);
                   const openSubagents = yield* Ref.get(openRunOwnedSubagents);
-                  const completedAt = yield* DateTime.now;
                   let nextRetryWarningAt = completedAt;
-                  // Once ingestion fails there will be no later consumer to
-                  // settle this run. Keep its failure until storage recovers or
-                  // the atomic ownership gate rejects this attempt.
                   yield* writeFinalRunEvents({
                     run: input.run,
                     rootNode: input.rootNode,
                     checkpointScope: input.checkpointScope,
                     providerThread,
                     attempt: input.attempt,
-                    // The failure may be the ownership read itself.
                     writeIfRunCurrent: {
                       activeAttemptId: input.attempt.id,
                       expectedStatus: "running",
@@ -1369,11 +1365,11 @@ export const layer: Layer.Layer<
                     failureItemPersisted: false,
                     refreshAfterTurn,
                   }).pipe(
-                    Effect.exit,
-                    Effect.flatMap((exit) =>
+                    // Storage failures can be defects; retry both failure channels.
+                    Effect.catchCause((writeCause) =>
                       Effect.gen(function* () {
-                        if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) {
-                          return yield* exit;
+                        if (Cause.hasInterruptsOnly(writeCause)) {
+                          return yield* Effect.failCause(writeCause);
                         }
                         const now = yield* DateTime.now;
                         if (DateTime.isGreaterThanOrEqualTo(now, nextRetryWarningAt)) {
@@ -1382,16 +1378,15 @@ export const layer: Layer.Layer<
                             {
                               runId: input.run.id,
                               attemptId: input.attempt.id,
-                              cause: exit.cause,
+                              cause: writeCause,
                             },
                           );
                           // Persistent storage failures must not flood the same disk.
                           nextRetryWarningAt = DateTime.add(now, { minutes: 10 });
                         }
-                        return yield* Effect.fail(exit.cause);
+                        return yield* Effect.fail(writeCause);
                       }),
                     ),
-                    // SQL commits can fail as defects, not only typed errors.
                     Effect.retry({
                       schedule: Schedule.exponential("1 second").pipe(
                         Schedule.modifyDelay(({ duration }) =>
@@ -1399,9 +1394,8 @@ export const layer: Layer.Layer<
                         ),
                       ),
                     }),
-                    // Startup can interrupt the consumer and then fail its own
-                    // terminal write. Recovery survives that consumer until the
-                    // ownership gate rejects it or the service shuts down.
+                    // Startup may cancel the consumer and fail its own terminal
+                    // write. Only service shutdown or the atomic gate ends recovery.
                     Effect.forkIn(scope),
                     Effect.flatMap(Fiber.join),
                   );
