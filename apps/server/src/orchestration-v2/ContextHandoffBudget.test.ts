@@ -691,7 +691,7 @@ describe("handoff delivery", () => {
         });
         assert.equal(deferred.context, "");
         assert.equal(durable.deferred, true);
-        assert.isUndefined(durable.delivery);
+        assert.equal(durable.delivery, undefined);
 
         const send = deliverContextHandoffs({
           ...input,
@@ -704,7 +704,7 @@ describe("handoff delivery", () => {
           assert.equal(durable.delivery?.status, "pending");
         } else {
           assert.include((yield* send).context, messages[0]!.text);
-          assert.isUndefined(durable.delivery);
+          assert.equal(durable.delivery, undefined);
         }
         assert.equal(durable.deferred, true);
 
