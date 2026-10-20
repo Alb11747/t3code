@@ -250,9 +250,15 @@ export const layer = Layer.effectDiscard(
     // queued for the next turn.
     const claimAgentMessages: ProviderContinuationRequests.ClaimAgentMessages = (input) =>
       Effect.gen(function* () {
-        const queued = yield* threads.getThreadRecords(input.threadId, ["runs", "messages"], {
-          messageRoles: ["user"],
+        // This runs at every tool batch: read only queued runs and their messages.
+        const { runs } = yield* threads.getThreadRecords(input.threadId, ["runs"], {
+          runStatuses: ["queued"],
         });
+        if (runs.length === 0) return [];
+        const { messages } = yield* threads.getThreadRecords(input.threadId, ["messages"], {
+          messageIds: runs.map((run) => run.userMessageId),
+        });
+        const queued = { runs, messages };
         const texts: Array<string> = [];
         for (const run of queuedRunsInDeliveryOrder(queued)) {
           const message = queued.messages.find((row) => row.id === run.userMessageId);
@@ -270,7 +276,9 @@ export const layer = Layer.effectDiscard(
               targetRunId: input.runId,
               atToolBoundary: true,
             })
-            .pipe(Effect.catchCause(() => Effect.succeed(undefined)));
+            // A refusal leaves the update queued. An aborted hook interrupts this
+            // fiber instead, which must stop the loop before the next promotion.
+            .pipe(Effect.catch(() => Effect.succeed(undefined)));
           // Deliver what the promotion committed, which may postdate the snapshot.
           const joined = result?.storedEvents.find(
             ({ event }) => event.type === "message.updated" && event.payload.id === message.id,
@@ -287,7 +295,7 @@ export const layer = Layer.effectDiscard(
         }
         return texts;
       }).pipe(
-        Effect.catchCause((cause) =>
+        Effect.catch((cause) =>
           Effect.logWarning("orchestration-v2.provider-continuation.agent-message-claim-failed", {
             threadId: input.threadId,
             cause,
