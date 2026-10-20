@@ -23,6 +23,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -723,7 +724,8 @@ it.effect("an agent update joins the running turn at its next tool boundary, onc
         const threadId = yield* startFirstTurn;
         const first = started[0]!;
         // The update arrives while a long tool call runs; nothing reaches the provider.
-        assert.equal((yield* sendUpdate(threadId, "agent", "auto")).delivery, "queued");
+        const sent = yield* sendUpdate(threadId, "agent", "auto");
+        assert.equal(sent.delivery, "queued");
         assert.deepEqual(steered, []);
 
         assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), ["progress update"]);
@@ -734,6 +736,19 @@ it.effect("an agent update joins the running turn at its next tool boundary, onc
           first.runId,
         );
         assert.isFalse(joined.runs.some((run) => run.status === "queued"));
+        // The sender waits on the run it was given; the run that took the update answers.
+        const waiting = yield* (yield* ThreadManagement.ThreadManagementService)
+          .waitForThread({
+            projectId: joined.thread.projectId,
+            threadId,
+            runId: sent.run.id,
+            timeoutMs: 1,
+          })
+          .pipe(Effect.forkScoped);
+        yield* TestClock.adjust("1 second");
+        const waited = yield* Fiber.join(waiting);
+        assert.equal(waited.run?.id, first.runId);
+        assert.isTrue(waited.timedOut);
 
         // The turn ends; the update does not start another one.
         const completed = yield* orchestrator.streamDomainEvents.pipe(

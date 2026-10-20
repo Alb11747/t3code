@@ -7836,9 +7836,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       if (command.atToolBoundary === true) {
         // Stop wins: a held queue or a stopped turn keeps the update queued.
+        // A run that owns a delegated task keeps its turn: the task settles
+        // with its own run, which joining would cancel.
         if (
           queuedMessage.atToolBoundary !== true ||
           queuedMessage.attachments.length > 0 ||
+          queuedRun.delegatedTaskId !== undefined ||
           queuedRun.queueHeld === true ||
           (yield* stopReachedRun(command, command.threadId, command.targetRunId))
         ) {
