@@ -237,11 +237,12 @@ with upstream before pushing it.
 ### Labs checks: Lazarus, then Blacksmith
 
 `Alb11747-Labs/t3code` runs the same checks without the fork's job budget. By
-default they run on self-hosted runners on Lazarus (label `lazarus-linux`; setup,
-security and operations are in `Agents/Setup/GitHubRunners/README.md` in Sync).
-Lazarus takes one job at a time: each job takes about as long as on a
-GitHub-hosted runner, so a full run takes 45 to 50 minutes, longer behind other
-queued runs. Its `main` checks workflow installs Chromium when the checked source
+default Quality, Tests and Web tests run on self-hosted runners on Lazarus (label
+`lazarus-linux`; setup, security and operations are in
+`Agents/Setup/GitHubRunners/README.md` in Sync), and the three server shards
+on GitHub-hosted `ubuntu-24.04` runners at the same time. Lazarus takes one job
+at a time, each about as long as on a GitHub-hosted runner, so a full run takes
+about 20 minutes, longer behind other queued runs. Its `main` checks workflow installs Chromium when the checked source
 has web browser tests; no per-candidate patch is needed. Publish the exact commit
 to the fork, then dispatch Labs checks:
 
@@ -263,11 +264,13 @@ is down or its queue is too long for the task: jobs stay queued and
 `gh api repos/Alb11747-Labs/t3code/actions/runners --jq '.runners[] | "\(.name) \(.status) busy=\(.busy)"'`
 shows no online `lazarus-*` runner, or one busy with other runs. Cancel the run
 and dispatch it again with `-f runner=blacksmith-8vcpu-ubuntu-2404` (about 6
-minutes). `-f runner=ubuntu-24.04` uses GitHub-hosted runners in Labs instead
-(about 12 minutes). To move every Labs check off Lazarus, for example while it
-is down for maintenance, run
+minutes; the input moves the server shards too). `-f runner=ubuntu-24.04` uses
+GitHub-hosted runners for every job instead (about 12 minutes). To move the
+Lazarus jobs off Lazarus, for example while it is down for maintenance, run
 `gh variable set CHECKS_RUNNER -R Alb11747-Labs/t3code -b blacksmith-8vcpu-ubuntu-2404`;
-`gh variable delete CHECKS_RUNNER -R Alb11747-Labs/t3code` moves them back.
+`gh variable delete CHECKS_RUNNER -R Alb11747-Labs/t3code` moves them back. The
+`CHECKS_SERVER_RUNNER` variable moves the server shards the same way, for
+example `-b lazarus-linux` while GitHub-hosted runners are limited.
 
 ### Release fallback after the job budget blocks
 
