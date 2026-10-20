@@ -200,6 +200,7 @@ describe("MessagesTimeline work rows", () => {
   it.each(["delegated", "legacy", "missing"] as const)(
     "uses the reported task for %s completion notifications",
     async (source) => {
+      setup();
       const now = DateTime.makeUnsafe(CREATED_AT);
       const childThreadId = ThreadId.make("shared-child");
       const task = (
@@ -232,7 +233,7 @@ describe("MessagesTimeline work rows", () => {
         task("continued", "completed", "Final implementation report"),
         task("follow-up", "completed", "Follow-up explanation"),
       ];
-      vi.spyOn(environmentThreadDetails, "threadAtom").mockReturnValue(
+      using _threadAtom = vi.spyOn(environmentThreadDetails, "threadAtom").mockReturnValue(
         Atom.make({
           projection: { subagents: tasks, turnItems: [], visibleTurnItems: [] },
         }) as never,
@@ -271,7 +272,6 @@ describe("MessagesTimeline work rows", () => {
       }
     },
   );
-
 });
 
 describe("MessagesTimeline messages", () => {
