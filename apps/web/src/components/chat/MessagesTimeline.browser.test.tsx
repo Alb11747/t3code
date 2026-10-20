@@ -1590,15 +1590,19 @@ describe("MessagesTimeline scroll position", () => {
 
   it("restores a manual reading position after reopening and switching threads", async () => {
     const props = baseProps();
-    function Chat() {
+    const onIsAtEndChange = vi.fn();
+    function Chat({ routeThreadKey = props.routeThreadKey }: { routeThreadKey?: string }) {
       const [liveFollowEnabled, setLiveFollowEnabled] = useState(true);
       // The chat view stops following the live edge when the reader scrolls.
       return (
         <div className="contents" onWheelCapture={() => setLiveFollowEnabled(false)}>
           <MessagesTimeline
             {...props}
+            routeThreadKey={routeThreadKey}
             timelineEntries={tallEntries}
             liveFollowEnabled={liveFollowEnabled}
+            onManualNavigation={() => setLiveFollowEnabled(false)}
+            onIsAtEndChange={onIsAtEndChange}
           />
         </div>
       );
@@ -1616,14 +1620,16 @@ describe("MessagesTimeline scroll position", () => {
       scrollOffset: offset,
     });
 
-    const timeline = (routeThreadKey: string) => (
-      <MessagesTimeline {...props} routeThreadKey={routeThreadKey} timelineEntries={tallEntries} />
-    );
+    const timeline = (routeThreadKey: string) => <Chat routeThreadKey={routeThreadKey} />;
+    onIsAtEndChange.mockClear();
     await renderElement(timeline(props.routeThreadKey));
     const reopenedViewport = await waitForList(props);
     await vi.waitFor(() =>
       expect(Math.abs(reopenedViewport.scrollTop - offset)).toBeLessThanOrEqual(1),
     );
+    // Restoration disables live follow before normal scroll handling resumes.
+    await vi.waitFor(() => expect(onIsAtEndChange).toHaveBeenCalledWith(false));
+    expect(readTimelinePosition(props.routeThreadKey)?.atEnd).toBe(false);
 
     await act(async () => roots.at(-1)!.render(timeline(`${props.routeThreadKey}-other`)));
     await vi.waitFor(() =>
