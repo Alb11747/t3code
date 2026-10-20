@@ -43,8 +43,21 @@ if resolving a conflict requires that, report failure for local resolution.
      commits that changed it (`git log --no-merges MERGE_HEAD..HEAD -- <file>`)
      and the entries in `fork/CHANGES.md` to understand their intent. Preserve
      upstream's current structure, names, and APIs while applying that intent.
-     Follow upstream moves/renames; do not restore obsolete structure. If
-     upstream already implements a fork change, take upstream's version.
+     Follow upstream moves/renames; do not restore obsolete structure.
+
+     Upstream sometimes lands a fork change through a different PR (closing
+     the fork's PR as superseded), which sync cannot detect. When a fork change
+     is already present in the upstream commit being merged (it conflicts with
+     an equivalent upstream change, or its PR was closed as superseded by one
+     that is in this merge), remove it instead of merging over it: run
+     `git merge --abort`, then `git revert --no-commit` its commits, newest
+     first, delete its `fork/CHANGES.md` entry, and commit with a message that
+     keeps git's "This reverts commit <sha>." lines and names the upstream PR
+     or commit that replaces it. Then run
+     `bash "$FORK_RESOLVER_HOME/tools/prepare-sync.sh" "$run_id" --continue`,
+     which merges again. A PR closed without merging is not enough on its own:
+     confirm the upstream change is actually present.
+
    - **Revert (`REVERT_HEAD` exists):** upstream merged that patch's PR, and
      later fork commits touched the same lines. Remove the reverted patch's
      changes while keeping the later commits' intent.

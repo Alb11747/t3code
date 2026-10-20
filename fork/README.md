@@ -160,7 +160,9 @@ attempt at the previous one.
    does not establish that upstream contains the fix, so sync only reverts
    patches whose `Upstream-PR` merge commit is included in the selected upstream
    commit. Add the entry in the change's own commit; sync deletes the line when
-   it reverts the change.
+   it reverts the change. Upstream sometimes lands the same change through a
+   different PR and closes ours as superseded; sync cannot tell, so whoever
+   resolves or reviews the sync removes the patch (see below).
 
 5. Validate as `AGENTS.md` describes (package typecheck, touched tests,
    `vp check` on changed files). Then get the full release checks on the
@@ -218,6 +220,17 @@ To change or fix a fork change already on `main`, add a commit with the same
 reverts every commit carrying the trailer when the PR merges. Commits still on
 your task branch can be amended freely. To remove a change from `main`,
 `git revert` its commits and delete its `CHANGES.md` entry in the revert.
+
+Remove a change the same way when upstream already contains it through
+another PR: the patch conflicts with an equivalent upstream change, the merge
+leaves it a no-op or a duplicate, or its PR was closed as superseded. A PR
+closed without merging is not enough on its own; confirm the upstream change
+is present in the upstream commit being synced. During a sync, abort the merge
+(`git merge --abort`), revert the change's commits newest first with the entry
+deleted, name the replacing upstream PR in the revert message, and rerun the
+sync, so the merge takes upstream's version. When `main` already carries the
+merge, a revert can also remove upstream's equivalent code; compare the result
+with upstream before pushing it.
 
 ### Blacksmith fallback
 
