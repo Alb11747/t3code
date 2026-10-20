@@ -1,6 +1,7 @@
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
 import {
   compileResolvedKeybindingsConfig,
   DEFAULT_RESOLVED_KEYBINDINGS,
@@ -16,7 +17,21 @@ let container: HTMLDivElement;
 const addFiles = vi.fn();
 const noop = () => undefined;
 
-beforeEach(() => {
+beforeEach(async () => {
+  // The real pointer stays wherever an earlier test file left it. If the menu opens under it,
+  // closing the menu fires a mouseleave that Base UI treats as a hover close, and focus does not
+  // return to the trigger. Park it in the far corner, away from the panel and its menu.
+  const pointerRest = document.createElement("div");
+  Object.assign(pointerRest.style, {
+    position: "fixed",
+    right: "0",
+    bottom: "0",
+    width: "16px",
+    height: "16px",
+  });
+  document.body.append(pointerRest);
+  await userEvent.hover(pointerRest);
+  pointerRest.remove();
   vi.useFakeTimers();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal(
