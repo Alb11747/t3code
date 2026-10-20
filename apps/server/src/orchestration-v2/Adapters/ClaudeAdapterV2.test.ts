@@ -4460,6 +4460,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
   it.effect.each([
     "generic retry",
+    "failed compaction",
+    "successful compaction",
+    "expired compaction",
+    "partly expired compaction",
+    "embedded completes retained reset",
+    "embedded replaces retained reset",
+    "current event wins over embedded reset",
     "sparse rejection",
     "unrelated allowed window",
     "allowed window",
@@ -4482,6 +4489,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const now = yield* DateTime.now;
       const resetsAt = Math.floor(DateTime.toEpochMillis(now) / 1000) + 7_200;
       const resetAt = DateTime.formatIso(DateTime.makeUnsafe(resetsAt * 1000));
+      const laterResetAt = DateTime.formatIso(DateTime.makeUnsafe((resetsAt + 7200) * 1000));
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       let ordinal = 0;
       let frameOrdinal = 0;
@@ -4513,9 +4521,18 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-      const fail = Effect.fnUntraced(function* (expectedReset: string | null) {
+      const fail = Effect.fnUntraced(function* (
+        expectedReset: string | null,
+        assistantInfo?: SDKRateLimitInfo,
+      ) {
         yield* Queue.offerAll(messages(), [
-          makeAssistantErrorFrame({ uuid: uuid(), error: "rate_limit" }),
+          makeAssistantErrorFrame({
+            uuid: uuid(),
+            error: "rate_limit",
+            ...(assistantInfo === undefined
+              ? {}
+              : { apiErrorParams: { rate_limit_info: assistantInfo } }),
+          }),
           makeResultFrame({
             uuid: uuid(),
             result: "API Error",
@@ -4531,11 +4548,24 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(terminal.failure.resetAt, expectedReset);
       });
       yield* start();
-      yield* limit({ status: "rejected", rateLimitType: "five_hour", resetsAt });
+      yield* limit({
+        status: "rejected",
+        rateLimitType: "five_hour",
+        ...(scenario === "embedded completes retained reset" ? {} : { resetsAt }),
+      });
       if (scenario === "incomplete windows") {
         yield* limit({ status: "rejected", rateLimitType: "seven_day" });
       }
-      yield* fail(scenario === "incomplete windows" ? null : resetAt);
+      if (scenario === "partly expired compaction") {
+        yield* limit({ status: "rejected", rateLimitType: "seven_day", resetsAt: resetsAt + 7200 });
+      }
+      yield* fail(
+        scenario === "incomplete windows" || scenario === "embedded completes retained reset"
+          ? null
+          : scenario === "partly expired compaction"
+            ? laterResetAt
+            : resetAt,
+      );
 
       if (scenario === "expired reset") yield* TestClock.adjust("3 hours");
       yield* start(
@@ -4553,6 +4583,51 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             }
           : harness.providerThread,
       );
+      if (
+        scenario === "failed compaction" ||
+        scenario === "successful compaction" ||
+        scenario === "expired compaction" ||
+        scenario === "partly expired compaction"
+      ) {
+        const blocked =
+          scenario === "failed compaction" || scenario === "partly expired compaction";
+        const expectedReset = scenario === "partly expired compaction" ? laterResetAt : resetAt;
+        if (scenario === "expired compaction" || scenario === "partly expired compaction")
+          yield* TestClock.adjust("3 hours");
+        yield* Queue.offerAll(messages(), [
+          claudeSdkFrame({
+            type: "system",
+            subtype: "status",
+            status: "compacting",
+            uuid: uuid(),
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+          claudeSdkFrame({
+            type: "system",
+            subtype: "status",
+            status: null,
+            compact_result: scenario === "successful compaction" ? "success" : "failed",
+            ...(scenario !== "successful compaction"
+              ? { compact_error: "Compaction stopped by the provider." }
+              : {}),
+            uuid: uuid(),
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+          claudeSdkFrame({
+            ...makeResultFrame({ uuid: uuid(), result: "", numTurns: 0, terminalReason: null }),
+            local_command: "compact",
+          }),
+        ]);
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(terminal.status, blocked ? "failed" : "completed");
+        if (terminal.status === "failed") {
+          assert.equal(terminal.failure.class, "usage_limit");
+          assert.equal(terminal.failure.resetAt, expectedReset);
+        }
+        yield* start();
+        yield* fail(blocked ? expectedReset : null);
+        return;
+      }
       if (scenario === "successful recovery" || scenario === "non-limit failure") {
         yield* Queue.offerAll(messages(), [
           makeAssistantErrorFrame({
@@ -4594,6 +4669,27 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* limit({ status: "allowed", rateLimitType: "five_hour" });
       if (scenario === "overage")
         yield* limit({ status: "rejected", rateLimitType: "five_hour", overageStatus: "allowed" });
+      if (
+        scenario === "embedded completes retained reset" ||
+        scenario === "embedded replaces retained reset" ||
+        scenario === "current event wins over embedded reset"
+      ) {
+        const embeddedReset = resetsAt + 3600;
+        const eventReset = resetsAt + 1800;
+        if (scenario === "current event wins over embedded reset") {
+          yield* limit({ status: "rejected", rateLimitType: "five_hour", resetsAt: eventReset });
+        }
+        yield* fail(
+          DateTime.formatIso(
+            DateTime.makeUnsafe(
+              (scenario === "current event wins over embedded reset" ? eventReset : embeddedReset) *
+                1000,
+            ),
+          ),
+          { status: "rejected", rateLimitType: "five_hour", resetsAt: embeddedReset },
+        );
+        return;
+      }
       const retainsReset =
         scenario === "generic retry" ||
         scenario === "sparse rejection" ||

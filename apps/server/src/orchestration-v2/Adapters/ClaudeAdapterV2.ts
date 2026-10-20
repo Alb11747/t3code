@@ -8583,10 +8583,25 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               next.delete(context.providerTurnId);
               return next;
             });
+            // Expired inherited windows no longer block; a fresh rejection remains authoritative.
+            for (const [type, reset] of context.rateLimitResetTimes) {
+              if (
+                reset !== null &&
+                Date.parse(reset) <= DateTime.toEpochMillis(completedAt) &&
+                !context.rejectedRateLimitTypes.has(type)
+              ) {
+                context.rateLimitResetTimes.delete(type);
+              }
+            }
             const usageLimited =
               context.authenticationFailureMessage === undefined &&
               (context.rejectedRateLimitTypes.size > 0 ||
-                context.latestAssistantRateLimit !== null) &&
+                context.latestAssistantRateLimit !== null ||
+                // A failed local compaction does not establish recovery from a retained limit.
+                (message.subtype === "success" &&
+                  message.local_command === "compact" &&
+                  context.compactionFailure !== null &&
+                  context.rateLimitResetTimes.size > 0)) &&
               (message.subtype !== "success" ||
                 message.api_error_status == null ||
                 message.api_error_status === 429) &&
@@ -8610,16 +8625,22 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               usageLimited && message.subtype === "success" && message.local_command === "compact"
                 ? context.compactionFailure
                 : null;
-            const resetTimes = Array.from(context.rateLimitResetTimes.values(), (time) =>
-              time !== null && Date.parse(time) > DateTime.toEpochMillis(completedAt) ? time : null,
-            );
             const assistantLimit = context.latestAssistantRateLimit;
             if (
               assistantLimit?.type != null &&
-              !context.rateLimitResetTimes.has(assistantLimit.type)
+              !context.rejectedRateLimitTypes.has(assistantLimit.type)
             ) {
-              resetTimes.push(assistantLimit.resetAt);
+              // Current-turn events take precedence; inherited windows must accept fresh evidence.
+              context.rateLimitResetTimes.set(
+                assistantLimit.type,
+                assistantLimit.resetAt ??
+                  context.rateLimitResetTimes.get(assistantLimit.type) ??
+                  null,
+              );
             }
+            const resetTimes = Array.from(context.rateLimitResetTimes.values(), (time) =>
+              time !== null && Date.parse(time) > DateTime.toEpochMillis(completedAt) ? time : null,
+            );
             const resetAt =
               resetTimes.length > 0 && resetTimes.every((time) => time !== null)
                 ? resetTimes.reduce((latest, time) => (time! > latest ? time! : latest), "")
