@@ -1092,6 +1092,8 @@ export const OrchestrationV2ConversationMessage = Schema.Struct({
    * the workflow's opening instead and keep the script behind a disclosure.
    */
   workflowScript: Schema.optional(Schema.Boolean),
+  /** A queued agent update the running turn may take at its next tool boundary. */
+  atToolBoundary: Schema.optional(Schema.Literal(true)),
   id: MessageId,
   threadId: ThreadId,
   runId: Schema.NullOr(RunId),
@@ -2852,6 +2854,8 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     queuedRunId: RunId,
     targetRunId: RunId,
+    // The provider is delivering the message itself at a tool boundary: no steer effect.
+    atToolBoundary: Schema.optional(Schema.Literal(true)),
   }),
   Schema.Struct({
     type: Schema.Literal("queue.resume"),

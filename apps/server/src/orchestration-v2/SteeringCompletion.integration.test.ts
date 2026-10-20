@@ -11,6 +11,8 @@ import {
   ProviderTurnId,
   ThreadId,
   TurnItemId,
+  type ChatAttachment,
+  type RunId,
   type ModelSelection,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
@@ -33,6 +35,7 @@ import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 
 const driver = ProviderDriverKind.make("codex");
 const instanceId = ProviderInstanceId.make("codex");
@@ -524,7 +527,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
   const layerRuntime = ProviderReplayHarness.layerWithRegistry(
     { name },
     ProviderAdapterRegistry.layerSingle(adapter),
-    { runEffectWorker: false, databaseLayer },
+    { runEffectWorker: false, runContinuationWorker: true, databaseLayer },
   );
   const layer = ThreadManagement.layer.pipe(
     Layer.provide(ServerSettings.layerTest()),
@@ -580,6 +583,7 @@ const sendUpdate = Effect.fn("sendUpdate")(function* (
   threadId: ThreadId,
   createdBy: "agent" | "user",
   mode: "auto" | "steer",
+  attachments: ReadonlyArray<ChatAttachment> = [],
 ) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -589,7 +593,7 @@ const sendUpdate = Effect.fn("sendUpdate")(function* (
     threadId,
     messageId: MessageId.make("message:update"),
     text: "progress update",
-    attachments: [],
+    attachments,
     mode,
     createdBy,
     creationSource: createdBy === "agent" ? "mcp" : "web",
@@ -659,16 +663,26 @@ it.effect.each(["auto", "steer"] as const)(
     ),
 );
 
+const imageAttachment: ChatAttachment = {
+  type: "image",
+  id: "attachment-1",
+  name: "screen.png",
+  mimeType: "image/png",
+  sizeBytes: 1,
+};
+
 it.effect.each([
-  { createdBy: "user", activeSteeringInterruptsTools: true },
-  { createdBy: "agent", activeSteeringInterruptsTools: false },
+  { createdBy: "user", activeSteeringInterruptsTools: true, attachments: [] },
+  { createdBy: "agent", activeSteeringInterruptsTools: false, attachments: [] },
+  // Boundary hooks carry text only, so this one steers natively.
+  { createdBy: "agent", activeSteeringInterruptsTools: true, attachments: [imageAttachment] },
 ] as const)(
-  "steers an update from $createdBy when steering is allowed (interruptsTools=$activeSteeringInterruptsTools)",
-  ({ createdBy, activeSteeringInterruptsTools }) =>
+  "steers an update from $createdBy when steering is allowed (interruptsTools=$activeSteeringInterruptsTools, attachments=$attachments.length)",
+  ({ createdBy, activeSteeringInterruptsTools, attachments }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
-          `update-steered-${createdBy}`,
+          `update-steered-${createdBy}-${activeSteeringInterruptsTools}`,
           { activeSteeringInterruptsTools },
         );
         yield* Effect.gen(function* () {
@@ -677,6 +691,7 @@ it.effect.each([
             threadId,
             createdBy,
             createdBy === "agent" ? "auto" : "steer",
+            attachments,
           );
           assert.equal(result.delivery, "steered");
           assert.deepEqual(steered, ["progress update"]);
@@ -684,6 +699,108 @@ it.effect.each([
         }).pipe(Effect.provide(layer));
       }),
     ),
+);
+
+// The Claude adapter calls this from its root PostToolBatch and Stop hooks.
+const claimAtToolBoundary = Effect.fn("claimAtToolBoundary")(function* (
+  threadId: ThreadId,
+  runId: RunId,
+) {
+  const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+  return yield* requests.claimAgentMessages!({ threadId, runId });
+});
+
+it.effect("an agent update joins the running turn at its next tool boundary, once", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { events, started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+        "agent-update-tool-boundary",
+        { activeSteeringInterruptsTools: true },
+      );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const threadId = yield* startFirstTurn;
+        const first = started[0]!;
+        // The update arrives while a long tool call runs; nothing reaches the provider.
+        assert.equal((yield* sendUpdate(threadId, "agent", "auto")).delivery, "queued");
+        assert.deepEqual(steered, []);
+
+        assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), ["progress update"]);
+        assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), []);
+        const joined = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(
+          joined.messages.find((message) => message.id === MessageId.make("message:update"))?.runId,
+          first.runId,
+        );
+        assert.isFalse(joined.runs.some((run) => run.status === "queued"));
+
+        // The turn ends; the update does not start another one.
+        const completed = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "run.updated" &&
+              event.payload.id === first.runId &&
+              event.payload.status === "waiting",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        const turn = joined.providerTurns[0]!;
+        yield* Queue.offer(events, {
+          type: "provider_turn.updated",
+          driver,
+          providerTurn: { ...turn, status: "completed", completedAt: yield* DateTime.now },
+        });
+        yield* Queue.offer(events, {
+          type: "turn.terminal",
+          driver,
+          providerThreadId: turn.providerThreadId,
+          providerTurnId: turn.id,
+          runOrdinal: first.runOrdinal,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        });
+        yield* Fiber.join(completed);
+        yield* worker.drain();
+        yield* orchestrator.resumeQueuedRuns;
+        yield* worker.drain();
+        assert.equal(started.length, 1);
+        assert.deepEqual(steered, []);
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
+it.effect("Stop keeps a queued agent update out of the stopped turn's boundaries", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { started, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+        "agent-update-boundary-after-stop",
+        { activeSteeringInterruptsTools: true },
+      );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const threadId = yield* startFirstTurn;
+        const first = started[0]!;
+        assert.equal((yield* sendUpdate(threadId, "agent", "auto")).delivery, "queued");
+        yield* orchestrator.dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make("stop"),
+          threadId,
+          runId: first.runId,
+          holdQueue: true,
+        });
+
+        assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), []);
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        const queued = projection.runs.find((run) => run.status === "queued");
+        assert.equal(queued?.queueHeld, true);
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
 );
 
 it.effect.each([{ canRestart: false }, { canRestart: true }])(

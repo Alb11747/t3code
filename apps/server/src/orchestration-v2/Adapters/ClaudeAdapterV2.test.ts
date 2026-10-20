@@ -2473,6 +2473,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly nativeSessionId?: string;
     readonly settings?: ClaudeSettings;
     readonly freshQueueOnReopen?: boolean;
+    readonly claimAgentMessages?: ProviderContinuationRequests.ClaimAgentMessages;
   }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -2527,6 +2528,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Effect.sync(() => {
               continuationRequests.push(request);
             }).pipe(Effect.andThen(Queue.offer(continuationReceipts, request))),
+          ...(options?.claimAgentMessages === undefined
+            ? {}
+            : { claimAgentMessages: options.claimAgentMessages }),
         },
         queryRunner: {
           allocateSessionId: Effect.succeed(options?.nativeSessionId ?? WAKE_NATIVE_SESSION),
@@ -3128,6 +3132,127 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               event.type === "node.updated" && event.node.nativeItemRef?.nativeId === "tool-error",
           );
           assert.equal(node?.type === "node.updated" ? node.node.status : undefined, failed.status);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
+  it.effect("delivers claimed agent updates at root tool-batch and stop hooks", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const claims: Array<{ readonly threadId: string; readonly runId: string }> = [];
+        const harness = yield* makeWakeHarnessWithOptions({
+          claimAgentMessages: (input) =>
+            Effect.sync(() => {
+              claims.push(input);
+              return ["Child finished."];
+            }),
+        });
+        const input = makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("attempt-agent-boundary"),
+          text: "Run the slow build.",
+          attachments: [],
+        });
+        yield* harness.runtime.startTurn(input);
+        const hooks = harness.getOpenedOptions()?.hooks;
+        const signal = new AbortController().signal;
+        const base = {
+          session_id: WAKE_NATIVE_SESSION,
+          transcript_path: "",
+          cwd: "",
+        };
+        const batch = yield* Effect.promise(() =>
+          hooks!.PostToolBatch![0]!.hooks[0]!(
+            { ...base, hook_event_name: "PostToolBatch", tool_calls: [] },
+            undefined,
+            { signal },
+          ),
+        );
+        const stop = yield* Effect.promise(() =>
+          hooks!.Stop![0]!.hooks[0]!(
+            { ...base, hook_event_name: "Stop", stop_hook_active: false },
+            undefined,
+            { signal },
+          ),
+        );
+        // A subagent's boundary is not the root turn's.
+        const subagent = yield* Effect.promise(() =>
+          hooks!.PostToolBatch![0]!.hooks[0]!(
+            { ...base, hook_event_name: "PostToolBatch", tool_calls: [], agent_id: "agent-1" },
+            undefined,
+            { signal },
+          ),
+        );
+        assert.deepEqual(batch, {
+          hookSpecificOutput: {
+            hookEventName: "PostToolBatch",
+            additionalContext: "New message from another agent:\nChild finished.",
+          },
+        });
+        assert.deepEqual(stop, {
+          hookSpecificOutput: {
+            hookEventName: "Stop",
+            additionalContext: "New message from another agent:\nChild finished.",
+          },
+        });
+        assert.deepEqual(subagent, {});
+        assert.deepEqual(claims, [
+          { threadId: harness.threadId, runId: input.runId },
+          { threadId: harness.threadId, runId: input.runId },
+        ]);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect.each(["agent", "user"] as const)(
+    "notes that a native %s steer may have interrupted a command only for agents",
+    (createdBy) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const idAllocator = yield* IdAllocator.IdAllocatorV2;
+          const attemptId = RunAttemptId.make("attempt-agent-steer-note");
+          const input = makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId,
+            text: "Audit the settings pages.",
+            attachments: [],
+          });
+          yield* harness.runtime.startTurn(input);
+          yield* harness.runtime.steerTurn({
+            threadId: harness.threadId,
+            runId: input.runId,
+            providerThread: harness.providerThread,
+            providerTurnId: idAllocator.derive.providerTurn({
+              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+              nativeTurnId: `turn:${attemptId}`,
+            }),
+            message: {
+              createdBy,
+              creationSource: createdBy === "agent" ? "mcp" : "web",
+              messageId: MessageId.make("message-agent-steer-note"),
+              text: "See the attached screenshot.",
+              attachments: [],
+            },
+          });
+          const steer = JSON.stringify(harness.offeredMessages[1]?.message.content);
+          assert.include(steer, "See the attached screenshot.");
+          assert.equal(
+            steer.includes("may have interrupted a running command"),
+            createdBy === "agent",
+          );
         }).pipe(
           Effect.provide(
             Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),

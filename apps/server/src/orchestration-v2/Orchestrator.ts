@@ -591,6 +591,21 @@ function isTerminalDelegatedTaskStatus(status: OrchestrationV2Subagent["status"]
   );
 }
 
+// An agent update that asked for prompt delivery (steer or auto, not an explicit
+// queue) is queued only because the turn is busy or still starting; the running
+// turn may take it at its next tool boundary. Hooks carry text only.
+function agentUpdateWantsPromptDelivery(
+  command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+): boolean {
+  return (
+    command.createdBy === "agent" &&
+    command.dispatchMode.type !== "queue_after_active" &&
+    command.attachments.length === 0 &&
+    command.notification === undefined &&
+    command.scheduledTaskId === undefined
+  );
+}
+
 function delegatedTaskTerminalStatus(
   status: OrchestrationV2Run["status"],
 ): OrchestrationV2Subagent["status"] | null {
@@ -3905,6 +3920,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly senderThreadId?: OrchestrationV2ConversationMessage["senderThreadId"];
     readonly delegatedCompletion?: OrchestrationV2ConversationMessage["delegatedCompletion"];
     readonly forceRestart: boolean;
+    /** The provider delivers the message at a tool boundary; record it without a steer effect. */
+    readonly atToolBoundary?: boolean;
   }) =>
     Effect.gen(function* () {
       const targetRun = input.projection.runs.find(
@@ -4150,6 +4167,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           input.projection.thread.providerInstanceId !== input.modelSelection.instanceId;
         if (
           input.delegatedCompletion === undefined &&
+          input.atToolBoundary !== true &&
           (instanceChanged ||
             !modelSelectionsEqual(input.projection.thread.modelSelection, input.modelSelection))
         ) {
@@ -4173,6 +4191,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           providerThreadId: providerThread.id,
           providerInstanceId: targetRun.providerInstanceId,
         });
+        if (input.atToolBoundary === true) return;
         yield* Ref.update(input.effects, (existing) => [
           ...existing,
           {
@@ -4820,6 +4839,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.dispatchMode,
         command.deliveryIntent,
       );
+      let atToolBoundary = false;
       if (dispatchMode.type === "steer_active") {
         const targetRunId = dispatchMode.targetRunId;
         const target = projection.runs.find((run) => run.id === targetRunId);
@@ -4853,10 +4873,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             if (
               Option.isSome(session) &&
               session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools ===
-                true
+                true &&
+              // Boundary hooks carry text only. An update with attachments steers
+              // natively; the adapter tells the agent it may have interrupted a tool.
+              command.attachments.length === 0
             ) {
               // Claude steering cancels pending tools, which appear as user refusals.
-              // Agent updates can wait for the durable queue's next-turn boundary.
+              // Agent updates wait in the durable queue instead, and the running turn
+              // takes them at its next tool batch or Stop (ProviderContinuationService
+              // claimAgentMessages). Whatever it does not take starts the next turn.
               dispatchMode = { type: "queue_after_active" };
             }
           }
@@ -4938,6 +4963,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           (id) => projection.subagents.find((task) => task.id === id)?.completionWake === "always",
         )
       ) {
+        // If it queues (steering would cancel tools, or the turn is still
+        // starting), the running turn may take it at its next tool boundary.
+        atToolBoundary = true;
         const active = projection.runs.find((run) => run.status === "running");
         const providerThread = projection.providerThreads.find(
           (row) => row.id === active?.providerThreadId,
@@ -5295,6 +5323,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           updatedAt: now,
           ...(delegatedCompletion === undefined ? {} : { delegatedCompletion }),
           ...(command.notification === undefined ? {} : { notification: command.notification }),
+          ...(atToolBoundary || agentUpdateWantsPromptDelivery(command)
+            ? { atToolBoundary: true as const }
+            : {}),
         };
         const emitEvent = emit(events, command);
         if (targetProviderThread === undefined) {
@@ -7803,7 +7834,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Queued run ${queuedRun.id} is missing message or execution state.`,
         });
       }
-      if (
+      if (command.atToolBoundary === true) {
+        // Stop wins: a held queue or a stopped turn keeps the update queued.
+        if (
+          queuedMessage.atToolBoundary !== true ||
+          queuedMessage.attachments.length > 0 ||
+          queuedRun.queueHeld === true ||
+          (yield* stopReachedRun(command, command.threadId, command.targetRunId))
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Queued run ${queuedRun.id} cannot join the running turn at a tool boundary.`,
+          });
+        }
+      } else if (
         queuedMessage.delegatedCompletion !== undefined ||
         queuedMessage.notification !== undefined
       ) {
@@ -7857,12 +7902,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         },
       });
 
+      const atToolBoundary = command.atToolBoundary === true;
       yield* dispatchSteerIntoRun({
         command,
         events,
         effects,
         projection,
-        modelSelection: projection.thread.modelSelection,
+        // An update joining at a tool boundary keeps the running turn's model; a
+        // selection change could otherwise restart the turn from inside its hook.
+        modelSelection: atToolBoundary
+          ? (projection.runs.find((run) => run.id === command.targetRunId)?.modelSelection ??
+            projection.thread.modelSelection)
+          : projection.thread.modelSelection,
+        ...(queuedMessage.delegatedCompletion === undefined
+          ? {}
+          : { delegatedCompletion: queuedMessage.delegatedCompletion }),
+        atToolBoundary,
         targetRunId: command.targetRunId,
         messageId: queuedMessage.id,
         text: queuedMessage.text,
@@ -7878,6 +7933,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : { senderThreadId: queuedMessage.senderThreadId }),
         forceRestart: false,
       });
+      if (atToolBoundary && queuedMessage.delegatedCompletion !== undefined) {
+        // Accept in the same commit: the cancelled queued run would otherwise
+        // read as a failed delivery and reserve a duplicate notification.
+        yield* dispatchNotificationAccepted(
+          {
+            type: "notification.delivery.accept",
+            commandId: command.commandId,
+            threadId: command.threadId,
+            messageId: queuedMessage.id,
+          },
+          events,
+        );
+      }
     });
 
   const dispatchQueuedRunReorder = (
