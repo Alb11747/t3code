@@ -4188,15 +4188,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         // whatever Claude emitted before that turn began (its `init`, sometimes
         // output) stays buffered. A continuation still queued replays it and
         // would wait for a result that already arrived, so mark it settled.
-        const settleWakeInUserTurn = (nativeThreadId: string) =>
-          Effect.gen(function* () {
-            yield* clearWakeReports(nativeThreadId);
-            yield* Ref.update(wakeBuffers, (current) => {
-              const entry = current.get(nativeThreadId);
-              if (entry === undefined || entry.settled) return current;
-              return new Map(current).set(nativeThreadId, { ...entry, settled: true });
-            });
+        const settleWakeInUserTurn = Effect.fn("ClaudeAdapterV2.settleWakeInUserTurn")(function* (
+          nativeThreadId: string,
+        ) {
+          yield* clearWakeReports(nativeThreadId);
+          yield* Ref.update(wakeBuffers, (current) => {
+            const entry = current.get(nativeThreadId);
+            if (entry === undefined || entry.settled) return current;
+            return new Map(current).set(nativeThreadId, { ...entry, settled: true });
           });
+        });
         // Last roster entry per opaque task. An empty roster level can land before
         // the task's notification, and the wake still needs to name the task.
         const lastKnownOpaqueTasks = yield* Ref.make(
@@ -10258,21 +10259,20 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ),
           ),
           startTurn,
-          compactThread: (turnInput) =>
-            Effect.gen(function* () {
-              const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId ?? null;
-              const live = yield* Ref.get(queryContext);
-              const promptCaching = claudeCompactionPromptCaching({
-                uncachedColdCompaction: adapterOptions.settings.uncachedColdCompaction,
-                hasLiveProcess: live !== null && live.nativeThreadId === nativeThreadId,
-                lastTurnActivityAt: turnInput.lastProviderTurnActivityAt,
-                now: yield* DateTime.now,
-              });
-              return yield* startTurn(
-                { ...turnInput, message: { ...turnInput.message, text: "/compact" } },
-                promptCaching,
-              );
-            }),
+          compactThread: Effect.fn("ClaudeAdapterV2.compactThread")(function* (turnInput) {
+            const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId ?? null;
+            const live = yield* Ref.get(queryContext);
+            const promptCaching = claudeCompactionPromptCaching({
+              uncachedColdCompaction: adapterOptions.settings.uncachedColdCompaction,
+              hasLiveProcess: live !== null && live.nativeThreadId === nativeThreadId,
+              lastTurnActivityAt: turnInput.lastProviderTurnActivityAt,
+              now: yield* DateTime.now,
+            });
+            return yield* startTurn(
+              { ...turnInput, message: { ...turnInput.message, text: "/compact" } },
+              promptCaching,
+            );
+          }),
           steerTurn,
           stopTask: Effect.fn("ClaudeAdapterV2.stopTask")(function* ({ providerThread, taskId }) {
             const liveQuery = yield* Ref.get(queryContext);

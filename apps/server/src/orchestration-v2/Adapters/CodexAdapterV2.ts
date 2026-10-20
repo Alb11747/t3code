@@ -2202,7 +2202,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         });
 
         /** Called with the terminalization permit for a held run's next native turn. */
-        const registerHeldTurn = (
+        const registerHeldTurn = Effect.fn("CodexAdapterV2.registerHeldTurn")(function* (
           nativeThreadId: string,
           hold: CodexGoalHold,
           turn: {
@@ -2211,47 +2211,46 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             readonly queued?: boolean;
           },
           isAbandoned = () => false,
-        ) =>
-          Effect.gen(function* () {
-            yield* emitProviderEvent({
-              type: "provider_turn.updated",
-              driver: CODEX_PROVIDER,
-              threadId: hold.context.projectionThreadId,
-              providerTurn: hold.completedTurn,
-            });
-            const next = yield* registerRootTurn(
-              {
-                turnInput: {
-                  ...hold.context.input,
-                  providerTurnOrdinal: hold.context.providerTurnOrdinal + 1,
-                },
-                nativeTurnId: turn.id,
-                startedAt: turn.startedAt,
-                ...(turn.queued === undefined ? {} : { waitForNativeStart: turn.queued }),
-              },
-              () => isAbandoned() || goalHolds.get(nativeThreadId) !== hold,
-            );
-            if (isAbandoned() || goalHolds.get(nativeThreadId) !== hold) return next;
-            goalHolds.delete(nativeThreadId);
-            const goalRun = goalRuns.get(hold.context.providerTurnId) ?? [hold.context];
-            goalRun.push(next);
-            goalRuns.set(hold.context.providerTurnId, goalRun);
-            goalRuns.set(next.providerTurnId, goalRun);
-            if (hold.overloadRetry !== undefined) {
-              const state: ActiveCodexProviderRetry = {
-                ...hold.overloadRetry.state,
-                retry: { ...hold.overloadRetry.state.retry, retryDelayMs: null },
-              };
-              yield* Ref.update(providerRetries, (current) =>
-                new Map(current).set(next.providerTurnId, state),
-              );
-              yield* emitOverloadRetryRow(next, state, "running");
-            }
-            yield* Deferred.succeed(hold.next, next);
-            return next;
+        ) {
+          yield* emitProviderEvent({
+            type: "provider_turn.updated",
+            driver: CODEX_PROVIDER,
+            threadId: hold.context.projectionThreadId,
+            providerTurn: hold.completedTurn,
           });
+          const next = yield* registerRootTurn(
+            {
+              turnInput: {
+                ...hold.context.input,
+                providerTurnOrdinal: hold.context.providerTurnOrdinal + 1,
+              },
+              nativeTurnId: turn.id,
+              startedAt: turn.startedAt,
+              ...(turn.queued === undefined ? {} : { waitForNativeStart: turn.queued }),
+            },
+            () => isAbandoned() || goalHolds.get(nativeThreadId) !== hold,
+          );
+          if (isAbandoned() || goalHolds.get(nativeThreadId) !== hold) return next;
+          goalHolds.delete(nativeThreadId);
+          const goalRun = goalRuns.get(hold.context.providerTurnId) ?? [hold.context];
+          goalRun.push(next);
+          goalRuns.set(hold.context.providerTurnId, goalRun);
+          goalRuns.set(next.providerTurnId, goalRun);
+          if (hold.overloadRetry !== undefined) {
+            const state: ActiveCodexProviderRetry = {
+              ...hold.overloadRetry.state,
+              retry: { ...hold.overloadRetry.state.retry, retryDelayMs: null },
+            };
+            yield* Ref.update(providerRetries, (current) =>
+              new Map(current).set(next.providerTurnId, state),
+            );
+            yield* emitOverloadRetryRow(next, state, "running");
+          }
+          yield* Deferred.succeed(hold.next, next);
+          return next;
+        });
 
-        const acceptNativeTurn = (
+        const acceptNativeTurn = Effect.fn("CodexAdapterV2.acceptNativeTurn")(function* (
           nativeThreadId: string,
           acceptance: NativeTurnAcceptance,
           turn: {
@@ -2259,46 +2258,37 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             readonly startedAt: DateTime.Utc;
             readonly queued?: boolean;
           },
-        ) =>
-          Effect.gen(function* () {
-            // A notification may have already accepted and completed this turn
-            // while the request was waiting for its reply. Never register it twice.
-            if (acceptance.nativeTurnId !== undefined) return;
-            acceptance.nativeTurnId = turn.id;
-            acceptance.nativeStarted = !turn.queued;
-            if (
-              acceptance.hold !== undefined &&
-              goalHolds.get(nativeThreadId) !== acceptance.hold
-            ) {
-              acceptance.abandoned = true;
+        ) {
+          // A notification may have already accepted and completed this turn
+          // while the request was waiting for its reply. Never register it twice.
+          if (acceptance.nativeTurnId !== undefined) return;
+          acceptance.nativeTurnId = turn.id;
+          acceptance.nativeStarted = !turn.queued;
+          if (acceptance.hold !== undefined && goalHolds.get(nativeThreadId) !== acceptance.hold) {
+            acceptance.abandoned = true;
+          }
+          if (acceptance.abandoned) {
+            if (acceptance.nativeStarted) yield* stopAbandonedTurn(nativeThreadId, turn.id);
+          } else {
+            const context = yield* acceptance.hold === undefined
+              ? registerRootTurn(
+                  {
+                    turnInput: acceptance.input,
+                    nativeTurnId: turn.id,
+                    startedAt: turn.startedAt,
+                    ...(turn.queued === undefined ? {} : { waitForNativeStart: turn.queued }),
+                  },
+                  () => acceptance.abandoned,
+                )
+              : registerHeldTurn(nativeThreadId, acceptance.hold, turn, () => acceptance.abandoned);
+            // turn/started can arrive while registration is publishing the
+            // context, before that handler can see nativeStartReady itself.
+            if (acceptance.nativeStarted && context.nativeStartReady !== undefined) {
+              yield* Deferred.succeed(context.nativeStartReady, undefined);
             }
-            if (acceptance.abandoned) {
-              if (acceptance.nativeStarted) yield* stopAbandonedTurn(nativeThreadId, turn.id);
-            } else {
-              const context = yield* acceptance.hold === undefined
-                ? registerRootTurn(
-                    {
-                      turnInput: acceptance.input,
-                      nativeTurnId: turn.id,
-                      startedAt: turn.startedAt,
-                      ...(turn.queued === undefined ? {} : { waitForNativeStart: turn.queued }),
-                    },
-                    () => acceptance.abandoned,
-                  )
-                : registerHeldTurn(
-                    nativeThreadId,
-                    acceptance.hold,
-                    turn,
-                    () => acceptance.abandoned,
-                  );
-              // turn/started can arrive while registration is publishing the
-              // context, before that handler can see nativeStartReady itself.
-              if (acceptance.nativeStarted && context.nativeStartReady !== undefined) {
-                yield* Deferred.succeed(context.nativeStartReady, undefined);
-              }
-            }
-            yield* Deferred.succeed(acceptance.accepted, undefined);
-          });
+          }
+          yield* Deferred.succeed(acceptance.accepted, undefined);
+        });
 
         /** Keeps unknown native acceptances ordered without tying the RPC to a caller's deadline. */
         const submitNativeTurn = (
@@ -6172,59 +6162,58 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
          * Starts the empty-input turn that continues a held overloaded run. The
          * turn/started handler joins it to the run through the hold.
          */
-        const retryOverloadedTurn = (
+        const retryOverloadedTurn = Effect.fn("CodexAdapterV2.retryOverloadedTurn")(function* (
           nativeThreadId: string,
           hold: CodexGoalHold,
           delayMs: number,
-        ) =>
-          Effect.gen(function* () {
-            yield* Effect.sleep(delayMs);
-            const stillHeld = () =>
-              goalHolds.get(nativeThreadId) === hold && !goalStops.has(nativeThreadId);
-            if (!(yield* turnTerminalizationPermit.withPermits(1)(Effect.sync(stillHeld)))) return;
-            const params = yield* nativeTurnStartParams(hold.context.input, []);
-            yield* submitNativeTurn(
-              hold.context.input,
-              client.request("turn/start", params).pipe(
-                Effect.map(({ turn }) => ({
-                  id: turn.id,
-                  startedAt: codexTimestamp(turn.startedAt),
-                  queued: turn.startedAt === null,
-                })),
+        ) {
+          yield* Effect.sleep(delayMs);
+          const stillHeld = () =>
+            goalHolds.get(nativeThreadId) === hold && !goalStops.has(nativeThreadId);
+          if (!(yield* turnTerminalizationPermit.withPermits(1)(Effect.sync(stillHeld)))) return;
+          const params = yield* nativeTurnStartParams(hold.context.input, []);
+          yield* submitNativeTurn(
+            hold.context.input,
+            client.request("turn/start", params).pipe(
+              Effect.map(({ turn }) => ({
+                id: turn.id,
+                startedAt: codexTimestamp(turn.startedAt),
+                queued: turn.startedAt === null,
+              })),
+            ),
+            Effect.void,
+            hold,
+          ).pipe(
+            // The same acceptance bound ProviderSessionManager puts on public
+            // starts. Timing out abandons the start, so a late turn is stopped.
+            Effect.timeout("2 minutes"),
+            Effect.raceFirst(
+              Deferred.await(hold.next).pipe(
+                Effect.flatMap((next) => (next === undefined ? Effect.void : Effect.never)),
               ),
-              Effect.void,
-              hold,
-            ).pipe(
-              // The same acceptance bound ProviderSessionManager puts on public
-              // starts. Timing out abandons the start, so a late turn is stopped.
-              Effect.timeout("2 minutes"),
-              Effect.raceFirst(
-                Deferred.await(hold.next).pipe(
-                  Effect.flatMap((next) => (next === undefined ? Effect.void : Effect.never)),
-                ),
+            ),
+            Effect.catch((cause) =>
+              turnTerminalizationPermit.withPermits(1)(
+                Effect.gen(function* () {
+                  yield* Effect.logWarning("orchestration-v2.codex-overload-retry-failed", {
+                    cause,
+                  });
+                  if (!stillHeld() || hold.overloadRetry === undefined) return;
+                  goalHolds.delete(nativeThreadId);
+                  yield* emitProviderEvent({
+                    type: "provider_turn.updated",
+                    driver: CODEX_PROVIDER,
+                    threadId: hold.context.projectionThreadId,
+                    providerTurn: hold.completedTurn,
+                  });
+                  yield* emitOverloadRetryRow(hold.context, hold.overloadRetry.state, "failed");
+                  yield* emitRootTerminal(hold.context, hold.overloadRetry.failed);
+                  yield* Deferred.succeed(hold.next, undefined);
+                }),
               ),
-              Effect.catch((cause) =>
-                turnTerminalizationPermit.withPermits(1)(
-                  Effect.gen(function* () {
-                    yield* Effect.logWarning("orchestration-v2.codex-overload-retry-failed", {
-                      cause,
-                    });
-                    if (!stillHeld() || hold.overloadRetry === undefined) return;
-                    goalHolds.delete(nativeThreadId);
-                    yield* emitProviderEvent({
-                      type: "provider_turn.updated",
-                      driver: CODEX_PROVIDER,
-                      threadId: hold.context.projectionThreadId,
-                      providerTurn: hold.completedTurn,
-                    });
-                    yield* emitOverloadRetryRow(hold.context, hold.overloadRetry.state, "failed");
-                    yield* emitRootTerminal(hold.context, hold.overloadRetry.failed);
-                    yield* Deferred.succeed(hold.next, undefined);
-                  }),
-                ),
-              ),
-            );
-          });
+            ),
+          );
+        });
 
         const emitOrDeferRootTerminal = Effect.fn("CodexAdapterV2.emitOrDeferRootTerminal")(
           function* (input: {
@@ -6902,57 +6891,52 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           );
         });
 
-        const nativeTurnStartParams = (
+        const nativeTurnStartParams = Effect.fn("CodexAdapterV2.nativeTurnStartParams")(function* (
           turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
           codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>,
-        ) =>
-          Effect.gen(function* () {
-            const mcpSession = yield* mcpSessions.read(
-              turnInput.threadId,
-              adapterOptions.instanceId,
-            );
-            return yield* buildCodexTurnStartParams({
-              nativeThreadId: yield* getNativeThreadId(turnInput.providerThread),
-              codexInput,
-              runtimePolicy: turnInput.runtimePolicy,
-              modelSelection: turnInput.modelSelection,
-              hasT3Mcp: mcpSession !== undefined,
-              browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
-              deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
-              omitServiceTier: adapterOptions.resolveRuntime !== undefined,
-              ...(turnInput.appContext === undefined ? {} : { appContext: turnInput.appContext }),
-            });
+        ) {
+          const mcpSession = yield* mcpSessions.read(turnInput.threadId, adapterOptions.instanceId);
+          return yield* buildCodexTurnStartParams({
+            nativeThreadId: yield* getNativeThreadId(turnInput.providerThread),
+            codexInput,
+            runtimePolicy: turnInput.runtimePolicy,
+            modelSelection: turnInput.modelSelection,
+            hasT3Mcp: mcpSession !== undefined,
+            browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
+            deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
+            omitServiceTier: adapterOptions.resolveRuntime !== undefined,
+            ...(turnInput.appContext === undefined ? {} : { appContext: turnInput.appContext }),
           });
+        });
 
         /** Starts a native turn with this run's full turn configuration. */
-        const startNativeTurn = (
+        const startNativeTurn = Effect.fn("CodexAdapterV2.startNativeTurn")(function* (
           turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
           codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>,
-        ) =>
-          Effect.gen(function* () {
-            const threadId = yield* getNativeThreadId(turnInput.providerThread);
-            const turnStartParams = yield* nativeTurnStartParams(turnInput, codexInput);
-            yield* submitNativeTurn(
-              turnInput,
-              client.request("turn/start", turnStartParams).pipe(
-                Effect.map(({ turn }) => ({
-                  id: turn.id,
-                  startedAt: codexTimestamp(turn.startedAt),
-                  queued: turn.startedAt === null,
-                })),
-              ),
-              Effect.gen(function* () {
-                overloadRetryAttempts.delete(threadId);
-                yield* Ref.update(additionalContextByThread, (current) => {
-                  const next = new Map(current);
-                  if (turnStartParams.additionalContext)
-                    next.set(threadId, turnStartParams.additionalContext);
-                  else next.delete(threadId);
-                  return next;
-                });
-              }),
-            );
-          });
+        ) {
+          const threadId = yield* getNativeThreadId(turnInput.providerThread);
+          const turnStartParams = yield* nativeTurnStartParams(turnInput, codexInput);
+          yield* submitNativeTurn(
+            turnInput,
+            client.request("turn/start", turnStartParams).pipe(
+              Effect.map(({ turn }) => ({
+                id: turn.id,
+                startedAt: codexTimestamp(turn.startedAt),
+                queued: turn.startedAt === null,
+              })),
+            ),
+            Effect.gen(function* () {
+              overloadRetryAttempts.delete(threadId);
+              yield* Ref.update(additionalContextByThread, (current) => {
+                const next = new Map(current);
+                if (turnStartParams.additionalContext)
+                  next.set(threadId, turnStartParams.additionalContext);
+                else next.delete(threadId);
+                return next;
+              });
+            }),
+          );
+        });
 
         /**
          * Setting or resuming a goal starts the first goal turn with this run's

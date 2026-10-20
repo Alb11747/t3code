@@ -47,17 +47,20 @@ export const make = Effect.gen(function* () {
   >();
   const changes = yield* PubSub.unbounded<PromptSuggestionChange>();
 
-  const set = (threadId: ThreadId, runId: RunId | null, suggestion: PromptSuggestion | null) =>
-    Effect.gen(function* () {
-      const existing = threads.get(threadId)?.suggestion ?? null;
-      if (runId === null) {
-        threads.delete(threadId);
-      } else {
-        threads.set(threadId, { runId, suggestion });
-      }
-      if (existing?.id === suggestion?.id) return;
-      yield* PubSub.publish(changes, { threadId, suggestion });
-    });
+  const set = Effect.fn("PromptSuggestions.set")(function* (
+    threadId: ThreadId,
+    runId: RunId | null,
+    suggestion: PromptSuggestion | null,
+  ) {
+    const existing = threads.get(threadId)?.suggestion ?? null;
+    if (runId === null) {
+      threads.delete(threadId);
+    } else {
+      threads.set(threadId, { runId, suggestion });
+    }
+    if (existing?.id === suggestion?.id) return;
+    yield* PubSub.publish(changes, { threadId, suggestion });
+  });
 
   const claim: (typeof PromptSuggestions.Service)["claim"] = (threadId, runId) =>
     set(threadId, runId, null);
