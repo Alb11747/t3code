@@ -31,7 +31,10 @@ export class McpProviderSessions extends Context.Service<
   McpProviderSessions,
   {
     readonly set: (config: McpProviderSessionConfig) => Effect.Effect<void>;
-    readonly read: (threadId: ThreadId, providerInstanceId: ProviderInstanceId) => Effect.Effect<McpProviderSessionConfig | undefined>;
+    readonly read: (
+      threadId: ThreadId,
+      providerInstanceId: ProviderInstanceId,
+    ) => Effect.Effect<McpProviderSessionConfig | undefined>;
     readonly clear: (threadId: ThreadId, providerSessionId?: string) => Effect.Effect<void>;
     readonly recordHtmlRender: (
       threadId: ThreadId,
@@ -78,22 +81,34 @@ const matchingPageIndex = (
 };
 
 const make = Effect.gen(function* () {
-  const sessions = yield* Ref.make(new Map<ThreadId, ReadonlyMap<ProviderInstanceId, McpProviderSessionConfig>>());
+  const sessions = yield* Ref.make(
+    new Map<ThreadId, ReadonlyMap<ProviderInstanceId, McpProviderSessionConfig>>(),
+  );
   const htmlRenders = yield* Ref.make(new Map<ThreadId, ReadonlyArray<KeptHtmlRender>>());
   return McpProviderSessions.of({
     set: Effect.fn("McpProviderSessions.set")(function* (config) {
       const current = yield* Ref.get(sessions);
-      if (current.get(config.threadId)?.get(config.providerInstanceId)?.providerSessionId !== config.providerSessionId) {
+      if (
+        current.get(config.threadId)?.get(config.providerInstanceId)?.providerSessionId !==
+        config.providerSessionId
+      ) {
         yield* Ref.update(htmlRenders, (kept) => {
           const next = new Map(kept);
           next.delete(config.threadId);
           return next;
         });
       }
-      yield* Ref.update(sessions, (current) => new Map(current).set(config.threadId,
-        new Map(current.get(config.threadId)).set(config.providerInstanceId, config)));
+      yield* Ref.update(sessions, (current) =>
+        new Map(current).set(
+          config.threadId,
+          new Map(current.get(config.threadId)).set(config.providerInstanceId, config),
+        ),
+      );
     }),
-    read: (threadId, providerInstanceId) => Ref.get(sessions).pipe(Effect.map((current) => current.get(threadId)?.get(providerInstanceId))),
+    read: (threadId, providerInstanceId) =>
+      Ref.get(sessions).pipe(
+        Effect.map((current) => current.get(threadId)?.get(providerInstanceId)),
+      ),
     clear: (threadId, providerSessionId) =>
       Ref.update(sessions, (current) => {
         const next = new Map(current);
@@ -103,7 +118,11 @@ const make = Effect.gen(function* () {
           next.delete(threadId);
           return next;
         }
-        const remaining = new Map(Array.from(byInstance).filter(([, config]) => config.providerSessionId !== providerSessionId));
+        const remaining = new Map(
+          Array.from(byInstance).filter(
+            ([, config]) => config.providerSessionId !== providerSessionId,
+          ),
+        );
         if (remaining.size === 0) next.delete(threadId);
         else next.set(threadId, remaining);
         return next;

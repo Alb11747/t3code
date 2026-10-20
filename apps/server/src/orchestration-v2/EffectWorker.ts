@@ -831,13 +831,13 @@ export const layerWithOptions = (
         },
         (effect, _excludeRestartContinuations?: boolean, _releaseWorkerOnLease?: boolean) =>
           effect.pipe(
-          Effect.mapError((cause) =>
-            isOrchestrationEffectWorkerError(cause)
-              ? cause
-              : new OrchestrationEffectWorkerError({ operation: "run", cause }),
+            Effect.mapError((cause) =>
+              isOrchestrationEffectWorkerError(cause)
+                ? cause
+                : new OrchestrationEffectWorkerError({ operation: "run", cause }),
+            ),
           ),
-          ),
-        );
+      );
 
       return OrchestrationEffectWorkerV2.of({
         awaitWork: outbox.awaitAvailable,
@@ -853,14 +853,14 @@ export const layerWithOptions = (
           ),
         ),
         drain: Effect.fn("EffectWorker.drain")(function* (maxEffects = Number.MAX_SAFE_INTEGER) {
-            let completed = 0;
-            // Drain is a completion milestone; unlike the daemon, it must wait
-            // for a claimed effect even when its worker lease expires.
-            while (completed < maxEffects && (yield* runOnce(false, false))) {
-              completed += 1;
-            }
-            return completed;
-          }),
+          let completed = 0;
+          // Drain is a completion milestone; unlike the daemon, it must wait
+          // for a claimed effect even when its worker lease expires.
+          while (completed < maxEffects && (yield* runOnce(false, false))) {
+            completed += 1;
+          }
+          return completed;
+        }),
       });
     }),
   );

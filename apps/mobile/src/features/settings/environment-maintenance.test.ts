@@ -168,17 +168,15 @@ describe("environment release checks", () => {
 
   it("finds fork updates in the fork feed for a fork server", async () => {
     const version = "0.0.46-nightly.20261015.3176.fork.3";
-    const fetchMock = vi
-      .fn()
-      .mockImplementation(async () => feed(`v${version}`));
+    const fetchMock = vi.fn().mockImplementation(async () => feed(`v${version}`));
     vi.stubGlobal("fetch", fetchMock);
     expect(await findEnvironmentUpdate("0.0.46-nightly.20261014.3132.fork.1", signal)).toBe(
       version,
     );
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://github.com/Alb11747/t3code/releases.atom",
-      { signal, headers: { Accept: "application/atom+xml" } },
-    );
+    expect(fetchMock).toHaveBeenCalledWith("https://github.com/Alb11747/t3code/releases.atom", {
+      signal,
+      headers: { Accept: "application/atom+xml" },
+    });
     expect(await findEnvironmentUpdate(version, signal)).toBeNull();
   });
 

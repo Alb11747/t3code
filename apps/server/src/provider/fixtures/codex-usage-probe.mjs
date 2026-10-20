@@ -47,6 +47,9 @@ for await (const line of input) {
     case "skills/list":
       result = { data: [] };
       break;
+    case "config/read":
+      result = { config: {}, origins: {}, layers: null };
+      break;
     case "account/rateLimits/read":
       if (process.env.CODEX_PROBE_USAGE_ERROR === "true") {
         process.stdout.write(

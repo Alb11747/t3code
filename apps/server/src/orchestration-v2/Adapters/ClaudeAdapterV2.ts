@@ -1147,11 +1147,11 @@ export const layerQueryRunner: Layer.Layer<
           ForkSessionResult & { readonly headMessageId?: string },
           unknown
         > = usesHostConfig
-            ? Effect.tryPromise(() => forkClaudeSession(input.sessionId, input.options))
-            : forkClaudeSessionInWorker(input).pipe(
-                Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-                Effect.provideService(Path.Path, path),
-              );
+          ? Effect.tryPromise(() => forkClaudeSession(input.sessionId, input.options))
+          : forkClaudeSessionInWorker(input).pipe(
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+              Effect.provideService(Path.Path, path),
+            );
         const result = yield* fork.pipe(
           Effect.mapError((cause) => queryRunnerError(cause, "forkSession")),
         );
@@ -1361,7 +1361,7 @@ export function makeClaudeQueryOptions(input: {
       preset: "claude_code" as const,
       append: [
         buildRuntimeInstructions({ harness: "Claude Code" }) +
-        (input.mcpServers === undefined ? "" : T3_CODE_ORCHESTRATION_INSTRUCTIONS),
+          (input.mcpServers === undefined ? "" : T3_CODE_ORCHESTRATION_INSTRUCTIONS),
         ...launchAppendSystemPrompt,
       ].join("\n\n"),
     },
@@ -4594,8 +4594,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const replacePendingBackgroundTasks =
           /* Provider events include streaming deltas; avoid a span for each update. */
           Effect.fnUntraced(function* (
-          nativeThreadId: string,
-          tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
+            nativeThreadId: string,
+            tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
           ) {
             yield* Ref.update(pendingBackgroundTasksByNativeThread, (current) => {
               const updated = new Map(current);
@@ -4621,8 +4621,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const upsertPendingBackgroundTask =
           /* Provider events include streaming deltas; avoid a span for each update. */
           Effect.fnUntraced(function* (
-          nativeThreadId: string,
-          task: OrchestrationV2PendingBackgroundTask,
+            nativeThreadId: string,
+            task: OrchestrationV2PendingBackgroundTask,
           ) {
             yield* Ref.update(pendingBackgroundTasksByNativeThread, (current) => {
               const roster = new Map(rosterForNativeThread(current, nativeThreadId));
@@ -5781,12 +5781,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               creationSource: "provider",
             });
             // Recovery cannot tell whether the child thread was already persisted.
-              yield* emitProviderEvent({
-                type: "app_thread.created",
-                driver: CLAUDE_PROVIDER,
-                appThread: childThread,
+            yield* emitProviderEvent({
+              type: "app_thread.created",
+              driver: CLAUDE_PROVIDER,
+              appThread: childThread,
               ...(existingSubagent === undefined ? {} : { createOnly: true }),
-              });
+            });
             subagent.childThread = childThread;
           }
 
@@ -7489,7 +7489,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               context.rateLimitResetTimes.set(
                 limitType,
                 claudeUsageLimitResetAt(rateLimitInfo.resetsAt) ??
-                  context.rateLimitResetTimes.get(limitType) ?? null,
+                  context.rateLimitResetTimes.get(limitType) ??
+                  null,
               );
             } else if (
               rateLimitInfo.status === "allowed" ||
@@ -9782,7 +9783,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   yield* handleSdkMessage({ query: querySession.query, message: lastResult });
                   return;
                 }
-                if (buffer?.settled === true || (hasOpaqueTaskNotification && !context.nativeWakeStarted)) {
+                if (
+                  buffer?.settled === true ||
+                  (hasOpaqueTaskNotification && !context.nativeWakeStarted)
+                ) {
                   const completedAt = yield* DateTime.now;
                   yield* finalizeActiveTurn({ context, status: "completed", completedAt });
                 } else if (!context.nativeWakeStarted) {
@@ -9805,8 +9809,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                               nativeThreadId,
                             },
                           );
-                  const completedAt = yield* DateTime.now;
-                  yield* finalizeActiveTurn({ context, status: "completed", completedAt });
+                          const completedAt = yield* DateTime.now;
+                          yield* finalizeActiveTurn({ context, status: "completed", completedAt });
                         }),
                       ),
                     ),
@@ -10178,17 +10182,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           hasPendingBackgroundWorkForThread: Effect.fn(
             "ClaudeAdapterV2.hasPendingBackgroundWorkForThread",
           )(function* (providerThread) {
-              const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
-              if (nativeThreadId === undefined || nativeThreadId === null) {
-                return false;
-              }
-              return (
-                rosterForNativeThread(
-                  yield* Ref.get(pendingBackgroundTasksByNativeThread),
-                  nativeThreadId,
-                ).size > 0
-              );
-            }),
+            const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+            if (nativeThreadId === undefined || nativeThreadId === null) {
+              return false;
+            }
+            return (
+              rosterForNativeThread(
+                yield* Ref.get(pendingBackgroundTasksByNativeThread),
+                nativeThreadId,
+              ).size > 0
+            );
+          }),
           ensureThread: Effect.fn("ClaudeAdapterV2.ensureThread")(
             function* (threadInput: ProviderAdapter.ProviderAdapterV2EnsureThreadInput) {
               const createdAt = yield* DateTime.now;
@@ -10271,34 +10275,34 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             }),
           steerTurn,
           stopTask: Effect.fn("ClaudeAdapterV2.stopTask")(function* ({ providerThread, taskId }) {
-              const liveQuery = yield* Ref.get(queryContext);
-              const task = (yield* Ref.get(sessionSubagentsByTaskId)).get(taskId);
-              if (
-                liveQuery === null ||
-                liveQuery.stopping ||
-                liveQuery.nativeThreadId !== providerThread.nativeThreadRef?.nativeId ||
-                task === undefined ||
-                task.task.threadId !== providerThread.appThreadId ||
-                task.task.workflow === undefined ||
-                task.task.status !== "running" ||
-                liveQuery.subagentsFromEarlierProcesses.has(task)
-              ) {
-                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-                  driver: CLAUDE_PROVIDER,
-                  detail: "No running workflow task belongs to this provider thread",
-                });
-              }
-              yield* liveQuery.query.stopTask(taskId).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderAdapter.ProviderAdapterProtocolError({
-                      driver: CLAUDE_PROVIDER,
-                      detail: "Workflow stop request failed",
-                      cause,
-                    }),
-                ),
-              );
-            }),
+            const liveQuery = yield* Ref.get(queryContext);
+            const task = (yield* Ref.get(sessionSubagentsByTaskId)).get(taskId);
+            if (
+              liveQuery === null ||
+              liveQuery.stopping ||
+              liveQuery.nativeThreadId !== providerThread.nativeThreadRef?.nativeId ||
+              task === undefined ||
+              task.task.threadId !== providerThread.appThreadId ||
+              task.task.workflow === undefined ||
+              task.task.status !== "running" ||
+              liveQuery.subagentsFromEarlierProcesses.has(task)
+            ) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CLAUDE_PROVIDER,
+                detail: "No running workflow task belongs to this provider thread",
+              });
+            }
+            yield* liveQuery.query.stopTask(taskId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: CLAUDE_PROVIDER,
+                    detail: "Workflow stop request failed",
+                    cause,
+                  }),
+              ),
+            );
+          }),
           interruptTurn,
           stopSubagent: Effect.fn("ClaudeAdapterV2.stopSubagent")(function* (input) {
             const existing = yield* Ref.get(queryContext);

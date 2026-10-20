@@ -2527,8 +2527,8 @@ function useChatMarkdownState({
       (error: unknown) => {
         if (mediaRequestId.current !== requestId) return;
         let description =
-              error instanceof Error
-                ? error.message
+          error instanceof Error
+            ? error.message
             : "The file could not be loaded. It may have been moved or deleted.";
         if (
           isAssetNotFoundError(error) &&
@@ -2827,7 +2827,11 @@ function useChatMarkdownState({
         copyMarkdown={copyMarkdown}
         theme={resolvedTheme}
         threadRef={threadRef}
-        onDownloadFile={threadRef ? async () => downloadMarkdownFile(await resolveHostPath()) : undefined}
+        onDownloadFile={
+          threadRef
+            ? async () => downloadMarkdownFile((await resolveHostPath()).absolutePath)
+            : undefined
+        }
         onOpen={
           canUseShellActions
             ? async () =>

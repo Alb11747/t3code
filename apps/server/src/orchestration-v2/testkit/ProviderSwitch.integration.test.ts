@@ -344,10 +344,10 @@ function makeTestAdapter(input: {
                         failure:
                           input.failure ??
                           makeProviderFailure({
-                          message: "Simulated provider failure.",
-                          code: "simulated_failure",
-                          class: "provider_error",
-                        }),
+                            message: "Simulated provider failure.",
+                            code: "simulated_failure",
+                            class: "provider_error",
+                          }),
                       }
                     : { status: terminalStatus, failure: null }),
                   threadDisposition: "reusable",
@@ -1210,15 +1210,24 @@ describe("orchestration v2 provider switching", () => {
       ),
   );
 
-  it.live.each([false, true].flatMap((deferred) => [
-    [deferred, "background work", new ClaudeBackgroundWorkBlocksQueryReplacementError()],
-    [deferred, "an unreadable append file", new ClaudeAppendSystemPromptFileError({ path: "missing.md" })],
-    [
-      deferred,
-      "a missing append value",
-      new ClaudeAppendSystemPromptMissingValueError({ flag: "--append-system-prompt" }),
-    ],
-  ] as const)) ("keeps the native session after turns refused for %s", ([deferred, , refusalCause]) =>
+  it.live.each(
+    [false, true].flatMap(
+      (deferred) =>
+        [
+          [deferred, "background work", new ClaudeBackgroundWorkBlocksQueryReplacementError()],
+          [
+            deferred,
+            "an unreadable append file",
+            new ClaudeAppendSystemPromptFileError({ path: "missing.md" }),
+          ],
+          [
+            deferred,
+            "a missing append value",
+            new ClaudeAppendSystemPromptMissingValueError({ flag: "--append-system-prompt" }),
+          ],
+        ] as const,
+    ),
+  )("keeps the native session after turns refused for %s", ([deferred, , refusalCause]) =>
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("refused-start-keeps-native");

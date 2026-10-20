@@ -195,7 +195,6 @@ it("ignores custom models that shadow a preferred slug", () => {
 const encodeProbeAccount = Schema.encodeSync(
   Schema.fromJsonString(CodexSchema.V2GetAccountResponse),
 );
-const decodeCodexSettings = Schema.decodeUnknownSync(CodexSettings);
 
 const probeUsage = (account: CodexSchema.V2GetAccountResponse, usageReadFails = false) =>
   Effect.gen(function* () {
@@ -287,7 +286,7 @@ const decodeRequest = Schema.decodeUnknownSync(
 );
 const account = {
   account: { type: "chatgpt", email: "test@example.com", planType: "pro" },
-  requiresOpenaiAuth: false,
+  requiresOpenaiAuth: true,
 } as const;
 
 const startProbe = Effect.fn("startProbe")(function* (hang: ReadonlyArray<string>) {
