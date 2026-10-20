@@ -18519,10 +18519,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const NESTED_TOOL_USE_ID = "toolu-steer-nested";
           const FINISHED_TOOL_USE_ID = "toolu-steer-finished";
           const calls: Array<string> = [];
+          const backgroundRequested = yield* Deferred.make<void>();
+          // The adapter's wait for backgrounding before it steers anyway.
+          const steerTimeout = Duration.seconds(5);
+          const steerTimeouts = yield* Queue.unbounded<void>();
+          const clock = yield* Clock.Clock;
           let beforeAnswer: Effect.Effect<void> = Effect.void;
           const harness = yield* makeWakeHarnessWithOptions({
             backgroundTasks: (toolUseId) =>
               Effect.sync(() => calls.push(toolUseId)).pipe(
+                Effect.andThen(Deferred.succeed(backgroundRequested, undefined)),
                 Effect.andThen(
                   backgrounding === "answers after the turn ended" ||
                     backgrounding === "answers after the subagent ran again"
@@ -18651,22 +18657,39 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
 
           const offered = harness.offeredMessages.length;
-          const steer = harness.runtime.steerTurn({
-            threadId: harness.threadId,
-            runId: input.runId,
-            providerThread: harness.providerThread,
-            providerTurnId: idAllocator.derive.providerTurn({
-              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-              nativeTurnId: `turn:${attemptId}`,
-            }),
-            message: {
-              createdBy: "user",
-              creationSource: "web",
-              messageId: MessageId.make("message-steer-foreground-subagent"),
-              text: "Also check the docs.",
-              attachments: [],
-            },
-          });
+          const steer = harness.runtime
+            .steerTurn({
+              threadId: harness.threadId,
+              runId: input.runId,
+              providerThread: harness.providerThread,
+              providerTurnId: idAllocator.derive.providerTurn({
+                driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+                nativeTurnId: `turn:${attemptId}`,
+              }),
+              message: {
+                createdBy: "user",
+                creationSource: "web",
+                messageId: MessageId.make("message-steer-foreground-subagent"),
+                text: "Also check the docs.",
+                attachments: [],
+              },
+            })
+            .pipe(
+              Effect.provideService(Clock.Clock, {
+                ...clock,
+                sleep: (duration) =>
+                  !Duration.equals(duration, steerTimeout)
+                    ? clock.sleep(duration)
+                    : Effect.gen(function* () {
+                        // Register the timeout before advancing time, including after async skill reads.
+                        const sleeper = yield* Effect.forkChild(clock.sleep(duration), {
+                          startImmediately: true,
+                        });
+                        yield* Queue.offer(steerTimeouts, undefined);
+                        yield* Fiber.join(sleeper);
+                      }),
+              }),
+            );
           const RERUN_TOOL_USE_ID = "toolu-steer-rerun";
           if (backgrounding === "answers after the subagent ran again") {
             beforeAnswer = harness
@@ -18695,9 +18718,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             backgrounding === "never answers" ||
             backgrounding === "answers after the steer went out"
           ) {
-            yield* awaitUntil(() => calls.length === 1, "background request");
+            yield* Deferred.await(backgroundRequested);
+            yield* Queue.take(steerTimeouts);
             assert.equal(harness.offeredMessages.length, offered);
-            yield* TestClock.adjust("5 seconds");
+            yield* TestClock.adjust(steerTimeout);
           }
           const steered = yield* Fiber.await(steering);
 
@@ -18713,10 +18737,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           if (backgrounding === "never answers") {
             for (let repeat = 1; repeat <= 2; repeat++) {
               const again = yield* Effect.forkScoped(steer);
-              for (let tick = 0; tick < 100 && again.pollUnsafe() === undefined; tick++) {
-                yield* TestClock.adjust("1 second");
-                yield* Effect.yieldNow;
-              }
+              yield* Queue.take(steerTimeouts);
+              yield* TestClock.adjust(steerTimeout);
               assert.isTrue(Exit.isSuccess(yield* Fiber.await(again)));
               assert.equal(harness.offeredMessages.length, offered + 1 + repeat);
             }

@@ -10,6 +10,7 @@ an issue alone does not revert a patch. See `fork/README.md` for how to add or d
 an entry.
 
 - `fix(opencode): OpenCodeServerLedger linux tests no longer race a wrapper's exec`: records stable serve arguments across wrapper exec and tolerates a process group disappearing during test cleanup. Issue: https://github.com/pingdotgg/t3code/issues/22324. PR: https://github.com/pingdotgg/t3code/pull/22209
+- `test(server): await Claude background requests before advancing the clock`: waits for the fake background transport and registered steer timeouts, including repeated steers after asynchronous skill reads, instead of yield-count and clock-advance loops. Issue: https://github.com/pingdotgg/t3code/issues/22324. PR: none yet
 
 - `feat(fork): publish budget-blocked releases from Labs`: manually verifies a real fork job-budget failure, checks and builds pinned fork main on fallback runners, and publishes the same update feed only after a draft has every asset verified; the cross-repository token reaches only the final publish step. Fork-only. Issue: none linked. PR: none yet
 
