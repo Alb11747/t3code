@@ -206,9 +206,15 @@ export class ScheduledTaskService extends Context.Service<
     readonly delete: (
       input: ScheduledTaskDeleteInput,
     ) => Effect.Effect<ScheduledTaskDeleteResult, ScheduledTaskError>;
+    /** Deletes only tasks that still target this thread, including their webhook deliveries. */
+    readonly deleteForThread: (threadId: ThreadId) => Effect.Effect<void, ScheduledTaskError>;
+    /** The dispatched thread, or null if dispatch failed; leaves the task's binding unchanged. */
     readonly runNow: (
       input: ScheduledTaskRunNowInput,
-    ) => Effect.Effect<ScheduledTaskRunNowResult, ScheduledTaskError>;
+    ) => Effect.Effect<
+      ScheduledTaskRunNowResult & { readonly threadId: ThreadId | null },
+      ScheduledTaskError
+    >;
     readonly rotateWebhookToken: (
       input: ScheduledTaskRotateWebhookTokenInput,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
@@ -281,8 +287,9 @@ function webhookEndpoint(
   };
 }
 
-const decodeRow = (row: ScheduledTaskRow, origin: WebhookOrigin | null = null) =>
-  Effect.gen(function* () {
+// Runs per task row; list and lookup operations already own the span.
+const decodeRow = Effect.fnUntraced(
+  function* (row: ScheduledTaskRow, origin: WebhookOrigin | null = null) {
     const schedule = yield* decodeScheduleJson(row.schedule_json);
     const webhook = schedule.type === "webhook" ? webhookEndpoint(row, origin) : undefined;
     const workspaceStrategy = yield* decodeWorkspaceStrategyJson(row.workspace_strategy_json);
@@ -310,7 +317,9 @@ const decodeRow = (row: ScheduledTaskRow, origin: WebhookOrigin | null = null) =
       runCount: row.run_count,
       ...(webhook === undefined ? {} : { webhook }),
     });
-  }).pipe(
+  },
+  (effect, row, _origin?) =>
+    effect.pipe(
     Effect.mapError((cause) => {
       const taskId = decodeTaskId(row.task_id);
       return taskError("Could not decode schedule task row.", {
@@ -318,6 +327,7 @@ const decodeRow = (row: ScheduledTaskRow, origin: WebhookOrigin | null = null) =
         cause,
       });
     }),
+    ),
   );
 
 export const listDueTasks = Effect.fn("ScheduledTaskService.listDueTasks")(function* (
@@ -639,8 +649,8 @@ export const layer = Layer.effect(
     // the task forever (it filters out 'running' rows) nor re-fires it
     // immediately: the dispatch may already have gone out, so next_run_at must
     // advance and run_count must count the attempt.
-    const releaseStuckRun = (task: ScheduledTask, message: string) =>
-      Effect.gen(function* () {
+    const releaseStuckRun = Effect.fn("ScheduledTaskService.releaseStuckRun")(
+      function* (task: ScheduledTask, message: string) {
         const now = yield* localNow;
         const reread = yield* Effect.result(findTask(task.id));
         if (Result.isSuccess(reread) && reread.success === null) return;
@@ -655,12 +665,15 @@ export const layer = Layer.effect(
           WHERE task_id = ${task.id} AND last_run_status = 'running'
         `;
         yield* notifyChanged;
-      }).pipe(
+      },
+      (effect, task, _message) =>
+        effect.pipe(
         Effect.catch((cause) =>
           Effect.logWarning("Could not release stuck schedule task run", {
             taskId: task.id,
             cause,
           }),
+        ),
         ),
       );
 
@@ -679,7 +692,7 @@ export const layer = Layer.effect(
         if (trigger !== "scheduled") {
           return yield* taskError("Schedule task is already running.", { taskId: task.id });
         }
-        return task;
+        return { task, threadId: null };
       }
 
       return yield* Effect.gen(function* () {
@@ -699,7 +712,7 @@ export const layer = Layer.effect(
           if (trigger !== "scheduled") {
             return yield* taskError("Schedule task not found.", { taskId: task.id });
           }
-          return task;
+          return { task, threadId: null };
         }
         const parsedNextRunAt =
           active.nextRunAt === null ? Option.none() : DateTime.make(active.nextRunAt);
@@ -709,7 +722,7 @@ export const layer = Layer.effect(
             Option.isNone(parsedNextRunAt) ||
             DateTime.toEpochMillis(parsedNextRunAt.value) > DateTime.toEpochMillis(startedAt))
         ) {
-          return active;
+          return { task: active, threadId: null };
         }
         // A queued delivery must not run a task that was paused, deleted and
         // recreated under the same id, or switched to another trigger while
@@ -744,7 +757,8 @@ export const layer = Layer.effect(
         const result =
           active.threadId === null
             ? yield* Effect.exit(
-                threadLaunch.launch({
+                threadLaunch
+                  .launch({
                   commandId,
                   projectId: active.projectId,
                   title: active.title,
@@ -760,12 +774,14 @@ export const layer = Layer.effect(
                   },
                   createdBy: active.createdBy,
                   creationSource: active.creationSource,
-                }),
+                  })
+                  .pipe(Effect.map((launched) => launched.threadId)),
               )
             : yield* Effect.exit(
                 // The stored selection only seeds fresh threads. A bound run
                 // follows the thread's current provider, so it passes none.
-                threadManagement.sendToThread({
+                threadManagement
+                  .sendToThread({
                   projectId: active.projectId,
                   commandId,
                   threadId: ThreadId.make(active.threadId),
@@ -776,13 +792,15 @@ export const layer = Layer.effect(
                   mode: "queue",
                   createdBy: active.createdBy,
                   creationSource: active.creationSource,
-                }),
+                  })
+                  .pipe(Effect.as(ThreadId.make(active.threadId))),
               );
 
         const completedAt = yield* localNow;
         const runSucceeded = result._tag === "Success";
         const lastRunStatus = runSucceeded ? ("succeeded" as const) : ("failed" as const);
         const lastRunError = runSucceeded ? null : errorMessage(result.cause);
+        const threadId = runSucceeded ? result.value : null;
         const current = yield* findTask(task.id);
         const scheduleSource = current ?? task;
         const completed: ScheduledTask = {
@@ -808,7 +826,7 @@ export const layer = Layer.effect(
           });
           yield* notifyChanged;
         }
-        return completed;
+        return { task: completed, threadId };
       }).pipe(
         Effect.onError((cause) => releaseStuckRun(task, errorMessage(cause))),
         Effect.ensuring(
@@ -935,8 +953,9 @@ export const layer = Layer.effect(
         }),
       );
 
-    const upsert: ScheduledTaskService["Service"]["upsert"] = (input) =>
-      Effect.gen(function* () {
+    const upsert: ScheduledTaskService["Service"]["upsert"] = Effect.fn(
+      "ScheduledTaskService.upsert",
+    )(function* (input) {
         if (
           input.schedule.type === "fixed_time" &&
           input.schedule.timeZone != null &&
@@ -1002,8 +1021,7 @@ export const layer = Layer.effect(
             ? yield* Effect.gen(function* () {
                 const existing = existingTask === null ? null : yield* findWebhookCredentials(id);
                 const token = existing?.token ?? (yield* newWebhookToken);
-                const signature =
-                  input.schedule.type === "webhook" ? input.schedule.signature : null;
+              const signature = input.schedule.type === "webhook" ? input.schedule.signature : null;
                 // A secretRef is a value the user entered for an agent; this
                 // save consumes it, so it cannot be used again. A replay of a
                 // save that already used it keeps the secret that save stored.
@@ -1072,8 +1090,9 @@ export const layer = Layer.effect(
         return { task: (yield* findTask(id)) ?? task };
       });
 
-    const setEnabled: ScheduledTaskService["Service"]["setEnabled"] = (input) =>
-      Effect.gen(function* () {
+    const setEnabled: ScheduledTaskService["Service"]["setEnabled"] = Effect.fn(
+      "ScheduledTaskService.setEnabled",
+    )(function* (input) {
         const existing = yield* loadTask(input.id);
         if (existing.enabled === input.enabled) return { task: existing };
         const now = yield* localNow;
@@ -1101,44 +1120,77 @@ export const layer = Layer.effect(
         };
       });
 
-    const deleteTask: ScheduledTaskService["Service"]["delete"] = (input) =>
-      deleteRow(input.id).pipe(
-        Effect.andThen(
-          Effect.all([
+    const forgetWebhookTask = (id: ScheduledTaskId) =>
+      Effect.all(
+        [
             Ref.update(webhookRateWindows, (windows) => {
               const next = new Map(windows);
-              next.delete(input.id);
+            next.delete(id);
               return next;
             }),
             Ref.update(webhookPermits, (permits) => {
               const next = new Map(permits);
-              next.delete(input.id);
+            next.delete(id);
               return next;
             }),
-          ]),
-        ),
+        ],
+        { discard: true },
+      );
+
+    const deleteTask: ScheduledTaskService["Service"]["delete"] = (input) =>
+      deleteRow(input.id).pipe(
+        Effect.andThen(forgetWebhookTask(input.id)),
         Effect.andThen(notifyChanged),
         Effect.as({ id: input.id }),
       );
 
-    const runNow: ScheduledTaskService["Service"]["runNow"] = (input: ScheduledTaskRunNowInput) =>
+    const deleteForThread = Effect.fn("ScheduledTaskService.deleteForThread")(function* (
+      threadId: ThreadId,
+    ) {
+      // Check the current binding in the transaction: an automation may have
+      // been unbound or moved since thread deletion queued this cleanup.
+      const removed = yield* sql
+        .withTransaction(
       Effect.gen(function* () {
+            yield* sql`
+            DELETE FROM scheduled_task_webhook_deliveries
+            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
+          `;
+            return yield* sql<{ task_id: ScheduledTaskId }>`
+            DELETE FROM scheduled_tasks WHERE thread_id = ${threadId} RETURNING task_id
+          `;
+          }),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not delete thread's schedule tasks.", { cause }),
+          ),
+        );
+      yield* Effect.forEach(removed, ({ task_id }) => forgetWebhookTask(task_id), {
+        discard: true,
+      });
+      if (removed.length > 0) yield* notifyChanged;
+    });
+
+    const runNow: ScheduledTaskService["Service"]["runNow"] = Effect.fn(
+      "ScheduledTaskService.runNow",
+    )(function* (input: ScheduledTaskRunNowInput) {
         const task = yield* loadTask(input.id);
         if (task.schedule.type === "webhook") {
           return yield* taskError("Webhook tasks run when their URL receives a request.", {
             taskId: input.id,
           });
         }
-        const next = yield* runTask(task, "manual").pipe(
+      return yield* runTask(task, "manual").pipe(
           Effect.mapError((cause) =>
             taskError("Could not run schedule task.", { taskId: input.id, cause }),
           ),
         );
-        return { task: next };
       });
 
-    const rotateWebhookToken: ScheduledTaskService["Service"]["rotateWebhookToken"] = (input) =>
-      Effect.gen(function* () {
+    const rotateWebhookToken: ScheduledTaskService["Service"]["rotateWebhookToken"] = Effect.fn(
+      "ScheduledTaskService.rotateWebhookToken",
+    )(function* (input) {
         const task = yield* loadTask(input.id);
         if (task.schedule.type !== "webhook") {
           return yield* taskError("Only webhook tasks have a URL token.", { taskId: input.id });
@@ -1193,8 +1245,9 @@ export const layer = Layer.effect(
         ),
       );
 
-    const getWebhookDelivery: ScheduledTaskService["Service"]["getWebhookDelivery"] = (input) =>
-      Effect.gen(function* () {
+    const getWebhookDelivery: ScheduledTaskService["Service"]["getWebhookDelivery"] = Effect.fn(
+      "ScheduledTaskService.getWebhookDelivery",
+    )(function* (input) {
         const rows = yield* sql<WebhookDeliveryRow>`
           SELECT * FROM scheduled_task_webhook_deliveries
           WHERE task_id = ${input.id} AND delivery_id = ${input.deliveryId}
@@ -1320,8 +1373,9 @@ export const layer = Layer.effect(
         },
       );
 
-    const webhookPermit = (id: ScheduledTaskId) =>
-      Effect.gen(function* () {
+    const webhookPermit = Effect.fn("ScheduledTaskService.webhookPermit")(function* (
+      id: ScheduledTaskId,
+    ) {
         const existing = (yield* Ref.get(webhookPermits)).get(id);
         if (existing !== undefined) return existing;
         const created = yield* Semaphore.make(1);
@@ -1335,13 +1389,13 @@ export const layer = Layer.effect(
 
     const serviceScope = yield* Effect.scope;
 
-    const observeDelivery = (
+    // Delivery attributes belong to the enclosing triggerWebhook span.
+    const observeDelivery = Effect.fnUntraced(function* (
       request: WebhookTriggerRequest,
       outcome: WebhookDeliveryOutcome,
       receivedAt: DateTime.DateTime | undefined,
       now: DateTime.DateTime | undefined,
-    ) =>
-      Effect.gen(function* () {
+    ) {
         const source = request.relayDeliveryId === undefined ? "direct" : "relay";
         yield* Effect.annotateCurrentSpan({
           "scheduled_task.webhook.outcome": outcome,
@@ -1372,8 +1426,8 @@ export const layer = Layer.effect(
         }),
       );
 
-    const triggerWebhookUnobserved = (request: WebhookTriggerRequest) =>
-      Effect.gen(function* () {
+    // triggerWebhook owns the operation span and its task-id annotation.
+    const triggerWebhookUnobserved = Effect.fnUntraced(function* (request: WebhookTriggerRequest) {
         const taskId = decodeTaskId(request.hookId);
         const notFound = observeDelivery(request, "not_found", undefined, undefined).pipe(
           Effect.as({ _tag: "not_found" as const }),
@@ -1417,9 +1471,7 @@ export const layer = Layer.effect(
             ? `delivery:${yield* crypto
                 .randomUUIDv4()
                 .pipe(
-                  Effect.mapError((cause) =>
-                    taskError("Could not generate delivery id.", { cause }),
-                  ),
+                Effect.mapError((cause) => taskError("Could not generate delivery id.", { cause })),
                 )}`
             : `delivery:relay:${request.relayDeliveryId}`,
         );
@@ -1580,7 +1632,7 @@ export const layer = Layer.effect(
                 Metrics.increment(Metrics.webhookRunsTotal, { outcome }),
               ]);
             yield* runTask(task, "webhook", { deliveryId, prompt: rendered.prompt }).pipe(
-              Effect.flatMap((completed) =>
+            Effect.flatMap(({ task: completed }) =>
                 completed.lastRunStatus === "failed"
                   ? runOutcome("failed").pipe(
                       Effect.andThen(markDeliveryFailed(deliveryId, "The run failed to start.")),
@@ -1625,6 +1677,7 @@ export const layer = Layer.effect(
       upsert,
       setEnabled,
       delete: deleteTask,
+      deleteForThread,
       runNow,
       rotateWebhookToken,
       listWebhookDeliveries,

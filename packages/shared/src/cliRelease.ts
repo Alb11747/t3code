@@ -13,6 +13,9 @@ function cliReleaseRepository(version: string): string {
     : FORK_RELEASE_REPOSITORY;
 }
 
+export function cliReleasesPageUrl(version: string): string {
+  return `https://github.com/${cliReleaseRepository(version)}/releases`;
+}
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";
 

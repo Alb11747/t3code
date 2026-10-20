@@ -748,8 +748,9 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const sendToThread: ThreadManagementServiceShape["sendToThread"] = (input) =>
-    Effect.gen(function* () {
+  const sendToThread: ThreadManagementServiceShape["sendToThread"] = Effect.fn(
+    "ThreadManagementService.sendToThread",
+  )(function* (input) {
       const target = yield* getProjectThreadRecords(input, ["runs", "providerTurns"]);
       if (target.thread.archivedAt !== null) {
         return yield* new ThreadManagementThreadArchivedError({
@@ -831,8 +832,9 @@ const make = Effect.gen(function* () {
       return { dispatch: dispatched, projection, message, run, turnItem, delivery };
     });
 
-  const waitForThread: ThreadManagementServiceShape["waitForThread"] = (input) =>
-    Effect.gen(function* () {
+  const waitForThread: ThreadManagementServiceShape["waitForThread"] = Effect.fn(
+    "ThreadManagementService.waitForThread",
+  )(function* (input) {
       const loadError = (cause: unknown) =>
         new ThreadManagementProjectionLoadError({
           projectId: input.projectId,
@@ -860,10 +862,10 @@ const make = Effect.gen(function* () {
       }
       // A restart cuts a run and continues it as a new run. Follow that chain,
       // so a cut run is not the answer while its continuation is pending.
-      const outcome = (runs: ReadonlyArray<OrchestrationV2Run>) =>
-        Effect.gen(function* () {
-          const selected = runs.find((candidate) => candidate.id === selectedRun.id);
-          if (selected === undefined) {
+    // Runs per matching event and is already covered by the waitForThread span.
+    const outcome = Effect.fnUntraced(function* (runs: ReadonlyArray<OrchestrationV2Run>) {
+      const selected = runs.find((candidate) => candidate.id === selectedRun.id);
+      if (selected === undefined) {
             return yield* new ThreadManagementRunNotFoundError({
               threadId: input.threadId,
               runId: selectedRun.id,
@@ -881,8 +883,7 @@ const make = Effect.gen(function* () {
           const current = runs.find((candidate) => candidate.id === takenBy) ?? selected;
           const run = latestRestartContinuation(runs, current);
           const pending =
-            isTerminalRunStatus(run.status) &&
-            (yield* orchestrator.restartContinuationPending(run));
+        isTerminalRunStatus(run.status) && (yield* orchestrator.restartContinuationPending(run));
           return { run, pending, settled: isTerminalRunStatus(run.status) && !pending };
         });
       const initial = yield* outcome(target.runs);
@@ -970,8 +971,9 @@ const make = Effect.gen(function* () {
     return { sequence: result.sequence };
   });
 
-  const interruptThread: ThreadManagementServiceShape["interruptThread"] = (input) =>
-    Effect.gen(function* () {
+  const interruptThread: ThreadManagementServiceShape["interruptThread"] = Effect.fn(
+    "ThreadManagementService.interruptThread",
+  )(function* (input) {
       const target = yield* getProjectThreadRecords(input, ["runs", "providerTurns"]);
       const explicitRun =
         input.runId === undefined
@@ -1017,8 +1019,10 @@ const make = Effect.gen(function* () {
       return { type: "interrupt_requested", run: interruptibleRun, dispatch } as const;
     });
 
-  const stopWorkflow: ThreadManagementServiceShape["stopWorkflow"] = (input) =>
-    Effect.gen(function* () {
+  const stopWorkflow: ThreadManagementServiceShape["stopWorkflow"] = Effect.fn(
+    "ThreadManagementService.stopWorkflow",
+  )(
+    function* (input) {
       const records = yield* orchestrator
         .getThreadRecords(input.threadId, ["subagents", "runs", "providerThreads"])
         .pipe(
@@ -1099,10 +1103,13 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
-    }).pipe((effect) => threadDispatch.withLock(input.threadId, effect));
+    },
+    (effect, input) => effect.pipe((effect) => threadDispatch.withLock(input.threadId, effect)),
+  );
 
-  const stopDelegatedTasks: ThreadManagementServiceShape["stopDelegatedTasks"] = (input) =>
-    Effect.gen(function* () {
+  const stopDelegatedTasks: ThreadManagementServiceShape["stopDelegatedTasks"] = Effect.fn(
+    "ThreadManagementService.stopDelegatedTasks",
+  )(function* (input) {
       const { subagents } = yield* orchestrator.getThreadRecords(input.threadId, ["subagents"]);
       const failures: Array<
         Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError

@@ -164,6 +164,10 @@ beforeEach(() => {
   state.copy.mockReset().mockResolvedValue(undefined);
   useRightPanelStore.setState({ openFile: state.openFile });
   vi.spyOn(navigator.clipboard, "writeText").mockImplementation(state.copy);
+  vi.spyOn(navigator.clipboard, "write").mockImplementation(async (items) => {
+    const item = items[0]!;
+    await state.copy(await (await item.getType("text/plain")).text());
+  });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 });
 
@@ -250,6 +254,26 @@ it("downloads the workspace file a bare filename link resolves to", async () => 
       }),
     ),
   );
+});
+
+it("starts copying before the nested-file lookup finishes", async () => {
+  let finishLookup: () => void = () => {
+    throw new Error("Lookup not started");
+  };
+  state.search.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishLookup = () =>
+          resolve(AsyncResult.success({ entries: [{ path: "src/readme.md", kind: "file" }] }));
+      }),
+  );
+  state.choose.mockResolvedValue("copy-full");
+  await renderMarkdown("`readme.md:10:2`");
+  await openContextMenu();
+  expect(navigator.clipboard.write).toHaveBeenCalledOnce();
+  expect(state.copy).not.toHaveBeenCalled();
+  await act(async () => finishLookup());
+  await vi.waitFor(() => expect(state.copy).toHaveBeenCalledWith("/work/src/readme.md:10:2"));
 });
 
 it("does not launch an editor after revocation during a native context menu", async () => {

@@ -71,6 +71,9 @@ can specify an IANA `timeZone` in a fixed-time schedule, such as
 `{type:"fixed_time", timeOfDay:"04:00", timeZone:"UTC"}` for 04:00 UTC daily.
 Editing the task keeps its configured time zone.
 
+Deleting a thread also deletes tasks that post into that thread. Tasks that start
+a new thread on each run survive deletion of their previous threads.
+
 You can edit, pause, resume, run immediately, or delete a task from the list.
 Webhook tasks only run when their URL is called, so they can't be run
 immediately.

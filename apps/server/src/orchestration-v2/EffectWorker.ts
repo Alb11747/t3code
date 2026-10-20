@@ -463,6 +463,17 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+          case "scheduled-tasks.cleanup":
+            return resourceCleanup.cleanupScheduledTasks(effect.threadId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
           case "terminal.cleanup":
             return resourceCleanup.cleanupTerminals(effect.threadId).pipe(
               Effect.mapError(
@@ -675,8 +686,9 @@ export const layerWithOptions = (
           ? requeueClaim(effect, cause)
           : terminalizeClaim(effect, cause);
 
-      const runOnce = (excludeRestartContinuations = false, releaseWorkerOnLease = true) =>
-        Effect.gen(function* () {
+      // The worker probes for work repeatedly, including when the outbox is empty.
+      const runOnce = Effect.fnUntraced(
+        function* (excludeRestartContinuations = false, releaseWorkerOnLease = true) {
           const claimExit = yield* Effect.exit(
             outbox.claimNext({ workerId, leaseDurationMs, excludeRestartContinuations }),
           );
@@ -816,11 +828,14 @@ export const layerWithOptions = (
             Effect.forkIn(workerScope),
           );
           return true;
-        }).pipe(
+        },
+        (effect, _excludeRestartContinuations?: boolean, _releaseWorkerOnLease?: boolean) =>
+          effect.pipe(
           Effect.mapError((cause) =>
             isOrchestrationEffectWorkerError(cause)
               ? cause
               : new OrchestrationEffectWorkerError({ operation: "run", cause }),
+          ),
           ),
         );
 
@@ -837,8 +852,7 @@ export const layerWithOptions = (
               }),
           ),
         ),
-        drain: (maxEffects = Number.MAX_SAFE_INTEGER) =>
-          Effect.gen(function* () {
+        drain: Effect.fn("EffectWorker.drain")(function* (maxEffects = Number.MAX_SAFE_INTEGER) {
             let completed = 0;
             // Drain is a completion milestone; unlike the daemon, it must wait
             // for a claimed effect even when its worker lease expires.
