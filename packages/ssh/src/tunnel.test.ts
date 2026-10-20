@@ -1457,26 +1457,28 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
 
         // A crashed server whose parent never reaps it stays a zombie, which
         // kill -0 still reports. Its pid file and runtime record keep naming it.
+        // The child is killed only after sh has exec'd into node, which never
+        // reaps it (sh would), and its pid is printed once SIGCHLD confirms the
+        // zombie exists.
         const parent = yield* spawner.spawn(
-          ChildProcess.make("sh", ["-c", "sleep 600 & echo $!; exec sleep 600"]),
+          ChildProcess.make("sh", [
+            "-c",
+            'sleep 600 & exec node -e "$1" "$!"',
+            "sh",
+            [
+              "const child = Number(process.argv[1]);",
+              'process.on("SIGCHLD", () => console.log(child));',
+              'process.kill(child, "SIGKILL");',
+              "setInterval(() => {}, 1 << 30);",
+            ].join("\n"),
+          ]),
         );
         const zombie = Number(
           Option.getOrThrow(
             yield* parent.stdout.pipe(Stream.decodeText(), Stream.splitLines, Stream.runHead),
           ),
         );
-        process.kill(zombie, "SIGKILL");
-        // SIGKILL delivery is asynchronous; establish the zombie fixture before launching.
-        const zombieState = yield* runScript(home, [
-          "-c",
-          `attempt=0; while [ "$attempt" -lt 100 ]; do
-            state=$(ps -o stat= -p ${zombie}) || exit 1
-            case "$state" in *Z*) printf '%s\\n' "$state"; exit 0;; esac
-            attempt=$((attempt + 1))
-          done; printf '%s\\n' "$state"; exit 1`,
-        ]);
-        assert.equal(zombieState.exitCode, 0, zombieState.stdout);
-        assert.include(zombieState.stdout, "Z");
+        assert.include((yield* runScript(home, ["-c", `ps -o stat= -p ${zombie}`])).stdout, "Z");
         yield* fs.writeFileString(`${stateDir}/pid`, `${zombie}\n`);
         yield* fs.writeFileString(
           `${home}/.t3/userdata/server-runtime.json`,
