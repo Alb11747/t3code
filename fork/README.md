@@ -9,13 +9,13 @@ ARM64. Installed desktop copies update through the in-app **Install update** but
 To set up another computer, follow [Install the fork](INSTALL.md) for downloads,
 installation, remote connections and updates.
 
-Read this before changing anything here, from freshly fetched `fork/main`
+Read this before changing anything here, from freshly fetched `origin/main`
 rather than a local checkout, which may hold an older copy. Upstream's
 `AGENTS.md` still governs code style, testing and conventions.
 
 Diagnosis that turns into a fix in the same thread still starts at
 _Adding a change_, step 1. Upstream often fixes a bug within days of the
-fork's base, so check fetched `origin/main` before writing any code. If a
+fork's base, so check fetched `upstream/main` before writing any code. If a
 fetch fails, stop and report it instead of working from stale refs.
 
 ## Layout
@@ -49,11 +49,13 @@ exception is `release-desktop.yml`, which `fork-release.yml` calls.
 - `upstream-main` is the upstream commit (normally a nightly) in the latest
   candidate, for review diffs; `sync/candidate` is that candidate. Both are
   written by the sync workflow or T3 publisher.
-- Locally, `origin` may point at upstream. Add the fork as its own remote
-  (`git remote add fork https://github.com/Alb11747/t3code.git`). Keep the main
-  checkout (the original clone) on a local `main` that tracks `fork/main`, so
-  agents starting there read this guide; use `origin/main` for upstream.
-  Refresh a clean `main` with `git pull --ff-only fork main`.
+- Locally, `origin` is the fork (`https://github.com/Alb11747/t3code.git`) and
+  `upstream` is pingdotgg (`git remote add upstream https://github.com/pingdotgg/t3code.git`);
+  `upstream/main` is upstream's `main`. Keep the main checkout (the original
+  clone) on a local `main` that tracks `origin/main`, so agents starting there
+  read this guide. Refresh a clean `main` with `git pull --ff-only origin main`.
+  An older checkout with `origin` = upstream and `fork` = the fork migrates with
+  `git remote rename origin upstream` followed by `git remote rename fork origin`.
 - Commits follow Conventional Commits, as upstream does.
 
 ## Planning a fork feature
@@ -92,7 +94,7 @@ waiting for another approval. Cover:
    confirmation just to push or start the automated release. Ask only when the
    scope or release target remains unclear.
 
-Build on a branch from the fork's `main` on GitHub (`git fetch fork` first;
+Build on a branch from the fork's `main` on GitHub (`git fetch origin` first;
 local `main` may be stale), in a separate worktree. If a helper agent
 investigates or implements, the agent that owns the plan reviews the diff and
 reruns the tests itself before committing.
@@ -136,12 +138,12 @@ attempt at the previous one.
 
 ## Adding a change
 
-1. Before an app or workflow feat or fix, fetch `fork` and `origin` and check
+1. Before an app or workflow feat or fix, fetch `origin` and `upstream` and check
    fork `main` against the latest upstream target that sync would ship. Resolve
    any pending sync review or failed sync first, following _Syncing with upstream_;
    sync if main is behind that target. If blocked, stop and report. Guide-only
    edits to `fork/*.md` are exempt. Start from synced fork `main` in a new worktree
-   (`git fetch fork && git worktree add -b <branch> <path> fork/main`).
+   (`git fetch origin && git worktree add -b <branch> <path> origin/main`).
 2. Make one focused commit per change. Keep the diff small and inside existing
    files' structure: every line touched in an upstream file is a potential
    conflict on each sync. Prefer new files and narrow hooks over edits spread
@@ -170,7 +172,7 @@ attempt at the previous one.
    starts no release, and run **Fork PR checks** on it:
 
    ```sh
-   git push --force-with-lease fork HEAD:refs/heads/check/<branch>
+   git push --force-with-lease origin HEAD:refs/heads/check/<branch>
    # Prints this dispatch's run URL; watch that run, not the latest one in the list.
    url=$(gh workflow run fork-pr-checks.yml -R Alb11747/t3code -f ref="$(git rev-parse HEAD)" 2>&1 | grep -o 'https://[^ ]*/runs/[0-9]*')
    gh run watch "${url##*/}" -R Alb11747/t3code --exit-status   # run in the background
@@ -179,23 +181,23 @@ attempt at the previous one.
    Pass the full commit SHA, not the branch name: only a pass on an exact
    commit lets Fork release skip its checks for that commit (step 6).
    Run it once per finished round of commits, fix any failure, and delete the
-   branch (`git push fork :check/<branch>`) once the change is on `main`.
+   branch (`git push origin :check/<branch>`) once the change is on `main`.
    If the job budget blocks checks, or GitHub-hosted Actions is unavailable or
    frozen, use _Labs checks_ below instead.
 
-6. Right before pushing, fetch `fork` and rebase the task branch's own commits
-   onto current `fork/main` (they are not on `main` yet, so this rewrites
+6. Right before pushing, fetch `origin` and rebase the task branch's own commits
+   onto current `origin/main` (they are not on `main` yet, so this rewrites
    nothing published); rerun focused checks if the rebase touched the change's
    files. Do not repeat
    the full upstream sync on every push: sync again only for a new pending or
    failed sync, or a dependency on newer upstream code. When finished (_Release
    lineage_), push from the task
-   worktree with `git push fork HEAD:main` (a plain push: it must fast-forward).
+   worktree with `git push origin HEAD:main` (a plain push: it must fast-forward).
    **Fork release**
    waits 15 minutes (the `fork-release-delay` environment's wait timer), runs
    the checks, then builds and publishes, about 30 minutes in all. It skips the
    checks when Fork PR checks already passed on the exact commit it releases,
-   so push the checked commit itself when `fork/main` has not moved; a rebase
+   so push the checked commit itself when `origin/main` has not moved; a rebase
    gives a new commit, which the release checks again. The wait is
    short because a fork push is a change you want soon; it batches a quick
    follow-up or another thread's push close behind. Upstream syncs wait far
@@ -203,7 +205,7 @@ attempt at the previous one.
    stage, so pushes from several threads close together build once. Don't hold
    a finished change for other threads' work.
    If the push is rejected because another thread pushed first,
-   `git fetch fork`, rebase onto `fork/main`, and push again. After the
+   `git fetch origin`, rebase onto `origin/main`, and push again. After the
    wait, Fork release compares files with the newest published release and
    skips the rest when only `fork/*.md` differs, so docs pushes don't release.
 
@@ -245,7 +247,7 @@ to the fork, then dispatch Labs checks:
 
 ```sh
 sha=$(git rev-parse HEAD)
-git push --force-with-lease fork "$sha:refs/heads/check/<branch>"
+git push --force-with-lease origin "$sha:refs/heads/check/<branch>"
 url=$(gh workflow run fork-pr-checks.yml -R Alb11747-Labs/t3code --ref main -f ref="$sha" 2>&1 | grep -o 'https://[^ ]*/runs/[0-9]*')
 gh run watch "${url##*/}" -R Alb11747-Labs/t3code --exit-status # run in the background
 ```
@@ -372,7 +374,7 @@ CONTRIBUTING.md. We are not maintainers, so never let it close, comment on,
 label, or request review for an upstream PR.
 
 1. Complete the sync-first check in _Adding a change_, then inspect fetched
-   `origin/main`, upstream's open issues and PRs, and `fork/CHANGES.md` for an
+   `upstream/main`, upstream's open issues and PRs, and `fork/CHANGES.md` for an
    existing fix before writing one. Try a few phrasings and any error text:
 
    ```sh
@@ -403,17 +405,17 @@ label, or request review for an upstream PR.
 
 2. Branch from **upstream** `main`, not the fork's, so the PR contains only
    the fix, in a new worktree:
-   `git fetch origin main && git worktree add -b fix/<issue>-<slug> <path> origin/main`
-   (`origin` = upstream). Fix exactly one underlying problem, with focused
+   `git fetch upstream main && git worktree add -b fix/<issue>-<slug> <path> upstream/main`
+   (`upstream` = pingdotgg). Fix exactly one underlying problem, with focused
    tests, following `AGENTS.md`.
-3. Push the branch to the fork (`git push fork fix/<issue>-<slug>`) and run
+3. Push the branch to the fork (`git push origin fix/<issue>-<slug>`) and run
    upstream's checks on it (see step 5 of _Adding a change_ to wait for the run):
    `gh workflow run fork-pr-checks.yml -R Alb11747/t3code -f ref=fix/<issue>-<slug>`.
    Upstream holds CI on PRs from unvouched contributors at "action required"
    until a maintainer approves the run, so don't count on upstream CI; the
    fork run is your evidence. Validate locally first, and rerun it once per
    finished round of pushes, not after each push; every run is seven jobs.
-4. Before opening the upstream PR, fetch and rebase onto latest `origin/main`
+4. Before opening the upstream PR, fetch and rebase onto latest `upstream/main`
    and recheck whether upstream has fixed the bug in the meantime. If so, sync
    instead of opening the PR. If rebasing changed HEAD, rerun affected checks,
    push the revised branch with an explicit lease, and repeat step 3's fork checks
@@ -576,11 +578,11 @@ To resolve a conflict locally (use the artifact's `upstream_sha` to reconstruct
 the original request, or omit `--onto` to sync to today's upstream):
 
 ```sh
-git fetch fork && git switch -c sync/local fork/main   # in a worktree
+git fetch origin && git switch -c sync/local origin/main   # in a worktree
 fork/scripts/sync-upstream.sh --onto <full upstream SHA> # exit 2 = conflict
 # resolve the files, `git add` them, `git commit --no-edit`, then rerun the
 # same command; repeat until it exits 0
-# validate, then push: git push fork HEAD:main
+# validate, then push: git push origin HEAD:main
 ```
 
 After a local push to main, close the tracking issue with the resolution and
