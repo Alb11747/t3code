@@ -272,13 +272,14 @@ describe("HtmlRender", () => {
       yield* mcpSessions.set({ ...session, browserToolsAvailable: true });
       expect(yield* mcpSessions.takeHtmlRender(threadId, page)).toEqual(reused);
 
-      yield* htmlRender.publish({ threadId, ...page });
+      const pending = yield* htmlRender.publish({ threadId, ...page });
       yield* mcpSessions.set({
         ...session,
         providerSessionId: "replacement-credential",
         providerInstanceId: ProviderInstanceId.make("antigravity"),
         authorizationHeader: "Bearer replacement-token",
       });
+      expect(yield* mcpSessions.takeHtmlRender(threadId, page)).toEqual(pending);
       const replacement = yield* htmlRender.publish({ threadId, ...page });
       expect(yield* mcpSessions.takeHtmlRender(threadId, page)).toEqual(replacement);
       expect(yield* mcpSessions.takeHtmlRender(threadId, page)).toBe(undefined);

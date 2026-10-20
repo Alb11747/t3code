@@ -88,9 +88,12 @@ const make = Effect.gen(function* () {
   return McpProviderSessions.of({
     set: Effect.fn("McpProviderSessions.set")(function* (config) {
       const current = yield* Ref.get(sessions);
+      const byInstance = current.get(config.threadId);
       if (
-        current.get(config.threadId)?.get(config.providerInstanceId)?.providerSessionId !==
-        config.providerSessionId
+        byInstance?.get(config.providerInstanceId)?.providerSessionId !==
+          config.providerSessionId &&
+        (byInstance === undefined ||
+          (byInstance.size === 1 && byInstance.has(config.providerInstanceId)))
       ) {
         yield* Ref.update(htmlRenders, (kept) => {
           const next = new Map(kept);
@@ -110,7 +113,7 @@ const make = Effect.gen(function* () {
         Effect.map((current) => current.get(threadId)?.get(providerInstanceId)),
       ),
     clear: (threadId, providerSessionId) =>
-      Ref.update(sessions, (current) => {
+      Ref.updateAndGet(sessions, (current) => {
         const next = new Map(current);
         // A provider switch can leave the previous session alive. Clear only its credential.
         const byInstance = current.get(threadId);
@@ -127,12 +130,14 @@ const make = Effect.gen(function* () {
         else next.set(threadId, remaining);
         return next;
       }).pipe(
-        Effect.andThen(
-          Ref.update(htmlRenders, (current) => {
-            const next = new Map(current);
-            next.delete(threadId);
-            return next;
-          }),
+        Effect.flatMap((remaining) =>
+          remaining.has(threadId)
+            ? Effect.void
+            : Ref.update(htmlRenders, (current) => {
+                const next = new Map(current);
+                next.delete(threadId);
+                return next;
+              }),
         ),
       ),
     recordHtmlRender: (threadId, input, reference) =>
