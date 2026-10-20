@@ -58,7 +58,6 @@ import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
 import {
-  CLAUDE_COLD_CACHE_IDLE_MINUTES,
   CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
   formatClaudeResumeCompactionQuestion,
 } from "@t3tools/shared/claudeCompaction";
@@ -2164,23 +2163,26 @@ type ClaudePromptCaching = "default" | "disabled";
 /**
  * Prompt caching for a compaction turn. With `uncachedColdCompaction` on, a
  * cold compaction runs uncached: its summary replaces the old history, so
- * writing that history to the cache again buys nothing. Cold means the
- * thread's last turn ended at least CLAUDE_COLD_CACHE_IDLE_MINUTES ago and
- * its CLI process is gone (idle release), so the compaction starts a process
- * anyway. A live process is never replaced for this; it may run background
- * work.
+ * writing that history to the cache again buys nothing. Cold means the cache
+ * of the thread's latest turn has expired, by the TTL Claude reported for it,
+ * and its CLI process is gone (idle release), so the compaction starts a
+ * process anyway. An unknown expiry keeps caching: a fully cached request
+ * reports no TTL, and a wrong "cold" turns cheap cache reads into full input.
+ * If Claude switches TTL mid-session, a 1h prefix can outlive the latest
+ * request's 5m expiry; usage can't tell which layer holds most of the
+ * history, so that case is accepted rather than guessed.
+ * A live process is never replaced for this; it may run background work.
  */
 function claudeCompactionPromptCaching(input: {
   readonly uncachedColdCompaction: boolean;
   readonly hasLiveProcess: boolean;
-  readonly lastTurnActivityAt: DateTime.Utc | undefined;
+  readonly promptCacheExpiresAt: DateTime.Utc | undefined;
   readonly now: DateTime.Utc;
 }): ClaudePromptCaching {
   return input.uncachedColdCompaction &&
     !input.hasLiveProcess &&
-    input.lastTurnActivityAt !== undefined &&
-    DateTime.toEpochMillis(input.now) - DateTime.toEpochMillis(input.lastTurnActivityAt) >=
-      CLAUDE_COLD_CACHE_IDLE_MINUTES * 60_000
+    input.promptCacheExpiresAt !== undefined &&
+    DateTime.isGreaterThanOrEqualTo(input.now, input.promptCacheExpiresAt)
     ? "disabled"
     : "default";
 }
@@ -10286,7 +10288,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const promptCaching = claudeCompactionPromptCaching({
               uncachedColdCompaction: adapterOptions.settings.uncachedColdCompaction,
               hasLiveProcess: live !== null && live.nativeThreadId === nativeThreadId,
-              lastTurnActivityAt: turnInput.lastProviderTurnActivityAt,
+              promptCacheExpiresAt: turnInput.promptCacheExpiresAt,
               now: yield* DateTime.now,
             });
             return yield* startTurn(

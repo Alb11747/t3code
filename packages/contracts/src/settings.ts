@@ -708,7 +708,7 @@ export const ClaudeSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Skip cache writes on cold compaction",
         description:
-          "Compact threads idle 70+ minutes without prompt caching, so the history the summary replaces isn't cached again. Saves usage only if any gateway or proxy forwards uncached requests unchanged.",
+          "Once a thread's prompt cache has expired, compact it without prompt caching, so the history the summary replaces isn't cached again. Saves usage only if any gateway or proxy forwards uncached requests unchanged.",
         providerSettingsForm: { control: "switch", clearWhenEmpty: "omit" },
       }),
     ),

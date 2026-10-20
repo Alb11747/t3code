@@ -1,6 +1,5 @@
 import type { ModelSelection, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import {
-  CLAUDE_COLD_CACHE_IDLE_MINUTES,
   CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
   COMPACTION_SUGGESTION_MIN_TOKENS,
   isClaudeResumeCompactionQuestion,
@@ -12,8 +11,7 @@ import {
 import { getTriggerDisplayModelName, type ModelEsque } from "./providerIconUtils";
 
 // Used when the provider did not report its cache TTL: Claude's 1h cache plus slack.
-const CLAUDE_RESUME_COMPACTION_FALLBACK_MS = CLAUDE_COLD_CACHE_IDLE_MINUTES * 60_000;
-const CLAUDE_RESUME_COMPACTION_TOKENS = 100_000;
+const CLAUDE_RESUME_COMPACTION_FALLBACK_MS = 70 * 60_000;
 
 export function providerSupportsManualCompaction(
   provider: ProviderInstanceEntry | null | undefined,

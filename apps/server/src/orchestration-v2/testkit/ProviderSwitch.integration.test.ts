@@ -88,7 +88,7 @@ interface CapturedTurn {
   readonly nativeThreadId?: string | null;
   readonly providerTurnOrdinal?: number;
   readonly nativeThreadHasTurns?: boolean;
-  readonly lastProviderTurnActivityAt?: DateTime.Utc;
+  readonly promptCacheExpiresAt?: DateTime.Utc;
 }
 
 function unimplemented(driver: ProviderDriverKind, detail: string) {
@@ -257,9 +257,9 @@ function makeTestAdapter(input: {
                   ...(turnInput.nativeThreadHasTurns === undefined
                     ? {}
                     : { nativeThreadHasTurns: turnInput.nativeThreadHasTurns }),
-                  ...(turnInput.lastProviderTurnActivityAt === undefined
+                  ...(turnInput.promptCacheExpiresAt === undefined
                     ? {}
-                    : { lastProviderTurnActivityAt: turnInput.lastProviderTurnActivityAt }),
+                    : { promptCacheExpiresAt: turnInput.promptCacheExpiresAt }),
                 },
               ]);
               if (
@@ -1097,6 +1097,9 @@ describe("orchestration v2 provider switching", () => {
               capturedTurns,
               failResumeOnce,
               nativeThreadGeneration: generation,
+              tokenUsageByRunOrdinal: {
+                2: { usedTokens: 1_000, promptCacheExpiresAt: "2026-08-29T01:00:00.000Z" },
+              },
             }),
           ]);
           yield* Effect.gen(function* () {
@@ -1184,13 +1187,12 @@ describe("orchestration v2 provider switching", () => {
             assert.isFalse(turns[1]?.nativeThreadHasTurns);
             assert.equal(turns[2]?.nativeThreadId, turns[1]?.nativeThreadId);
             assert.isTrue(turns[2]?.nativeThreadHasTurns);
-            // Adapters see the provider thread's latest earlier turn activity.
-            assert.isUndefined(turns[0]?.lastProviderTurnActivityAt);
-            const secondTurn = (yield* orchestrator.getThreadProjection(
-              threadId,
-            )).providerTurns.find((turn) => turn.id.endsWith(":2"));
-            assert.isDefined(secondTurn?.completedAt ?? undefined);
-            assert.deepEqual(turns[2]?.lastProviderTurnActivityAt, secondTurn?.completedAt);
+            // Adapters see the cache expiry the latest earlier turn reported.
+            assert.isUndefined(turns[1]?.promptCacheExpiresAt);
+            assert.deepEqual(
+              turns[2]?.promptCacheExpiresAt,
+              DateTime.makeUnsafe("2026-08-29T01:00:00.000Z"),
+            );
           }).pipe(
             Effect.provide(
               ProviderReplayHarness.layerWithRegistry(

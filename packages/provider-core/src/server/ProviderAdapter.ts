@@ -429,10 +429,10 @@ export interface ProviderAdapterV2TurnInput {
   readonly runOrdinal: number;
   readonly nativeThreadHasTurns?: boolean;
   /**
-   * Latest end of this provider thread's earlier turns (start, for a turn that
-   * never ended); omitted when it has none.
+   * When the prompt cache of this provider thread's latest turn expires, as
+   * reported in that turn's token usage; omitted when unknown.
    */
-  readonly lastProviderTurnActivityAt?: DateTime.Utc;
+  readonly promptCacheExpiresAt?: DateTime.Utc;
   readonly providerTurnOrdinal: number;
   readonly restartContinuationOfRunId?: RunId;
   readonly attemptId: RunAttemptId;

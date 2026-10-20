@@ -564,7 +564,7 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly attemptId: RunAttemptId;
   readonly providerTurnOrdinal: number;
   readonly nativeThreadHasTurns?: boolean;
-  readonly lastProviderTurnActivityAt?: DateTime.Utc;
+  readonly promptCacheExpiresAt?: DateTime.Utc;
   readonly loadInheritedBackgroundTurnItems?: () => Effect.Effect<
     ReadonlyArray<InheritedBackgroundTurnItemRoute>,
     unknown
@@ -1533,9 +1533,9 @@ export const layer: Layer.Layer<
           ...(input.nativeThreadHasTurns === undefined
             ? {}
             : { nativeThreadHasTurns: input.nativeThreadHasTurns }),
-          ...(input.lastProviderTurnActivityAt === undefined
+          ...(input.promptCacheExpiresAt === undefined
             ? {}
-            : { lastProviderTurnActivityAt: input.lastProviderTurnActivityAt }),
+            : { promptCacheExpiresAt: input.promptCacheExpiresAt }),
           ...(input.run.restartContinuationOfRunId === undefined
             ? {}
             : {

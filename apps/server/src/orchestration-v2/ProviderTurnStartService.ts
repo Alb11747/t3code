@@ -1236,15 +1236,18 @@ export const layer: Layer.Layer<
           ? session
           : makeDeliverySession(session, startWithHandoffs);
       // Lets adapters judge whether the provider's prompt cache has expired.
-      let lastProviderTurnActivityAt: DateTime.Utc | undefined;
-      for (const turn of projection.providerTurns) {
-        const activityAt = turn.completedAt ?? turn.startedAt;
-        if (turn.providerThreadId !== providerThread.id || activityAt === null) continue;
-        lastProviderTurnActivityAt =
-          lastProviderTurnActivityAt === undefined
-            ? activityAt
-            : DateTime.max(lastProviderTurnActivityAt, activityAt);
-      }
+      // Only the latest turn counts: any later request refreshed the cache.
+      const latestProviderTurn = projection.providerTurns
+        .filter((turn) => turn.providerThreadId === providerThread.id)
+        .reduce<(typeof projection.providerTurns)[number] | undefined>(
+          (latest, turn) => (latest === undefined || turn.ordinal > latest.ordinal ? turn : latest),
+          undefined,
+        );
+      const reportedCacheExpiry = latestProviderTurn?.tokenUsage?.promptCacheExpiresAt;
+      const promptCacheExpiresAt =
+        reportedCacheExpiry === undefined
+          ? undefined
+          : Option.getOrUndefined(DateTime.make(reportedCacheExpiry));
       return runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,
@@ -1275,7 +1278,7 @@ export const layer: Layer.Layer<
           (legacyInputRunIds.size > 0 &&
             sameNativeThread &&
             !acceptedAttempts.some((source) => source.nativeThreadId !== undefined)),
-        ...(lastProviderTurnActivityAt === undefined ? {} : { lastProviderTurnActivityAt }),
+        ...(promptCacheExpiresAt === undefined ? {} : { promptCacheExpiresAt }),
         shouldStartProviderTurn: runControls.shouldStartProviderTurn,
         shouldFinalizeRun: runControls.shouldFinalizeRun,
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,

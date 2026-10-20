@@ -7,15 +7,6 @@
  */
 export const CLAUDE_RESUME_COMPACTION_NEVER_ANSWER = "Don't ask again";
 
-/**
- * Idle time after which T3 treats a Claude thread's prompt cache as expired:
- * past Claude's longest (1h) cache TTL, with margin. A heuristic, not proof:
- * another request sharing the prefix can keep it warm. The web client offers
- * resume compaction from here; the server skips cache writes for a cold
- * compaction when that instance setting is on.
- */
-export const CLAUDE_COLD_CACHE_IDLE_MINUTES = 70;
-
 export function formatClaudeResumeCompactionQuestion(input: {
   readonly ageMinutes: number;
   readonly estimatedTokens: number;
