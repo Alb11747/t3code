@@ -170,10 +170,12 @@ attempt at the previous one.
    ```sh
    git push --force-with-lease fork HEAD:refs/heads/check/<branch>
    # Prints this dispatch's run URL; watch that run, not the latest one in the list.
-   url=$(gh workflow run fork-pr-checks.yml -R Alb11747/t3code -f ref=check/<branch> 2>&1 | grep -o 'https://[^ ]*/runs/[0-9]*')
+   url=$(gh workflow run fork-pr-checks.yml -R Alb11747/t3code -f ref="$(git rev-parse HEAD)" 2>&1 | grep -o 'https://[^ ]*/runs/[0-9]*')
    gh run watch "${url##*/}" -R Alb11747/t3code --exit-status   # run in the background
    ```
 
+   Pass the full commit SHA, not the branch name: only a pass on an exact
+   commit lets Fork release skip its checks for that commit (step 6).
    Run it once per finished round of commits, fix any failure, and delete the
    branch (`git push fork :check/<branch>`) once the change is on `main`.
    If the job budget blocks checks, or GitHub-hosted Actions is unavailable or
@@ -189,7 +191,10 @@ attempt at the previous one.
    worktree with `git push fork HEAD:main` (a plain push: it must fast-forward).
    **Fork release**
    waits 15 minutes (the `fork-release-delay` environment's wait timer), runs
-   the checks, then builds and publishes, about 30 minutes in all. The wait is
+   the checks, then builds and publishes, about 30 minutes in all. It skips the
+   checks when Fork PR checks already passed on the exact commit it releases,
+   so push the checked commit itself when `fork/main` has not moved; a rebase
+   gives a new commit, which the release checks again. The wait is
    short because a fork push is a change you want soon; it batches a quick
    follow-up or another thread's push close behind. Upstream syncs wait far
    longer (_Syncing with upstream_). A newer push cancels the older run at any
@@ -203,7 +208,8 @@ attempt at the previous one.
    Fork release and Fork PR checks first check a job budget
    (`fork-budget.yml`): once the fork's workflows have run 150 jobs in the
    last 24 hours (`FORK_JOB_BUDGET` repository variable), they fail before
-   the checks and builds start. A full release uses 16 jobs, a check run 7. If
+   the checks and builds start. A full release uses 17 jobs (10 when it reuses
+   passed checks), a check run 8. If
    one fails this way, rerun it once older runs age out; don't push again to
    retry.
 
@@ -384,17 +390,18 @@ A fork patch touching the same code as a pending upstream PR will conflict when
 that PR merges and sync merges it, unless sync reverts the patch first through
 its `Upstream-PR:` trailer. A `Related-PR:` trailer keeps the patch.
 
-**Fork sync** follows upstream's nightly releases. It checks hourly (and runs
-on demand from the Actions tab). GitHub skips many scheduled runs, so the
-Lazarus host's `t3code-fork-sync-watchdog.timer` dispatches a `backstop=true`
-run when no sync ran in the last 20 minutes; backstop runs follow the same
-rules as scheduled ones:
+**Fork sync** follows upstream's nightly releases. It has no GitHub schedule:
+every Actions run costs a job, so deciding when to sync happens off GitHub.
+The Lazarus host's `t3code-fork-sync-watchdog.timer` checks every half hour
+and dispatches the workflow only when a sync is due (setup and the decision
+script: `Setup/T3Code` in the synced Agents folder). You can also run it from
+the Actions tab, which syncs immediately.
 
-1. It finds upstream's newest nightly release and stops if fork `main` already
-   contains that commit. The fork follows released nightlies rather than every
-   upstream `main` commit. A manual run with `upstream=main` syncs to
-   upstream's tip instead.
-2. A scheduled run then waits for upstream to settle: it syncs once upstream
+1. The run finds upstream's newest nightly release and stops if fork `main`
+   already contains that commit. The fork follows released nightlies rather
+   than every upstream `main` commit. A manual run with `upstream=main` syncs
+   to upstream's tip instead.
+2. The watchdog waits for upstream to settle: it dispatches once upstream
    has published no new nightly for 12 hours, or once the oldest nightly the
    fork lacks is 24 hours old, onto the newest nightly at that point. Upstream
    ships a nightly every 4–6 hours, and each sync is a release with no fork
@@ -403,7 +410,9 @@ rules as scheduled ones:
    keeping the fork at most about 31 hours behind upstream. Shorter quiet
    periods saved little (nightlies arrive before the timer runs out); a
    36-hour cap saved two or three more releases at up to 41 hours behind. Your
-   own pushes are unaffected. Other manual runs sync immediately.
+   own pushes are unaffected. It also skips while a sync is running, for 12
+   hours after a failed run (a failure without a conflict issue needs a fix,
+   not a retry), and while a conflict issue was updated in the last 24 hours.
 3. `sync-upstream.sh --onto <nightly SHA>` reverts fork commits whose
    `Upstream-PR` merged into that nightly (deleting their `CHANGES.md`
    entries in the revert), then merges the nightly.
@@ -413,12 +422,11 @@ rules as scheduled ones:
    HTTP response marks the issue **Handed to T3 (request run <id>)** and finishes
    the run successfully; it does not prove resolution. Without configuration
    or after a failed delivery, the issue says **Needs local resolution** with
-   the reason, and the run fails. Scheduled and backstop runs skip with
-   `status=pending` while an open tracking issue was updated in the last 24 hours.
-   Other manual sync runs always try again.
+   the reason, and the run fails.
 5. The candidate is pushed to `sync/candidate` and checked with `fork-checks.yml`.
 6. Clean merge and green checks: `main` fast-forwards to the exact checked SHA,
-   leased against the original main, and a release follows. T3-resolved or failing candidates get a review PR
+   leased against the original main, and a release follows. The release reuses
+   those checks instead of running them again (_Adding a change_, step 6). T3-resolved or failing candidates get a review PR
    (`sync/candidate` into `upstream-main`) instead. Ship one by running
    **Fork sync** with `mode=promote` and `candidate_sha=<full reviewed SHA>`;
    promotion fails if `sync/candidate` changed since review. Merging the PR does nothing.
@@ -426,7 +434,7 @@ rules as scheduled ones:
    for this repository in ChatGPT's Codex settings. That uses the plan's Code
    Review usage; Codex ignores `@codex` comments from the workflow's bot.
 
-Workflow modes are `sync` (default, including schedules), `resume` (the resolver
+Workflow modes are `sync` (default, including the watchdog's), `resume` (the resolver
 dispatches with a full `candidate_sha` and numeric `request_run_id`), and
 `promote` (a person supplies the reviewed SHA). Resume loads the original
 artifact and verifies its source run, unchanged fork main, current candidate

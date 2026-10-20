@@ -8,14 +8,11 @@ name: Fork sync
 # CI pushes use FORK_DEPLOY_KEY so workflow changes and fork releases work.
 # Webhook URL/key are confined to the sender step, never candidate checks.
 # Sync follows upstream's nightly releases, so each fork release builds on code
-# upstream already shipped. Scheduled runs poll hourly, stop after a few API
-# calls, and wait for upstream to settle before syncing (see the target step).
-# GitHub drops many scheduled runs, so a Lazarus timer dispatches backstop
-# runs, which follow the same rules as scheduled ones.
+# upstream already shipped. There is no schedule: a Lazarus timer decides when
+# upstream has settled and dispatches a run only then, so waiting costs no
+# Actions jobs (fork/README.md, Syncing with upstream).
 
 on:
-  schedule:
-    - cron: "41 * * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -34,10 +31,6 @@ on:
       request_run_id:
         description: Original conflict run ID (required for resume)
         type: string
-      backstop:
-        description: Behave like a scheduled run (wait for upstream to settle, skip pending conflicts)
-        type: boolean
-        default: false
 
 concurrency:
   group: fork-sync
@@ -57,7 +50,7 @@ jobs:
       contents: read
       issues: write
     outputs:
-      status: ${{ steps.pending.outputs.status || steps.target.outputs.status || steps.sync.outputs.status || steps.resume.outputs.status }}
+      status: ${{ steps.target.outputs.status || steps.sync.outputs.status || steps.resume.outputs.status }}
       upstream_sha: ${{ steps.sync.outputs.upstream_sha || steps.resume.outputs.upstream_sha }}
       main_sha: ${{ steps.main.outputs.sha || steps.resume.outputs.main_sha }}
       candidate_sha: ${{ steps.push.outputs.sha || steps.resume.outputs.sha }}
@@ -65,44 +58,23 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      SCHEDULED: ${{ github.event_name == 'schedule' || inputs.backstop }}
     steps:
-      - id: pending
-        name: Avoid repeated scheduled handoffs
-        if: github.event_name == 'schedule' || inputs.backstop
-        run: |
-          recent=$(gh issue list --label fork-sync --state open --json updatedAt --jq '.[].updatedAt')
-          while read -r updated; do
-            [[ -n "$updated" ]] || continue
-            if (( $(date +%s) - $(date -d "$updated" +%s) < 86400 )); then
-              echo "status=pending" >> "$GITHUB_OUTPUT"
-              echo "A recent fork-sync issue is pending; skipping this scheduled sync."
-              break
-            fi
-          done <<< "$recent"
-
       # Upstream's release list mixes frequent previews with nightlies and is
       # not strictly ordered, so pick the newest nightly by publication time.
       - id: target
         name: Resolve latest upstream nightly
-        if: steps.pending.outputs.status != 'pending' && inputs.mode != 'resume' && inputs.upstream != 'main'
+        if: inputs.mode != 'resume' && inputs.upstream != 'main'
         run: |
-          # Nightlies newest first, as "<tag> <published_at>". Frequent previews
-          # share the list, so read pages until a nightly at least 24 hours old
-          # turns up (the oldest one the wait below needs) or the list ends.
-          day_ago=$(date -u -d '-24 hours' +%Y-%m-%dT%H:%M:%SZ)
+          # Frequent previews share the list, so read pages until one has a nightly.
           nightlies=""
           for page in $(seq 1 10); do
             batch=$(gh api "repos/pingdotgg/t3code/releases?per_page=100&page=$page")
             [[ $(jq length <<< "$batch") -gt 0 ]] || break
-            nightlies+=$(jq -r '.[] | select((.draft | not) and .published_at != null and (.tag_name | test("-nightly\\.")))
-              | "\(.tag_name) \(.published_at)"' <<< "$batch")$'\n'
-            if awk -v cutoff="$day_ago" '$2 != "" && $2 <= cutoff { found = 1 } END { exit !found }' <<< "$nightlies"; then
-              break
-            fi
+            nightlies=$(jq -r '.[] | select((.draft | not) and .published_at != null and (.tag_name | test("-nightly\\.")))
+              | "\(.published_at) \(.tag_name)"' <<< "$batch")
+            [[ -z $nightlies ]] || break
           done
-          nightlies=$(sort -k2,2 -r <<< "$nightlies" | sed '/^$/d')
-          read -r tag published <<< "$nightlies"
+          tag=$(sort -r <<< "$nightlies" | head -1 | cut -d' ' -f2)
           [[ -n "$tag" ]] || { echo "::error::No upstream nightly in upstream's recent releases."; exit 1; }
           # A new upstream commit may not exist in the fork yet. Compare from
           # upstream across the fork network instead of asking the fork for it.
@@ -119,23 +91,6 @@ jobs:
             echo "Fork main already contains upstream nightly $tag."
             exit 0
           fi
-          # Scheduled syncs wait until upstream has published nothing new for
-          # 12 hours, or until the oldest nightly the fork lacks is 24 hours
-          # old, so a burst of nightlies becomes one sync release. Replaying
-          # October 2026 history, this cut sync-only releases from 21 to 5 a
-          # week. Other manual runs sync immediately.
-          # Upstream's nightlies form one line of history, so the fork lacks a
-          # nightly over 24 hours old exactly when it lacks the newest of them.
-          if [[ $SCHEDULED == true && $published > $(date -u -d '-12 hours' +%Y-%m-%dT%H:%M:%SZ) ]]; then
-            overdue=$(awk -v cutoff="$day_ago" '$2 <= cutoff { print $1; exit }' <<< "$nightlies")
-            overdue_in_fork=true
-            if [[ -n $overdue ]]; then overdue_in_fork=$(in_fork "$overdue"); fi
-            if [[ $overdue_in_fork == true ]]; then
-              echo "status=current" >> "$GITHUB_OUTPUT"
-              echo "Waiting: upstream nightly $tag is under 12 hours old and the fork lacks no nightly older than 24 hours."
-              exit 0
-            fi
-          fi
           sha=$(gh api "repos/pingdotgg/t3code/commits/$tag" --jq .sha)
           [[ $sha =~ ^[0-9a-f]{40}$ ]]
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
@@ -147,7 +102,7 @@ jobs:
       # The clone is complete, not blobless: merging needs blobs of upstream
       # commits, which a lazy fetch from the fork cannot always supply.
       - name: Check out fork
-        if: steps.pending.outputs.status != 'pending' && steps.target.outputs.status != 'current'
+        if: steps.target.outputs.status != 'current'
         run: |
           git clone --no-checkout --no-tags --single-branch --branch main \
             "https://github.com/${GITHUB_REPOSITORY}.git" .
@@ -155,7 +110,7 @@ jobs:
           git checkout main
 
       - id: main
-        if: steps.pending.outputs.status != 'pending' && steps.target.outputs.status != 'current' && inputs.mode != 'resume'
+        if: steps.target.outputs.status != 'current' && inputs.mode != 'resume'
         env:
           HAS_DEPLOY_KEY: ${{ secrets.FORK_DEPLOY_KEY != '' }}
         run: |
@@ -168,7 +123,7 @@ jobs:
 
       - id: sync
         name: Merge upstream
-        if: steps.pending.outputs.status != 'pending' && steps.target.outputs.status != 'current' && inputs.mode != 'resume'
+        if: steps.target.outputs.status != 'current' && inputs.mode != 'resume'
         env:
           NIGHTLY_SHA: ${{ steps.target.outputs.sha }}
         run: |
@@ -339,6 +294,9 @@ jobs:
     name: Checks
     needs: [sync]
     if: needs.sync.outputs.candidate_sha != ''
+    permissions:
+      contents: read
+      statuses: write
     uses: ./.github/workflows/fork-checks.yml
     with:
       ref: ${{ needs.sync.outputs.candidate_sha }}

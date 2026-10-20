@@ -2,8 +2,17 @@ name: Fork checks
 
 # The release gate from upstream's release.yml (quality, tests, sharded server
 # tests) on GitHub-hosted runners, which this fork has instead of Blacksmith.
-# Called by fork-sync.yml before promoting a sync and by fork-release.yml
-# before publishing.
+# Called by fork-sync.yml before promoting a sync, by fork-pr-checks.yml, and
+# by fork-release.yml before publishing.
+#
+# When every check passes on a ref given as a full commit SHA, the record job
+# sets a `fork-checks` commit status on that commit, naming the commit this
+# workflow file came from. Fork
+# release skips its checks when that status is on the commit it releases and
+# this file is unchanged there (a promoted sync candidate, or a branch checked
+# with Fork PR checks and pushed to main unchanged). Only the record job can
+# write statuses: the check jobs run the checked ref's code, which could
+# otherwise forge a pass. Callers grant statuses: write.
 
 on:
   workflow_call:
@@ -136,3 +145,26 @@ jobs:
 
       - name: Test
         run: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }}
+
+  record:
+    name: Record pass
+    needs: [quality, test, test_web, test_server]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REF: ${{ inputs.ref }}
+    steps:
+      # Only a full commit SHA proves every job checked the same commit; a
+      # branch can move between their checkouts. A local reusable workflow
+      # comes from the caller's commit, GITHUB_SHA.
+      - run: |
+          if [[ ! $REF =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Checked ref $REF is not a full commit SHA; not recording a reusable pass."
+            exit 0
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$REF" -f state=success -f context=fork-checks \
+            -f "description=checks@$GITHUB_SHA" \
+            -f "target_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null

@@ -34,6 +34,9 @@ jobs:
   checks:
     name: Checks
     needs: [budget]
+    permissions:
+      contents: read
+      statuses: write
     uses: ./.github/workflows/fork-checks.yml
     with:
       ref: ${{ inputs.ref }}

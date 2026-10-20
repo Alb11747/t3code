@@ -49,8 +49,10 @@ jobs:
     permissions:
       actions: write
       contents: read
+      statuses: read
     outputs:
       release: ${{ steps.changes.outputs.release }}
+      checked: ${{ steps.checked.outputs.checked }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -92,6 +94,30 @@ jobs:
             fi
           fi
           echo "release=$release" >> "$GITHUB_OUTPUT"
+
+      # Fork checks sets a `fork-checks` status on a commit once every check
+      # passed there, naming the commit its workflow file came from. When a sync
+      # candidate or Fork PR checks run already passed on this exact commit,
+      # with the same checks this commit defines, running them again proves
+      # nothing new.
+      - id: checked
+        name: Reuse checks that passed on this commit
+        if: steps.changes.outputs.release == 'true'
+        run: |
+          set -euo pipefail
+          checks_file=.github/workflows/fork-checks.yml
+          status=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status" \
+            --jq '.statuses[] | select(.context == "fork-checks" and .state == "success") | .description')
+          checked=false
+          if [[ $status =~ ^checks@([0-9a-f]{40})$ ]]; then
+            used=$(gh api "repos/$GITHUB_REPOSITORY/contents/$checks_file?ref=${BASH_REMATCH[1]}" --jq .sha)
+            here=$(gh api "repos/$GITHUB_REPOSITORY/contents/$checks_file?ref=$GITHUB_SHA" --jq .sha)
+            if [[ $used == "$here" ]]; then
+              checked=true
+              echo "Fork checks already passed on $GITHUB_SHA; skipping them."
+            fi
+          fi
+          echo "checked=$checked" >> "$GITHUB_OUTPUT"
 
   budget:
     name: Job budget
@@ -177,16 +203,23 @@ jobs:
 
   checks:
     name: Checks
-    needs: [budget]
+    needs: [settle, budget]
+    if: needs.settle.outputs.checked != 'true'
+    permissions:
+      contents: read
+      statuses: write
     uses: ./.github/workflows/fork-checks.yml
     with:
       ref: ${{ github.sha }}
 
   # Builds wait for the checks so a failing commit doesn't also spend the
-  # desktop builds.
+  # desktop builds. Checks skipped because they already passed count as
+  # passed; GitHub would otherwise skip every job that depends on them, so
+  # the jobs below test results explicitly.
   build_bundle:
     name: Build JS bundle
     needs: [preflight, checks]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && (needs.checks.result == 'success' || needs.checks.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     # T3 Connect needs upstream's Clerk/relay deployment. These optional
@@ -237,6 +270,7 @@ jobs:
   desktop_linux_x64:
     name: Desktop Linux x64
     needs: [preflight, build_bundle]
+    if: ${{ !cancelled() && needs.build_bundle.result == 'success' }}
     uses: ./.github/workflows/release-desktop.yml
     with:
       version: ${{ needs.preflight.outputs.version }}
@@ -259,6 +293,7 @@ jobs:
   desktop_win_x64:
     name: Desktop Windows x64
     needs: [preflight, build_bundle]
+    if: ${{ !cancelled() && needs.build_bundle.result == 'success' }}
     uses: ./.github/workflows/release-desktop.yml
     with:
       version: ${{ needs.preflight.outputs.version }}
@@ -283,6 +318,7 @@ jobs:
   cli_arm64:
     name: CLI ${{ matrix.resource_key }}
     needs: [preflight, build_bundle]
+    if: ${{ !cancelled() && needs.build_bundle.result == 'success' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
@@ -410,6 +446,7 @@ jobs:
   release:
     name: Publish GitHub release
     needs: [preflight, checks, desktop_linux_x64, desktop_win_x64, cli_arm64]
+    if: ${{ !cancelled() && needs.desktop_linux_x64.result == 'success' && needs.desktop_win_x64.result == 'success' && needs.cli_arm64.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
