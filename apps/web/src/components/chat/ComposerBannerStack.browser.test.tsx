@@ -61,6 +61,8 @@ it("only offers notice details when the description cannot fit", async () => {
 });
 
 it("keeps only the usage limit attached while an active goal waits in the collapsible stack", async () => {
+  // A pointer left at the top of the page can expand the stack as soon as it mounts.
+  await userEvent.hover(document.body, { position: { x: 0, y: window.innerHeight - 1 } });
   await act(async () =>
     root.render(
       <ComposerBannerStack
