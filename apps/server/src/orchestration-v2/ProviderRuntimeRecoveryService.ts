@@ -647,7 +647,6 @@ export const make = Effect.gen(function* () {
           .cancelUnsettled({
             threadId: projection.thread.id,
             effectTypes: EffectOutbox.PROCESS_BOUND_EFFECT_TYPES,
-            preserveBoundarySteers: true,
             reason: detail,
           })
           .pipe(
@@ -673,7 +672,6 @@ export const make = Effect.gen(function* () {
             effects,
             cancelUnsettledEffects: {
               effectTypes: EffectOutbox.PROCESS_BOUND_EFFECT_TYPES,
-              preserveBoundarySteers: true,
               reason: detail,
             },
           })

@@ -101,8 +101,6 @@ import {
 import {
   isBufferedProviderNotification,
   isUndeliveredMailboxSteer,
-  delegatedCompletionWakeDetail,
-  isTerminalDelegatedTaskStatus,
 } from "./NotificationMailbox.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -589,6 +587,37 @@ function legacyPullRequestLink(
       ...(existing?.endedWatch && { endedWatch: existing.endedWatch }),
     },
     existing?.watch,
+  );
+}
+
+function delegatedCompletionWakeDetail(taskIds: ReadonlyArray<string>): string {
+  const taskList = taskIds.join(", ");
+  return taskIds.length === 1
+    ? `Delegated task ${taskList} reached a terminal state. Use task_status with taskId ${taskList} to read the result.`
+    : `Delegated tasks ${taskList} reached terminal states. Use task_status with each taskId to read the results.`;
+}
+
+function isTerminalDelegatedTaskStatus(status: OrchestrationV2Subagent["status"]): boolean {
+  return (
+    status === "completed" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "interrupted"
+  );
+}
+
+// An agent update that asked for prompt delivery (steer or auto, not an explicit
+// queue) is queued only because the turn is busy or still starting; the running
+// turn may take it at its next tool boundary. Hooks carry text only.
+function agentUpdateWantsPromptDelivery(
+  command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+): boolean {
+  return (
+    command.createdBy === "agent" &&
+    command.dispatchMode.type !== "queue_after_active" &&
+    command.attachments.length === 0 &&
+    command.notification === undefined &&
+    command.scheduledTaskId === undefined
   );
 }
 
@@ -3964,8 +3993,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly scheduledTaskId?: OrchestrationV2ConversationMessage["scheduledTaskId"];
     readonly senderThreadId?: OrchestrationV2ConversationMessage["senderThreadId"];
     readonly delegatedCompletion?: OrchestrationV2ConversationMessage["delegatedCompletion"];
-    readonly notification?: OrchestrationV2ConversationMessage["notification"];
     readonly forceRestart: boolean;
+    /** The provider delivers the message at a tool boundary; record it without a steer effect. */
+    readonly atToolBoundary?: boolean;
   }) =>
     Effect.gen(function* () {
       const targetRun = input.projection.runs.find(
@@ -4123,7 +4153,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...(input.delegatedCompletion === undefined
               ? {}
               : { delegatedCompletion: input.delegatedCompletion }),
-            ...(input.notification === undefined ? {} : { notification: input.notification }),
             ...(input.scheduledTaskId === undefined
               ? {}
               : { scheduledTaskId: input.scheduledTaskId }),
@@ -4212,6 +4241,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           input.projection.thread.providerInstanceId !== input.modelSelection.instanceId;
         if (
           input.delegatedCompletion === undefined &&
+          input.atToolBoundary !== true &&
           (instanceChanged ||
             !modelSelectionsEqual(input.projection.thread.modelSelection, input.modelSelection))
         ) {
@@ -4235,6 +4265,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           providerThreadId: providerThread.id,
           providerInstanceId: targetRun.providerInstanceId,
         });
+        if (input.atToolBoundary === true) return;
         yield* Ref.update(input.effects, (existing) => [
           ...existing,
           {
@@ -4243,11 +4274,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             threadId: input.command.threadId,
             request: {
               type: "provider-turn.steer",
-              ...(input.createdBy === "agent" &&
-              session.providerSession.capabilities.turns.supportsNonInterruptingAgentSteering ===
-                true
-                ? { waitForBoundary: true as const }
-                : {}),
               providerSessionId,
               providerThreadId: providerThread.id,
               providerTurnId: providerTurn.id,
@@ -4679,23 +4705,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) =>
     Effect.gen(function* () {
       let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
-      // Stop can commit after the boundary wait expires but before its fallback
-      // is dispatched. Do not turn that stale steer into fresh work.
-      if (
-        command.steeringFallbackOfRunId !== undefined &&
-        (yield* stopReachedRun(command, command.threadId, command.steeringFallbackOfRunId))
-      ) {
-        yield* emit(
-          events,
-          command,
-        )({
-          type: "thread.metadata-updated",
-          threadId: command.threadId,
-          occurredAt: yield* DateTime.now,
-          payload: projection.thread,
-        });
-        return;
-      }
       if (command.manualContinuationOfRunId !== undefined) {
         const source = projection.runs.find((run) => run.id === command.manualContinuationOfRunId);
         const limited = latestRootProviderFailure(source ?? null, projection.turnItems);
@@ -4904,6 +4913,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.dispatchMode,
         command.deliveryIntent,
       );
+      let atToolBoundary = false;
       if (dispatchMode.type === "steer_active") {
         const targetRunId = dispatchMode.targetRunId;
         const target = projection.runs.find((run) => run.id === targetRunId);
@@ -4921,7 +4931,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               turn.status === "completed"))
         ) {
           dispatchMode = { type: "start_immediately" };
-        } else if (command.createdBy === "agent") {
+        } else if (
+          command.createdBy === "agent" &&
+          // After Stop the steer must still fail below; queueing it instead would
+          // start the update on its own once the provider stops.
+          !(yield* stopReachedRun(command, command.threadId, targetRunId))
+        ) {
           const providerThread = projection.providerThreads.find(
             (candidate) => candidate.id === target?.providerThreadId,
           );
@@ -4933,11 +4948,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               Option.isSome(session) &&
               session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools ===
                 true &&
-              session.value.providerSession.capabilities.turns
-                .supportsNonInterruptingAgentSteering !== true
+              // Boundary hooks carry text only. An update with attachments steers
+              // natively; the adapter tells the agent it may have interrupted a tool.
+              command.attachments.length === 0
             ) {
               // Claude steering cancels pending tools, which appear as user refusals.
-              // Agent updates can wait for the durable queue's next-turn boundary.
+              // Agent updates wait in the durable queue instead, and the running turn
+              // takes them at its next tool batch or Stop (ProviderContinuationService
+              // claimAgentMessages). Whatever it does not take starts the next turn.
               dispatchMode = { type: "queue_after_active" };
             }
           }
@@ -4990,15 +5008,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           (candidate) => candidate.id === requestedCompletion.parentRunId,
         );
         const delivery = parentRun?.delegatedCompletion?.delivery;
-        const existingDelivery = projection.messages.find(
-          (message) => message.id === command.messageId,
-        );
-        const deferredSteer =
-          existingDelivery !== undefined &&
-          command.steeringFallbackOfRunId === existingDelivery.runId &&
-          existingDelivery.delegatedCompletion?.generation === requestedCompletion.generation &&
-          projection.runs.find((run) => run.id === existingDelivery.runId)?.userMessageId !==
-            command.messageId;
         if (
           parentRun?.delegatedCompletion?.disposition !== "open" ||
           delivery === null ||
@@ -5006,7 +5015,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           delivery.generation !== requestedCompletion.generation ||
           delivery.messageId !== command.messageId ||
           (projection.messages.some((candidate) => candidate.id === command.messageId) &&
-            !deferredSteer &&
             !isUndeliveredMailboxSteer(projection, command.messageId))
         ) {
           return yield* new OrchestratorDispatchError({
@@ -5032,13 +5040,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : undefined);
       if (
         mailboxTaskIds !== undefined &&
-        // A steer deferred by the adapter is already persisted. Requeue it
-        // without trying the same unavailable boundary again.
-        !projection.messages.some((message) => message.id === command.messageId) &&
         mailboxTaskIds.every(
           (id) => projection.subagents.find((task) => task.id === id)?.completionWake === "always",
         )
       ) {
+        // If it queues (steering would cancel tools, or the turn is still
+        // starting), the running turn may take it at its next tool boundary.
+        atToolBoundary = true;
         const active = projection.runs.find((run) => run.status === "running");
         const providerThread = projection.providerThreads.find(
           (row) => row.id === active?.providerThreadId,
@@ -5061,10 +5069,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           if (
             Option.isSome(session) &&
             session.value.providerSession.capabilities.turns.supportsActiveSteering &&
-            (session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools !==
-              true ||
-              session.value.providerSession.capabilities.turns
-                .supportsNonInterruptingAgentSteering === true)
+            session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools !== true
           ) {
             dispatchMode = { type: "steer_active", targetRunId: active.id };
           }
@@ -5136,7 +5141,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               : (projection.runs.find((run) => run.id === dispatchMode.targetRunId)
                   ?.modelSelection ?? modelSelection),
           delegatedCompletion,
-          ...(command.notification === undefined ? {} : { notification: command.notification }),
           targetRunId: dispatchMode.targetRunId,
           messageId: command.messageId,
           text: dispatchText,
@@ -5400,6 +5404,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           updatedAt: now,
           ...(delegatedCompletion === undefined ? {} : { delegatedCompletion }),
           ...(command.notification === undefined ? {} : { notification: command.notification }),
+          ...(atToolBoundary || agentUpdateWantsPromptDelivery(command)
+            ? { atToolBoundary: true as const }
+            : {}),
         };
         const emitEvent = emit(events, command);
         if (targetProviderThread === undefined) {
@@ -7918,7 +7925,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Queued run ${queuedRun.id} is missing message or execution state.`,
         });
       }
-      if (
+      if (command.atToolBoundary === true) {
+        // Stop wins: a held queue or a stopped turn keeps the update queued.
+        // A run that owns a delegated task keeps its turn: the task settles
+        // with its own run, which joining would cancel.
+        if (
+          queuedMessage.atToolBoundary !== true ||
+          queuedMessage.attachments.length > 0 ||
+          queuedRun.delegatedTaskId !== undefined ||
+          queuedRun.queueHeld === true ||
+          (yield* stopReachedRun(command, command.threadId, command.targetRunId))
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Queued run ${queuedRun.id} cannot join the running turn at a tool boundary.`,
+          });
+        }
+      } else if (
         queuedMessage.delegatedCompletion !== undefined ||
         queuedMessage.notification !== undefined
       ) {
@@ -7972,21 +7996,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         },
       });
 
+      const atToolBoundary = command.atToolBoundary === true;
       yield* dispatchSteerIntoRun({
         command,
         events,
         effects,
         projection,
-        modelSelection: projection.thread.modelSelection,
-        targetRunId: command.targetRunId,
-        messageId: queuedMessage.id,
-        text: queuedMessage.text,
-        ...(queuedMessage.notification === undefined
-          ? {}
-          : { notification: queuedMessage.notification }),
+        // An update joining at a tool boundary keeps the running turn's model; a
+        // selection change could otherwise restart the turn from inside its hook.
+        modelSelection: atToolBoundary
+          ? (projection.runs.find((run) => run.id === command.targetRunId)?.modelSelection ??
+            projection.thread.modelSelection)
+          : projection.thread.modelSelection,
         ...(queuedMessage.delegatedCompletion === undefined
           ? {}
           : { delegatedCompletion: queuedMessage.delegatedCompletion }),
+        atToolBoundary,
+        targetRunId: command.targetRunId,
+        messageId: queuedMessage.id,
+        text: queuedMessage.text,
         attachments: queuedMessage.attachments,
         ...(queuedMessage.context ? { context: queuedMessage.context } : {}),
         createdBy: queuedMessage.createdBy,
@@ -7999,6 +8027,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : { senderThreadId: queuedMessage.senderThreadId }),
         forceRestart: false,
       });
+      if (atToolBoundary && queuedMessage.delegatedCompletion !== undefined) {
+        // Accept in the same commit: the cancelled queued run would otherwise
+        // read as a failed delivery and reserve a duplicate notification.
+        yield* dispatchNotificationAccepted(
+          {
+            type: "notification.delivery.accept",
+            commandId: command.commandId,
+            threadId: command.threadId,
+            messageId: queuedMessage.id,
+          },
+          events,
+        );
+      }
     });
 
   const dispatchQueuedRunReorder = (
@@ -11154,7 +11195,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       readonly cancelUnsettledEffects?: {
         readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
         readonly reason: string;
-        readonly messageIds?: ReadonlyArray<MessageId>;
       };
     },
     OrchestratorV2Error
@@ -11171,7 +11211,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       | {
           readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
           readonly reason: string;
-          readonly messageIds?: ReadonlyArray<MessageId>;
         }
       | undefined;
     switch (command.type) {
@@ -11429,41 +11468,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* dispatchDelegatedTaskWakePolicy(command, events);
         break;
       case "delegated_task.completion-delivery.acknowledge":
-      case "delegated_task.completion-delivery.dispose": {
-        const before = yield* getProjectionWithPendingEvents(command.parentThreadId, events);
+      case "delegated_task.completion-delivery.dispose":
         yield* dispatchDelegatedTaskCompletionDeliveryResolution(command, events);
-        const task = before.subagents.find((candidate) => candidate.id === command.taskId);
-        const owner = before.runs.find((run) => run.id === task?.runId);
-        const after = yield* getProjectionWithPendingEvents(command.parentThreadId, events);
-        const remaining = after.runs.find((run) => run.id === owner?.id)?.delegatedCompletion
-          ?.delivery;
-        const messageIds = before.messages
-          .filter((message) => {
-            const source = message.notification?.source;
-            return (
-              message.id.startsWith("message:delegated-task-question:") &&
-              source?.kind === "delegated_task" &&
-              source.taskIds.includes(command.taskId)
-            );
-          })
-          .map((message) => message.id);
-        const previousDelivery = owner?.delegatedCompletion?.delivery;
-        if (
-          previousDelivery != null &&
-          (remaining == null ||
-            remaining.taskIds.length === 0 ||
-            remaining.messageId !== previousDelivery.messageId)
-        ) {
-          messageIds.push(previousDelivery.messageId);
-        }
-        if (messageIds.length > 0)
-          cancelUnsettledEffects = {
-            effectTypes: ["provider-turn.steer"],
-            messageIds,
-            reason: "The delegated notification is no longer owned by this task.",
-          };
         break;
-      }
       case "thread.created.record":
         yield* dispatchCreatedThreadRecord(command, events);
         break;
@@ -11472,12 +11479,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       default:
         return yield* dispatchUnsupported(command);
-    }
-    if (command.type === "run.interrupt" || command.type === "thread.stop") {
-      cancelUnsettledEffects = {
-        effectTypes: [...(cancelUnsettledEffects?.effectTypes ?? []), "provider-turn.steer"],
-        reason: cancelUnsettledEffects?.reason ?? "The user stopped this thread.",
-      };
     }
     return {
       events: yield* Ref.get(events),
@@ -11611,6 +11612,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
+    if (plan.events.length === 0) {
+      // A settle that ended nothing still records its receipt: a replayed Stop
+      // effect then finds it instead of settling work that appeared since.
+      const resultSequence = yield* Effect.gen(function* () {
+        const sequence = yield* eventSink.latestSequence({ threadId: commandThreadId(command) });
+        yield* commandReceipts.insertIfAbsent({
+          commandId: command.commandId,
+          threadId: commandThreadId(command),
+          commandType: command.type,
+          acceptedAt: yield* DateTime.now,
+          resultSequence: sequence,
+          status: "accepted",
+          error: null,
+        });
+        return sequence;
+      }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause,
+            }),
+        ),
+      );
+      return { sequence: resultSequence, storedEvents: [] } satisfies OrchestratorV2DispatchResult;
+    }
     const acceptedAt = plan.events.at(-1)?.occurredAt ?? (yield* DateTime.now);
     const committed = yield* eventSink
       .commitCommand({

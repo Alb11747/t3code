@@ -63,7 +63,7 @@ export function isNonRetryableProviderTurnControlFailure(
 export interface OrchestrationEffectExecutorV2Shape {
   readonly execute: (
     effect: EffectOutbox.OrchestrationEffectV2,
-    options?: { readonly willRetry: boolean; readonly isCurrent?: Effect.Effect<boolean, unknown> },
+    options?: { readonly willRetry: boolean },
   ) => Effect.Effect<void, OrchestrationEffectExecutionError>;
 }
 
@@ -223,7 +223,6 @@ export const layerExecutor: Layer.Layer<
           case "provider-turn.steer":
             return providerTurnControl
               .steer({
-                ...(options?.isCurrent === undefined ? {} : { isCurrent: options.isCurrent }),
                 threadId: effect.threadId,
                 providerSessionId: effect.request.providerSessionId,
                 providerThreadId: effect.request.providerThreadId,
@@ -250,49 +249,15 @@ export const layerExecutor: Layer.Layer<
                     });
                   }),
                 ),
-                Effect.as(undefined),
-                Effect.catchTags({
-                  ProviderTurnControlSteerCancelledError: () => Effect.void,
-                  ProviderTurnControlSteerDeferredError: (error) => Effect.succeed(error),
-                  ProviderTurnControlError: (error) =>
-                    Effect.gen(function* () {
-                      if (
-                        effect.request.type === "provider-turn.steer" &&
-                        effect.request.waitForBoundary
-                      ) {
-                        const request = effect.request;
-                        const projection = yield* threads.getThreadRecords(effect.threadId, [
-                          "providerTurns",
-                          "providerSessions",
-                        ]);
-                        const target = projection.providerTurns.find(
-                          (turn) => turn.id === request.providerTurnId,
-                        );
-                        const session = projection.providerSessions.find(
-                          (row) => row.id === request.providerSessionId,
-                        );
-                        if (
-                          (target !== undefined && target.status !== "running") ||
-                          session?.status === "stopped" ||
-                          session?.status === "error"
-                        ) {
-                          return new ProviderTurnControlService.ProviderTurnControlSteerDeferredError(
-                            {
-                              threadId: effect.threadId,
-                              providerTurnId: request.providerTurnId,
-                              cause: error,
-                            },
-                          );
-                        }
-                      }
-                      return error.turnCompleted ? error : yield* error;
-                    }),
-                }),
-                Effect.flatMap((error) =>
+                Effect.catch((error) =>
                   Effect.gen(function* () {
-                    if (error === undefined) return;
-                    if (effect.request.type !== "provider-turn.steer") return yield* error;
-                    const deferToQueue = error._tag === "ProviderTurnControlSteerDeferredError";
+                    if (
+                      !("turnCompleted" in error) ||
+                      !error.turnCompleted ||
+                      effect.request.type !== "provider-turn.steer"
+                    ) {
+                      return yield* error;
+                    }
                     const projection = yield* threads.getThreadRecords(
                       effect.threadId,
                       ["messages", "runs"],
@@ -311,7 +276,6 @@ export const layerExecutor: Layer.Layer<
                         threadId: effect.threadId,
                         messageId: message.id,
                         text: message.text,
-                        ...(deferToQueue ? { steeringFallbackOfRunId: run.id } : {}),
                         ...(message.context ? { context: message.context } : {}),
                         attachments: message.attachments,
                         ...(message.delegatedCompletion === undefined
@@ -319,7 +283,7 @@ export const layerExecutor: Layer.Layer<
                           : { modelSelection: run.modelSelection }),
                         dispatchMode: {
                           type:
-                            message.delegatedCompletion === undefined && !deferToQueue
+                            message.delegatedCompletion === undefined
                               ? "start_immediately"
                               : "queue_after_active",
                         },
@@ -763,10 +727,7 @@ export const layerWithOptions = (
 
           const settle = Effect.gen(function* () {
             const execution = executor
-              .execute(effect, {
-                willRetry: effect.attemptCount < maxAttempts,
-                isCurrent: wasCancelled(effect.id).pipe(Effect.map((cancelled) => !cancelled)),
-              })
+              .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
               .pipe(Effect.as("executed" as const));
             const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
               Effect.ensuring(outbox.clearCancellation(effect.id)),
@@ -839,22 +800,15 @@ export const layerWithOptions = (
               Effect.onInterrupt(() => Fiber.interrupt(settlement)),
             );
           }
-          // Boundary delivery waits on the provider, not a worker slot. Keep its
-          // durable row and settlement fiber owned until delivery, timeout, or Stop.
-          if (effect.request.type !== "provider-turn.steer" || !effect.request.waitForBoundary) {
-            const settled = yield* Fiber.await(settlement).pipe(
-              Effect.timeoutOption(Duration.millis(leaseDurationMs)),
-              Effect.onInterrupt(() => Fiber.interrupt(settlement)),
-            );
-            if (Option.isSome(settled)) return yield* settled.value;
-            yield* Effect.logWarning(
-              "Orchestration effect outlived its lease; freeing its worker",
-              {
-                effectId: effect.id,
-                effectType: effect.request.type,
-              },
-            );
-          }
+          const settled = yield* Fiber.await(settlement).pipe(
+            Effect.timeoutOption(Duration.millis(leaseDurationMs)),
+            Effect.onInterrupt(() => Fiber.interrupt(settlement)),
+          );
+          if (Option.isSome(settled)) return yield* settled.value;
+          yield* Effect.logWarning("Orchestration effect outlived its lease; freeing its worker", {
+            effectId: effect.id,
+            effectType: effect.request.type,
+          });
           yield* Fiber.join(settlement).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("Orchestration effect worker failed", cause),

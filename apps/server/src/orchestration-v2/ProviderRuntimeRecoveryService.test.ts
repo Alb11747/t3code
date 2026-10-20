@@ -1,6 +1,5 @@
 import { assert, it, vi } from "@effect/vitest";
 import {
-  CommandId,
   MessageId,
   NodeId,
   ProviderDriverKind,
@@ -17,7 +16,6 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
 import * as EffectWorker from "./EffectWorker.ts";
@@ -27,82 +25,6 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import * as SqlitePersistence from "../persistence/Sqlite.ts";
-
-it.effect.each(["pending", "running"] as const)(
-  "preserves a $0 boundary delivery through recovery without reviving settled input",
-  (status) =>
-    Effect.gen(function* () {
-      const outbox = yield* EffectOutbox.EffectOutboxV2;
-      const threadId = ThreadId.make(`thread:boundary-recovery:${status}`);
-      const commandId = CommandId.make(`command:boundary-recovery:${status}`);
-      const request = {
-        type: "provider-turn.steer",
-        providerSessionId: ProviderSessionId.make("session:boundary-recovery"),
-        providerThreadId: ProviderThreadId.make("provider-thread:boundary-recovery"),
-        providerTurnId: ProviderTurnId.make("turn:boundary-recovery"),
-        messageId: MessageId.make("message:boundary-recovery"),
-        waitForBoundary: true,
-      } as const;
-      yield* outbox.enqueue([
-        { id: "effect:boundary", commandId, threadId, request },
-        {
-          id: "effect:revoked",
-          commandId,
-          threadId,
-          request: { ...request, messageId: MessageId.make("message:revoked") },
-        },
-        {
-          id: "effect:human",
-          commandId,
-          threadId,
-          request: {
-            ...request,
-            waitForBoundary: undefined,
-            messageId: MessageId.make("message:human"),
-          },
-        },
-      ]);
-      yield* outbox.cancelUnsettled({
-        threadId,
-        effectTypes: ["provider-turn.steer"],
-        messageIds: [MessageId.make("message:revoked")],
-        reason: "Completion ownership was revoked.",
-      });
-      if (status === "running") {
-        const claimed = yield* outbox.claimNext({
-          workerId: "old-process",
-          leaseDurationMs: 30_000,
-        });
-        assert.equal(Option.getOrThrow(claimed).id, "effect:boundary");
-      }
-      const retired = yield* outbox.cancelUnsettled({
-        threadId,
-        effectTypes: EffectOutbox.PROCESS_BOUND_EFFECT_TYPES,
-        preserveBoundarySteers: true,
-        reason: "The provider process ended.",
-      });
-      assert.deepEqual(retired, ["effect:human"]);
-      assert.deepEqual(yield* outbox.reconcileAfterProcessLoss, {
-        cancelled: 0,
-        requeued: status === "running" ? 1 : 0,
-      });
-      assert.deepEqual(yield* outbox.reconcileAfterProcessLoss, { cancelled: 0, requeued: 0 });
-      const recovered = yield* outbox.claimNext({
-        workerId: "new-process",
-        leaseDurationMs: 30_000,
-      });
-      assert.deepEqual(Option.getOrThrow(recovered).request, request);
-      yield* outbox.succeed({ effectId: "effect:boundary", workerId: "new-process" });
-      assert.deepEqual(yield* outbox.reconcileAfterProcessLoss, { cancelled: 0, requeued: 0 });
-      assert.isTrue(
-        Option.isNone(
-          yield* outbox.claimNext({ workerId: "new-process", leaseDurationMs: 30_000 }),
-        ),
-      );
-      assert.equal(Option.getOrThrow(yield* outbox.get("effect:revoked")).status, "cancelled");
-    }).pipe(Effect.provide(EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)))),
-);
 
 it.effect("leaves durable effects for the worker after runtime reconciliation", () =>
   Effect.gen(function* () {
@@ -933,7 +855,6 @@ it.effect(
         "provider-turn.restart",
         "runtime-request.respond",
       ]);
-      assert.isTrue(committedInput?.cancelUnsettledEffects?.preserveBoundarySteers);
       const events = committedInput?.events ?? [];
       assert.deepEqual(
         events.map((event) => [

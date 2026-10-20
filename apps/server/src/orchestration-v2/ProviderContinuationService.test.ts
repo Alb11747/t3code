@@ -14,6 +14,7 @@ import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -1020,4 +1021,63 @@ describe("ProviderContinuationService", () => {
       );
     });
   });
+
+  it.effect("an aborted boundary hook commits no further promotions", () =>
+    Effect.gen(function* () {
+      // Three queued agent updates. The fake dispatch stands in for the SQLite
+      // commit: the first promotion commits, the second blocks until the hook
+      // is aborted, and the third must never run.
+      const runs = [1, 2, 3].map((ordinal) => ({
+        id: RunId.make(`run-boundary-${ordinal}`),
+        status: "queued",
+        ordinal,
+        queuePosition: ordinal,
+        userMessageId: MessageId.make(`message-boundary-${ordinal}`),
+      }));
+      const messages = runs.map((run) => ({
+        id: run.userMessageId,
+        text: "update",
+        atToolBoundary: true,
+      }));
+      const committed: Array<unknown> = [];
+      const blocked = yield* Deferred.make<void>();
+      const layerThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
+        getThreadRecords: () =>
+          Effect.succeed({
+            ...projection,
+            runs,
+            messages,
+          } as unknown as OrchestrationV2ThreadProjection),
+        dispatch: (command) =>
+          Effect.gen(function* () {
+            if (command.type !== "queued-message.promote-to-steer") return {} as never;
+            if (committed.length === 1) {
+              yield* Deferred.succeed(blocked, undefined);
+              return yield* Effect.never;
+            }
+            committed.push(command.queuedRunId);
+            return { sequence: 1, storedEvents: [] };
+          }),
+      });
+      const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests.pipe(
+        Effect.provide(
+          ProviderContinuationService.layer.pipe(
+            Layer.provideMerge(
+              Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, layerThreads),
+            ),
+          ),
+        ),
+      );
+      // The Claude adapter runs the claim with the hook's AbortSignal, which
+      // interrupts the claim fiber when Claude aborts the hook.
+      const claim = yield* requests.claimAgentMessages!({
+        threadId,
+        runId: RunId.make("run-boundary-active"),
+      }).pipe(Effect.forkScoped);
+      yield* Deferred.await(blocked);
+      yield* Fiber.interrupt(claim);
+      assert.isTrue(Exit.hasInterrupts(yield* Fiber.await(claim)));
+      assert.deepEqual(committed, [runs[0]!.id]);
+    }).pipe(Effect.scoped),
+  );
 });
