@@ -181,7 +181,7 @@ attempt at the previous one.
    Run it once per finished round of commits, fix any failure, and delete the
    branch (`git push fork :check/<branch>`) once the change is on `main`.
    If the job budget blocks checks, or GitHub-hosted Actions is unavailable or
-   frozen, use _Blacksmith fallback_ below instead.
+   frozen, use _Labs checks_ below instead.
 
 6. Right before pushing, fetch `fork` and rebase the task branch's own commits
    onto current `fork/main` (they are not on `main` yet, so this rewrites
@@ -232,12 +232,16 @@ sync, so the merge takes upstream's version. When `main` already carries the
 merge, a revert can also remove upstream's equivalent code; compare the result
 with upstream before pushing it.
 
-### Blacksmith fallback
+### Labs checks: Lazarus, then Blacksmith
 
-`Alb11747-Labs/t3code` runs the same checks on existing Blacksmith runners,
-without the fork's GitHub-hosted job budget. Its `main` checks workflow installs
-Chromium when the checked source has web browser tests; no per-candidate patch
-is needed. Publish the exact commit to the fork, then dispatch Labs checks:
+`Alb11747-Labs/t3code` runs the same checks without the fork's job budget. By
+default they run on self-hosted runners on Lazarus (label `lazarus-linux`; setup,
+security and operations are in `Agents/Setup/GitHubRunners/README.md` in Sync).
+Lazarus takes one job at a time: each job takes about as long as on a
+GitHub-hosted runner, so a full run takes 45 to 50 minutes, longer behind other
+queued runs. Its `main` checks workflow installs Chromium when the checked source
+has web browser tests; no per-candidate patch is needed. Publish the exact commit
+to the fork, then dispatch Labs checks:
 
 ```sh
 sha=$(git rev-parse HEAD)
@@ -251,6 +255,17 @@ identifies the Labs workflow, not the checked fork commit. Retain both SHA and
 run URL as evidence. A passing Labs run does not override `FORK_JOB_BUDGET=150`.
 When the budget blocks a release, use the reviewed release fallback below or
 wait for the fork's budget to recover.
+
+Blacksmith is the second choice, since its usage is limited. Use it when Lazarus
+is down or its queue is too long for the task: jobs stay queued and
+`gh api repos/Alb11747-Labs/t3code/actions/runners --jq '.runners[] | "\(.name) \(.status) busy=\(.busy)"'`
+shows no online `lazarus-*` runner, or one busy with other runs. Cancel the run
+and dispatch it again with `-f runner=blacksmith-8vcpu-ubuntu-2404` (about 6
+minutes). `-f runner=ubuntu-24.04` uses GitHub-hosted runners in Labs instead
+(about 12 minutes). To move every Labs check off Lazarus, for example while it
+is down for maintenance, run
+`gh variable set CHECKS_RUNNER -R Alb11747-Labs/t3code -b blacksmith-8vcpu-ubuntu-2404`;
+`gh variable delete CHECKS_RUNNER -R Alb11747-Labs/t3code` moves them back.
 
 ### Release fallback after the job budget blocks
 
@@ -298,9 +313,12 @@ They do not prove cross-repository publication or installed-client updating.
 | Windows ARM64 CLI                   | GitHub `windows-11-arm`                              |
 | Checks                              | Labs' existing `fork-checks.yml`, managed separately |
 
-Once Lazarus Linux runners are ready, set the **Labs** repository variable
-`FORK_RELEASE_LINUX_RUNNER=lazarus-linux`; it replaces the Linux x64 entries
+Once a Lazarus release runner pool exists, set the **Labs** repository variable
+`FORK_RELEASE_LINUX_RUNNER` to its label; it replaces the Linux x64 entries
 above without changing checks or ARM jobs. Clear it to return to Blacksmith.
+The `lazarus-linux` check runners are not that pool: they lack the release
+toolchain and share caches with check jobs, and the variable also moves the
+guard, preflight and publish jobs, the last with `FORK_RELEASE_TOKEN`.
 The rootless runner image needs the release toolchain, `libsecret-1-dev`,
 `pkg-config`, ImageMagick and clean job workspaces; jobs never elevate there.
 Release image checklist: Node 24.13.1-compatible (and download access for the
