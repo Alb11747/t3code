@@ -365,7 +365,9 @@ jobs:
       clerk_cli_oauth_client_id: ${{ vars.CLERK_CLI_OAUTH_CLIENT_ID }}
       relay_url: ${{ vars.RELAY_URL }}
       label: Windows x64
-      runner: ${{ github.repository == 'Alb11747/t3code' && 'windows-2025' || 'blacksmith-4vcpu-windows-2025' }}
+      # GitHub-hosted in Labs too: free for public repositories, so the
+      # fallback spends no Blacksmith usage on Windows.
+      runner: windows-2025
       platform: win
       target: nsis
       arch: x64

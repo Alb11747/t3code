@@ -307,7 +307,7 @@ They do not prove cross-repository publication or installed-client updating.
 | ----------------------------------- | ---------------------------------------------------- |
 | Guard, preflight and publish        | Blacksmith Ubuntu 24.04, 2 vCPU                      |
 | JS bundle and Linux x64 desktop/CLI | Blacksmith Ubuntu 24.04, 8 vCPU                      |
-| Windows x64 desktop/CLI             | `blacksmith-4vcpu-windows-2025`                      |
+| Windows x64 desktop/CLI             | GitHub `windows-2025`                                |
 | Linux ARM64 CLI                     | `blacksmith-4vcpu-ubuntu-2404-arm`                   |
 | macOS ARM64 CLI                     | GitHub `macos-15` (native ARM64)                     |
 | Windows ARM64 CLI                   | GitHub `windows-11-arm`                              |
@@ -333,8 +333,10 @@ in the image rather than granting jobs sudo. Linux ARM64 remains on its native
 Blacksmith runner and uses `aarch64-unknown-linux-gnu`.
 [Blacksmith's runner catalog](https://docs.blacksmith.sh/blacksmith-runners/overview)
 lists Linux x64/ARM64, Windows x64 and macOS ARM64. Windows ARM64 has no listed
-Blacksmith runner. GitHub macOS avoids Blacksmith's much higher macOS free-minute
-conversion; these are the only two GitHub-hosted fallback build jobs.
+Blacksmith runner. The three GitHub-hosted fallback build jobs (Windows x64 and
+ARM64, macOS) are free in the public Labs repository and spend no Blacksmith
+usage (macOS on Blacksmith would also cost its much higher macOS minute rate);
+GitHub's own concurrency and rate limits are why the rest stays on Blacksmith.
 
 Install the reviewed `fork-release.yml`, `release-desktop.yml`, unchanged
 `fork-budget.yml`, and
