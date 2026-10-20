@@ -28,9 +28,14 @@ const groupExists = (pgid: number) => {
   }
 };
 
+// A group can empty between any check and the kill, so ESRCH means done.
 const killGroup = (pgid: number) =>
   Effect.sync(() => {
-    if (groupExists(pgid)) process.kill(-pgid, "SIGKILL");
+    try {
+      process.kill(-pgid, "SIGKILL");
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== "ESRCH") throw cause;
+    }
   });
 
 const spawnGroup = (args: ReadonlyArray<string>, script = "sleep 600 & wait") =>
@@ -96,15 +101,21 @@ describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platfo
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-ledger-" });
+      const gate = path.join(stateDir, "gate");
+      const ready = path.join(stateDir, "ready");
+      NodeChildProcess.execFileSync("mkfifo", [gate, ready]);
+      // The wrapper's child is recorded before it execs and stopped after.
       const wrapper = yield* spawnGroup(
         SERVE_ARGS,
-        '/bin/sh -c "sleep 600 & wait" "$0" "$@" & exit 0',
+        `(read _ < '${gate}'; exec /bin/sh -c 'echo > "${ready}"; sleep 600 & wait' "$0" "$@") & exit 0`,
       );
       yield* wrapper.exited;
       expect(groupExists(wrapper.pid)).toBe(true);
 
       yield* recordFromDeadServer(stateDir, wrapper);
       expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toHaveLength(1);
+      yield* fs.writeFileString(gate, "\n");
+      yield* fs.readFileString(ready);
 
       const restarted = yield* OpenCodeServerLedger.make({ stateDir });
       yield* restarted.reapOrphans;

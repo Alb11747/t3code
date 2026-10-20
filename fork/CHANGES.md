@@ -9,6 +9,8 @@ the sync script deletes the line of a change whose upstream PR merged. Closing
 an issue alone does not revert a patch. See `fork/README.md` for how to add or drop
 an entry.
 
+- `fix(opencode): OpenCodeServerLedger linux tests no longer race a wrapper's exec`: records stable serve arguments across wrapper exec and tolerates a process group disappearing during test cleanup. Issue: https://github.com/pingdotgg/t3code/issues/22324. PR: https://github.com/pingdotgg/t3code/pull/22209
+
 - `feat(fork): publish budget-blocked releases from Labs`: manually verifies a real fork job-budget failure, checks and builds pinned fork main on fallback runners, and publishes the same update feed only after a draft has every asset verified; the cross-repository token reaches only the final publish step. Fork-only. Issue: none linked. PR: none yet
 
 - `fix(web): show the result of the notified delegated task`: completion cards select the task IDs carried by their notification, so continuing a child conversation no longer makes later completions display the original task's interrupted result; legacy notifications keep their child-thread lookup. Issue: none linked. PR: https://github.com/pingdotgg/t3code/pull/22141
