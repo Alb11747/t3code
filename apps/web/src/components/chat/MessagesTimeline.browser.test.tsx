@@ -4,9 +4,15 @@ import {
   CheckpointRef,
   EnvironmentId,
   MessageId,
+  NodeId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   RunId,
   ThreadId,
+  type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import { Atom } from "effect/reactivity";
 import type { LegendListRef } from "@legendapp/list/react";
 import { act, createRef, Profiler, useState, type ComponentProps, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -16,6 +22,7 @@ import { userEvent } from "vite-plus/test/browser";
 import "~/index.css";
 
 import { serverEnvironment } from "../../state/server";
+import { environmentThreadDetails } from "../../state/threads";
 import { PullRequestLinkPreview } from "../pullRequest/PullRequestLinkPreview";
 import { Tooltip, TooltipPopup, TooltipScrollDismissArea, TooltipTrigger } from "../ui/tooltip";
 import { MessagesTimeline, remarkThoughtPreview } from "./MessagesTimeline";
@@ -156,6 +163,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await act(async () => root.unmount());
   document.body.replaceChildren();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 async function renderElement(element: ReactElement) {
@@ -230,6 +238,81 @@ describe("MessagesTimeline work rows", () => {
     await press(row);
     expect(row.getAttribute("aria-expanded")).toBe("false");
   });
+
+  it.each(["delegated", "legacy", "missing"] as const)(
+    "uses the reported task for %s completion notifications",
+    async (source) => {
+      const now = DateTime.makeUnsafe(CREATED_AT);
+      const childThreadId = ThreadId.make("shared-child");
+      const task = (
+        id: string,
+        status: OrchestrationV2Subagent["status"],
+        result: string,
+      ): OrchestrationV2Subagent => ({
+        id: NodeId.make(id),
+        threadId: ThreadId.make("thread-1"),
+        runId: null,
+        parentNodeId: NodeId.make("parent-root"),
+        origin: "app_owned",
+        createdBy: "agent",
+        driver: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        providerThreadId: null,
+        childThreadId,
+        nativeTaskRef: null,
+        prompt: "Simplify delivery",
+        title: "Simplify delivery",
+        model: null,
+        status,
+        result,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+      });
+      const tasks = [
+        task("original", "interrupted", "Old interrupted progress"),
+        task("continued", "completed", "Final implementation report"),
+        task("follow-up", "completed", "Follow-up explanation"),
+      ];
+      vi.spyOn(environmentThreadDetails, "threadAtom").mockReturnValue(
+        Atom.make({
+          projection: { subagents: tasks, turnItems: [], visibleTurnItems: [] },
+        }) as never,
+      );
+      const onOpenThread = vi.fn();
+      await renderTimeline(
+        (source === "delegated" ? ["continued", "follow-up"] : [source]).map((id) =>
+          work(`notification-${id}`, {
+            label: "Notification fallback",
+            tone: "info",
+            itemType: "notification",
+            projectedItem: v2Item("notification", {
+              id: `notification-${id}`,
+              source:
+                source === "legacy"
+                  ? { kind: "subagent", childThreadId }
+                  : { kind: "delegated_task", childThreadId, taskIds: [NodeId.make(id)] },
+              outcome: "completed",
+              summary: "Notification fallback",
+            }),
+          }),
+        ),
+        { onOpenThread },
+      );
+      if (source === "delegated") {
+        expect(text()).toContain("Final implementation report");
+        expect(text()).toContain("Follow-up explanation");
+        expect(text()).not.toContain("Old interrupted progress");
+        await click(buttons("Open Simplify delivery")[0]!);
+        expect(onOpenThread).toHaveBeenCalledWith(childThreadId);
+      } else if (source === "legacy") {
+        expect(text()).toContain("Old interrupted progress");
+      } else {
+        expect(text()).toContain("Notification fallback");
+        expect(text()).not.toContain("Old interrupted progress");
+      }
+    },
+  );
 
   it("shows dynamic tool input without cached output when the row is expanded", async () => {
     await renderTimeline([
