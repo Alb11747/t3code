@@ -36,6 +36,12 @@ on:
       AZURE_TRUSTED_SIGNING_PUBLISHER_NAME:
         required: false
     inputs:
+      repository:
+        default: ${{ github.repository }}
+        type: string
+      release_repository:
+        default: ${{ github.repository }}
+        type: string
       label:
         required: true
         type: string
@@ -120,14 +126,16 @@ jobs:
         shell: bash
         env:
           CHECKOUT_REF: ${{ inputs.ref }}
+          CHECKOUT_REPOSITORY: ${{ inputs.repository }}
           GIT_TERMINAL_PROMPT: "0"
         run: |
           set -euo pipefail
           git init .
-          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git config remote.origin.url "${GITHUB_SERVER_URL}/${CHECKOUT_REPOSITORY}.git"
           git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
           git sparse-checkout set --no-cone '/*' '!/.repos/'
-          git -c checkout.workers=0 checkout --detach FETCH_HEAD
+          git -c checkout.workers=0 checkout --force --detach FETCH_HEAD
+          git clean -ffdx
 
       # The runner's PowerShell 7.6/.NET 10 intermittently crashes during signing:
       # https://github.com/dotnet/runtime/issues/131636
@@ -262,14 +270,19 @@ jobs:
           }
 
       - uses: ./.github/actions/setup-apt-mirrors
-        if: inputs.platform == 'linux'
+        if: inputs.platform == 'linux' && inputs.runner != 'lazarus-linux'
 
       - name: Install Linux desktop build libraries
         if: inputs.platform == 'linux'
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libsecret-1-dev pkg-config
+          if command -v sudo >/dev/null; then
+              sudo apt-get update
+              sudo apt-get install -y libsecret-1-dev pkg-config
+          else
+              # The isolated Lazarus image supplies these; jobs never elevate.
+              pkg-config --exists libsecret-1
+          fi
           if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
               sudo apt-get install -y imagemagick
           fi
@@ -406,6 +419,9 @@ jobs:
       - name: Build desktop artifact
         shell: bash
         env:
+          # Packaging runs in Labs during budget fallback; installed clients
+          # must still read the fork's release feed.
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ inputs.release_repository }}
           pnpm_config_cache_dir: ${{ runner.temp }}/pnpm-metadata
           T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: ${{ steps.resource_monitor_cache.outputs.cache-hit == 'true' }}
           T3CODE_DESKTOP_REUSE_LINUX_CAPTURE_HELPERS: ${{ steps.capture_helper_cache.outputs.cache-hit == 'true' }}

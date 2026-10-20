@@ -248,10 +248,95 @@ gh run watch "${url##*/}" -R Alb11747-Labs/t3code --exit-status # run in the bac
 
 Use that dispatch's run URL and verify the checkout is `sha`; the run's head SHA
 identifies the Labs workflow, not the checked fork commit. Retain both SHA and
-run URL as evidence. A passing Labs run does not override `FORK_JOB_BUDGET=150`:
-publishing remains in `Alb11747/t3code` and waits for its release budget to recover.
-Moving release builds to Labs needs a separately reviewed artifact and publishing
-handoff; do not add credentials or bypass the gate to improvise one.
+run URL as evidence. A passing Labs run does not override `FORK_JOB_BUDGET=150`.
+When the budget blocks a release, use the reviewed release fallback below or
+wait for the fork's budget to recover.
+
+### Release fallback after the job budget blocks
+
+**Fork release** can also run manually in `Alb11747-Labs/t3code`. Pushes there
+skip every release job. Supply a failed `Alb11747/t3code` Fork release run ID.
+Its budget job must have logged actual budget exhaustion; an API error, runner
+outage, or a failure followed by a newer published release does not qualify.
+The fallback pins current fork `main` (which must contain the blocked commit),
+checks that exact SHA with Labs' existing checks workflow, and builds the same
+installers, updater feeds, WSL runtime and five native CLI archives. The version
+and notes use the fork's existing scripts. The embedded update feed remains
+`Alb11747/t3code`.
+
+Stop any background release-retry waiter and cancel other fork release runs
+before dispatching a publishing fallback. Do not rerun the original release
+concurrently. A newer code push during the build requires a new fallback;
+docs-only pushes do not. Both publishing paths claim the version with a draft,
+refuse an existing release, and publish only after the complete asset inventory
+matches GitHub's uploaded names, sizes and SHA-256 digests. A failed or cancelled
+upload leaves a draft. Inspect it, delete only that unpublished draft (and its
+tag if it points at the wrong source), then rerun; never replace a published
+release. Keep the usual fork budget unchanged.
+
+```sh
+# Defaults to dry-run: all checks, builds and asset validation, no release writes.
+gh workflow run fork-release.yml -R Alb11747-Labs/t3code --ref main \
+  -f blocked_run_id=<failed-fork-release-run-id> -f dry_run=true
+# After the dry-run succeeds and FORK_RELEASE_TOKEN is configured:
+gh workflow run fork-release.yml -R Alb11747-Labs/t3code --ref main \
+  -f blocked_run_id=<failed-fork-release-run-id> -f dry_run=false
+```
+
+Retain the dispatch URL and pinned source SHA from **Verify budget fallback**.
+The workflow run's head SHA is the Labs workflow revision, not the built source.
+Dry-runs upload the same artifacts without exposing the publishing credential.
+They do not prove cross-repository publication or installed-client updating.
+
+| Jobs                                | Labs runners                                         |
+| ----------------------------------- | ---------------------------------------------------- |
+| Guard, preflight and publish        | Blacksmith Ubuntu 24.04, 2 vCPU                      |
+| JS bundle and Linux x64 desktop/CLI | Blacksmith Ubuntu 24.04, 8 vCPU                      |
+| Windows x64 desktop/CLI             | `blacksmith-4vcpu-windows-2025`                      |
+| Linux ARM64 CLI                     | `blacksmith-4vcpu-ubuntu-2404-arm`                   |
+| macOS ARM64 CLI                     | GitHub `macos-15` (native ARM64)                     |
+| Windows ARM64 CLI                   | GitHub `windows-11-arm`                              |
+| Checks                              | Labs' existing `fork-checks.yml`, managed separately |
+
+Once Lazarus Linux runners are ready, set the **Labs** repository variable
+`FORK_RELEASE_LINUX_RUNNER=lazarus-linux`; it replaces the Linux x64 entries
+above without changing checks or ARM jobs. Clear it to return to Blacksmith.
+The rootless runner image needs the release toolchain, `libsecret-1-dev`,
+`pkg-config`, ImageMagick and clean job workspaces; jobs never elevate there.
+Release image checklist: Node 24.13.1-compatible (and download access for the
+native Node 26.8.2 CLI build), Vite+/pnpm 11.10.0, `gh`, Git, Bash, Rust stable
+with Cargo and `x86_64-unknown-linux-gnu`, a C/C++ compiler and Make
+(`build-essential`), Python 3 for node-gyp, `libsecret-1-dev`, `pkg-config`,
+`imagemagick`, `ca-certificates`, `curl`, `tar`, `gzip`, `xz-utils`, `zip`,
+`unzip`, and standard GNU utilities. The jobs download Electron, Rust crates,
+Node, npm packages and electron-builder packaging tools over HTTPS. A GUI,
+Docker and host access are unnecessary for these release jobs. Install packages
+in the image rather than granting jobs sudo. Linux ARM64 remains on its native
+Blacksmith runner and uses `aarch64-unknown-linux-gnu`.
+[Blacksmith's runner catalog](https://docs.blacksmith.sh/blacksmith-runners/overview)
+lists Linux x64/ARM64, Windows x64 and macOS ARM64. Windows ARM64 has no listed
+Blacksmith runner. GitHub macOS avoids Blacksmith's much higher macOS free-minute
+conversion; these are the only two GitHub-hosted fallback build jobs.
+
+Install the reviewed `fork-release.yml`, `release-desktop.yml`, unchanged
+`fork-budget.yml`, and
+`fork/scripts/{release-fallback,publish-release,release-notes}.cjs` on Labs
+`main`, preserving the separately maintained Labs checks workflow. Copy the
+fork's four public `CLERK_*` / `RELAY_URL` repository variables to Labs so builds
+retain T3 Connect. Do not copy any fork secrets.
+
+Publishing credential: a **fine-grained personal access token**, resource owner
+**Alb11747**, **Only select repositories → t3code** (the sole repository
+`Alb11747/t3code`), **Contents: Read and write**, and the automatically required
+**Metadata: Read-only**. No Actions, Workflows, organization or other permissions
+are needed. Use **No expiration**, as requested by the owner. Store it as the
+Labs repository Actions secret **`FORK_RELEASE_TOKEN`** at
+`https://github.com/Alb11747-Labs/t3code/settings/secrets/actions`. The coordinator
+creates and stores it privately; never put it in chat, logs, files or commits.
+Only the final **Publish release** step receives it, after every build and
+artifact download. Other jobs use Labs' normal `GITHUB_TOKEN` for public reads
+and Labs artifacts. A token-free publisher would still need a job in the
+budget-blocked fork; this fallback deliberately spends no fork jobs.
 
 ## Fixing bugs
 
