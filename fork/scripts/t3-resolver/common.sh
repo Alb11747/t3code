@@ -57,6 +57,7 @@ remote_main() {
   fork_gh api "repos/$fork_repo/git/ref/heads/main" --jq .object.sha
 }
 
-rebase_in_progress() {
-  [[ -d $(git rev-parse --git-path rebase-merge) || -d $(git rev-parse --git-path rebase-apply) ]]
+sync_in_progress() {
+  git rev-parse -q --verify MERGE_HEAD >/dev/null || git rev-parse -q --verify REVERT_HEAD >/dev/null ||
+    [[ -d $(git rev-parse --git-path rebase-merge) || -d $(git rev-parse --git-path rebase-apply) ]]
 }

@@ -172,6 +172,20 @@ test("includes new upstream and fork changes without repeating rebased carried p
   assert.match(normalized.releaseNotes[0].items[0], /^Fork: feat: new fork patch/);
 });
 
+test("lists only new fork commits after upstream is merged in", (t) => {
+  const { git, commit, notes } = fixture(t);
+  git("switch", "upstream");
+  commit("upstream.txt", "initial\nnew upstream\n", "fix: upstream change");
+  git("switch", "fork");
+  git("merge", "-q", "--no-ff", "-m", "chore(fork): merge upstream", "upstream");
+  commit("new.txt", "new patch\n", "feat: new fork patch");
+
+  const body = notes();
+  assert.match(body, /Upstream: fix: upstream change/);
+  assert.match(body, /Fork: feat: new fork patch/);
+  assert.doesNotMatch(body, /carried patch|merge upstream/);
+});
+
 test("detects changed patch content even when the commit subject stays the same", (t) => {
   const { git, notes } = fixture(t);
   const cwd = git("rev-parse", "--show-toplevel");

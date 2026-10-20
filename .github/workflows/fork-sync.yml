@@ -1,6 +1,7 @@
 name: Fork sync
 
-# Sync rebases and checks an immutable candidate; a clean, green rebase ships.
+# Sync merges upstream into a candidate and checks it; a clean, green merge
+# ships as a fast-forward of main, whose history is never rewritten.
 # Conflicts produce a sync-request artifact and signed T3 webhook, with a
 # fork-sync issue as the fallback. Resume validates an external candidate and
 # always opens review. Promote ships only the explicitly reviewed SHA.
@@ -9,6 +10,8 @@ name: Fork sync
 # Sync follows upstream's nightly releases, so each fork release builds on code
 # upstream already shipped. Scheduled runs poll hourly, stop after a few API
 # calls, and wait for upstream to settle before syncing (see the target step).
+# GitHub drops many scheduled runs, so a Lazarus timer dispatches backstop
+# runs, which follow the same rules as scheduled ones.
 
 on:
   schedule:
@@ -31,6 +34,10 @@ on:
       request_run_id:
         description: Original conflict run ID (required for resume)
         type: string
+      backstop:
+        description: Behave like a scheduled run (wait for upstream to settle, skip pending conflicts)
+        type: boolean
+        default: false
 
 concurrency:
   group: fork-sync
@@ -58,10 +65,11 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      SCHEDULED: ${{ github.event_name == 'schedule' || inputs.backstop }}
     steps:
       - id: pending
         name: Avoid repeated scheduled handoffs
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' || inputs.backstop
         run: |
           recent=$(gh issue list --label fork-sync --state open --json updatedAt --jq '.[].updatedAt')
           while read -r updated; do
@@ -115,10 +123,10 @@ jobs:
           # 12 hours, or until the oldest nightly the fork lacks is 24 hours
           # old, so a burst of nightlies becomes one sync release. Replaying
           # October 2026 history, this cut sync-only releases from 21 to 5 a
-          # week. Manual runs sync immediately.
+          # week. Other manual runs sync immediately.
           # Upstream's nightlies form one line of history, so the fork lacks a
           # nightly over 24 hours old exactly when it lacks the newest of them.
-          if [[ $GITHUB_EVENT_NAME == schedule && $published > $(date -u -d '-12 hours' +%Y-%m-%dT%H:%M:%SZ) ]]; then
+          if [[ $SCHEDULED == true && $published > $(date -u -d '-12 hours' +%Y-%m-%dT%H:%M:%SZ) ]]; then
             overdue=$(awk -v cutoff="$day_ago" '$2 <= cutoff { print $1; exit }' <<< "$nightlies")
             overdue_in_fork=true
             if [[ -n $overdue ]]; then overdue_in_fork=$(in_fork "$overdue"); fi
@@ -136,10 +144,12 @@ jobs:
       # Checkout's recursive auth cleanup fails on upstream's vendored gitlinks
       # without .gitmodules URLs, even with sparse checkout. Public clones need
       # no checkout credentials; the deploy key is configured separately below.
+      # The clone is complete, not blobless: merging needs blobs of upstream
+      # commits, which a lazy fetch from the fork cannot always supply.
       - name: Check out fork
         if: steps.pending.outputs.status != 'pending' && steps.target.outputs.status != 'current'
         run: |
-          git clone --filter=blob:none --no-checkout --no-tags --single-branch --branch main \
+          git clone --no-checkout --no-tags --single-branch --branch main \
             "https://github.com/${GITHUB_REPOSITORY}.git" .
           git sparse-checkout set --no-cone '/*' '!/.repos/'
           git checkout main
@@ -153,11 +163,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          # Early conflicts may remove tooling from the checkout.
+          # A stopped revert or merge may change tooling in the checkout.
           cp fork/scripts/sync-upstream.sh fork/scripts/deploy-key-env.sh "$RUNNER_TEMP/"
 
       - id: sync
-        name: Rebase fork patches
+        name: Merge upstream
         if: steps.pending.outputs.status != 'pending' && steps.target.outputs.status != 'current' && inputs.mode != 'resume'
         env:
           NIGHTLY_SHA: ${{ steps.target.outputs.sha }}
@@ -173,11 +183,13 @@ jobs:
           MAIN_SHA: ${{ steps.main.outputs.sha }}
           UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
         run: |
-          stopped=$(git rev-parse REBASE_HEAD)
+          # A stopped revert of a merged PR's patch, or else the merge itself.
+          stopped=$(git rev-parse -q --verify REVERT_HEAD || git rev-parse MERGE_HEAD)
+          echo "stopped=$stopped" >> "$GITHUB_OUTPUT"
           [[ $MAIN_SHA =~ ^[0-9a-f]{40}$ && $UPSTREAM_SHA =~ ^[0-9a-f]{40}$ && $stopped =~ ^[0-9a-f]{40}$ ]]
           jq -cn --argjson id "$GITHUB_RUN_ID" --argjson attempt "$GITHUB_RUN_ATTEMPT" \
             --arg main "$MAIN_SHA" --arg upstream "$UPSTREAM_SHA" --arg stopped "$stopped" \
-            --arg subject "$(git log -1 --format=%s REBASE_HEAD)" --arg created "$(date -u +%FT%TZ)" \
+            --arg subject "$(git log -1 --format=%s "$stopped")" --arg created "$(date -u +%FT%TZ)" \
             '{request_run_id:$id, run_attempt:$attempt, main_sha:$main, upstream_sha:$upstream, stopped_commit:$stopped, stopped_subject:$subject, created_at:$created}' \
             > "$RUNNER_TEMP/sync-request.json"
           # Make the issue discoverable before waking a fast resolver.
@@ -238,10 +250,11 @@ jobs:
           HANDED_OFF: ${{ steps.webhook.outputs.handed_off }}
           REASON: ${{ steps.webhook.outputs.reason || 'request artifact or tracking issue failed' }}
           ISSUE_NUMBER: ${{ steps.request.outputs.issue_number }}
+          STOPPED: ${{ steps.request.outputs.stopped }}
         run: |
           state="Needs local resolution ($REASON)"
           if [[ "$HANDED_OFF" == true ]]; then state="Handed to T3 (request run $GITHUB_RUN_ID)"; fi
-          stopped=$(git log -1 --format='%H %s' REBASE_HEAD)
+          stopped=$(git log -1 --format='%H %s' "${STOPPED:-MERGE_HEAD}" 2>/dev/null || echo unknown)
           printf "%s\n\nStopped commit: \`%s\`\n\nRun: %s/%s/actions/runs/%s\n\nLocal resolution: [fork/README.md](%s/%s/blob/main/fork/README.md#syncing-with-upstream).\n" \
             "$state" "$stopped" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" \
             "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/issue.md"
@@ -259,7 +272,7 @@ jobs:
 
       - id: push
         name: Push candidate and upstream mirror
-        if: steps.sync.outputs.status == 'rebased'
+        if: steps.sync.outputs.status == 'synced'
         env:
           FORK_DEPLOY_KEY: ${{ secrets.FORK_DEPLOY_KEY }}
         run: |
@@ -311,14 +324,15 @@ jobs:
             +refs/heads/sync/candidate:refs/remotes/fork/candidate +refs/heads/main:refs/remotes/fork/main
           [[ $(git rev-parse refs/remotes/fork/candidate) == "$CANDIDATE_SHA" ]] || { echo "::error::Candidate changed."; exit 1; }
           [[ $(git rev-parse refs/remotes/fork/main) == "$main" ]] || { echo "::error::Stale request: fork main changed."; exit 1; }
+          # Promotion fast-forwards main, so the candidate must contain both.
           git merge-base --is-ancestor "$upstream" "$CANDIDATE_SHA"
-          [[ -z $(git rev-list --merges "$upstream..$CANDIDATE_SHA") ]]
+          git merge-base --is-ancestor "$main" "$CANDIDATE_SHA"
           {
             echo "sha=$CANDIDATE_SHA"
             echo "main_sha=$main"
             echo "upstream_sha=$upstream"
             echo "requires_review=true"
-            echo "status=rebased"
+            echo "status=synced"
           } >> "$GITHUB_OUTPUT"
 
   checks:
@@ -351,10 +365,10 @@ jobs:
       - run: |
           issue=$(gh issue list --label fork-sync --state open --json url --jq '.[0].url // empty')
           {
-            printf "Fork patches rebased onto upstream \`%s\` as candidate \`%s\`.\n\n" "$UPSTREAM_SHA" "$CANDIDATE_SHA"
+            printf "Upstream \`%s\` merged into the fork as candidate \`%s\`.\n\n" "$UPSTREAM_SHA" "$CANDIDATE_SHA"
             printf 'Checks: **%s** (%s/%s/actions/runs/%s)\n\n' "$CHECKS" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
             if [[ -n "$issue" ]]; then printf 'Tracking issue (T3 resolution summary): %s\n\n' "$issue"; fi
-            printf "Review the full fork patch series. To ship it, run **Fork sync** with \`mode=promote\` and \`candidate_sha=%s\`. Merging this PR does nothing.\n" "$CANDIDATE_SHA"
+            printf "Review the merge and the fork's changes against upstream. To ship it, run **Fork sync** with \`mode=promote\` and \`candidate_sha=%s\`. Merging this PR does nothing.\n" "$CANDIDATE_SHA"
           } > body.md
           existing=$(gh pr list --head sync/candidate --base upstream-main --state open --json number --jq '.[0].number // empty')
           if [[ -n "$existing" ]]; then
@@ -399,9 +413,11 @@ jobs:
           remote="git@github.com:${GITHUB_REPOSITORY}.git"
           git fetch --quiet "$remote" +refs/heads/sync/candidate:refs/remotes/fork/candidate +refs/heads/main:refs/remotes/fork/main
           [[ $(git rev-parse refs/remotes/fork/candidate) == "$CANDIDATE_SHA" ]] || { echo "::error::Candidate changed since review/checks."; exit 1; }
-          # Automatic promotion leases against the original rebase main. Manual
+          # Automatic promotion leases against the main the sync started from. Manual
           # promotion leases against main read in this same step.
           expected="${EXPECTED_MAIN:-$(git rev-parse refs/remotes/fork/main)}"
+          # The lease alone would allow a rewind; main only ever fast-forwards.
+          git merge-base --is-ancestor "$expected" "$CANDIDATE_SHA" || { echo "::error::Candidate does not contain main."; exit 1; }
           git push --force-with-lease="main:$expected" "$remote" "$CANDIDATE_SHA:refs/heads/main"
 
       - name: Close review PR and tracking issue

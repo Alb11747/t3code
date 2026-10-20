@@ -87,45 +87,151 @@ cat "\${0%/*}/pr-$3" 2>/dev/null || { echo "HTTP 502: Bad Gateway" >&2; exit 1; 
 
   const sync = (...args) =>
     spawnSync(bash, [script, ...args], { cwd: fork, env, encoding: "utf8" });
-  const subjects = () => git(fork, "log", "--format=%s", "-4").split("\n");
+  const forkCommits = [git(fork, "rev-parse", "HEAD~1"), git(fork, "rev-parse", "HEAD")];
+  const parents = () => git(fork, "log", "-1", "--format=%P").split(" ");
+  const subjects = (range) => git(fork, "log", "--format=%s", range).split("\n");
   const changes = () => git(fork, "show", "HEAD:fork/CHANGES.md").split("\n");
-  return { git, fork, bin, sync, subjects, changes, entry, nightly1, nightly2 };
+  const files = () => git(fork, "ls-tree", "--name-only", "HEAD").split("\n");
+  return {
+    git,
+    fork,
+    bin,
+    commit,
+    sync,
+    forkCommits,
+    parents,
+    subjects,
+    changes,
+    files,
+    entry,
+    nightly1,
+    nightly2,
+  };
 }
 
-test("keeps a merged PR's patch when the pinned nightly predates the merge", (t) => {
-  const { sync, subjects, changes, entry, nightly1 } = fixture(t);
+test("merges the pinned nightly and keeps a PR's patch merged after it", (t) => {
+  const { git, fork, sync, forkCommits, parents, changes, entry, nightly1 } = fixture(t);
+  const before = git(fork, "rev-parse", "HEAD");
 
   const result = sync("--onto", nightly1);
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^status=rebased$/m);
-  assert.deepEqual(subjects(), [
-    "feat: feature 2",
-    "feat: feature 1",
-    "docs(fork): changes",
-    "nightly 1",
-  ]);
+  assert.match(result.stdout, /^status=synced$/m);
+  assert.deepEqual(parents(), [before, nightly1]);
+  for (const sha of forkCommits) git(fork, "merge-base", "--is-ancestor", sha, "HEAD");
   assert.deepEqual(changes(), [entry(1), entry(2)]);
+  assert.match(sync("--onto", nightly1).stdout, /^status=current$/m);
 });
 
-test("drops a merged PR's patch and entry once the new base contains the merge", (t) => {
-  const { sync, subjects, changes, entry, nightly2 } = fixture(t);
+test("reverts a merged PR's patch and entry before merging", (t) => {
+  const { git, fork, sync, forkCommits, parents, subjects, changes, files, entry, nightly2 } =
+    fixture(t);
 
   const result = sync("--onto", nightly2);
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^Dropping feat: feature 1: upstream PR #1 merged\.$/m);
-  assert.match(result.stdout, /^status=rebased$/m);
-  assert.deepEqual(subjects(), [
-    "feat: feature 2",
-    "docs(fork): changes",
-    "nightly 2",
-    "Merge PR 1",
-  ]);
+  assert.match(result.stdout, /^Reverting feat: feature 1: upstream PR #1 merged\.$/m);
+  assert.match(result.stdout, /^status=synced$/m);
+  assert.equal(parents()[1], nightly2);
+  assert.deepEqual(subjects("HEAD^1~1..HEAD^1"), ['Revert "feat: feature 1"']);
+  assert.match(
+    git(fork, "log", "-1", "--format=%B", "HEAD^1"),
+    new RegExp(`This reverts commit ${forkCommits[0]}`),
+  );
+  assert.deepEqual(changes(), [entry(2)]);
+  assert.ok(!files().includes("fork-1.txt"));
+  assert.ok(files().includes("feature-1.txt"));
+});
+
+test("reverts every commit for a merged PR, including ones that edited its entry", (t) => {
+  const { git, fork, sync, changes, files, entry, nightly2 } = fixture(t);
+  const pr1 = "https://github.com/pingdotgg/t3code/pull/1";
+  // Two follow-ups each revise the code and the entry, so reverting them one
+  // by one would conflict on the entry.
+  for (const round of [1, 2]) {
+    writeFileSync(path.join(fork, "fork-1.txt"), `fork, revision ${round}\n`);
+    writeFileSync(
+      path.join(fork, "fork/CHANGES.md"),
+      `${entry(1)} (revision ${round})\n${entry(2)}\n`,
+    );
+    git(fork, "add", "fork-1.txt", "fork/CHANGES.md");
+    git(fork, "commit", "-qm", `fix: feature 1 revision ${round}\n\nUpstream-PR: ${pr1}`);
+  }
+
+  const result = sync("--onto", nightly2);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.match(/^Reverting /gm).length, 3);
+  assert.ok(!files().includes("fork-1.txt"));
   assert.deepEqual(changes(), [entry(2)]);
 });
 
-test("stops before rebasing when PR metadata cannot be read", (t) => {
+test("refuses to sync over staged changes", (t) => {
+  const { git, fork, sync, nightly2 } = fixture(t);
+  writeFileSync(path.join(fork, "unrelated.txt"), "staged\n");
+  git(fork, "add", "unrelated.txt");
+  const before = git(fork, "rev-parse", "HEAD");
+
+  const result = sync("--onto", nightly2);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /must be clean/);
+  assert.equal(git(fork, "rev-parse", "HEAD"), before);
+});
+
+test("keeps a merged PR's patch named by a Related-PR trailer", (t) => {
+  const { git, fork, sync, changes, files, entry, nightly2 } = fixture(t);
+  git(
+    fork,
+    "commit",
+    "-q",
+    "--allow-empty",
+    "-m",
+    "chore: keep feature 1\n\nRelated-PR: https://github.com/pingdotgg/t3code/pull/1",
+  );
+
+  const result = sync("--onto", nightly2);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /^Reverting/m);
+  assert.ok(files().includes("fork-1.txt"));
+  assert.deepEqual(changes(), [entry(1), entry(2)]);
+});
+
+test("continues after a resolved conflict without reverting twice", (t) => {
+  const { git, fork, commit, sync, subjects, nightly2 } = fixture(t);
+  commit(fork, "nightly.txt", "fork\n", "feat: fork nightly marker");
+
+  const stopped = sync("--onto", nightly2);
+  assert.equal(stopped.status, 2, stopped.stderr);
+  assert.match(stopped.stdout, /^status=conflict$/m);
+  git(fork, "rev-parse", "--verify", "MERGE_HEAD");
+  commit(fork, "nightly.txt", "resolved\n", "chore(fork): merge upstream nightly 2");
+
+  const resumed = sync("--onto", nightly2);
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.match(resumed.stdout, /^status=current$/m);
+  assert.equal(subjects("HEAD~3..HEAD").filter((s) => s.startsWith("Revert")).length, 1);
+});
+
+test("continues after a resolved revert conflict", (t) => {
+  const { git, fork, commit, sync, changes, entry, nightly2 } = fixture(t);
+  commit(fork, "fork-1.txt", "fork, extended\n", "feat: extend feature 1 locally");
+
+  const stopped = sync("--onto", nightly2);
+  assert.equal(stopped.status, 2, stopped.stderr);
+  git(fork, "rev-parse", "--verify", "REVERT_HEAD");
+  git(fork, "rm", "-q", "fork-1.txt");
+  git(fork, "commit", "-q", "--no-edit");
+
+  const resumed = sync("--onto", nightly2);
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.doesNotMatch(resumed.stdout, /^Reverting/m);
+  assert.match(resumed.stdout, /^status=synced$/m);
+  assert.deepEqual(changes(), [entry(2)]);
+});
+
+test("stops before changing anything when PR metadata cannot be read", (t) => {
   const { git, fork, bin, sync, nightly2 } = fixture(t);
   rmSync(path.join(bin, "pr-1"));
   const before = git(fork, "rev-parse", "HEAD");

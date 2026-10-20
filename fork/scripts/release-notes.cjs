@@ -2,7 +2,7 @@ const { execFileSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
 const { readFileSync } = require("node:fs");
 
-// Fork releases are `<upstream nightly>.fork` (patches rebased, nothing new) or
+// Fork releases are `<upstream nightly>.fork` (upstream synced, nothing new) or
 // `.fork.<n>` (the nth fork change on that nightly). As in semver, `.fork`
 // sorts below `.fork.1` on the same nightly. Other tags are not fork releases.
 function nightlyVersion(tag) {
@@ -133,7 +133,7 @@ function releaseChanges({ cwd, previousTag, repository, upstreamRef }) {
     // would describe changes that were actually removed.
     git("merge-base", "--is-ancestor", previousBase, base);
     previousPatches = new Map();
-    for (const sha of git("rev-list", `${previousBase}..${previousHead}`)
+    for (const sha of git("rev-list", "--no-merges", `${previousBase}..${previousHead}`)
       .split("\n")
       .filter(Boolean)) {
       const signature = patchSignature(sha);
@@ -143,8 +143,10 @@ function releaseChanges({ cwd, previousTag, repository, upstreamRef }) {
     }
   }
 
+  // Skips merges: upstream syncs merge into the fork, and upstream's own merge
+  // commits are noise next to the changes they bring in.
   function changes(from, to, source, commitRepository, include = () => true) {
-    const commits = git("log", "--reverse", "--format=%H%x09%s", `${from}..${to}`);
+    const commits = git("log", "--reverse", "--no-merges", "--format=%H%x09%s", `${from}..${to}`);
     if (!commits) return [];
     return commits.split("\n").flatMap((line) => {
       const separator = line.indexOf("\t");

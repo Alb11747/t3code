@@ -8,10 +8,11 @@ export FORK_RESOLVER_CREDENTIAL_HELPER
 FORK_RESOLVER_CREDENTIAL_HELPER=$(realpath "$(dirname "${BASH_SOURCE[0]}")/credential-helper.sh")
 load_claim "$1"
 cd "$resolver_home/repo"
-rebase_in_progress && die "Finish the rebase before publishing."
+sync_in_progress && die "Commit the merge or revert, and rerun the sync script, before publishing."
 [[ -z $(git status --porcelain --untracked-files=normal) ]] || die "Candidate checkout must be clean (ignored files are allowed)."
-git merge-base --is-ancestor "$upstream_sha" HEAD || die "Candidate is not based on the requested upstream SHA."
-[[ -z $(git rev-list --merges "$upstream_sha..HEAD") ]] || die "Candidate history contains merge commits."
+git merge-base --is-ancestor "$upstream_sha" HEAD || die "Candidate does not contain the requested upstream SHA."
+# Promotion fast-forwards main, so the candidate must build on it.
+git merge-base --is-ancestor "$main_sha" HEAD || die "Candidate does not contain the request's fork main."
 [[ $(remote_main) == "$main_sha" ]] || die "Fork main changed; request is stale."
 candidate_sha=$(git rev-parse HEAD)
 current=$(git ls-remote "$fork_url" refs/heads/sync/candidate | cut -f1)

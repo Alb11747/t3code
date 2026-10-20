@@ -20,8 +20,8 @@ function newestPublishedTag(releases) {
 }
 
 // The next fork version on an upstream nightly. v0.0.46-nightly.20261014.3132
-// gives 0.0.46-nightly.20261014.3132.fork when the fork only rebased its
-// patches onto it, then .fork.1, .fork.2, ... for each release with new or
+// gives 0.0.46-nightly.20261014.3132.fork when the fork only synced onto
+// it, then .fork.1, .fork.2, ... for each release with new or
 // updated fork patches. The count restarts on each upstream nightly. A manual
 // sync onto upstream main past a released nightly also takes the next number.
 function nextForkVersion(releases, upstreamTag, hasForkChanges, hasUpstreamChanges = false) {

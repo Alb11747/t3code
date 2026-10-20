@@ -1,78 +1,55 @@
 #!/usr/bin/env bash
-# Rebase the fork's patch series onto the latest upstream main.
+# Merge upstream into the fork's current branch (normally main).
 #
-#   fork/scripts/sync-upstream.sh           start a sync on the current branch
-#   fork/scripts/sync-upstream.sh --onto <upstream_sha>  use a pinned upstream base
-#   fork/scripts/sync-upstream.sh --finish  after resolving a stopped rebase
+#   fork/scripts/sync-upstream.sh                        merge the latest upstream main
+#   fork/scripts/sync-upstream.sh --onto <upstream_sha>  merge a pinned upstream commit
 #
-# Patches whose `Upstream-PR:` trailer points at an upstream PR merged into the
-# new base are dropped, and their entries are pruned from fork/CHANGES.md.
+# Fork commits are never rewritten. Patches whose `Upstream-PR:` trailer points
+# at an upstream PR merged into the new upstream commit are reverted first,
+# with their fork/CHANGES.md entries, so the merge takes upstream's version.
 # Requires `gh`.
 #
-# Exit codes: 0 = up to date or rebased; 2 = the rebase stopped on a conflict.
-# Resolve it with the T3 resolver or by hand, finish the
-# rebase with `git rebase --continue`, then run this script with --finish.
+# Exit codes: 0 = up to date or merged; 2 = a revert or the merge stopped on a
+# conflict. Resolve the files, `git add` them, `git commit --no-edit`, then run
+# the same command again: it continues where it stopped.
 set -euo pipefail
 
 upstream_repo=${UPSTREAM_REPO:-pingdotgg/t3code}
 upstream_branch=${UPSTREAM_BRANCH:-main}
-dropped_file=$(git rev-parse --git-path fork-dropped-prs)
+changes=fork/CHANGES.md
 
 output() {
   echo "$1=$2"
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then echo "$1=$2" >>"$GITHUB_OUTPUT"; fi
 }
 
-rebase_in_progress() {
-  [[ -d "$(git rev-parse --git-path rebase-merge)" || -d "$(git rev-parse --git-path rebase-apply)" ]]
+# A failed revert or merge is a conflict only when it left unmerged paths;
+# anything else (a fetch or hook failure) is an error, not work for a resolver.
+stopped() {
+  if [[ -n $(git ls-files --unmerged) ]]; then
+    output status conflict
+    exit 2
+  fi
+  exit 1
 }
-
-# Remove CHANGES.md entries for dropped PRs. The entries belong to the commit that
-# last touched the file, so the edit is squashed into it to keep one docs commit.
-finish() {
-  if rebase_in_progress; then
-    echo "A rebase is still in progress; finish it before running --finish." >&2
-    exit 1
-  fi
-  [[ -s "$dropped_file" ]] || { rm -f "$dropped_file"; output status rebased; return; }
-
-  # The fixup commit and autosquash must not absorb unrelated local edits.
-  if ! git diff --quiet || ! git diff --cached --quiet; then
-    echo "The checkout must be clean before running --finish." >&2
-    exit 1
-  fi
-
-  local upstream changes=fork/CHANGES.md
-  upstream=$(git rev-parse refs/fork/upstream)
-  while read -r pr; do
-    sed -i "\#/pull/${pr}\b#d" "$changes"
-  done <"$dropped_file"
-  if ! git diff --quiet -- "$changes"; then
-    local target
-    target=$(git log -1 --format=%H "$upstream"..HEAD -- "$changes")
-    git add -- "$changes"
-    git commit -q --fixup="$target"
-    GIT_SEQUENCE_EDITOR=true git rebase -q -i --autosquash "$upstream"
-  fi
-  rm -f "$dropped_file"
-  output status rebased
-}
-
-if [[ $# == 1 && $1 == "--finish" ]]; then
-  finish
-  exit 0
-fi
 
 onto=
 if [[ $# == 2 && $1 == --onto && $2 =~ ^[0-9a-f]{40}$ ]]; then
   onto=$2
 elif [[ $# != 0 ]]; then
-  echo "Usage: $0 [--finish | --onto <full upstream SHA>]" >&2
+  echo "Usage: $0 [--onto <full upstream SHA>]" >&2
   exit 1
 fi
 
-if rebase_in_progress; then
-  echo "A rebase is already in progress." >&2
+for head in MERGE_HEAD REVERT_HEAD CHERRY_PICK_HEAD REBASE_HEAD; do
+  if git rev-parse -q --verify "$head" >/dev/null; then
+    echo "$head exists; commit or abort that operation first." >&2
+    exit 1
+  fi
+done
+# Reverts and the merge commit whatever is staged, so start from a clean tree.
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "The checkout must be clean before syncing." >&2
   exit 1
 fi
 
@@ -85,44 +62,67 @@ if [[ -n "$onto" ]]; then
   fi
   upstream=$onto
 fi
-# A stable name for later steps (--finish, workflows) that need the new base.
+# A stable name for later steps (workflows, resolvers) that need the new base.
 git update-ref refs/fork/upstream "$upstream"
-base=$(git merge-base HEAD "$upstream")
 output upstream_sha "$upstream"
 
-if [[ "$base" == "$upstream" ]]; then
+if git merge-base --is-ancestor "$upstream" HEAD; then
   output status current
   exit 0
 fi
 
-: >"$dropped_file"
-# Git runs the sequence editor through the shell, so the edits are quoted here.
-sequence_editor="sed -i -e ''"
+# Fork commits not in upstream, newest first, minus those already reverted.
+# Several commits can carry one PR (the patch and later review follow-ups);
+# reverting newest first keeps each revert applying to its own lines.
+reverted=$(git log --format=%B HEAD --not "$upstream" | grep -oE '^This reverts commit [0-9a-f]{40}' | cut -d' ' -f4 || true)
+# A `Related-PR:` trailer on any fork commit keeps that PR's patches, such as
+# a copy kept after a maintainer took the PR over.
+kept=$(git log --format='%(trailers:key=Related-PR,valueonly)' HEAD --not "$upstream" | grep -oE '/pull/[0-9]+' | cut -d/ -f3 || true)
+retire=()
+declare -A merged=()
 while read -r sha; do
+  grep -qx "$sha" <<<"$reverted" && continue
   pr=$(git log -1 --format='%(trailers:key=Upstream-PR,valueonly)' "$sha" | grep -oE '/pull/[0-9]+' | head -1 | cut -d/ -f3 || true)
   [[ -n "$pr" ]] || continue
-  # A PR merged after the pinned nightly is not in the new base yet, so the
-  # patch is dropped only once its merge commit is part of $upstream.
-  merge=$(gh pr view "$pr" --repo "$upstream_repo" --json state,mergeCommit --jq 'select(.state == "MERGED") | .mergeCommit.oid')
-  [[ -n "$merge" ]] || continue
-  if [[ ! "$merge" =~ ^[0-9a-f]{40}$ ]]; then
-    echo "Upstream PR #$pr is merged but has no merge commit SHA: $merge" >&2
-    exit 1
+  grep -qx "$pr" <<<"$kept" && continue
+  if [[ -z ${merged[$pr]+set} ]]; then
+    # A PR merged after the pinned nightly is not in the new base yet, so the
+    # patch is retired only once its merge commit is part of $upstream.
+    merge=$(gh pr view "$pr" --repo "$upstream_repo" --json state,mergeCommit --jq 'select(.state == "MERGED") | .mergeCommit.oid')
+    if [[ -n "$merge" && ! "$merge" =~ ^[0-9a-f]{40}$ ]]; then
+      echo "Upstream PR #$pr is merged but has no merge commit SHA: $merge" >&2
+      exit 1
+    fi
+    merged[$pr]=false
+    if [[ -n "$merge" ]] && git merge-base --is-ancestor "$merge" "$upstream"; then merged[$pr]=true; fi
   fi
-  if git merge-base --is-ancestor "$merge" "$upstream"; then
-    echo "Dropping $(git log -1 --format=%s "$sha"): upstream PR #$pr merged."
-    echo "$pr" >>"$dropped_file"
-    sequence_editor+=" -e 's/^pick $sha /drop $sha /'"
-  fi
-done < <(git rev-list --reverse "$base"..HEAD)
+  if [[ ${merged[$pr]} == true ]]; then retire+=("$sha $pr"); fi
+done < <(git rev-list --no-merges HEAD --not "$upstream")
 
-# core.abbrev=40 puts full hashes in the todo list so the drop edits match.
-if ! GIT_SEQUENCE_EDITOR="$sequence_editor" git -c core.abbrev=40 rebase -q -i --onto "$upstream" "$base"; then
-  if rebase_in_progress; then
-    output status conflict
-    exit 2
+for entry in "${retire[@]}"; do
+  read -r sha pr <<<"$entry"
+  subject=$(git log -1 --format=%s "$sha")
+  echo "Reverting $subject: upstream PR #$pr merged."
+  if ! git revert --no-commit "$sha"; then
+    # REVERT_HEAD marks a revert stopped on conflicts; without it, it failed.
+    git rev-parse -q --verify REVERT_HEAD >/dev/null || exit 1
   fi
-  exit 1
-fi
+  # The change list is not reverted with the patch: older commits for the same
+  # PR edit its entry too, and undoing those edits one by one conflicts.
+  # Keep the current list (or its absence) and just delete the PR's entry.
+  if git cat-file -e "HEAD:$changes" 2>/dev/null; then
+    git checkout -q HEAD -- "$changes"
+    sed -i "\#/pull/${pr}\b#d" "$changes"
+    git add -- "$changes"
+  else
+    git rm -q -f --ignore-unmatch -- "$changes"
+  fi
+  # Restoring the list may have resolved the only conflict.
+  [[ -z $(git ls-files --unmerged) ]] || stopped
+  # The "This reverts commit" line is how later runs recognize the revert;
+  # git's own message for a stopped revert has it too.
+  git commit -q --allow-empty -m "Revert \"$subject\"" -m "Upstream PR #$pr merged; sync takes upstream's version." -m "This reverts commit $sha."
+done
 
-finish
+git merge -q --no-ff -m "chore(fork): merge upstream ${upstream:0:12}" "$upstream" || stopped
+output status synced

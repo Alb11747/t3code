@@ -2,7 +2,7 @@ name: Fork checks
 
 # The release gate from upstream's release.yml (quality, tests, sharded server
 # tests) on GitHub-hosted runners, which this fork has instead of Blacksmith.
-# Called by fork-sync.yml before promoting a rebase and by fork-release.yml
+# Called by fork-sync.yml before promoting a sync and by fork-release.yml
 # before publishing.
 
 on:
