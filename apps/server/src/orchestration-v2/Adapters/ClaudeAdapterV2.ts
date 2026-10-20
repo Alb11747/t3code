@@ -276,6 +276,8 @@ const CLAUDE_SCRIPT_EXTENSIONS = [".js", ".mjs", ".tsx", ".ts", ".jsx"];
 // The SDK puts no deadline on control requests. The CLI answers
 // mcp_set_servers once each server connected or hit its own 30 s timeout.
 const CLAUDE_MCP_REGISTRATION_TIMEOUT = "90 seconds";
+const CLAUDE_AGENT_STEER_NOTE =
+  "This message came from another agent, not the user, and may have interrupted a running command; check that command's state before continuing.";
 // Claude Code flushes transcript writes every 100 ms, so a workflow member's
 // reply can land after the progress frame that settles it. Its transcript
 // stays the source of its answer this long after it settles.
@@ -327,7 +329,6 @@ export const ClaudeProviderCapabilitiesV2 = {
     supportsInterrupt: true,
     supportsActiveSteering: true,
     activeSteeringInterruptsTools: true,
-    supportsNonInterruptingAgentSteering: true,
     supportsSteeringByInterruptRestart: false,
     supportsQueuedMessages: true,
     terminalStatusQuality: "strong",
@@ -3140,15 +3141,6 @@ function formatClaudeUsageLimitWait(waitMs: number): string {
   return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
 }
 
-type ClaudeAgentSteerOutcome = "delivered" | "deferred" | "cancelled";
-
-interface PendingClaudeAgentSteer {
-  readonly text: string;
-  readonly completion: Deferred.Deferred<ClaudeAgentSteerOutcome>;
-  readonly resolveMessageText?: ProviderAdapter.ProviderAdapterV2SteerInput["resolveMessageText"];
-  outcome?: ClaudeAgentSteerOutcome;
-}
-
 interface ActiveClaudeTurnContext {
   readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
   readonly nativeThreadId: string;
@@ -3208,24 +3200,10 @@ interface ActiveClaudeTurnContext {
   readonly subagentsByToolUseId: Map<string, ActiveClaudeSubagent>;
   readonly subagentNodesByTaskId: Map<string, OrchestrationV2ExecutionNode["id"]>;
   readonly promptUuid: string | null;
-  readonly pendingAgentSteers: Map<string, PendingClaudeAgentSteer>;
   promptEcho: "pending" | "confirmed";
   promptStarted: boolean;
   gatedFramesBeforeEcho: number;
   readonly heldRootFrames: Array<SDKMessage>;
-}
-
-// Claim and acknowledge synchronously so a boundary racing the timeout cannot
-// both inject a message and return it to the durable queue.
-function settleClaudeAgentSteers(
-  context: ActiveClaudeTurnContext,
-  outcome: ClaudeAgentSteerOutcome,
-): void {
-  for (const pending of context.pendingAgentSteers.values()) {
-    pending.outcome = outcome;
-    Deferred.doneUnsafe(pending.completion, Effect.succeed(outcome));
-  }
-  context.pendingAgentSteers.clear();
 }
 
 interface ActiveClaudeProviderRetry {
@@ -3641,6 +3619,7 @@ export interface ClaudeAdapterV2Options {
     readonly offer: (
       request: ProviderContinuationRequests.ProviderContinuationRequest,
     ) => Effect.Effect<void>;
+    readonly claimAgentMessages?: ProviderContinuationRequests.ClaimAgentMessages;
   };
 }
 
@@ -6302,12 +6281,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           readonly threadDisposition?: "reusable" | "broken";
           readonly result?: SDKResultMessage;
         }) {
-          settleClaudeAgentSteers(
-            input.context,
-            input.status === "interrupted" || input.status === "cancelled"
-              ? "cancelled"
-              : "deferred",
-          );
           const nativeThreadId = input.context.nativeThreadId;
           const model = input.context.input.modelSelection.model;
           if (input.status === "failed" && input.failure?.class === "usage_limit") {
@@ -8994,56 +8967,41 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             onUserDialog,
             supportedDialogKinds: ["resume_return"],
           });
-          let boundaryQuery: ClaudeAgentSdkQuerySession | undefined;
-          const agentMessageBoundary: HookCallback = (hookInput, _toolUseId, options) =>
+          // Native steering cancels running tools, so agent updates wait in the
+          // app queue. The root agent's tool-batch and stop boundaries take them
+          // as context: the tool has finished and, at Stop, the turn continues.
+          // The claim commits before the SDK reads the context: delivery is at
+          // most once, and a crash in that window loses the claimed updates. A
+          // cancelled hook interrupts the claim before its next promotion.
+          const takeAgentMessages: HookCallback = (hookInput, _toolUseId, { signal }) =>
             runPromise(
               Effect.gen(function* () {
                 const context = yield* Ref.get(activeTurn);
-                const live = yield* Ref.get(queryContext);
                 if (
-                  options.signal.aborted ||
+                  (hookInput.hook_event_name !== "PostToolBatch" &&
+                    hookInput.hook_event_name !== "Stop") ||
                   hookInput.agent_id !== undefined ||
                   context === null ||
-                  live?.query !== boundaryQuery ||
-                  live?.stopping ||
                   context.nativeThreadId !== hookInput.session_id ||
                   (yield* Ref.get(interruptedTurns)).has(context.providerTurnId) ||
-                  (hookInput.hook_event_name !== "PostToolBatch" &&
-                    hookInput.hook_event_name !== "Stop")
+                  continuationRequests.claimAgentMessages === undefined
                 ) {
                   return {};
                 }
-                // Resolve before claiming so an aborted hook consumes no partial batch.
-                const pendingSteers = yield* Effect.forEach(
-                  Array.from(context.pendingAgentSteers),
-                  ([id, pending]) =>
-                    (pending.resolveMessageText ?? Effect.succeed(pending.text)).pipe(
-                      Effect.map((text) => ({ id, pending, text })),
-                    ),
-                );
-                const liveTurn =
-                  (yield* Ref.get(activeTurn)) === context &&
-                  (yield* Ref.get(queryContext)) === live &&
-                  !(yield* Ref.get(interruptedTurns)).has(context.providerTurnId);
-                if (options.signal.aborted) return {};
-                const messages: string[] = [];
-                for (const { id, pending, text } of pendingSteers) {
-                  // The deadline or cancellation can win while storage is read.
-                  if (context.pendingAgentSteers.get(id) !== pending) continue;
-                  pending.outcome = text !== undefined && liveTurn ? "delivered" : "cancelled";
-                  context.pendingAgentSteers.delete(id);
-                  Deferred.doneUnsafe(pending.completion, Effect.succeed(pending.outcome));
-                  if (pending.outcome === "delivered" && text !== undefined) messages.push(text);
-                }
-                return messages.length === 0
+                const texts = yield* continuationRequests.claimAgentMessages({
+                  threadId: context.input.threadId,
+                  runId: context.input.runId,
+                });
+                return texts.length === 0
                   ? {}
                   : {
                       hookSpecificOutput: {
                         hookEventName: hookInput.hook_event_name,
-                        additionalContext: `New message from another agent:\n${messages.join("\n\n")}`,
+                        additionalContext: `New message from another agent:\n${texts.join("\n\n")}`,
                       },
                     };
               }),
+              { signal },
             );
           const querySession = yield* queryRunner
             .open({
@@ -9052,8 +9010,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               options: {
                 ...queryOptions,
                 hooks: {
-                  PostToolBatch: [{ hooks: [agentMessageBoundary] }],
-                  Stop: [{ hooks: [agentMessageBoundary] }],
+                  PostToolBatch: [{ hooks: [takeAgentMessages] }],
+                  Stop: [{ hooks: [takeAgentMessages] }],
                 },
               },
             })
@@ -9069,7 +9027,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   : Effect.void,
               ),
             );
-          boundaryQuery = querySession;
           // Marked only after a successful open: a failed create must not
           // leave the runtime believing the native session exists, or the
           // retry would resume a session that was never created.
@@ -9262,7 +9219,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               latestAssistantRateLimited: false,
               compactionFailure: null,
               steeredSegmentUsage: [],
-              pendingAgentSteers: new Map(),
               subagentsByTaskId: new Map(),
               subagentsByToolUseId: new Map(),
               subagentNodesByTaskId: new Map(),
@@ -9463,7 +9419,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               next.add(turnInput.providerTurnId);
               return next;
             });
-            settleClaudeAgentSteers(currentTurn, "cancelled");
             yield* existing.query.interrupt;
             yield* existing.query.close.pipe(Effect.ignore);
             const closed = yield* Deferred.await(existing.closed).pipe(
@@ -9589,46 +9544,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 detail: `Claude provider turn ${turnInput.providerTurnId} is not the active turn.`,
               });
             }
-            if (turnInput.message.createdBy === "agent") {
-              // `priority: next` also folds after tools, but can start an unowned
-              // native turn if the answer ends first. Hooks keep delivery owned
-              // by this turn. Allow ordinary commands to finish before falling
-              // back to T3's queue.
-              if (turnInput.message.attachments.length > 0) {
-                return yield* new ProviderAdapter.ProviderAdapterSteerRunDeferredError({
-                  driver: CLAUDE_PROVIDER,
-                  providerThreadId: turnInput.providerThread.id,
-                  providerTurnId: turnInput.providerTurnId,
-                });
-              }
-              const pending: PendingClaudeAgentSteer = {
-                text: turnInput.message.text,
-                completion: yield* Deferred.make<ClaudeAgentSteerOutcome>(),
-                ...(turnInput.resolveMessageText === undefined
-                  ? {}
-                  : { resolveMessageText: turnInput.resolveMessageText }),
-              };
-              currentTurn.pendingAgentSteers.set(turnInput.message.messageId, pending);
-              yield* Deferred.await(pending.completion).pipe(
-                Effect.timeoutOption("1 minute"),
-                Effect.ensuring(
-                  Effect.sync(() => {
-                    currentTurn.pendingAgentSteers.delete(turnInput.message.messageId);
-                  }),
-                ),
-              );
-              if (pending.outcome === "delivered") return;
-              // A restart can interrupt this wait too. Let the caller revoke
-              // stopped/disposed input or retain still-owned input in its queue.
-              return yield* new ProviderAdapter.ProviderAdapterSteerRunDeferredError({
-                driver: CLAUDE_PROVIDER,
-                providerThreadId: turnInput.providerThread.id,
-                providerTurnId: turnInput.providerTurnId,
-              });
-            }
             const userMessage = yield* makeClaudeUserMessageWithAttachments({
               text: applyClaudePromptEffortPrefix(
-                turnInput.message.text,
+                // An agent update steers natively only when hooks cannot carry it
+                // (attachments). It cancels running tools; say so, or Claude reads
+                // the cancellation as a user refusal.
+                turnInput.message.createdBy === "agent"
+                  ? `${CLAUDE_AGENT_STEER_NOTE}\n\n${turnInput.message.text}`
+                  : turnInput.message.text,
                 compileClaudeModelSelection(currentTurn.input.modelSelection).promptEffort,
               ),
               attachments: turnInput.message.attachments,
@@ -9659,15 +9582,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           },
           (effect, turnInput) =>
             effect.pipe(
-              Effect.mapError((cause) =>
-                cause._tag === "ProviderAdapterSteerRunDeferredError"
-                  ? cause
-                  : new ProviderAdapter.ProviderAdapterSteerRunError({
-                      driver: CLAUDE_PROVIDER,
-                      providerThreadId: turnInput.providerThread.id,
-                      providerTurnId: turnInput.providerTurnId,
-                      cause,
-                    }),
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterSteerRunError({
+                    driver: CLAUDE_PROVIDER,
+                    providerThreadId: turnInput.providerThread.id,
+                    providerTurnId: turnInput.providerTurnId,
+                    cause,
+                  }),
               ),
             ),
         );

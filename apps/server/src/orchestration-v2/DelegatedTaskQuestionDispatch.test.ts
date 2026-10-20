@@ -22,7 +22,7 @@ import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
-import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
@@ -65,31 +65,10 @@ const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "test-model" };
 
 it.effect.each([
-  {
-    interruptsTools: false,
-    stop: false,
-    safeBoundary: false,
-    label: "steers a question into a running parent turn",
-  },
-  {
-    interruptsTools: true,
-    stop: false,
-    safeBoundary: false,
-    label: "queues and deduplicates retryable questions",
-  },
-  {
-    interruptsTools: true,
-    stop: true,
-    safeBoundary: false,
-    label: "Stop drops question notices from earlier cohorts",
-  },
-  {
-    interruptsTools: true,
-    stop: false,
-    safeBoundary: true,
-    label: "a deferred question queues once and remains disposable",
-  },
-])("$label", ({ interruptsTools, stop, safeBoundary }) =>
+  { interruptsTools: false, stop: false, label: "steers a question into a running parent turn" },
+  { interruptsTools: true, stop: false, label: "queues and deduplicates retryable questions" },
+  { interruptsTools: true, stop: true, label: "Stop drops question notices from earlier cohorts" },
+])("$label", ({ interruptsTools, stop }) =>
   Effect.scoped(
     Effect.gen(function* () {
       const cwd = yield* checkpointWorkspace(`delegated-question-${interruptsTools}-${stop}`);
@@ -102,7 +81,6 @@ it.effect.each([
           ...CodexProviderCapabilitiesV2.turns,
           supportsActiveSteering: true,
           activeSteeringInterruptsTools: interruptsTools,
-          supportsNonInterruptingAgentSteering: safeBoundary,
         },
       };
       const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
@@ -173,17 +151,9 @@ it.effect.each([
                   });
                 }),
               steerTurn: (turn) =>
-                safeBoundary
-                  ? Effect.fail(
-                      new ProviderAdapter.ProviderAdapterSteerRunDeferredError({
-                        driver,
-                        providerThreadId: turn.providerThread.id,
-                        providerTurnId: turn.providerTurnId,
-                      }),
-                    )
-                  : Effect.sync(() => {
-                      steered.push(turn.message.text);
-                    }),
+                Effect.sync(() => {
+                  steered.push(turn.message.text);
+                }),
               interruptTurn: () => Effect.void,
               respondToRuntimeRequest: () => Effect.void,
               readThreadSnapshot: () => Effect.die("unused"),

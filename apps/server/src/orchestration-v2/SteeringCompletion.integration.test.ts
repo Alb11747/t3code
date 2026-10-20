@@ -11,6 +11,8 @@ import {
   ProviderTurnId,
   ThreadId,
   TurnItemId,
+  type ChatAttachment,
+  type RunId,
   type ModelSelection,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
@@ -25,7 +27,6 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
-import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -34,6 +35,7 @@ import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 
 const driver = ProviderDriverKind.make("codex");
 const instanceId = ProviderInstanceId.make("codex");
@@ -427,22 +429,17 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
   {
     canRestart = false,
     activeSteeringInterruptsTools = false,
-    supportsNonInterruptingAgentSteering = false,
-    deferSteering = false,
-    beforeBoundary = Effect.void,
+    beforeInterrupt = Effect.void,
   }: {
     canRestart?: boolean;
     activeSteeringInterruptsTools?: boolean;
-    supportsNonInterruptingAgentSteering?: boolean;
-    deferSteering?: boolean;
-    beforeBoundary?: Effect.Effect<void>;
+    beforeInterrupt?: Effect.Effect<void>;
   } = {},
 ) {
   const cwd = yield* checkpointWorkspace(name);
   const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
   const started: ProviderAdapter.ProviderAdapterV2TurnInput[] = [];
   const steered: string[] = [];
-  const interrupted: ProviderTurnId[] = [];
   const capabilities = {
     ...CodexProviderCapabilitiesV2,
     turns: {
@@ -450,7 +447,6 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
       supportsActiveSteering: true,
       supportsSteeringByInterruptRestart: canRestart,
       activeSteeringInterruptsTools,
-      supportsNonInterruptingAgentSteering,
     },
   };
   const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
@@ -521,22 +517,10 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
               });
             }),
           steerTurn: (turn) =>
-            Effect.gen(function* () {
-              yield* beforeBoundary;
-              if (deferSteering) {
-                return yield* new ProviderAdapter.ProviderAdapterSteerRunDeferredError({
-                  driver,
-                  providerThreadId: turn.providerThread.id,
-                  providerTurnId: turn.providerTurnId,
-                });
-              }
-              const text = yield* turn.resolveMessageText ?? Effect.succeed(turn.message.text);
-              if (text !== undefined) steered.push(text);
-            }),
-          interruptTurn: (turn) =>
             Effect.sync(() => {
-              interrupted.push(turn.providerTurnId);
+              steered.push(turn.message.text);
             }),
+          interruptTurn: () => beforeInterrupt,
           respondToRuntimeRequest: () => Effect.void,
           readThreadSnapshot: () => Effect.die("unused"),
           rollbackThread: () => Effect.die("unused"),
@@ -548,13 +532,12 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
   const layerRuntime = ProviderReplayHarness.layerWithRegistry(
     { name },
     ProviderAdapterRegistry.layerSingle(adapter),
-    { runEffectWorker: false, databaseLayer },
+    { runEffectWorker: false, runContinuationWorker: true, databaseLayer },
   );
   const layer = ThreadManagement.layer.pipe(
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(databaseLayer))),
     Layer.provideMerge(layerRuntime),
-    Layer.provideMerge(EffectOutbox.layer.pipe(Layer.provide(databaseLayer))),
   );
   const startFirstTurn = Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -598,68 +581,51 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     yield* Fiber.join(running);
     return threadId;
   });
-  return { events, started, steered, interrupted, layer, startFirstTurn };
+  return { events, started, steered, layer, startFirstTurn };
 });
 
-it.effect.each(
-  (
-    [
-      { actor: "agent", mode: "auto", interruptsTools: true },
-      { actor: "agent", mode: "steer", interruptsTools: true },
-      { actor: "user", mode: "steer", interruptsTools: true },
-      { actor: "agent", mode: "auto", interruptsTools: false },
-      { actor: "agent", mode: "steer", interruptsTools: false },
-    ] as const
-  )
-    .map((entry) => ({ ...entry, safeBoundary: false, defer: false }))
-    .concat([
-      { actor: "agent", mode: "auto", interruptsTools: true, safeBoundary: true, defer: false },
-      { actor: "agent", mode: "steer", interruptsTools: true, safeBoundary: true, defer: true },
-    ]),
-)(
-  "delivers $actor $mode messages safely (interruptsTools=$interruptsTools, boundary=$safeBoundary, defer=$defer)",
-  ({ actor, mode, interruptsTools, safeBoundary, defer }) =>
+const sendUpdate = Effect.fn("sendUpdate")(function* (
+  threadId: ThreadId,
+  createdBy: "agent" | "user",
+  mode: "auto" | "steer",
+  attachments: ReadonlyArray<ChatAttachment> = [],
+) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const result = yield* threads.sendToThread({
+    projectId: (yield* orchestrator.getThreadProjection(threadId)).thread.projectId,
+    commandId: CommandId.make("update"),
+    threadId,
+    messageId: MessageId.make("message:update"),
+    text: "progress update",
+    attachments,
+    mode,
+    createdBy,
+    creationSource: createdBy === "agent" ? "mcp" : "web",
+  });
+  yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+  return result;
+});
+
+it.effect.each(["auto", "steer"] as const)(
+  "queues an agent %s update behind a turn whose steering cancels tools",
+  (mode) =>
     Effect.scoped(
       Effect.gen(function* () {
         const { events, started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
-          `agent-steering-${actor}-${mode}-${interruptsTools}`,
-          {
-            activeSteeringInterruptsTools: interruptsTools,
-            supportsNonInterruptingAgentSteering: safeBoundary,
-            deferSteering: defer,
-          },
+          `agent-update-queued-${mode}`,
+          { activeSteeringInterruptsTools: true },
         );
         yield* Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-          const threads = yield* ThreadManagement.ThreadManagementService;
           const threadId = yield* startFirstTurn;
           const first = started[0]!;
-          const messageId = MessageId.make("message:update");
-          const result = yield* threads.sendToThread({
-            projectId: (yield* orchestrator.getThreadProjection(threadId)).thread.projectId,
-            commandId: CommandId.make("update"),
-            threadId,
-            messageId,
-            text: "progress update",
-            attachments: [],
-            mode,
-            createdBy: actor,
-            creationSource: actor === "agent" ? "mcp" : "web",
-          });
-          yield* worker.drain();
-          const queuedAtDispatch = actor === "agent" && interruptsTools && !safeBoundary;
-          const queued = queuedAtDispatch || defer;
-          assert.equal(result.delivery, queuedAtDispatch ? "queued" : "steered");
-          assert.deepEqual(steered, queued ? [] : ["progress update"]);
-          assert.equal(started.length, 1);
+          const result = yield* sendUpdate(threadId, "agent", mode);
+          assert.equal(result.delivery, "queued");
+          assert.deepEqual(steered, []);
           const pending = yield* orchestrator.getThreadProjection(threadId);
           assert.equal(pending.runs.find((run) => run.id === first.runId)?.status, "running");
-          if (!queued) return;
-          assert.equal(
-            pending.runs.find((run) => run.userMessageId === messageId)?.status,
-            "queued",
-          );
 
           const completed = yield* orchestrator.streamDomainEvents.pipe(
             Stream.filter(
@@ -692,15 +658,154 @@ it.effect.each(
           yield* worker.drain();
           yield* orchestrator.resumeQueuedRuns;
           yield* worker.drain();
-          assert.equal(started.length, 2);
-          assert.equal(started[1]?.message.messageId, messageId);
-          assert.equal(started[1]?.message.text, "progress update");
+          assert.deepEqual(
+            started.map((input) => input.message.messageId),
+            [MessageId.make("message:first"), MessageId.make("message:update")],
+          );
           assert.deepEqual(steered, []);
-          const final = yield* orchestrator.getThreadProjection(threadId);
-          assert.equal(final.runs.find((run) => run.id === first.runId)?.status, "completed");
         }).pipe(Effect.provide(layer));
       }),
     ),
+);
+
+const imageAttachment: ChatAttachment = {
+  type: "image",
+  id: "attachment-1",
+  name: "screen.png",
+  mimeType: "image/png",
+  sizeBytes: 1,
+};
+
+it.effect.each([
+  { createdBy: "user", activeSteeringInterruptsTools: true, attachments: [] },
+  { createdBy: "agent", activeSteeringInterruptsTools: false, attachments: [] },
+  // Boundary hooks carry text only, so this one steers natively.
+  { createdBy: "agent", activeSteeringInterruptsTools: true, attachments: [imageAttachment] },
+] as const)(
+  "steers an update from $createdBy when steering is allowed (interruptsTools=$activeSteeringInterruptsTools, attachments=$attachments.length)",
+  ({ createdBy, activeSteeringInterruptsTools, attachments }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+          `update-steered-${createdBy}-${activeSteeringInterruptsTools}`,
+          { activeSteeringInterruptsTools },
+        );
+        yield* Effect.gen(function* () {
+          const threadId = yield* startFirstTurn;
+          const result = yield* sendUpdate(
+            threadId,
+            createdBy,
+            createdBy === "agent" ? "auto" : "steer",
+            attachments,
+          );
+          assert.equal(result.delivery, "steered");
+          assert.deepEqual(steered, ["progress update"]);
+          assert.equal(started.length, 1);
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
+);
+
+// The Claude adapter calls this from its root PostToolBatch and Stop hooks.
+const claimAtToolBoundary = Effect.fn("claimAtToolBoundary")(function* (
+  threadId: ThreadId,
+  runId: RunId,
+) {
+  const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+  return yield* requests.claimAgentMessages!({ threadId, runId });
+});
+
+it.effect("an agent update joins the running turn at its next tool boundary, once", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { events, started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+        "agent-update-tool-boundary",
+        { activeSteeringInterruptsTools: true },
+      );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const threadId = yield* startFirstTurn;
+        const first = started[0]!;
+        // The update arrives while a long tool call runs; nothing reaches the provider.
+        assert.equal((yield* sendUpdate(threadId, "agent", "auto")).delivery, "queued");
+        assert.deepEqual(steered, []);
+
+        assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), ["progress update"]);
+        assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), []);
+        const joined = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(
+          joined.messages.find((message) => message.id === MessageId.make("message:update"))?.runId,
+          first.runId,
+        );
+        assert.isFalse(joined.runs.some((run) => run.status === "queued"));
+
+        // The turn ends; the update does not start another one.
+        const completed = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "run.updated" &&
+              event.payload.id === first.runId &&
+              event.payload.status === "waiting",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        const turn = joined.providerTurns[0]!;
+        yield* Queue.offer(events, {
+          type: "provider_turn.updated",
+          driver,
+          providerTurn: { ...turn, status: "completed", completedAt: yield* DateTime.now },
+        });
+        yield* Queue.offer(events, {
+          type: "turn.terminal",
+          driver,
+          providerThreadId: turn.providerThreadId,
+          providerTurnId: turn.id,
+          runOrdinal: first.runOrdinal,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        });
+        yield* Fiber.join(completed);
+        yield* worker.drain();
+        yield* orchestrator.resumeQueuedRuns;
+        yield* worker.drain();
+        assert.equal(started.length, 1);
+        assert.deepEqual(steered, []);
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
+it.effect("Stop keeps a queued agent update out of the stopped turn's boundaries", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { started, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+        "agent-update-boundary-after-stop",
+        { activeSteeringInterruptsTools: true },
+      );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const threadId = yield* startFirstTurn;
+        const first = started[0]!;
+        assert.equal((yield* sendUpdate(threadId, "agent", "auto")).delivery, "queued");
+        yield* orchestrator.dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make("stop"),
+          threadId,
+          runId: first.runId,
+          holdQueue: true,
+        });
+
+        assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), []);
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        const queued = projection.runs.find((run) => run.status === "queued");
+        assert.equal(queued?.queueHeld, true);
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
 );
 
 it.effect.each([{ canRestart: false }, { canRestart: true }])(
@@ -774,302 +879,6 @@ it.effect.each([{ canRestart: false }, { canRestart: true }])(
           assert.equal(back.thread.providerInstanceId, instanceId);
           assert.deepEqual(back.thread.modelSelection, runSelection);
         }).pipe(Effect.provide(layer));
-      }),
-    ),
-);
-
-it.effect("Stop suppresses a boundary timeout whose fallback has not dispatched yet", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const entered = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      const { started, interrupted, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
-        "steering-boundary-stop-race",
-        {
-          activeSteeringInterruptsTools: true,
-          supportsNonInterruptingAgentSteering: true,
-          deferSteering: true,
-          beforeBoundary: Deferred.succeed(entered, undefined).pipe(
-            Effect.andThen(Deferred.await(release)),
-          ),
-        },
-      );
-      yield* Effect.gen(function* () {
-        const orchestrator = yield* Orchestrator.OrchestratorV2;
-        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        const outbox = yield* EffectOutbox.EffectOutboxV2;
-        const threadId = yield* startFirstTurn;
-        yield* orchestrator.dispatch({
-          type: "message.dispatch",
-          commandId: CommandId.make("boundary-update"),
-          threadId,
-          messageId: MessageId.make("message:boundary-update"),
-          text: "The review found another issue.",
-          attachments: [],
-          dispatchMode: { type: "steer_active", targetRunId: started[0]!.runId },
-          createdBy: "agent",
-          creationSource: "mcp",
-        });
-        const draining = yield* worker.drain().pipe(Effect.forkScoped);
-        yield* Deferred.await(entered);
-        yield* orchestrator.dispatch({
-          type: "run.interrupt",
-          commandId: CommandId.make("stop-boundary-parent"),
-          threadId,
-          runId: started[0]!.runId,
-          holdQueue: true,
-        });
-        yield* Deferred.succeed(release, undefined);
-        yield* Fiber.join(draining);
-        yield* worker.drain();
-        const projection = yield* orchestrator.getThreadProjection(threadId);
-        assert.equal(started.length, 1);
-        assert.equal(projection.runs.length, 1);
-        const effects = yield* outbox.listByCommandId(CommandId.make("boundary-update"));
-        assert.lengthOf(effects, 1);
-        assert.include(["succeeded", "cancelled"], effects[0]?.status);
-        if (effects[0]?.status === "succeeded") assert.isNull(effects[0].lastError);
-        assert.lengthOf(interrupted, 1);
-        const stops = yield* outbox.listByCommandId(CommandId.make("stop-boundary-parent"));
-        assert.equal(
-          stops.find((effect) => effect.request.type === "provider-turn.interrupt")?.status,
-          "succeeded",
-        );
-      }).pipe(Effect.provide(layer));
-    }),
-  ),
-);
-
-it.effect("Stop cancels pending hook delivery and executes the interrupt before a boundary", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const entered = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      const h = yield* nextTurnSelectionHarness("steering-stop-before-hook", {
-        activeSteeringInterruptsTools: true,
-        supportsNonInterruptingAgentSteering: true,
-        beforeBoundary: Deferred.succeed(entered, undefined).pipe(
-          Effect.andThen(Deferred.await(release)),
-        ),
-      });
-      yield* Effect.gen(function* () {
-        const orchestrator = yield* Orchestrator.OrchestratorV2;
-        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        const outbox = yield* EffectOutbox.EffectOutboxV2;
-        const threadId = yield* h.startFirstTurn;
-        yield* orchestrator.dispatch({
-          type: "message.dispatch",
-          commandId: CommandId.make("pending-hook"),
-          threadId,
-          messageId: MessageId.make("message:pending-hook"),
-          text: "Do not deliver after Stop.",
-          attachments: [],
-          dispatchMode: { type: "steer_active", targetRunId: h.started[0]!.runId },
-          createdBy: "agent",
-          creationSource: "mcp",
-        });
-        const delivery = yield* worker.runOnce.pipe(Effect.forkScoped);
-        yield* Deferred.await(entered);
-        yield* orchestrator.dispatch({
-          type: "thread.stop",
-          commandId: CommandId.make("stop-pending-hook"),
-          threadId,
-        });
-        yield* worker.drain();
-        assert.lengthOf(h.interrupted, 1);
-        yield* Fiber.join(delivery);
-        const effects = yield* outbox.listByCommandId(CommandId.make("pending-hook"));
-        assert.equal(effects[0]?.status, "cancelled");
-        yield* Deferred.succeed(release, undefined);
-        yield* worker.drain();
-        assert.deepEqual(h.steered, []);
-        assert.equal((yield* orchestrator.getThreadProjection(threadId)).runs.length, 1);
-      }).pipe(Effect.provide(h.layer));
-    }),
-  ),
-);
-
-const dispatchClaimedCompletion = Effect.fn("dispatchClaimedCompletion")(function* (
-  threadId: ThreadId,
-  first: ProviderAdapter.ProviderAdapterV2TurnInput,
-  taskIds: ReadonlyArray<NodeId>,
-) {
-  const orchestrator = yield* Orchestrator.OrchestratorV2;
-  const sink = yield* EventSink.EventSinkV2;
-  const messageId = MessageId.make("message:pending-completion");
-  const current = yield* orchestrator.getThreadProjection(threadId);
-  const now = yield* DateTime.now;
-  yield* sink.write({
-    events: [
-      {
-        id: EventId.make("completion:cohort"),
-        type: "run.updated",
-        threadId,
-        runId: first.runId,
-        occurredAt: now,
-        payload: {
-          ...current.runs.find((run) => run.id === first.runId)!,
-          delegatedCompletion: {
-            disposition: "open",
-            nextGeneration: 2,
-            delivery: { generation: 1, messageId, taskIds },
-          },
-        },
-      },
-      ...taskIds.map((taskId) => ({
-        id: EventId.make(`completion:${taskId}`),
-        type: "subagent.updated" as const,
-        threadId,
-        runId: first.runId,
-        nodeId: taskId,
-        occurredAt: now,
-        payload: {
-          id: taskId,
-          threadId,
-          runId: first.runId,
-          parentNodeId: first.rootNodeId,
-          origin: "app_owned" as const,
-          createdBy: "agent" as const,
-          driver,
-          providerInstanceId: instanceId,
-          providerThreadId: null,
-          childThreadId: null,
-          nativeTaskRef: null,
-          prompt: "Do background work",
-          title: "Background test",
-          model: null,
-          completionWake: "always" as const,
-          completionDelivery: { state: "claimed" as const, observedByRunId: null },
-          status: "completed" as const,
-          result: "done",
-          startedAt: now,
-          completedAt: now,
-          updatedAt: now,
-        },
-      })),
-    ],
-  });
-  yield* orchestrator.dispatch({
-    type: "message.dispatch",
-    commandId: CommandId.make("dispatch-completion"),
-    threadId,
-    messageId,
-    text: `Original completion for ${taskIds.join(", ")}`,
-    attachments: [],
-    dispatchMode: { type: "queue_after_active" },
-    createdBy: "agent",
-    creationSource: "server",
-    delegatedCompletion: { parentRunId: first.runId, generation: 1, taskIds },
-  });
-  return messageId;
-});
-
-it.effect("a live completion boundary defer creates exactly one queued follow-up", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const h = yield* nextTurnSelectionHarness("steering-live-completion-defer", {
-        activeSteeringInterruptsTools: true,
-        supportsNonInterruptingAgentSteering: true,
-        deferSteering: true,
-      });
-      yield* Effect.gen(function* () {
-        const orchestrator = yield* Orchestrator.OrchestratorV2;
-        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        const outbox = yield* EffectOutbox.EffectOutboxV2;
-        const threadId = yield* h.startFirstTurn;
-        const first = h.started[0]!;
-        const taskId = NodeId.make("task:deferred");
-        const messageId = yield* dispatchClaimedCompletion(threadId, first, [taskId]);
-        yield* worker.drain();
-        yield* worker.drain();
-        const projection = yield* orchestrator.getThreadProjection(threadId);
-        const followUps = projection.runs.filter((run) => run.userMessageId === messageId);
-        assert.lengthOf(followUps, 1);
-        assert.equal(followUps[0]?.status, "queued");
-        assert.equal(projection.runs.find((run) => run.id === first.runId)?.status, "running");
-        assert.equal(projection.messages.filter((message) => message.id === messageId).length, 1);
-        assert.deepEqual(
-          projection.messages.find((message) => message.id === messageId)?.delegatedCompletion,
-          {
-            parentRunId: first.runId,
-            generation: 1,
-            taskIds: [taskId],
-          },
-        );
-        const effects = yield* outbox.listByCommandId(CommandId.make("dispatch-completion"));
-        assert.equal(
-          effects.find((effect) => effect.request.type === "provider-turn.steer")?.status,
-          "succeeded",
-        );
-        assert.equal(h.started.length, 1);
-        assert.deepEqual(h.steered, []);
-      }).pipe(Effect.provide(h.layer));
-    }),
-  ),
-);
-
-it.effect.each(["dispose", "acknowledge one"] as const)(
-  "completion %s updates a pending boundary before delivery",
-  (resolution) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const entered = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        const h = yield* nextTurnSelectionHarness(`steering-completion-${resolution}`, {
-          activeSteeringInterruptsTools: true,
-          supportsNonInterruptingAgentSteering: true,
-          beforeBoundary: Deferred.succeed(entered, undefined).pipe(
-            Effect.andThen(Deferred.await(release)),
-          ),
-        });
-        yield* Effect.gen(function* () {
-          const orchestrator = yield* Orchestrator.OrchestratorV2;
-          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-          const outbox = yield* EffectOutbox.EffectOutboxV2;
-          const threadId = yield* h.startFirstTurn;
-          const first = h.started[0]!;
-          const taskId = NodeId.make("task:resolved");
-          const remainingTaskId = NodeId.make("task:remaining");
-          const taskIds = resolution === "dispose" ? [taskId] : [taskId, remainingTaskId];
-          yield* dispatchClaimedCompletion(threadId, first, taskIds);
-          const delivery = yield* worker.runOnce.pipe(Effect.forkScoped);
-          yield* Deferred.await(entered);
-          yield* orchestrator.dispatch(
-            resolution === "dispose"
-              ? {
-                  type: "delegated_task.completion-delivery.dispose",
-                  commandId: CommandId.make("resolve-completion"),
-                  parentThreadId: threadId,
-                  taskId,
-                }
-              : {
-                  type: "delegated_task.completion-delivery.acknowledge",
-                  commandId: CommandId.make("resolve-completion"),
-                  parentThreadId: threadId,
-                  taskId,
-                  observedByRunId: first.runId,
-                },
-          );
-          yield* Deferred.succeed(release, undefined);
-          yield* Fiber.join(delivery);
-          yield* worker.drain();
-          const projection = yield* orchestrator.getThreadProjection(threadId);
-          assert.equal(
-            projection.subagents.find((task) => task.id === taskId)?.completionDelivery?.state,
-            resolution === "dispose" ? "disposed" : "acknowledged",
-          );
-          if (resolution === "dispose") assert.deepEqual(h.steered, []);
-          else {
-            assert.lengthOf(h.steered, 1);
-            assert.include(h.steered[0]!, String(remainingTaskId));
-            assert.notInclude(h.steered[0]!, String(taskId));
-            assert.include(h.steered[0]!, "task_status");
-          }
-          assert.equal(projection.runs.length, 1);
-          const effects = yield* outbox.listByCommandId(CommandId.make("dispatch-completion"));
-          assert.include(["succeeded", "cancelled"], effects[0]?.status);
-          if (effects[0]?.status === "succeeded") assert.isNull(effects[0].lastError);
-        }).pipe(Effect.provide(h.layer));
       }),
     ),
 );
@@ -1316,8 +1125,16 @@ it.effect("keeps a queued message queued when promoted into a run that Stop reac
 it.effect("queues a plain send behind the stopped queue and releases its hold", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const { started, steered, layer, startFirstTurn } =
-        yield* nextTurnSelectionHarness("plain-send-after-stop");
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+        "plain-send-after-stop",
+        {
+          beforeInterrupt: Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+          ),
+        },
+      );
       yield* Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
@@ -1347,7 +1164,8 @@ it.effect("queues a plain send behind the stopped queue and releases its hold", 
         });
         // The provider has not stopped yet, so a plain send still resolves to a steer.
         yield* send("sent", "auto");
-        yield* worker.drain();
+        const stopping = yield* worker.drain().pipe(Effect.forkScoped);
+        yield* Deferred.await(entered);
 
         const projection = yield* orchestrator.getThreadProjection(threadId);
         assert.deepEqual(steered, []);
@@ -1363,6 +1181,9 @@ it.effect("queues a plain send behind the stopped queue and releases its hold", 
         );
         // The user sent it, so the queue they stopped runs again once the provider stops.
         assert.isFalse(queued.some((run) => run.queueHeld === true));
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(stopping);
+        yield* worker.drain();
       }).pipe(Effect.provide(layer));
     }),
   ),
