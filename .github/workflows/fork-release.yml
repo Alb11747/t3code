@@ -50,11 +50,15 @@ jobs:
   # It also disables upstream workflows that a sync or push added: they need
   # upstream's runners or credentials, or automate upstream's issues, and stay
   # active until disabled. Every change to main passes through here.
+  #
+  # It checks the job budget too, rather than a separate job: a push blocked by
+  # the budget then costs one job, which lets an exhausted budget recover
+  # sooner.
   settle:
     name: Wait for pushes to settle
     if: github.repository == 'Alb11747/t3code'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     environment: fork-release-delay
     permissions:
       actions: write
@@ -66,6 +70,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      LIMIT: ${{ vars.FORK_JOB_BUDGET || 150 }}
     steps:
       - run: echo "Releasing $GITHUB_SHA"
 
@@ -105,6 +110,14 @@ jobs:
           fi
           echo "release=$release" >> "$GITHUB_OUTPUT"
 
+      - name: Check job budget
+        if: steps.changes.outputs.release == 'true'
+        run: |
+          set -euo pipefail
+          gh api -H "Accept: application/vnd.github.raw" \
+            "repos/$GITHUB_REPOSITORY/contents/fork/scripts/job-budget.sh?ref=$GITHUB_SHA" > "$RUNNER_TEMP/job-budget.sh"
+          bash "$RUNNER_TEMP/job-budget.sh"
+
       # Fork checks sets a `fork-checks` status on a commit once every check
       # passed there, naming the commit its workflow file came from. When a sync
       # candidate or Fork PR checks run already passed on this exact commit,
@@ -128,12 +141,6 @@ jobs:
             fi
           fi
           echo "checked=$checked" >> "$GITHUB_OUTPUT"
-
-  budget:
-    name: Job budget
-    needs: [settle]
-    if: needs.settle.outputs.release == 'true'
-    uses: ./.github/workflows/fork-budget.yml
 
   fallback:
     name: Verify budget fallback
@@ -162,10 +169,11 @@ jobs:
 
   preflight:
     name: Preflight
-    needs: [budget, fallback]
+    needs: [settle, fallback]
     if: >-
       always() && !cancelled() &&
-      (needs.budget.result == 'success' || needs.fallback.result == 'success')
+      ((needs.settle.result == 'success' && needs.settle.outputs.release == 'true') ||
+      needs.fallback.result == 'success')
     runs-on: ${{ github.repository == 'Alb11747/t3code' && 'ubuntu-24.04' || vars.FORK_RELEASE_LINUX_RUNNER || 'blacksmith-2vcpu-ubuntu-2404' }}
     timeout-minutes: 10
     outputs:

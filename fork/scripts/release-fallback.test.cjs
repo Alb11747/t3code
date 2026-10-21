@@ -19,6 +19,16 @@ const receipt = "::error::The fork ran 160 jobs in the last 24 hours (limit 150)
 test("fallback requires actual budget exhaustion, not an arbitrary failed gate", () => {
   verifyBudgetFailure(run, jobs, receipt, []);
   verifyBudgetFailure(run, jobs, receipt.replace("::error::", "##[error]"), []);
+  verifyBudgetFailure(
+    run,
+    [{ name: "Wait for pushes to settle", conclusion: "failure" }],
+    receipt,
+    [],
+  );
+  assert.throws(
+    () => verifyBudgetFailure(run, [{ name: "Preflight", conclusion: "failure" }], receipt, []),
+    /budget gate/,
+  );
   assert.throws(() => verifyBudgetFailure(run, jobs, "HTTP 403", []), /No job-budget/);
   assert.throws(
     () => verifyBudgetFailure({ ...run, head_branch: "feature" }, jobs, receipt, []),

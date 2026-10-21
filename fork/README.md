@@ -210,10 +210,10 @@ attempt at the previous one.
    skips the rest when only `fork/*.md` differs, so docs pushes don't release.
 
    Fork release and Fork PR checks first check a job budget
-   (`fork-budget.yml`): once the fork's workflows have run 150 jobs in the
-   last 24 hours (`FORK_JOB_BUDGET` repository variable), they fail before
-   the checks and builds start. A full release uses 17 jobs (10 when it reuses
-   passed checks), a check run 8. If
+   (`fork/scripts/job-budget.sh`): once the fork's workflows have run 150 jobs
+   in the last 24 hours (`FORK_JOB_BUDGET` repository variable), they fail
+   before the checks and builds start. A full release uses 16 jobs (9 when it
+   reuses passed checks), a check run 8; a blocked run uses 1. If
    one fails this way, rerun it once older runs age out; don't push again to
    retry.
 
@@ -343,8 +343,7 @@ ARM64, macOS) are free in the public Labs repository and spend no Blacksmith
 usage (macOS on Blacksmith would also cost its much higher macOS minute rate);
 GitHub's own concurrency and rate limits are why the rest stays on Blacksmith.
 
-Install the reviewed `fork-release.yml`, `release-desktop.yml`, unchanged
-`fork-budget.yml`, and
+Install the reviewed `fork-release.yml`, `release-desktop.yml`, and
 `fork/scripts/{release-fallback,publish-release,release-notes}.cjs` on Labs
 `main`, preserving the separately maintained Labs checks workflow. Copy the
 fork's four public `CLERK_*` / `RELAY_URL` repository variables to Labs so builds

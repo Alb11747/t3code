@@ -2,6 +2,11 @@ const { execFileSync } = require("node:child_process");
 const { appendFileSync } = require("node:fs");
 
 const repository = "Alb11747/t3code";
+// Fork release checks the budget in its settle job; runs from before October
+// 2026 checked it in a separate reusable job.
+const budgetJobs = ["Wait for pushes to settle", "Job budget / Check job budget"];
+const failedBudgetJob = (jobs) =>
+  jobs.find((job) => budgetJobs.includes(job.name) && job.conclusion === "failure");
 
 function verifyBudgetFailure(run, jobs, logs, releases) {
   if (
@@ -12,11 +17,7 @@ function verifyBudgetFailure(run, jobs, logs, releases) {
   ) {
     throw new Error("Expected a completed, failed Fork release on main.");
   }
-  if (
-    !jobs.some(
-      (job) => job.name === "Job budget / Check job budget" && job.conclusion === "failure",
-    )
-  ) {
+  if (!failedBudgetJob(jobs)) {
     throw new Error("The release did not fail its job budget gate.");
   }
   const match = /The fork ran (\d+) jobs in the last 24 hours \(limit (\d+)\)/.exec(logs);
@@ -40,7 +41,7 @@ if (require.main === module) {
   const api = (path) => JSON.parse(gh("api", `repos/${repository}/${path}`));
   const run = api(`actions/runs/${runId}`);
   const jobs = api(`actions/runs/${runId}/attempts/${run.run_attempt}/jobs?per_page=100`).jobs;
-  const budget = jobs.find((job) => job.name === "Job budget / Check job budget");
+  const budget = failedBudgetJob(jobs);
   const logs = budget
     ? gh("api", "--paginate", `${budget.check_run_url}/annotations`, "--jq", ".[].message")
     : "";

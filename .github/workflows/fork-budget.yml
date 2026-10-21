@@ -1,17 +1,17 @@
 name: Fork job budget
 
 # Fails a run before it spends runners once the fork has run too many jobs in
-# the last 24 hours. GitHub froze this fork's Actions in October 2026 after
-# about 650 jobs in 2.5 days (up to 315 in one day). The count covers every
-# workflow's jobs that got a runner, retries included, so runs cancelled while
-# waiting (fork-release's settle wait) cost nothing. Raise or lower the limit
-# with the FORK_JOB_BUDGET repository variable.
+# the last 24 hours (fork/scripts/job-budget.sh). Fork release runs the same
+# script inside its settle job instead, so a blocked release costs one job.
+# Raise or lower the limit with the FORK_JOB_BUDGET repository variable.
 
 on:
   workflow_call:
 
 permissions:
   actions: read
+  # Reads fork/scripts/job-budget.sh.
+  contents: read
 
 jobs:
   budget:
@@ -22,33 +22,9 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       LIMIT: ${{ vars.FORK_JOB_BUDGET || 150 }}
     steps:
+      # Fetches only the script instead of checking out the repository.
       - run: |
           set -euo pipefail
-          since=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
-          # Lists every run because reruns keep the run's created_at. Marks the
-          # runs that may have started jobs since the cutoff: unfinished ones,
-          # and finished ones updated since (a run updates when it ends, after
-          # its last job started). Assigned first so a failed API call fails
-          # the job instead of counting nothing.
-          runs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" \
-            --jq ".workflow_runs[] | \"\(.id) \(.status != \"completed\" or .updated_at >= \"$since\")\"")
-          # The listing quietly ends at 40,000 runs, which would hide newer reruns of older runs.
-          if (( $(wc -l <<< "$runs") >= 40000 )); then
-            echo "::error::Over 40,000 runs; too many to count."
-            exit 1
-          fi
-          # Collects jobs a runner started since the cutoff. Rerunning failed
-          # jobs copies the passed ones into the new attempt under new job IDs
-          # but with their original runner and start time, so each runner start
-          # counts once.
-          starts=""
-          for id in $(awk '$2 == "true" { print $1 }' <<< "$runs"); do
-            starts+=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?filter=all&per_page=100" \
-              --jq ".jobs[] | select((.runner_name // \"\") != \"\" and .started_at >= \"$since\") | \"\(.runner_id) \(.started_at)\"")$'\n'
-          done
-          used=$(awk 'NF && !seen[$0]++' <<< "$starts" | wc -l)
-          echo "$used of $LIMIT jobs used in the last 24 hours."
-          if (( used >= LIMIT )); then
-            echo "::error::The fork ran $used jobs in the last 24 hours (limit $LIMIT). Rerun this workflow once older runs age out."
-            exit 1
-          fi
+          gh api -H "Accept: application/vnd.github.raw" \
+            "repos/$GITHUB_REPOSITORY/contents/fork/scripts/job-budget.sh?ref=$GITHUB_SHA" > "$RUNNER_TEMP/job-budget.sh"
+          bash "$RUNNER_TEMP/job-budget.sh"
