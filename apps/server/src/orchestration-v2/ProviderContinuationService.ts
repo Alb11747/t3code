@@ -248,8 +248,8 @@ export const layer = Layer.effectDiscard(
     // joins its running turn before the hook returns the text. An update that
     // cannot join (edited away, held by Stop, turn no longer running) stays
     // queued for the next turn.
-    const claimAgentMessages: ProviderContinuationRequests.ClaimAgentMessages = (input) =>
-      Effect.gen(function* () {
+    const claimAgentMessages = Effect.fn("ProviderContinuationService.claimAgentMessages")(
+      function* (input: Parameters<ProviderContinuationRequests.ClaimAgentMessages>[0]) {
         // This runs at every tool batch: read only queued runs and their messages.
         const { runs } = yield* threads.getThreadRecords(input.threadId, ["runs"], {
           runStatuses: ["queued"],
@@ -294,14 +294,17 @@ export const layer = Layer.effectDiscard(
           }
         }
         return texts;
-      }).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("orchestration-v2.provider-continuation.agent-message-claim-failed", {
-            threadId: input.threadId,
-            cause,
-          }).pipe(Effect.as([])),
+      },
+      (effect, input) =>
+        effect.pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("orchestration-v2.provider-continuation.agent-message-claim-failed", {
+              threadId: input.threadId,
+              cause,
+            }).pipe(Effect.as([])),
+          ),
         ),
-      );
+    );
     if (requests.serveAgentMessages !== undefined) {
       yield* requests.serveAgentMessages(claimAgentMessages);
     }
