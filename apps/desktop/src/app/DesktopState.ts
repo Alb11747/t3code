@@ -7,12 +7,15 @@ export class DesktopState extends Context.Service<
   DesktopState,
   {
     readonly backendReady: Ref.Ref<boolean>;
+    // Read synchronously by the main window's close handler; DesktopTray owns writes.
+    readonly closeToTray: Ref.Ref<boolean>;
     readonly quitting: Ref.Ref<boolean>;
   }
 >()("@t3tools/desktop/app/DesktopState") {}
 
 const make = Effect.all({
   backendReady: Ref.make(false),
+  closeToTray: Ref.make(false),
   quitting: Ref.make(false),
 });
 

@@ -98,6 +98,7 @@ function makeFakeBrowserWindow() {
     focus: vi.fn(),
     getBounds: vi.fn(() => ({ x: 0, y: 0, width: 1100, height: 780 })),
     getNormalBounds: vi.fn(() => ({ x: 0, y: 0, width: 1100, height: 780 })),
+    hide: vi.fn(),
     isDestroyed: vi.fn(() => false),
     isFullScreen: vi.fn(() => false),
     isMaximized: vi.fn(() => false),
@@ -127,6 +128,7 @@ function makeFakeBrowserWindow() {
     window: window as unknown as Electron.BrowserWindow,
     getBounds: window.getBounds,
     getNormalBounds: window.getNormalBounds,
+    hide: window.hide,
     isDestroyed: window.isDestroyed,
     isFullScreen: window.isFullScreen,
     isMaximized: window.isMaximized,
@@ -784,6 +786,39 @@ describe("DesktopWindow", () => {
           ),
         );
       }),
+  );
+
+  it.effect("hides the main window on close to tray until quitting starts", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const layer = layerTest({
+        window: fakeWindow.window,
+        createCount: yield* Ref.make(0),
+        mainWindow: yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none()),
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        const state = yield* DesktopState.DesktopState;
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+        const close = fakeWindow.windowListeners.get("close");
+        if (!close) {
+          return yield* Effect.die("window close listener was not registered");
+        }
+
+        yield* Ref.set(state.closeToTray, true);
+        const userClose = { preventDefault: vi.fn() };
+        close(userClose);
+        assert.equal(userClose.preventDefault.mock.calls.length, 1);
+        assert.equal(fakeWindow.hide.mock.calls.length, 1);
+
+        yield* Ref.set(state.quitting, true);
+        const quitClose = { preventDefault: vi.fn() };
+        close(quitClose);
+        assert.equal(quitClose.preventDefault.mock.calls.length, 0);
+        assert.equal(fakeWindow.hide.mock.calls.length, 1);
+      }).pipe(Effect.provide(layer));
+    }),
   );
 
   it.effect("persists normal bounds and state for a maximized window", () =>

@@ -518,6 +518,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     desktopOnly: true,
   },
   {
+    id: "close-to-tray",
+    title: "Close to tray",
+    to: "/settings/general",
+    searchTerms: ["minimize system tray notification area background keep running window"],
+    desktopOnly: true,
+    windowsOnly: true,
+  },
+  {
     id: "text-generation-model",
     title: "Text generation model",
     to: "/settings/general",

@@ -701,7 +701,13 @@ export const make = Effect.gen(function* () {
     window.on("move", scheduleBoundsPersist);
     window.on("maximize", scheduleBoundsPersist);
     window.on("unmaximize", scheduleBoundsPersist);
-    window.on("close", () => {
+    window.on("close", (event) => {
+      // Quitting destroys windows or sets `quitting` before they close, so only
+      // a user close (X, Ctrl+W, taskbar) is turned into a hide.
+      if (Ref.getUnsafe(desktopState.closeToTray) && !Ref.getUnsafe(desktopState.quitting)) {
+        event.preventDefault();
+        window.hide();
+      }
       runFork(flushBoundsPersist);
     });
 

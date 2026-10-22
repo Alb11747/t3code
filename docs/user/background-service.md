@@ -75,7 +75,11 @@ Mac logged in and awake for unattended remote access. Installing over SSH while
 nobody is logged in at the Mac's screen can fail at the final start step; the
 service is still installed and will start at the next login.
 
-Windows background services are not supported.
+Windows background services are not supported. Instead, turn on
+**Settings → General → Behavior → Close to tray** in the desktop app: closing
+its window then leaves T3 Code and its agents running behind an icon in the
+notification area. Click the icon to reopen the window, or right-click it and
+choose **Quit** to exit.
 
 T3 Connect can offer service installation during setup, but the two are managed
 separately. Signing out of T3 Connect does not stop or uninstall the service.
