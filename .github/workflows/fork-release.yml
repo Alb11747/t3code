@@ -373,9 +373,11 @@ jobs:
       clerk_cli_oauth_client_id: ${{ vars.CLERK_CLI_OAUTH_CLIENT_ID }}
       relay_url: ${{ vars.RELAY_URL }}
       label: Windows x64
+      # Cross-built on Linux and verified on Windows, as upstream does.
       # GitHub-hosted in Labs too: free for public repositories, so the
       # fallback spends no Blacksmith usage on Windows.
-      runner: windows-2025
+      runner: ubuntu-24.04
+      verify_runner: windows-2025
       platform: win
       target: nsis
       arch: x64

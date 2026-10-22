@@ -312,7 +312,7 @@ They do not prove cross-repository publication or installed-client updating.
 | ----------------------------------- | ---------------------------------------------------- |
 | Guard, preflight and publish        | Blacksmith Ubuntu 24.04, 2 vCPU                      |
 | JS bundle and Linux x64 desktop/CLI | Blacksmith Ubuntu 24.04, 8 vCPU                      |
-| Windows x64 desktop/CLI             | GitHub `windows-2025`                                |
+| Windows x64 desktop/CLI             | GitHub `ubuntu-24.04`, verified on `windows-2025`    |
 | Linux ARM64 CLI                     | `blacksmith-4vcpu-ubuntu-2404-arm`                   |
 | macOS ARM64 CLI                     | GitHub `macos-15` (native ARM64)                     |
 | Windows ARM64 CLI                   | GitHub `windows-11-arm`                              |
