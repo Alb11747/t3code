@@ -460,8 +460,14 @@ assigns themselves, says they are taking it over, or pushes commits not authored
 by `Alb11747` or our agents. Record the takeover evidence and last pushed SHA in
 durable thread context so later wakes and compaction preserve the boundary.
 If a push lease fails, fetch and repeat this check before reconciling or retrying.
-Never push to that branch again, plain or force. The watch may continue to read
-and report, with the error-reporting exception below. This rule overrides other
+After takeover the branch is theirs: never force-push it, and never push
+changes to its behavior, review fixes, refactors or nits. Routine maintenance
+stays allowed: when the PR conflicts with its base, merge the base into the
+branch (never rebase, so their commits keep their hashes), resolve the
+conflicts preserving both sides' intent, fix only the build or check failures
+the merge itself causes, and push normally once checks pass. Repeat the
+takeover check right before that push. The watch may continue to read and
+report, with the error-reporting exception below. This rule overrides other
 maintenance guidance, including the `babysit-pr` skill.
 
 After takeover, keep the fork's copy as a fork-only change: commit to `main`
@@ -475,7 +481,7 @@ PR comment; the user pre-authorizes this. State what fails, how to reproduce it,
 and where in the code. Fix it durably on fork `main` with a `Related-PR:` trailer.
 Edit that same comment to link the fork commit and the release containing it,
 so maintainers and their agents can use or cherry-pick it. Never push the fix to
-the PR branch. Other comments, including opinions, design proposals, and nits,
+the PR branch, except for failures caused by our own base merge (above). Other comments, including opinions, design proposals, and nits,
 need the user's approval first.
 
 Open PRs authored by `Alb11747` against `pingdotgg/t3code` should keep receiving
