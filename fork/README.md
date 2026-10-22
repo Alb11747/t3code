@@ -438,7 +438,7 @@ label, or request review for an upstream PR.
    provider `codex`, an `existing_worktree` workspace on the PR branch, and a
    message to link the PR, call `watch_pull_request`, and handle follow-ups
    with the `babysit-pr` skill until it merges or closes, subject to the takeover
-   rule below. If you are Sol, call
+   rules below. If you are Sol, call
    `watch_pull_request` in your own thread instead. T3 wakes the watching
    thread when checks finish, someone comments, or the branch conflicts. This
    needs the T3 server running, like the webhook.
@@ -449,40 +449,38 @@ label, or request review for an upstream PR.
    a person's review changes the PR, add a follow-up commit with the same
    trailer once that round settles. Once upstream merges it, sync reverts the
    fork's copy automatically,
-   except for a fork-only copy retained after takeover (see below).
+   except for a fork-only copy kept after takeover (see below).
 
 ## Maintaining your upstream PRs
 
-On every wake before making changes, and immediately before any push to an
-upstream PR branch, check assignees and timeline comments, plus remote branch
-commits since our last push. A PR is taken over when a maintainer or other person
-assigns themselves, says they are taking it over, or pushes commits not authored
-by `Alb11747` or our agents. Record the takeover evidence and last pushed SHA in
-durable thread context so later wakes and compaction preserve the boundary.
-If a push lease fails, fetch and repeat this check before reconciling or retrying.
-After takeover the branch is theirs: never force-push it, and never push
-changes to its behavior, review fixes, refactors or nits. Routine maintenance
-stays allowed: when the PR conflicts with its base, merge the base into the
-branch (never rebase, so their commits keep their hashes), resolve the
-conflicts preserving both sides' intent, fix only the build or check failures
-the merge itself causes, and push normally once checks pass. Repeat the
-takeover check right before that push. The watch may continue to read and
-report, with the error-reporting exception below. This rule overrides other
-maintenance guidance, including the `babysit-pr` skill.
+A PR is **taken over** once anyone other than `Alb11747` or our agents pushes
+commits to its branch or says they are taking it over, usually a maintainer
+finishing it. On every wake and right before any push, fetch the branch and
+find their latest push or takeover comment in the PR timeline (commit dates
+can predate the push). Record it and our last pushed SHA in durable thread
+context so later wakes and compaction keep them. These rules override other
+maintenance guidance, including the `babysit-pr` skill:
 
-After takeover, keep the fork's copy as a fork-only change: commit to `main`
-(empty with `--allow-empty` if there is nothing to change) with a
-`Related-PR: <PR URL>` trailer. Sync never reverts commits whose `Upstream-PR`
-also appears in a fork commit's `Related-PR`. Expect a merge conflict when
-their version merges.
+- Never rebase or force-push a taken-over branch. Update it by merging the
+  base in, so their commits keep their hashes.
+- Their latest push or takeover comment under 4 hours ago: they are likely
+  mid-work. Push nothing; post conflicts, failures and findings as PR comments.
+- 4 hours or more: also merge the base in to resolve conflicts, fix only the
+  failures that merge causes, and push normally once checks pass.
+- 3 days or more: also push fixes for bugs, failing checks and actionable
+  review findings, as normal commits.
 
-Report bugs, failing checks, and regressions in the takeover PR immediately in a
-PR comment; the user pre-authorizes this. State what fails, how to reproduce it,
-and where in the code. Fix it durably on fork `main` with a `Related-PR:` trailer.
-Edit that same comment to link the fork commit and the release containing it,
-so maintainers and their agents can use or cherry-pick it. Never push the fix to
-the PR branch, except for failures caused by our own base merge (above). Other comments, including opinions, design proposals, and nits,
-need the user's approval first.
+Comment on a taken-over PR whenever it is relevant (bugs, failures, findings,
+what we pushed); no approval is needed. When pushing would be premature, say
+what fails, how to reproduce it and where in the code.
+
+Fix bugs in a taken-over PR durably on fork `main` either way, with a
+`Related-PR: <PR URL>` trailer, and edit the comment to link the fork commit
+and its release so maintainers and their agents can use or cherry-pick it.
+Keep the fork's copy as a fork-only change: commit to `main` (empty with
+`--allow-empty` if there is nothing to change) with that trailer. Sync never
+reverts commits whose `Upstream-PR` also appears in a fork commit's
+`Related-PR`. Expect a merge conflict when their version merges.
 
 Open PRs authored by `Alb11747` against `pingdotgg/t3code` should keep receiving
 maintenance after their initial submission. Handle existing conflicts, check
