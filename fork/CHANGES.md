@@ -9,6 +9,7 @@ the sync script deletes the line of a change whose upstream PR merged. Closing
 an issue alone does not revert a patch. See `fork/README.md` for how to add or drop
 an entry.
 
+- `fix(fork): register the disk-loaded Codex probe fixture`: declares the account probe's child-process fixture as a knip entry so the file audit recognizes its filesystem-path use. Fork-only. Issue: none linked. PR: none yet
 - `fix(chat): requeued steers no longer look delivered`: hides undelivered queued inputs in local and inherited history and shell counts; web/mobile restore retained prompts when runs leave the queue, including bounded startup failures. Issue: https://github.com/pingdotgg/t3code/issues/23403. PR: https://github.com/pingdotgg/t3code/pull/23420
 - `fix(opencode): OpenCodeServerLedger linux tests no longer race a wrapper's exec`: records stable serve arguments across wrapper exec and tolerates a process group disappearing during test cleanup. Issue: https://github.com/pingdotgg/t3code/issues/22324. PR: https://github.com/pingdotgg/t3code/pull/22209
 - `test(server): await Claude background requests before advancing the clock`: waits for the fake background transport and registered steer timeouts, including repeated steers after asynchronous skill reads, instead of yield-count and clock-advance loops. Issue: https://github.com/pingdotgg/t3code/issues/22324. PR: none yet
