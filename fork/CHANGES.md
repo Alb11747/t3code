@@ -9,6 +9,7 @@ the sync script deletes the line of a change whose upstream PR merged. Closing
 an issue alone does not revert a patch. See `fork/README.md` for how to add or drop
 an entry.
 
+- `fix(chat): requeued steers no longer look delivered`: hides a steer returned to the durable queue until its new run starts or fails, with matching server snapshots; live web/mobile clients restore the hidden item when the run leaves the queue, and a failed queued start republishes it for bounded snapshots that omitted it. Issue: none linked. PR: none yet
 - `fix(opencode): OpenCodeServerLedger linux tests no longer race a wrapper's exec`: records stable serve arguments across wrapper exec and tolerates a process group disappearing during test cleanup. Issue: https://github.com/pingdotgg/t3code/issues/22324. PR: https://github.com/pingdotgg/t3code/pull/22209
 - `test(server): await Claude background requests before advancing the clock`: waits for the fake background transport and registered steer timeouts, including repeated steers after asynchronous skill reads, instead of yield-count and clock-advance loops. Issue: https://github.com/pingdotgg/t3code/issues/22324. PR: none yet
 - `test(web): preserve manual navigation when reopening timelines`: uses the chat's live-follow callback in the restoration fixture and waits for normal scroll reporting before switching threads, so a completed restore cannot mark a reading position as following the end. Issue: https://github.com/pingdotgg/t3code/issues/22324. PR: none yet
