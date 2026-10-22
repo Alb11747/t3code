@@ -1,92 +1,64 @@
-import "../../index.css";
-
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
-import { page, userEvent } from "vite-plus/test/browser";
-
 import { ComposerBannerStack } from "./ComposerBannerStack";
 
-let root: Root;
-let container: HTMLDivElement;
+import "../../index.css";
 
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
+import { render } from "../../../test/render";
 
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
-
-const nextFrame = () =>
-  act(() => new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))));
-
-async function render(width: number, description: string) {
-  container.style.width = `${width}px`;
-  await act(async () =>
-    root.render(
-      <ComposerBannerStack
-        items={[{ id: "usage", variant: "info", icon: null, title: "Usage limits", description }]}
-      />,
-    ),
-  );
-  await nextFrame();
-}
-
-const hasDetails = () => container.querySelector('[aria-label="Show notice details"]') !== null;
+import { expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
 
 it("only offers notice details when the description cannot fit", async () => {
-  await render(700, "OpenCode");
-  expect(hasDetails()).toBe(false);
+  const container = document.createElement("div");
+  container.style.width = "700px";
+  const banner = (description: string) => (
+    <ComposerBannerStack
+      items={[{ id: "usage", variant: "info", icon: null, title: "Usage limits", description }]}
+    />
+  );
+  await using screen = await render(banner("OpenCode"), { container });
+  const hasDetails = () => container.querySelector('[aria-label="Show notice details"]') !== null;
+  await vi.waitFor(() => expect(hasDetails()).toBe(false));
 
-  await render(700, "OpenCode ".repeat(40));
-  expect(hasDetails()).toBe(true);
+  await screen.rerender(banner("OpenCode ".repeat(40)));
+  await vi.waitFor(() => expect(hasDetails()).toBe(true));
 
   container.style.width = "4000px";
-  await nextFrame();
-  expect(hasDetails()).toBe(false);
+  await vi.waitFor(() => expect(hasDetails()).toBe(false));
 
-  await render(4000, "OpenCode");
-  expect(hasDetails()).toBe(false);
+  await screen.rerender(banner("OpenCode"));
+  await vi.waitFor(() => expect(hasDetails()).toBe(false));
 
   // A narrow composer hides the description entirely, so details are the only way to read it.
   container.style.width = "300px";
-  await nextFrame();
-  expect(hasDetails()).toBe(true);
+  await vi.waitFor(() => expect(hasDetails()).toBe(true));
 });
 
 it("keeps only the usage limit attached while an active goal waits in the collapsible stack", async () => {
   // A pointer left at the top of the page can expand the stack as soon as it mounts.
   await userEvent.hover(document.body, { position: { x: 0, y: window.innerHeight - 1 } });
-  await act(async () =>
-    root.render(
-      <ComposerBannerStack
-        items={[
-          {
-            id: "goal",
-            variant: "default",
-            priority: "activity",
-            icon: null,
-            title: "Goal active",
-            description: "Finish the banner fix",
-          },
-          {
-            id: "limit",
-            variant: "default",
-            priority: "urgent",
-            icon: null,
-            title: "Usage limit reached",
-          },
-        ]}
-      />,
-    ),
+  await using screen = await render(
+    <ComposerBannerStack
+      items={[
+        {
+          id: "goal",
+          variant: "default",
+          priority: "activity",
+          icon: null,
+          title: "Goal active",
+          description: "Finish the banner fix",
+        },
+        {
+          id: "limit",
+          variant: "default",
+          priority: "urgent",
+          icon: null,
+          title: "Usage limit reached",
+        },
+      ]}
+    />,
   );
 
+  const container = screen.container;
   const visibleBanners = () =>
     Array.from(container.querySelectorAll('[data-slot="composer-banner"]')).filter((banner) =>
       banner.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
@@ -101,12 +73,12 @@ it("keeps only the usage limit attached while an active goal waits in the collap
     "Usage limit reached",
   );
 
-  await act(async () => page.getByRole("button", { name: "Show other notices" }).click());
+  await page.getByRole("button", { name: "Show other notices" }).click();
   await expect.element(goal).toBeVisible();
   await expect.element(limit).toBeVisible();
   await expect.poll(visibleBanners).toHaveLength(2);
 
-  await act(async () => userEvent.keyboard("{Escape}"));
+  await userEvent.keyboard("{Escape}");
   await expect.element(goal).not.toBeVisible();
   await expect.element(limit).toBeVisible();
   expect(visibleBanners()).toHaveLength(1);
@@ -115,21 +87,21 @@ it("keeps only the usage limit attached while an active goal waits in the collap
 it("reveals the full running command only while its title is clipped", async () => {
   const command =
     "Running: /usr/bin/zsh -lc 'sleep 600 > /tmp/t3-background-command-with-a-long-log-filename-for-truncation.log 2>&1'";
+  const container = document.createElement("div");
   container.style.width = "240px";
-  await act(async () =>
-    root.render(
-      <ComposerBannerStack
-        items={[
-          {
-            id: "background-work",
-            variant: "default",
-            priority: "activity",
-            icon: null,
-            title: command,
-          },
-        ]}
-      />,
-    ),
+  await using _screen = await render(
+    <ComposerBannerStack
+      items={[
+        {
+          id: "background-work",
+          variant: "default",
+          priority: "activity",
+          icon: null,
+          title: command,
+        },
+      ]}
+    />,
+    { container },
   );
 
   const details = page.getByRole("button", { name: "Show title details", exact: true });
