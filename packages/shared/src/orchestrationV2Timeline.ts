@@ -53,15 +53,14 @@ export function isOrchestrationV2TurnItemVisible(input: {
     return false;
   }
 
-  // A steer can return to the queue before delivery. Keep its retained item out
-  // of conversation history until its run starts; cancelled queued inputs stay hidden.
+  // A queued message is composer state, not conversation history. When its run
+  // is cancelled the input never reached the provider, so it must not surface
+  // as a transcript row.
   if (
     item.type === "user_message" &&
     item.inputIntent === "queued_turn" &&
     item.runId !== null &&
-    input.runs.some(
-      (run) => run.id === item.runId && (run.status === "queued" || run.status === "cancelled"),
-    )
+    input.runs.some((run) => run.id === item.runId && run.status === "cancelled")
   ) {
     return false;
   }
@@ -96,7 +95,7 @@ export function createOrchestrationV2TurnItemVisibility(input: {
     const status = item.runId === null ? undefined : statuses.get(item.runId);
     if (status === "rolled_back") return false;
     if (
-      (status === "queued" || status === "cancelled") &&
+      status === "cancelled" &&
       item.type === "user_message" &&
       item.inputIntent === "queued_turn"
     )
