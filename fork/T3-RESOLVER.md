@@ -119,3 +119,18 @@ On any unrecoverable problem after claiming, including the time limit, write
 output. Run `bash "$FORK_RESOLVER_HOME/tools/fail-request.sh" "$run_id" "$reason_file"`.
 Leave the checkout and any stopped merge in place for inspection. If this helper fails too,
 report both errors; never claim that the issue was updated when it was not.
+
+Before ending, hand off and tidy up:
+
+- If the run failed at any stage, including setup or claiming, or left a
+  published candidate for human review (step 8 skipped or exit 3), and
+  `$FORK_RESOLVER_HOME/maintainer-thread` exists, send one message to the T3
+  address it contains with AgentBridge `send` (mode `queue`, `wait` false).
+  Start it with `[from the fork sync resolver on Lazarus]`. Give the outcome
+  and its reason, the request run ID if known, the issue comment URL if one
+  was posted, and the candidate SHA if one was published. Explicitly identify
+  unavailable metadata; never invent it.
+- Then settle this thread with `t3_thread_organize` (action `settle`). Its
+  outcome is either finished (promotion dispatched, or a quiet stop in step 2)
+  or handed to the maintainer. If the message could not be sent, do not
+  settle; report the error instead.
