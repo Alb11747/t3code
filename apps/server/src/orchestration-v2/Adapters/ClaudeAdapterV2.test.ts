@@ -3518,7 +3518,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           claimAgentMessages: (input) =>
             Effect.sync(() => {
               claims.push(input);
-              return ["Child finished."];
+              return ["From another agent:\nChild finished."];
             }),
         });
         const input = makeClaudeTestTurnInput({
@@ -3562,13 +3562,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.deepEqual(batch, {
           hookSpecificOutput: {
             hookEventName: "PostToolBatch",
-            additionalContext: "New message from another agent:\nChild finished.",
+            additionalContext: "New messages:\nFrom another agent:\nChild finished.",
           },
         });
         assert.deepEqual(stop, {
           hookSpecificOutput: {
             hookEventName: "Stop",
-            additionalContext: "New message from another agent:\nChild finished.",
+            additionalContext: "New messages:\nFrom another agent:\nChild finished.",
           },
         });
         assert.deepEqual(subagent, {});

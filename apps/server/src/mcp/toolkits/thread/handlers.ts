@@ -290,6 +290,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       type: "queued-message.promote-to-steer",
       queuedRunId: input.queuedRunId,
       targetRunId: input.targetRunId,
+      requestedBy: "agent",
     })),
   ),
   t3_thread_organize: writesThread((input) =>

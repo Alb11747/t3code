@@ -989,60 +989,66 @@ it.effect("keeps a held commentary draft before the steer when turn end flushes 
   ),
 );
 
-it.effect("keeps a queued message queued when promoted into a run that Stop reached", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const { started, steered, layer, startFirstTurn } =
-        yield* nextTurnSelectionHarness("steering-after-stop");
-      yield* Effect.gen(function* () {
-        const orchestrator = yield* Orchestrator.OrchestratorV2;
-        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        const threadId = yield* startFirstTurn;
-        const first = started[0]!;
-        yield* orchestrator.dispatch({
-          type: "message.dispatch",
-          commandId: CommandId.make("queued"),
-          threadId,
-          messageId: MessageId.make("message:queued"),
-          text: "queued",
-          attachments: [],
-          modelSelection: runSelection,
-          dispatchMode: { type: "queue_after_active" },
-          createdBy: "user",
-          creationSource: "web",
-        });
-        const queuedRun = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
-          (run) => run.status === "queued",
-        )!;
-        // The worker has not delivered the interrupt yet, so the run still reads as running.
-        yield* orchestrator.dispatch({
-          type: "run.interrupt",
-          commandId: CommandId.make("stop"),
-          threadId,
-          runId: first.runId,
-          holdQueue: true,
-        });
-
-        const promoteError = yield* orchestrator
-          .dispatch({
-            type: "queued-message.promote-to-steer",
-            commandId: CommandId.make("promote"),
+it.effect.each(["user", "agent"] as const)(
+  "keeps a queued message queued when the %s promotes it into a run that Stop reached",
+  (requester) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+          `steering-after-stop-${requester}`,
+          { activeSteeringInterruptsTools: true },
+        );
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threadId = yield* startFirstTurn;
+          const first = started[0]!;
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("queued"),
             threadId,
-            queuedRunId: queuedRun.id,
-            targetRunId: first.runId,
-          })
-          .pipe(Effect.flip);
-        yield* worker.drain();
+            messageId: MessageId.make("message:queued"),
+            text: "queued",
+            attachments: [],
+            modelSelection: runSelection,
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+          const queuedRun = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (run) => run.status === "queued",
+          )!;
+          // The worker has not delivered the interrupt yet, so the run still reads as running.
+          yield* orchestrator.dispatch({
+            type: "run.interrupt",
+            commandId: CommandId.make("stop"),
+            threadId,
+            runId: first.runId,
+            holdQueue: true,
+          });
 
-        const projection = yield* orchestrator.getThreadProjection(threadId);
-        assert.equal(promoteError._tag, "OrchestratorDispatchError");
-        assert.deepEqual(steered, []);
-        const queued = projection.runs.find((run) => run.id === queuedRun.id);
-        assert.equal(queued?.status, "queued");
-        assert.isTrue(queued?.queueHeld);
-      }).pipe(Effect.provide(layer));
-    }),
-  ),
+          const promoteError = yield* orchestrator
+            .dispatch({
+              type: "queued-message.promote-to-steer",
+              commandId: CommandId.make("promote"),
+              threadId,
+              queuedRunId: queuedRun.id,
+              targetRunId: first.runId,
+              ...(requester === "agent" ? { requestedBy: "agent" as const } : {}),
+            })
+            .pipe(Effect.flip);
+          yield* worker.drain();
+
+          const projection = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(promoteError._tag, "OrchestratorDispatchError");
+          assert.deepEqual(steered, []);
+          const queued = projection.runs.find((run) => run.id === queuedRun.id);
+          assert.equal(queued?.status, "queued");
+          assert.isTrue(queued?.queueHeld);
+          assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), []);
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
 );
 
 it.effect("queues a plain send behind the stopped queue and releases its hold", () =>
@@ -1259,7 +1265,9 @@ it.effect("an agent update joins the running turn at its next tool boundary, onc
         assert.equal(sent.delivery, "queued");
         assert.deepEqual(steered, []);
 
-        assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), ["progress update"]);
+        assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), [
+          "From another agent:\nprogress update",
+        ]);
         assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), []);
         const joined = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(
@@ -1347,6 +1355,103 @@ it.effect("Stop keeps a queued agent update out of the stopped turn's boundaries
       }).pipe(Effect.provide(layer));
     }),
   ),
+);
+
+it.effect.each(["auto", "steer"] as const)(
+  "a user's %s send steers a turn whose steering cancels tools right away",
+  (deliveryIntent) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+          `user-send-steers-${deliveryIntent}`,
+          { activeSteeringInterruptsTools: true },
+        );
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const threadId = yield* startFirstTurn;
+          // The client's dispatch shape: the server resolves the intent.
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("user-send"),
+            threadId,
+            messageId: MessageId.make("message:user-send"),
+            text: "user update",
+            attachments: [],
+            deliveryIntent,
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "user",
+            creationSource: "mobile",
+          });
+          yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+          const projection = yield* orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(steered, ["user update"]);
+          assert.equal(started.length, 1);
+          assert.isFalse(projection.runs.some((run) => run.status === "queued"));
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
+);
+
+it.effect.each(["agent", "user"] as const)(
+  "a queue promotion requested by the %s into a turn whose steering cancels tools",
+  (requester) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+          `queue-promote-${requester}`,
+          { activeSteeringInterruptsTools: true },
+        );
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threadId = yield* startFirstTurn;
+          const first = started[0]!;
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("queued"),
+            threadId,
+            messageId: MessageId.make("message:queued"),
+            text: "queued",
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+          const queuedRun = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (run) => run.status === "queued",
+          )!;
+          yield* orchestrator.dispatch({
+            type: "queued-message.promote-to-steer",
+            commandId: CommandId.make("promote"),
+            threadId,
+            queuedRunId: queuedRun.id,
+            targetRunId: first.runId,
+            ...(requester === "agent" ? { requestedBy: "agent" as const } : {}),
+          });
+          yield* worker.drain();
+
+          if (requester === "user") {
+            assert.deepEqual(steered, ["queued"]);
+            return;
+          }
+          // The agent's promotion waits for the running turn's next tool boundary.
+          assert.deepEqual(steered, []);
+          assert.equal(
+            (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+              (run) => run.id === queuedRun.id,
+            )?.status,
+            "queued",
+          );
+          // An agent promoted it, but the provider must still see the user wrote it.
+          assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), [
+            "From the user:\nqueued",
+          ]);
+          assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), []);
+          assert.deepEqual(steered, []);
+          assert.equal(started.length, 1);
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
 );
 
 it.effect.each([{ canRestart: false }, { canRestart: true }])(

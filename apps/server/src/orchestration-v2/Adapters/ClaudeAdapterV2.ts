@@ -9460,7 +9460,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   : {
                       hookSpecificOutput: {
                         hookEventName: hookInput.hook_event_name,
-                        additionalContext: `New message from another agent:\n${texts.join("\n\n")}`,
+                        additionalContext: `New messages:\n${texts.join("\n\n")}`,
                       },
                     };
               }),

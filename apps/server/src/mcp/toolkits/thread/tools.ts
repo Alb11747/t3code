@@ -123,7 +123,7 @@ const QueueReorderTool = Tool.make("t3_queue_reorder", {
 const QueuePromoteTool = Tool.make("t3_queue_promote_to_steer", {
   ...commandTool,
   description:
-    "Deliver a queued message as steering to the specified active run. Existing provider and run-state rules apply.",
+    "Deliver a queued message as steering to the specified active run. Existing provider and run-state rules apply. Providers whose steering does not interrupt running tools receive it immediately. Where steering would interrupt tools (including Claude), a text-only message waits for the run's next whole tool-batch boundary; if no boundary takes it before the run ends, it starts the next turn. A message with attachments always steers natively, which can interrupt tools.",
   parameters: Schema.Struct({ ...queueTarget, targetRunId: RunId }),
 }).annotate(Tool.Destructive, true);
 

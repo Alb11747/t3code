@@ -287,11 +287,13 @@ export const layer = Layer.effectDiscard(
           )?.event;
           if (joined?.type === "message.updated") {
             const promoted = joined.payload;
+            // An agent may promote a message the user queued, so each text names its own author.
+            const author = promoted.createdBy === "user" ? "the user" : "another agent";
             texts.push(
-              projectComposerContextForProvider({
+              `From ${author}:\n${projectComposerContextForProvider({
                 text: promoted.text,
                 records: promoted.context?.records ?? [],
-              }),
+              })}`,
             );
           }
         }

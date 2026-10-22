@@ -95,6 +95,38 @@ credentials stay on Lazarus; signing in does not copy them to the computer. You 
 not need local providers just to control remote agents. Lazarus must stay running
 and reachable, and updating the computer app does not update Lazarus's server.
 
+## Claude follow-ups during a running turn
+
+Choose **Steer** under **Settings → General → Follow-up behavior** to send
+follow-ups into the current turn. **Queue** deliberately waits for a separate
+turn. The stock mobile app stores this preference on the phone and defaults to
+Queue; changing the desktop preference or updating the fork server does not
+change the phone's choice.
+
+User steers use Claude Code's native steering. The stock mobile app sends its
+Steer choice as automatic delivery, so it can still become a queued next turn
+while the server is starting or finishing a provider turn, even if the thread
+already says Running. The server needs a live provider turn before it can steer.
+This also affects short replies and background continuations. A server update
+cannot change the stock app's submission behavior. Native steering itself does
+not guarantee immediate model attention: Claude Code can wait for a foreground
+shell call to return, and can cancel MCP calls in flight.
+
+Agent text updates normally enter the durable queue and join Claude's current
+turn at its next root tool-batch or Stop boundary, rather than waiting for the
+turn to end. Agent promotions of queued text follow the same rule; human
+promotions stay native. A successful MCP promotion receipt can still mean the
+message is waiting. Parallel tools finish their whole batch before delivery;
+the fork does not inject a context change between calls in the same batch.
+There is no delivery deadline while a tool call is running. A native timeout
+fallback would cancel MCP calls and could discard reasoning, so it cannot also
+guarantee uninterrupted work.
+Updates with attachments currently use native steering with an explanation that
+another agent sent them; that explanation does not prevent cancellation.
+Boundary delivery also has a crash window: an update claimed just before the
+server crashes can be lost before Claude reads it. Preservation of all thinking
+tokens has not been verified.
+
 ## Browser access on macOS or other computers
 
 To use the fork without a supported desktop build, open the web app served by a

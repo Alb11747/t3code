@@ -2887,6 +2887,9 @@ export const OrchestrationV2Command = Schema.Union([
     targetRunId: RunId,
     // The provider is delivering the message itself at a tool boundary: no steer effect.
     atToolBoundary: Schema.optional(Schema.Literal(true)),
+    // An agent's promotion waits for the running turn's next tool boundary when
+    // steering would cancel its tools.
+    requestedBy: Schema.optional(Schema.Literal("agent")),
   }),
   Schema.Struct({
     type: Schema.Literal("queue.resume"),
