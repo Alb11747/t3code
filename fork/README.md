@@ -138,11 +138,13 @@ attempt at the previous one.
 
 ## Adding a change
 
-1. Before an app or workflow feat or fix, fetch `origin` and `upstream` and check
-   fork `main` against the latest upstream target that sync would ship. Resolve
-   any pending sync review or failed sync first, following _Syncing with upstream_;
-   sync if main is behind that target. If blocked, stop and report. Guide-only
-   edits to `fork/*.md` are exempt. Start from synced fork `main` in a new worktree
+1. Before an app or workflow feat or fix, fetch `origin` and resolve any pending
+   sync review or failed sync first, following _Syncing with upstream_. If
+   blocked, stop and report. Main being behind upstream's newest nightly is not
+   a blocker: the watchdog syncs on its own schedule, and a sync per fix would
+   add an upstream-only release each time. Sync first only when the fix needs
+   an upstream change main lacks. Guide-only edits to `fork/*.md` are exempt.
+   Start from fork `main` in a new worktree
    (`git fetch origin && git worktree add -b <branch> <path> origin/main`).
 2. Make one focused commit per change. Keep the diff small and inside existing
    files' structure: every line touched in an upstream file is a potential
