@@ -1,3 +1,4 @@
+import * as TestClock from "effect/testing/TestClock";
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointId,
