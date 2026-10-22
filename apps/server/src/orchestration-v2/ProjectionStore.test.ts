@@ -5714,11 +5714,16 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           });
           assert.deepEqual(page.items, target.visibleTurnItems);
           const shellSnapshot = yield* projectionStore.getShellSnapshot();
-          for (const shell of [
-            yield* projectionStore.getThreadShell(targetThreadId),
-            shellSnapshot.threads.find((thread) => thread.id === targetThreadId),
+          for (const projection of [
+            yield* projectionStore.getThreadProjection(sourceThreadId),
+            target,
           ]) {
-            assert.equal(shell?.visibleItemCount, target.visibleTurnItems.length);
+            for (const shell of [
+              yield* projectionStore.getThreadShell(projection.thread.id),
+              shellSnapshot.threads.find((thread) => thread.id === projection.thread.id),
+            ]) {
+              assert.equal(shell?.visibleItemCount, projection.visibleTurnItems.length);
+            }
           }
           const filledLocalPage = yield* projectionStore.getThreadSnapshotWindow(targetThreadId, {
             rowLimit: target.visibleTurnItems.length,

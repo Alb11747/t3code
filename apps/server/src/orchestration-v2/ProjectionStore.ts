@@ -5870,7 +5870,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       sql<ShellItemCountRow>`
         SELECT counts.thread_id,
           SUM(CASE WHEN counts.run_id IS NULL OR r.status <> 'rolled_back'
-            THEN counts.item_count ELSE 0 END) AS item_count,
+            THEN counts.item_count - CASE
+              WHEN r.status IN ('queued', 'cancelled') THEN (
+                SELECT COUNT(*)
+                FROM orchestration_v2_projection_turn_items held
+                WHERE held.run_id = counts.run_id
+                  AND held.type = 'user_message'
+                  AND json_extract(held.payload_json, '$.inputIntent') = 'queued_turn'
+              )
+              ELSE 0
+            END
+            ELSE 0 END) AS item_count,
           SUM(CASE WHEN counts.run_id IS NULL THEN counts.item_count ELSE 0 END)
             AS runless_item_count
         FROM (
