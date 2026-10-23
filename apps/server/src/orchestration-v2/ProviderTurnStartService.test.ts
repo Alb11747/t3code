@@ -595,7 +595,9 @@ function makeLocalCommandHarness(input: {
                   ),
                 ),
               )
-            : input.failReadsAfterRunning === true || input.nativeTurn === true || input.previousTurn !== undefined
+            : input.failReadsAfterRunning === true ||
+                input.nativeTurn === true ||
+                input.previousTurn !== undefined
               ? Effect.succeed({
                   driver: providerThread.driver,
                   providerSession: {

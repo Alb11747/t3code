@@ -7087,7 +7087,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
   describe("overload retries", () => {
     const nativeThreadId = "overload-thread";
     const prompt = "Fix the build";
-    const turnCompleted = (id: string, status: "completed" | "failed") =>
+    const turnCompleted = (id: string, status: "completed" | "failed", includeErrorInfo = true) =>
       ({
         type: "emit_inbound",
         label: `turn/completed ${id}`,
@@ -7101,7 +7101,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 ? {
                     error: {
                       message: "Selected model is at capacity. Please try a different model.",
-                      codexErrorInfo: "serverOverloaded",
+                      ...(includeErrorInfo ? { codexErrorInfo: "serverOverloaded" as const } : {}),
                     },
                   }
                 : {}),
@@ -7145,76 +7145,98 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ),
       );
 
-    it.effect("continues an overloaded run with an empty-input turn after a backoff", () =>
-      Effect.gen(function* () {
-        const transcript = makeCodexReplayTranscript({
-          scenario: "overload-retry",
-          entries: [
-            ...codexReplayPreamble({ nativeThreadId, nativeTurnId: "turn-1", prompt }),
-            turnCompleted("turn-1", "failed"),
-            {
-              type: "expect_outbound",
-              label: "retry turn/start",
-              frame: {
-                id: 4,
-                method: "turn/start",
-                params: {
-                  threadId: nativeThreadId,
-                  input: [],
-                  cwd: "/workspace",
-                  model: "gpt-5.4",
-                  approvalPolicy: "never",
-                  approvalsReviewer: "user",
-                  sandboxPolicy: { type: "dangerFullAccess" },
-                  summary: "detailed",
+    it.effect.each(["completion", "notification"] as const)(
+      "continues an overloaded run reported by %s with an empty-input turn after a backoff",
+      (source) =>
+        Effect.gen(function* () {
+          const transcript = makeCodexReplayTranscript({
+            scenario: "overload-retry",
+            entries: [
+              ...codexReplayPreamble({ nativeThreadId, nativeTurnId: "turn-1", prompt }),
+              ...(source === "notification"
+                ? [
+                    {
+                      type: "emit_inbound" as const,
+                      label: "overload error notification",
+                      frame: {
+                        method: "error",
+                        params: {
+                          threadId: nativeThreadId,
+                          turnId: "turn-1",
+                          willRetry: false,
+                          error: {
+                            message: "Selected model is at capacity. Please try a different model.",
+                            codexErrorInfo: "serverOverloaded",
+                          },
+                        },
+                      },
+                    },
+                  ]
+                : []),
+              turnCompleted("turn-1", "failed", source === "completion"),
+              {
+                type: "expect_outbound",
+                label: "retry turn/start",
+                frame: {
+                  id: 4,
+                  method: "turn/start",
+                  params: {
+                    threadId: nativeThreadId,
+                    input: [],
+                    cwd: "/workspace",
+                    model: "gpt-5.4",
+                    approvalPolicy: "never",
+                    approvalsReviewer: "user",
+                    sandboxPolicy: { type: "dangerFullAccess" },
+                    summary: "detailed",
+                  },
                 },
               },
-            },
-            {
-              type: "emit_inbound",
-              label: "retry turn/start",
-              frame: {
-                id: 4,
-                result: { turn: makeCodexReplayTurn({ id: "turn-2", status: "inProgress" }) },
-              },
-            },
-            {
-              type: "emit_inbound",
-              label: "retry turn/started",
-              frame: {
-                method: "turn/started",
-                params: {
-                  threadId: nativeThreadId,
-                  turn: makeCodexReplayTurn({ id: "turn-2", status: "inProgress" }),
+              {
+                type: "emit_inbound",
+                label: "retry turn/start",
+                frame: {
+                  id: 4,
+                  result: { turn: makeCodexReplayTurn({ id: "turn-2", status: "inProgress" }) },
                 },
               },
-            },
-            turnCompleted("turn-2", "completed"),
-          ],
-        });
-        const harness = yield* makeCodexReplayHarness(transcript);
-        yield* harness.runtime.startTurn(yield* runInput(harness));
-        yield* harness.until(() => retryRows(harness.events).length > 0);
-        // The run stays open through the backoff.
-        assert.lengthOf(harness.terminalEvents(), 0);
-        yield* TestClock.adjust("10 seconds");
-        yield* harness.firstTerminal;
+              {
+                type: "emit_inbound",
+                label: "retry turn/started",
+                frame: {
+                  method: "turn/started",
+                  params: {
+                    threadId: nativeThreadId,
+                    turn: makeCodexReplayTurn({ id: "turn-2", status: "inProgress" }),
+                  },
+                },
+              },
+              turnCompleted("turn-2", "completed"),
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(transcript);
+          yield* harness.runtime.startTurn(yield* runInput(harness));
+          yield* harness.until(() => retryRows(harness.events).length > 0);
+          // The run stays open through the backoff.
+          assert.lengthOf(harness.terminalEvents(), 0);
+          yield* TestClock.adjust("10 seconds");
+          yield* harness.firstTerminal;
 
-        assert.deepEqual(
-          harness.terminalEvents().map((event) => [event.providerTurnId, event.status]),
-          [[yield* providerTurnId("turn-2"), "completed"]],
-        );
-        assert.deepEqual(retryRows(harness.events), [
-          ["running", 1, 10_000],
-          ["running", 1, null],
-          ["completed", 1, null],
-        ]);
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          assert.deepEqual(
+            harness.terminalEvents().map((event) => [event.providerTurnId, event.status]),
+            [[yield* providerTurnId("turn-2"), "completed"]],
+          );
+          assert.deepEqual(retryRows(harness.events), [
+            ["running", 1, 10_000],
+            ["running", 1, null],
+            ["completed", 1, null],
+          ]);
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
         ),
-      ),
     );
 
     it.effect("stops an abandoned in-flight overload retry before submitting a newer turn", () =>

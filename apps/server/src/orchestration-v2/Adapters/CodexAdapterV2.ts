@@ -6124,7 +6124,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             return undefined;
           const code =
             codexErrorInfoCode(input.failureErrorInfo) ??
-            input.context.latestProviderFailure?.failure.code;
+            input.context.latestProviderFailure?.nativeCode;
           const attempt = (overloadRetryAttempts.get(nativeThreadId) ?? 0) + 1;
           if (
             code !== "serverOverloaded" ||
@@ -6156,6 +6156,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           overloadRetryAttempts.set(nativeThreadId, attempt);
           const state: ActiveCodexProviderRetry = {
             nativeMessage: event.failure.message,
+            nativeCode: "serverOverloaded",
             failure: { ...event.failure, retryable: true },
             retry: {
               attempt,

@@ -42,6 +42,7 @@ describe("ProviderSettingsForm helpers", () => {
       "binaryPath",
       "homePath",
       "autoCompactWindow",
+      "idleCompaction",
       "launchArgs",
       "uncachedColdCompaction",
       "promptSuggestions",
