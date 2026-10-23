@@ -1391,13 +1391,26 @@ function isTurnItemAtOrBeforeRun(input: {
 }
 
 // Forks keep source history their cutoff covered even after the source rolls it
-// back, so only the remaining visibility rules apply to inherited items.
+// back, so only the remaining visibility rules apply to inherited items. Rollback
+// overwrites a cancelled run's status; its unchanged attempt preserves the
+// cancelled-input visibility rule.
 function createInheritedTurnItemVisibility(
   source: Parameters<typeof createOrchestrationV2TurnItemVisibility>[0],
 ) {
+  const cancelledRunIds = new Set(
+    source.attempts
+      .filter((attempt) => attempt.status === "cancelled")
+      .map((attempt) => attempt.runId),
+  );
   return createOrchestrationV2TurnItemVisibility({
     ...source,
-    runs: source.runs.filter((run) => run.status !== "rolled_back"),
+    runs: source.runs.flatMap((run) =>
+      run.status !== "rolled_back"
+        ? [run]
+        : cancelledRunIds.has(run.id)
+          ? [{ ...run, status: "cancelled" as const }]
+          : [],
+    ),
   });
 }
 
@@ -2853,7 +2866,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     )
                     AND NOT (
                       item.type = 'user_message'
-                      AND COALESCE(run.status IN ('queued', 'cancelled'), 0)
+                      AND (
+                        COALESCE(run.status IN ('queued', 'cancelled'), 0)
+                        OR (
+                          run.status = 'rolled_back'
+                          AND EXISTS (
+                            SELECT 1
+                            FROM orchestration_v2_projection_run_attempts AS attempt
+                            WHERE attempt.run_id = run.run_id
+                              AND attempt.status = 'cancelled'
+                          )
+                        )
+                      )
                       AND json_extract(item.payload_json, '$.inputIntent') = 'queued_turn'
                     )
                     AND (
@@ -5837,8 +5861,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             WHERE thread_id IN ${sql.in(threadIds)}
           `;
 
-    // Forks do not inherit undelivered queued input. Checking the run first keeps
-    // payload reads to the few queued or cancelled runs.
+    // Forks do not inherit undelivered queued input, including from cancelled runs
+    // rolled back later. Checking the run first keeps payload reads to those few runs.
     const selectShellRunItemCounts = (threadIds: ReadonlyArray<ThreadId>) =>
       sql<ShellRunItemCountRow>`
         SELECT per_run.thread_id, per_run.run_id,
@@ -5847,7 +5871,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               SELECT 1
               FROM orchestration_v2_projection_runs AS run
               WHERE run.run_id = per_run.run_id
-                AND run.status IN ('queued', 'cancelled')
+                AND (
+                  run.status IN ('queued', 'cancelled')
+                  OR (
+                    run.status = 'rolled_back'
+                    AND EXISTS (
+                      SELECT 1
+                      FROM orchestration_v2_projection_run_attempts AS attempt
+                      WHERE attempt.run_id = run.run_id
+                        AND attempt.status = 'cancelled'
+                    )
+                  )
+                )
             ) THEN (
               SELECT COUNT(*)
               FROM orchestration_v2_projection_turn_items AS held

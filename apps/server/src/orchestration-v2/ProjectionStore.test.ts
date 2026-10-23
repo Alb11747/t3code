@@ -5563,6 +5563,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         const sourceThreadId = ThreadId.make(`thread:${prefix}:source`);
         const targetThreadId = ThreadId.make(`thread:${prefix}:target`);
         const heldRunId = RunId.make(`run:${prefix}:held`);
+        const heldAttemptId = RunAttemptId.make(`attempt:${prefix}:held`);
         const answeredRunId = RunId.make(`run:${prefix}:answered`);
 
         for (const [threadId, forkedFrom] of [
@@ -5626,10 +5627,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
               providerThreadId: null,
               userMessageId: MessageId.make(`message:${runId}`),
               rootNodeId: NodeId.make(`node:${runId}`),
-              activeAttemptId: null,
+              activeAttemptId: runId === heldRunId ? heldAttemptId : null,
               status,
               requestedAt: now,
-              startedAt: status === "queued" ? null : now,
+              startedAt: runId === heldRunId ? null : now,
               completedAt: status === "queued" ? null : now,
               checkpointId: null,
               contextHandoffId: null,
@@ -5674,6 +5675,28 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           });
 
         yield* applyRun(heldRunId, 1, heldStatus);
+        yield* projectionStore.apply({
+          id: EventId.make(`event:${heldAttemptId}:created`),
+          type: "run-attempt.created",
+          threadId: sourceThreadId,
+          runId: heldRunId,
+          nodeId: NodeId.make(`node:${heldRunId}`),
+          driver,
+          occurredAt: now,
+          payload: {
+            id: heldAttemptId,
+            runId: heldRunId,
+            attemptOrdinal: 1,
+            rootNodeId: NodeId.make(`node:${heldRunId}`),
+            providerInstanceId,
+            providerThreadId: ProviderThreadId.make(`provider-thread:${prefix}`),
+            providerTurnId: null,
+            reason: "initial",
+            status: heldStatus === "queued" ? "pending" : "cancelled",
+            startedAt: null,
+            completedAt: heldStatus === "queued" ? null : now,
+          },
+        });
         yield* applyRun(answeredRunId, 2, "completed");
         yield* applyUserItem({
           threadId: sourceThreadId,
@@ -5746,6 +5769,11 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         // Forks keep rolled-back source history, but still not undelivered input.
         yield* applyRun(answeredRunId, 2, "rolled_back");
         yield* assertForkHidesHeldInput();
+        // Rollback also takes cancelled runs, and overwrites the status that hid their input.
+        if (heldStatus === "cancelled") {
+          yield* applyRun(heldRunId, 1, "rolled_back");
+          yield* assertForkHidesHeldInput();
+        }
       }
     }),
   );
