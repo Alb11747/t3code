@@ -78,7 +78,10 @@ if resolving a conflict requires that, report failure for local resolution.
    Quality job also enforces; format any files it lists with
    `corepack pnpm exec vp fmt <files>` and commit the result on top.
    Run `git diff --check "$(jq -r .main_sha "$FORK_RESOLVER_HOME/request.json")" HEAD`.
-   Confirm no unresolved index entries, no merge or revert state, a clean
+   Fix any hit in content you or a fork change wrote. A hit in a file whose blob
+   at HEAD matches the upstream commit (`git rev-parse HEAD:<file>` against
+   `<upstream sha>:<file>`) is upstream's: leave it, note it in the summary, and
+   do not count it as a failed check in step 8. Confirm no unresolved index entries, no merge or revert state, a clean
    checkout, and that HEAD contains both the request's main and upstream SHAs.
 7. Write `$FORK_RESOLVER_HOME/logs/<run_id>-summary.md`: what conflicted, how
    each conflict was resolved, checks run and their results (including

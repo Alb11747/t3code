@@ -143,7 +143,9 @@ attempt at the previous one.
    blocked, stop and report. Main being behind upstream's newest nightly is not
    a blocker: the watchdog syncs on its own schedule, and a sync per fix would
    add an upstream-only release each time. Sync first only when the fix needs
-   an upstream change main lacks. Guide-only edits to `fork/*.md` are exempt.
+   an upstream change main lacks. Guide-only edits to `fork/*.md` are exempt,
+   but no push to `main` may land while a sync request is open: promotion
+   rejects the candidate as stale once main moves, so wait for it to settle.
    Start from fork `main` in a new worktree
    (`git fetch origin && git worktree add -b <branch> <path> origin/main`).
 2. Make one focused commit per change. Keep the diff small and inside existing
