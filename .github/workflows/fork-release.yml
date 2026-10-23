@@ -479,8 +479,6 @@ jobs:
 
       - name: Build CLI single-executable
         env:
-          # Keep in step with SEA_NODE_VERSION in apps/server/vite.config.ts.
-          VP_NODE_VERSION: "26.8.2"
           T3CODE_TELEMETRY_CHANNEL: dev
         run: node apps/server/scripts/cli.ts build-exe --verbose
 
