@@ -176,6 +176,37 @@ describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platfo
     }).pipe(provideHost),
   );
 
+  it.live("reaps version-1 entries only when the recorded command still matches", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      for (const commandMatches of [true, false]) {
+        const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-ledger-v1-" });
+        const orphan = yield* spawnGroup(SERVE_ARGS);
+        yield* recordFromDeadServer(stateDir, orphan);
+        const entryPath = path.join(stateDir, "opencode-servers", `${orphan.pid}.json`);
+        const entry: { version: number; args?: ReadonlyArray<string>; command?: string } =
+          JSON.parse(yield* fs.readFileString(entryPath));
+        entry.version = 1;
+        delete entry.args;
+        entry.command = NodeChildProcess.execFileSync(
+          "/bin/ps",
+          ["-ww", "-o", "args=", "-p", String(orphan.pid)],
+          { encoding: "utf8" },
+        ).trimEnd();
+        if (!commandMatches) entry.command += " --different-command";
+        yield* fs.writeFileString(entryPath, JSON.stringify(entry));
+
+        const restarted = yield* OpenCodeServerLedger.make({ stateDir });
+        yield* restarted.reapOrphans;
+
+        expect(groupExists(orphan.pid)).toBe(!commandMatches);
+        if (commandMatches) expect(yield* orphan.exited).toBe("SIGTERM");
+        expect(yield* fs.exists(entryPath)).toBe(false);
+      }
+    }).pipe(provideHost),
+  );
+
   it.live("leaves a recycled pid alone when its start time does not match", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

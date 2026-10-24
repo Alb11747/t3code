@@ -15,19 +15,31 @@ import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 const ProcessIdentity = Schema.Struct({ pid: Schema.Int, startTime: Schema.String });
 type ProcessIdentity = typeof ProcessIdentity.Type;
 
-const OpenCodeServerEntry = Schema.Struct({
-  version: Schema.Literal(2),
+const OpenCodeServerEntryFields = {
   pgid: Schema.Int,
   pid: Schema.Int,
   startTime: Schema.String,
-  args: Schema.Array(Schema.String),
   port: Schema.Int,
   stateDir: Schema.String,
   owner: ProcessIdentity,
+};
+const OpenCodeServerEntry = Schema.Struct({
+  ...OpenCodeServerEntryFields,
+  version: Schema.Literal(2),
+  args: Schema.Array(Schema.String),
 });
 type OpenCodeServerEntry = typeof OpenCodeServerEntry.Type;
 const OpenCodeServerEntryJson = Schema.fromJsonString(OpenCodeServerEntry);
-const decodeEntry = Schema.decodeUnknownOption(OpenCodeServerEntryJson);
+// A previous installation may have crashed with a version-1 record still on disk.
+const RecordedOpenCodeServerEntry = Schema.Union([
+  OpenCodeServerEntry,
+  Schema.Struct({
+    ...OpenCodeServerEntryFields,
+    version: Schema.Literal(1),
+    command: Schema.String,
+  }),
+]);
+const decodeEntry = Schema.decodeUnknownOption(Schema.fromJsonString(RecordedOpenCodeServerEntry));
 const encodeEntry = Schema.encodeEffect(OpenCodeServerEntryJson);
 
 export class OpenCodeServerLedger extends Context.Service<
@@ -245,10 +257,10 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
   );
 
   // Signals only a group whose recorded member still has the same pid, start
-  // time, and group and still runs the same serve arguments, so a recycled pid
-  // is never touched.
+  // time, and group and matches the recorded command identity, so a recycled
+  // pid is never touched. Version-1 entries retain their full-command check.
   const stopOrphan = Effect.fn("OpenCodeServerLedger.stopOrphan")(function* (
-    entry: OpenCodeServerEntry,
+    entry: typeof RecordedOpenCodeServerEntry.Type,
   ) {
     const observed = yield* observe(entry.pid);
     if (
@@ -256,7 +268,7 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
       observed.zombie ||
       observed.startTime !== entry.startTime ||
       observed.pgid !== entry.pgid ||
-      !runsServe(observed, entry.args)
+      !(entry.version === 1 ? observed.command === entry.command : runsServe(observed, entry.args))
     ) {
       return;
     }
