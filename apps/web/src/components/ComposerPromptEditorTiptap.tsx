@@ -69,6 +69,7 @@ import {
   ComposerListExtensions,
   buildTiptapContent,
   caretTakesMarksBefore,
+  ComposerBoldSelectionOnlyExtension,
   convertBulletItemToTask,
   ComposerCodeExtension,
   ComposerItalicExtension,
@@ -877,6 +878,7 @@ function createComposerExtensions(richText: boolean) {
     ComposerMarkersExtension,
     ...(richText
       ? [
+          ComposerBoldSelectionOnlyExtension,
           ComposerItalicExtension,
           ComposerCodeExtension,
           ComposerCodeBlockExtension.extend({
