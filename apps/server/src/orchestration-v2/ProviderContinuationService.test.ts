@@ -594,11 +594,12 @@ describe("ProviderContinuationService", () => {
     });
   });
 
-  it.effect("an aborted boundary hook commits no further promotions", () =>
+  it.effect("an aborted boundary hook leaves no promoted update undelivered", () =>
     Effect.gen(function* () {
       // Three queued agent updates. The fake dispatch stands in for the SQLite
       // commit: the first promotion commits, the second blocks until the hook
-      // is aborted, and the third must never run.
+      // is aborted. Claude drops an aborted hook's output, so a committed
+      // promotion the claim did not return is a lost update.
       const runs = [1, 2, 3].map((ordinal) => ({
         id: RunId.make(`run-boundary-${ordinal}`),
         status: "queued",
@@ -648,8 +649,9 @@ describe("ProviderContinuationService", () => {
       }).pipe(Effect.forkScoped);
       yield* Deferred.await(blocked);
       yield* Fiber.interrupt(claim);
-      assert.isTrue(Exit.hasInterrupts(yield* Fiber.await(claim)));
-      assert.deepEqual(committed, [runs[0]!.id]);
+      const exit = yield* Fiber.await(claim);
+      const delivered = Exit.isSuccess(exit) ? exit.value : [];
+      assert.equal(committed.length, delivered.length);
     }).pipe(Effect.scoped),
   );
 });

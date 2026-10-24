@@ -592,13 +592,27 @@ const sendUpdate = Effect.fn("sendUpdate")(function* (
   return result;
 });
 
-it.effect.each(["auto", "steer"] as const)(
-  "queues an agent %s update behind a turn whose steering cancels tools",
-  (mode) =>
+const imageAttachment: ChatAttachment = {
+  type: "image",
+  id: "attachment-1",
+  name: "screen.png",
+  mimeType: "image/png",
+  sizeBytes: 1,
+};
+
+it.effect.each([
+  { mode: "auto", attachments: [] },
+  { mode: "steer", attachments: [] },
+  // Steering an image natively would still cancel the running tool.
+  { mode: "auto", attachments: [imageAttachment] },
+  { mode: "steer", attachments: [imageAttachment] },
+] as const)(
+  "queues an agent $mode update behind a turn whose steering cancels tools (attachments=$attachments.length)",
+  ({ mode, attachments }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const { events, started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
-          `agent-update-queued-${mode}`,
+          `agent-update-queued-${mode}-${attachments.length}`,
           { activeSteeringInterruptsTools: true },
         );
         yield* Effect.gen(function* () {
@@ -606,7 +620,7 @@ it.effect.each(["auto", "steer"] as const)(
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
           const threadId = yield* startFirstTurn;
           const first = started[0]!;
-          const result = yield* sendUpdate(threadId, "agent", mode);
+          const result = yield* sendUpdate(threadId, "agent", mode, attachments);
           assert.equal(result.delivery, "queued");
           assert.deepEqual(steered, []);
           const pending = yield* orchestrator.getThreadProjection(threadId);
@@ -653,22 +667,12 @@ it.effect.each(["auto", "steer"] as const)(
     ),
 );
 
-const imageAttachment: ChatAttachment = {
-  type: "image",
-  id: "attachment-1",
-  name: "screen.png",
-  mimeType: "image/png",
-  sizeBytes: 1,
-};
-
 it.effect.each([
-  { createdBy: "user", activeSteeringInterruptsTools: true, attachments: [] },
-  { createdBy: "agent", activeSteeringInterruptsTools: false, attachments: [] },
-  // Boundary hooks carry text only, so this one steers natively.
-  { createdBy: "agent", activeSteeringInterruptsTools: true, attachments: [imageAttachment] },
+  { createdBy: "user", activeSteeringInterruptsTools: true },
+  { createdBy: "agent", activeSteeringInterruptsTools: false },
 ] as const)(
-  "steers an update from $createdBy when steering is allowed (interruptsTools=$activeSteeringInterruptsTools, attachments=$attachments.length)",
-  ({ createdBy, activeSteeringInterruptsTools, attachments }) =>
+  "steers an update from $createdBy when steering is allowed (interruptsTools=$activeSteeringInterruptsTools)",
+  ({ createdBy, activeSteeringInterruptsTools }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
@@ -681,7 +685,6 @@ it.effect.each([
             threadId,
             createdBy,
             createdBy === "agent" ? "auto" : "steer",
-            attachments,
           );
           assert.equal(result.delivery, "steered");
           assert.deepEqual(steered, ["progress update"]);
