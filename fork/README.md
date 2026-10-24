@@ -171,7 +171,11 @@ attempt at the previous one.
    resolves or reviews the sync removes the patch (see below).
 
 5. Validate as `AGENTS.md` describes (package typecheck, touched tests,
-   `vp check` on changed files). Then get the full release checks on the
+   `vp check` on changed files). Run a package's tests from its directory
+   (`cd apps/web && vp test run <files>`): `--config apps/web/vite.config.ts`
+   from the repository root still resolves the config's relative paths
+   against the root, so setup files go missing or no tests are found.
+   Then get the full release checks on the
    branch before it reaches `main`. Push it to a branch on the fork, which
    starts no release, and run **Fork PR checks** on it:
 
