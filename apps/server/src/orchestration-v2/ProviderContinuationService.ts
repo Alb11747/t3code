@@ -1,5 +1,4 @@
 import { CommandId, type OrchestrationV2ThreadProjection } from "@t3tools/contracts";
-import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -8,7 +7,6 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import { isUndeliveredMailboxSteer } from "./NotificationMailbox.ts";
-import { queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
 
 const CONTINUATION_MESSAGE_TEXT = "Background task completed.";
 
@@ -243,71 +241,6 @@ export const layer = Layer.effectDiscard(
         );
       },
     );
-
-    // The provider waits on this from a tool-batch or stop hook, so each update
-    // joins its running turn before the hook returns the text. An update that
-    // cannot join (edited away, held by Stop, turn no longer running) stays
-    // queued for the next turn.
-    const claimAgentMessages = Effect.fn("ProviderContinuationService.claimAgentMessages")(
-      function* (input: Parameters<ProviderContinuationRequests.ClaimAgentMessages>[0]) {
-        // This runs at every tool batch: read only queued runs and their messages.
-        const { runs } = yield* threads.getThreadRecords(input.threadId, ["runs"], {
-          runStatuses: ["queued"],
-        });
-        if (runs.length === 0) return [];
-        const { messages } = yield* threads.getThreadRecords(input.threadId, ["messages"], {
-          messageIds: runs.map((run) => run.userMessageId),
-        });
-        const queued = { runs, messages };
-        const texts: Array<string> = [];
-        for (const run of queuedRunsInDeliveryOrder(queued)) {
-          const message = queued.messages.find((row) => row.id === run.userMessageId);
-          if (message?.atToolBoundary !== true) continue;
-          const result = yield* threads
-            .dispatch({
-              type: "queued-message.promote-to-steer",
-              // Fresh per try: a refusal now must not be replayed at a later boundary.
-              commandId: yield* ids.allocate.command({
-                fixtureName: "tool-boundary",
-                commandName: "promote",
-              }),
-              threadId: input.threadId,
-              queuedRunId: run.id,
-              targetRunId: input.runId,
-              atToolBoundary: true,
-            })
-            // A refusal leaves the update queued. An aborted hook interrupts this
-            // fiber instead, which must stop the loop before the next promotion.
-            .pipe(Effect.catch(() => Effect.succeed(undefined)));
-          // Deliver what the promotion committed, which may postdate the snapshot.
-          const joined = result?.storedEvents.find(
-            ({ event }) => event.type === "message.updated" && event.payload.id === message.id,
-          )?.event;
-          if (joined?.type === "message.updated") {
-            const promoted = joined.payload;
-            texts.push(
-              projectComposerContextForProvider({
-                text: promoted.text,
-                records: promoted.context?.records ?? [],
-              }),
-            );
-          }
-        }
-        return texts;
-      },
-      (effect, input) =>
-        effect.pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("orchestration-v2.provider-continuation.agent-message-claim-failed", {
-              threadId: input.threadId,
-              cause,
-            }).pipe(Effect.as([])),
-          ),
-        ),
-    );
-    if (requests.serveAgentMessages !== undefined) {
-      yield* requests.serveAgentMessages(claimAgentMessages);
-    }
 
     yield* requests.take.pipe(
       Effect.flatMap((request) =>

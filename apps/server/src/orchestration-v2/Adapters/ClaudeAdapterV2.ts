@@ -26,7 +26,6 @@ import {
   type EffortLevel,
   type ForkSessionOptions,
   type ForkSessionResult,
-  type HookCallback,
   getSessionMessages,
   getSubagentMessages,
   query,
@@ -304,8 +303,6 @@ const CLAUDE_SCRIPT_EXTENSIONS = [".js", ".mjs", ".tsx", ".ts", ".jsx"];
 // The SDK puts no deadline on control requests. The CLI answers
 // mcp_set_servers once each server connected or hit its own 30 s timeout.
 const CLAUDE_MCP_REGISTRATION_TIMEOUT = "90 seconds";
-const CLAUDE_AGENT_STEER_NOTE =
-  "This message came from another agent, not the user, and may have interrupted a running command; check that command's state before continuing.";
 // Claude can consume a subagent result before the launching turn ends, leaving
 // its notification with no native wake turn to answer the continuation.
 const CLAUDE_WAKE_TURN_START_DEADLINE = "2 minutes";
@@ -3899,7 +3896,6 @@ export interface ClaudeAdapterV2Options {
     readonly offer: (
       request: ProviderContinuationRequests.ProviderContinuationRequest,
     ) => Effect.Effect<void>;
-    readonly claimAgentMessages?: ProviderContinuationRequests.ClaimAgentMessages;
   };
 }
 
@@ -9314,53 +9310,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             supportedDialogKinds: ["resume_return"],
             ...(appendSystemPromptFileText === undefined ? {} : { appendSystemPromptFileText }),
           });
-          // Native steering cancels running tools, so agent updates wait in the
-          // app queue. The root agent's tool-batch and stop boundaries take them
-          // as context: the tool has finished and, at Stop, the turn continues.
-          // The claim commits before the SDK reads the context: delivery is at
-          // most once, and a crash in that window loses the claimed updates. A
-          // cancelled hook interrupts the claim before its next promotion.
-          const takeAgentMessages: HookCallback = (hookInput, _toolUseId, { signal }) =>
-            runPromise(
-              Effect.gen(function* () {
-                const context = yield* Ref.get(activeTurn);
-                if (
-                  (hookInput.hook_event_name !== "PostToolBatch" &&
-                    hookInput.hook_event_name !== "Stop") ||
-                  hookInput.agent_id !== undefined ||
-                  context === null ||
-                  context.nativeThreadId !== hookInput.session_id ||
-                  (yield* Ref.get(interruptedTurns)).has(context.providerTurnId) ||
-                  continuationRequests.claimAgentMessages === undefined
-                ) {
-                  return {};
-                }
-                const texts = yield* continuationRequests.claimAgentMessages({
-                  threadId: context.input.threadId,
-                  runId: context.input.runId,
-                });
-                return texts.length === 0
-                  ? {}
-                  : {
-                      hookSpecificOutput: {
-                        hookEventName: hookInput.hook_event_name,
-                        additionalContext: `New message from another agent:\n${texts.join("\n\n")}`,
-                      },
-                    };
-              }),
-              { signal },
-            );
           const querySession = yield* queryRunner
             .open({
               threadId: turnInput.threadId,
               providerSessionId: input.providerSessionId,
-              options: {
-                ...queryOptions,
-                hooks: {
-                  PostToolBatch: [{ hooks: [takeAgentMessages] }],
-                  Stop: [{ hooks: [takeAgentMessages] }],
-                },
-              },
+              options: queryOptions,
             })
             .pipe(
               Effect.onError(() =>
@@ -9954,12 +9908,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             }
             const userMessage = yield* makeClaudeUserMessageWithAttachments({
               text: applyClaudePromptEffortPrefix(
-                // An agent update steers natively only when hooks cannot carry it
-                // (attachments). It cancels running tools; say so, or Claude reads
-                // the cancellation as a user refusal.
-                turnInput.message.createdBy === "agent"
-                  ? `${CLAUDE_AGENT_STEER_NOTE}\n\n${turnInput.message.text}`
-                  : turnInput.message.text,
+                turnInput.message.text,
                 compileClaudeModelSelection(currentTurn.input.modelSelection).promptEffort,
               ),
               attachments: turnInput.message.attachments,

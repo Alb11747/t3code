@@ -12,7 +12,6 @@ import {
   ThreadId,
   TurnItemId,
   type ChatAttachment,
-  type RunId,
   type ModelSelection,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
@@ -23,7 +22,6 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
-import * as TestClock from "effect/testing/TestClock";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -36,7 +34,6 @@ import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 
 const driver = ProviderDriverKind.make("codex");
 const instanceId = ProviderInstanceId.make("codex");
@@ -517,7 +514,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
   const layerRuntime = ProviderReplayHarness.layerWithRegistry(
     { name },
     ProviderAdapterRegistry.layerSingle(adapter),
-    { runEffectWorker: false, runContinuationWorker: true, databaseLayer },
+    { runEffectWorker: false, databaseLayer },
   );
   const layer = ThreadManagement.layer.pipe(
     Layer.provide(ServerSettings.layerTest()),
@@ -692,122 +689,6 @@ it.effect.each([
         }).pipe(Effect.provide(layer));
       }),
     ),
-);
-
-// The Claude adapter calls this from its root PostToolBatch and Stop hooks.
-const claimAtToolBoundary = Effect.fn("claimAtToolBoundary")(function* (
-  threadId: ThreadId,
-  runId: RunId,
-) {
-  const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
-  return yield* requests.claimAgentMessages!({ threadId, runId });
-});
-
-it.effect("an agent update joins the running turn at its next tool boundary, once", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const { events, started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
-        "agent-update-tool-boundary",
-        { activeSteeringInterruptsTools: true },
-      );
-      yield* Effect.gen(function* () {
-        const orchestrator = yield* Orchestrator.OrchestratorV2;
-        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        const threadId = yield* startFirstTurn;
-        const first = started[0]!;
-        // The update arrives while a long tool call runs; nothing reaches the provider.
-        const sent = yield* sendUpdate(threadId, "agent", "auto");
-        assert.equal(sent.delivery, "queued");
-        assert.deepEqual(steered, []);
-
-        assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), ["progress update"]);
-        assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), []);
-        const joined = yield* orchestrator.getThreadProjection(threadId);
-        assert.equal(
-          joined.messages.find((message) => message.id === MessageId.make("message:update"))?.runId,
-          first.runId,
-        );
-        assert.isFalse(joined.runs.some((run) => run.status === "queued"));
-        // The sender waits on the run it was given; the run that took the update answers.
-        const waiting = yield* (yield* ThreadManagement.ThreadManagementService)
-          .waitForThread({
-            projectId: joined.thread.projectId,
-            threadId,
-            runId: sent.run.id,
-            timeoutMs: 1,
-          })
-          .pipe(Effect.forkScoped);
-        yield* TestClock.adjust("1 second");
-        const waited = yield* Fiber.join(waiting);
-        assert.equal(waited.run?.id, first.runId);
-        assert.isTrue(waited.timedOut);
-
-        // The turn ends; the update does not start another one.
-        const completed = yield* orchestrator.streamDomainEvents.pipe(
-          Stream.filter(
-            (event) =>
-              event.type === "run.updated" &&
-              event.payload.id === first.runId &&
-              event.payload.status === "waiting",
-          ),
-          Stream.take(1),
-          Stream.runDrain,
-          Effect.forkScoped,
-        );
-        const turn = joined.providerTurns[0]!;
-        yield* Queue.offer(events, {
-          type: "provider_turn.updated",
-          driver,
-          providerTurn: { ...turn, status: "completed", completedAt: yield* DateTime.now },
-        });
-        yield* Queue.offer(events, {
-          type: "turn.terminal",
-          driver,
-          providerThreadId: turn.providerThreadId,
-          providerTurnId: turn.id,
-          runOrdinal: first.runOrdinal,
-          status: "completed",
-          failure: null,
-          threadDisposition: "reusable",
-        });
-        yield* Fiber.join(completed);
-        yield* worker.drain();
-        yield* orchestrator.resumeQueuedRuns;
-        yield* worker.drain();
-        assert.equal(started.length, 1);
-        assert.deepEqual(steered, []);
-      }).pipe(Effect.provide(layer));
-    }),
-  ),
-);
-
-it.effect("Stop keeps a queued agent update out of the stopped turn's boundaries", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const { started, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
-        "agent-update-boundary-after-stop",
-        { activeSteeringInterruptsTools: true },
-      );
-      yield* Effect.gen(function* () {
-        const orchestrator = yield* Orchestrator.OrchestratorV2;
-        const threadId = yield* startFirstTurn;
-        const first = started[0]!;
-        assert.equal((yield* sendUpdate(threadId, "agent", "auto")).delivery, "queued");
-        yield* orchestrator.dispatch({
-          type: "run.interrupt",
-          commandId: CommandId.make("stop"),
-          threadId,
-          runId: first.runId,
-          holdQueue: true,
-        });
-
-        assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), []);
-        const projection = yield* orchestrator.getThreadProjection(threadId);
-        const queued = projection.runs.find((run) => run.status === "queued");
-        assert.equal(queued?.queueHeld, true);
-      }).pipe(Effect.provide(layer));
-    }),
-  ),
 );
 
 it.effect("sends a selected held message once and preserves the remaining queue order", () =>
