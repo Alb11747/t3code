@@ -11,7 +11,7 @@ type TimelineTurnItem = Pick<OrchestrationV2TurnItem, "type" | "runId" | "nodeId
   readonly inputIntent?: OrchestrationV2UserMessageInputIntent;
 };
 
-export function isOrchestrationV2SupersededInterrupt(input: {
+function isOrchestrationV2SupersededInterrupt(input: {
   readonly item: TimelineTurnItem;
   readonly attempts: ReadonlyArray<TimelineRunAttempt>;
   readonly items: ReadonlyArray<TimelineTurnItem>;
