@@ -11,7 +11,7 @@ type TimelineTurnItem = Pick<OrchestrationV2TurnItem, "type" | "runId" | "nodeId
   readonly inputIntent?: OrchestrationV2UserMessageInputIntent;
 };
 
-function isOrchestrationV2SupersededInterrupt(input: {
+export function isOrchestrationV2SupersededInterrupt(input: {
   readonly item: TimelineTurnItem;
   readonly attempts: ReadonlyArray<TimelineRunAttempt>;
   readonly items: ReadonlyArray<TimelineTurnItem>;
@@ -31,8 +31,7 @@ function isOrchestrationV2SupersededInterrupt(input: {
     return false;
   }
 
-  // Paired stop-then-steer results have a matching request on the same run and
-  // must stay visible. Legacy plain-steer results have no request and stay hidden.
+  // Show paired stop-then-steer results; hide legacy plain-steer results without matching requests.
   const hasMatchingRequest = input.items.some(
     (candidate) => candidate.type === "run_interrupt_request" && candidate.runId === item.runId,
   );
