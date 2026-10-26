@@ -685,6 +685,7 @@ const decodeCodexTurnStartParamsWithCollaborationMode = Schema.decodeUnknownEffe
 const isProviderAdapterRuntimeRequestResponseError = Schema.is(
   ProviderAdapter.ProviderAdapterRuntimeRequestResponseError,
 );
+const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
 function codexRuntimeModeTurnDefaults(runtimeMode: RuntimeMode): {
   readonly approvalPolicy: CodexSchema.V2TurnStartParams__AskForApproval;
@@ -6137,10 +6138,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   });
                   if (!stillHeld() || hold.overloadRetry === undefined) return;
                   // Codex rejected the start before creating a turn, so the run keeps waiting.
-                  if (
-                    Schema.is(CodexErrors.CodexAppServerRequestError)(cause) &&
-                    cause.code === -32001
-                  ) {
+                  if (isCodexAppServerRequestError(cause) && cause.code === -32001) {
                     const attempt = (overloadRetryAttempts.get(nativeThreadId) ?? 0) + 1;
                     overloadRetryAttempts.set(nativeThreadId, attempt);
                     const retryDelayMs = codexOverloadRetryDelayMs(attempt);
