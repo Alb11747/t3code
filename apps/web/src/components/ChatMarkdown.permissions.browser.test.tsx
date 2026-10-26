@@ -233,7 +233,7 @@ it("downloads the workspace file a bare filename link resolves to", async () => 
         input: {
           resource: expect.objectContaining({
             path: "/work/docs/nested/report.pdf",
-            download: true,
+            disposition: "attachment",
           }),
         },
       }),
