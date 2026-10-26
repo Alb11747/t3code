@@ -3881,14 +3881,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         };
       },
       (effect, threadId, seenThreadIds, _window?) =>
-        effect.pipe(
-          Effect.flatMap((projection) =>
-            seenThreadIds.size > 0
-              ? Effect.succeed(projection)
-              : hydrateCompactionForkSupport(projection.visibleTurnItems).pipe(
-                  Effect.map((visibleTurnItems) => ({ ...projection, visibleTurnItems })),
-                ),
-          ),
+        Effect.gen(function* () {
+          const projection = yield* effect;
+          if (seenThreadIds.size > 0) return projection;
+          const visibleTurnItems = yield* hydrateCompactionForkSupport(projection.visibleTurnItems);
+          return { ...projection, visibleTurnItems };
+        }).pipe(
           Effect.mapError((cause) =>
             isProjectionStoreThreadNotFoundError(cause) || isProjectionStoreReadError(cause)
               ? cause

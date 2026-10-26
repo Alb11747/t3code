@@ -4609,7 +4609,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         });
         yield* harness.runtime.startTurn(input);
         const hooks = harness.getOpenedOptions()?.hooks;
-        const signal = new AbortController().signal;
+        const signal = yield* Effect.abortSignal;
         const base = {
           session_id: WAKE_NATIVE_SESSION,
           transcript_path: "",
