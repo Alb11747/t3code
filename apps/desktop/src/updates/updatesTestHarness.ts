@@ -220,30 +220,28 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
   const isInstallRecord = (path: string) =>
     path.endsWith(DesktopUpdates.DESKTOP_UPDATE_INSTALL_RECORD_FILE);
   const layerFileSystem = FileSystem.layerNoop({
-    readFileString: (path) => {
+    readFileString: Effect.fn("readFileString")(function* (path) {
       const installRecord = isInstallRecord(path)
         ? (installRecords.get(path) ?? previousInstallRecord)
         : undefined;
-      if (installRecord !== undefined) return Effect.succeed(installRecord);
+      if (installRecord !== undefined) return installRecord;
       const resourcePath = path.replaceAll("\\", "/");
       if (resourcePath === "/missing/resources/package-type" && options.packageType !== undefined) {
-        return Effect.succeed(options.packageType);
+        return options.packageType;
       }
       if (
         resourcePath === "/missing/resources/app-update.yml" &&
         options.appUpdateYml !== undefined
       ) {
-        return Effect.succeed(options.appUpdateYml);
+        return options.appUpdateYml;
       }
-      return Effect.fail(
-        PlatformError.systemError({
-          module: "FileSystem",
-          method: "readFileString",
-          _tag: "NotFound",
-          pathOrDescriptor: path,
-        }),
-      );
-    },
+      return yield* PlatformError.systemError({
+        module: "FileSystem",
+        method: "readFileString",
+        _tag: "NotFound",
+        pathOrDescriptor: path,
+      });
+    }),
     makeDirectory: () => Effect.void,
     writeFileString: (path, data) =>
       Effect.sync(() => {
