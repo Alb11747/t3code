@@ -295,6 +295,27 @@ export const openExternal = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const downloadFile = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.DOWNLOAD_FILE_CHANNEL,
+  payload: Schema.String,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.window.downloadFile")(function* (rawUrl) {
+    const url = URL.parse(rawUrl);
+    if (
+      !url ||
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      !url.pathname.startsWith("/api/assets/")
+    ) {
+      return false;
+    }
+    const electronWindow = yield* ElectronWindow.ElectronWindow;
+    const window = yield* electronWindow.currentMainOrFirst;
+    if (Option.isNone(window)) return false;
+    window.value.webContents.downloadURL(url.href);
+    return true;
+  }),
+});
+
 export const openSystemSettings = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.OPEN_SYSTEM_SETTINGS_CHANNEL,
   payload: SystemSettingsPaneSchema,

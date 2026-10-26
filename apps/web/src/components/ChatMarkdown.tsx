@@ -527,9 +527,14 @@ function useChatMarkdownState({
       }
       const url = resolveAssetUrl(connection.httpBaseUrl, result.value.relativeUrl);
       if (!url) throw new Error("The environment returned an invalid file URL.");
+      if (window.desktopBridge?.downloadFile) {
+        if (!(await window.desktopBridge.downloadFile(url))) {
+          throw new Error("The desktop app could not start the download.");
+        }
+        return;
+      }
       const anchor = document.createElement("a");
-      // Electron handles this marker with downloadURL instead of opening a remote URL externally.
-      anchor.href = `${url}#download`;
+      anchor.href = url;
       anchor.download = "";
       document.body.appendChild(anchor);
       anchor.click();

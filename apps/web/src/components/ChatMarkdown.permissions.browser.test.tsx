@@ -14,7 +14,7 @@ import { AsyncResult } from "effect/reactivity";
 import { PrimaryConnectionTarget } from "@t3tools/client-runtime/connection";
 import { expect, it, vi } from "vite-plus/test";
 
-import { act, render } from "../../test/render";
+import { act, render, stubGlobal } from "../../test/render";
 import { useRightPanelStore } from "../rightPanelStore";
 
 const state = vi.hoisted(() => ({
@@ -239,6 +239,25 @@ it("downloads the workspace file a bare filename link resolves to", async () => 
       }),
     ),
   );
+});
+
+it("sends a minted file URL to the desktop download command without navigating", async () => {
+  using _setup = setup();
+  const downloadFile = vi.fn().mockResolvedValue(true);
+  using _bridge = stubGlobal("desktopBridge", { downloadFile });
+  state.search
+    .mockResolvedValueOnce(
+      AsyncResult.success({ entries: [{ path: "docs/nested/report.pdf", kind: "file" }] }),
+    )
+    .mockResolvedValueOnce(AsyncResult.success({ relativeUrl: "/api/assets/report" }));
+  state.choose.mockResolvedValue("download");
+  await using screen = await renderMarkdown("[Report](report.pdf)");
+  using anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  await screen.openContextMenu();
+  await vi.waitFor(() =>
+    expect(downloadFile).toHaveBeenCalledWith("http://host/api/assets/report"),
+  );
+  expect(anchorClick).not.toHaveBeenCalled();
 });
 
 it("does not launch an editor after revocation during a native context menu", async () => {

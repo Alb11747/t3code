@@ -24,11 +24,59 @@ import * as DesktopAppSettings from "../../settings/DesktopAppSettings.ts";
 import * as ElectronDialog from "../../electron/ElectronDialog.ts";
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import {
+  downloadFile,
   getLocalEnvironmentBootstraps,
   getRelayTelemetryEnabled,
   pickProjectFavicon,
   probeRemoteEditors,
 } from "./window.ts";
+
+describe("downloadFile", () => {
+  it.effect("downloads local and remote assets through the desktop command", () =>
+    Effect.gen(function* () {
+      const downloadURL = vi.fn();
+      const window = { webContents: { downloadURL } } as unknown as Electron.BrowserWindow;
+      const urls = [
+        "http://127.0.0.1:3773/api/assets/signed-token/archive.zip",
+        "https://remote.example.com/api/assets/signed-token/archive.zip",
+      ];
+      for (const url of urls) {
+        const result = yield* downloadFile.handler(url).pipe(
+          Effect.provide(
+            Layer.mock(ElectronWindow.ElectronWindow)({
+              currentMainOrFirst: Effect.succeedSome(window),
+            }),
+          ),
+        );
+        assert.strictEqual(result, true);
+      }
+      assert.deepEqual(
+        downloadURL.mock.calls,
+        urls.map((url) => [url]),
+      );
+    }),
+  );
+
+  it.effect("rejects non-asset and non-HTTP download URLs", () =>
+    Effect.gen(function* () {
+      for (const url of [
+        "file:///tmp/file.zip",
+        "javascript:alert(1)",
+        "https://example.com/archive.zip",
+        "not a URL",
+      ]) {
+        const result = yield* downloadFile.handler(url).pipe(
+          Effect.provide(
+            Layer.mock(ElectronWindow.ElectronWindow)({
+              currentMainOrFirst: Effect.die("Unexpected download window lookup"),
+            }),
+          ),
+        );
+        assert.strictEqual(result, false);
+      }
+    }),
+  );
+});
 
 const readyWslConfig: DesktopBackendManager.DesktopBackendStartConfig = {
   executablePath: "wsl.exe",
