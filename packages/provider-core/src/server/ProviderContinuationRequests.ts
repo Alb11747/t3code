@@ -68,8 +68,12 @@ export const layer = Layer.effect(
         return Queue.offer(queue, request).pipe(Effect.asVoid);
       }),
       take: Queue.take(queue),
-      claimAgentMessages: (input) => Ref.get(claim).pipe(Effect.flatMap((serve) => serve(input))),
-      serveAgentMessages: (serve) => Ref.set(claim, serve),
+      claimAgentMessages: Effect.fn("ProviderContinuationRequests.claimAgentMessages")((input) =>
+        Ref.get(claim).pipe(Effect.flatMap((serve) => serve(input))),
+      ),
+      serveAgentMessages: Effect.fn("ProviderContinuationRequests.serveAgentMessages")((serve) =>
+        Ref.set(claim, serve),
+      ),
     };
   }),
 );
