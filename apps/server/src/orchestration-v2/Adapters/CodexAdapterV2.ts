@@ -91,6 +91,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
+import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -945,12 +946,14 @@ function describeCodexGoal(goal: OrchestrationV2ProviderGoal): string {
 // Codex starts the next goal turn milliseconds after the last one completes.
 const CODEX_GOAL_CONTINUATION_GRACE = "5 seconds";
 
-// Codex fails turns on capacity at once and on throttling or transport failures
-// after a few quick retries. The run instead continues with empty-input turns,
-// which see the failed turn's recorded work, until one makes progress: waits
-// start at 10s and double up to 3 minutes, with no attempt cap.
-const codexOverloadRetryDelayMs = (attempt: number) =>
-  Math.min(10_000 * 2 ** (attempt - 1), 180_000);
+// After Codex gives up on capacity, throttling or transport failures, the run
+// continues with empty-input turns until one makes progress. Waits start at 10s
+// and double up to 3 minutes with no attempt cap; each is drawn from the upper
+// half of its step so threads that failed together don't retry in lockstep.
+const codexOverloadRetryDelayMs = (attempt: number) => {
+  const step = Math.min(10_000 * 2 ** (attempt - 1), 180_000);
+  return Effect.map(Random.next, (draw) => step - Math.floor((draw * step) / 2));
+};
 
 const CODEX_RECOVERABLE_FAILURE_CODES = new Set([
   "serverOverloaded",
@@ -6063,7 +6066,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             retry: {
               attempt,
               maxAttempts: null,
-              retryDelayMs: codexOverloadRetryDelayMs(attempt),
+              retryDelayMs: yield* codexOverloadRetryDelayMs(attempt),
             },
             startedAt: input.providerRetry?.startedAt ?? (yield* DateTime.now),
             itemOrdinal: input.providerRetry?.itemOrdinal ?? event.failureItemOrdinal,
@@ -6141,7 +6144,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   if (isCodexAppServerRequestError(cause) && cause.code === -32001) {
                     const attempt = (overloadRetryAttempts.get(nativeThreadId) ?? 0) + 1;
                     overloadRetryAttempts.set(nativeThreadId, attempt);
-                    const retryDelayMs = codexOverloadRetryDelayMs(attempt);
+                    const retryDelayMs = yield* codexOverloadRetryDelayMs(attempt);
                     const { state } = hold.overloadRetry;
                     hold.overloadRetry.state = {
                       ...state,

@@ -52,6 +52,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -7419,6 +7420,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     );
   });
   describe("overload retries", () => {
+    // A zero draw gives each backoff step its full length, so delays are exact.
+    const fullRetryDelays = Layer.succeed(Random.Random, {
+      nextDoubleUnsafe: () => 0,
+      nextIntUnsafe: () => 0,
+    });
     const nativeThreadId = "overload-thread";
     const prompt = "Fix the build";
     const turnCompleted = (id: string, status: "completed" | "failed", includeErrorInfo = true) =>
@@ -7479,9 +7485,14 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ),
       );
 
-    it.effect.each(["completion", "notification"] as const)(
-      "continues an overloaded run reported by %s with an empty-input turn after a backoff",
-      (source) =>
+    it.effect.each([
+      { source: "completion", draw: 0, delayMs: 10_000 },
+      { source: "notification", draw: 0, delayMs: 10_000 },
+      // Threads failing together draw different waits from the upper half of the step.
+      { source: "completion", draw: 0.5, delayMs: 7_500 },
+    ] as const)(
+      "continues an overloaded run reported by $source with an empty-input turn after a $delayMs ms backoff",
+      ({ source, draw, delayMs }) =>
         Effect.gen(function* () {
           const transcript = makeCodexReplayTranscript({
             scenario: "overload-retry",
@@ -7554,7 +7565,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           yield* harness.until(() => retryRows(harness.events).length > 0);
           // The run stays open through the backoff.
           assert.lengthOf(harness.terminalEvents(), 0);
-          yield* TestClock.adjust("10 seconds");
+          yield* TestClock.adjust(delayMs);
           yield* harness.firstTerminal;
 
           assert.deepEqual(
@@ -7562,14 +7573,22 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             [[yield* providerTurnId("turn-2"), "completed"]],
           );
           assert.deepEqual(retryRows(harness.events), [
-            ["running", 1, 10_000],
+            ["running", 1, delayMs],
             ["running", 1, null],
             ["completed", 1, null],
           ]);
         }).pipe(
           Effect.scoped,
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              Layer.succeed(Random.Random, {
+                nextDoubleUnsafe: () => draw,
+                nextIntUnsafe: () => 0,
+              }),
+            ),
           ),
         ),
     );
@@ -7712,7 +7731,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            fullRetryDelays,
+          ),
         ),
       ),
     );
@@ -7808,7 +7832,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            fullRetryDelays,
+          ),
         ),
       ),
     );
@@ -7930,7 +7959,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            fullRetryDelays,
+          ),
         ),
       ),
     );
@@ -8005,7 +8039,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         }).pipe(
           Effect.scoped,
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              fullRetryDelays,
+            ),
           ),
         ),
     );
@@ -8098,7 +8137,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         }).pipe(
           Effect.scoped,
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              fullRetryDelays,
+            ),
           ),
         ),
     );
@@ -8164,7 +8208,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            fullRetryDelays,
+          ),
         ),
       ),
     );
@@ -8220,7 +8269,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            fullRetryDelays,
+          ),
         ),
       ),
     );
@@ -8268,7 +8322,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            fullRetryDelays,
+          ),
         ),
       ),
     );
@@ -8384,7 +8443,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            fullRetryDelays,
+          ),
         ),
       ),
     );
@@ -8459,7 +8523,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            fullRetryDelays,
+          ),
         ),
       ),
     );
