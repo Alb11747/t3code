@@ -6258,6 +6258,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             limit: target.visibleTurnItems.length + 1,
           });
           assert.deepEqual(page.items, target.visibleTurnItems);
+          const bounded = yield* projectionStore.getThreadSnapshotWindow(targetThreadId, {
+            rowLimit: target.visibleTurnItems.length + 1,
+          });
+          assert.deepEqual(bounded.projection.visibleTurnItems, target.visibleTurnItems);
           const shellSnapshot = yield* projectionStore.getShellSnapshot();
           for (const projection of [
             yield* projectionStore.getThreadProjection(sourceThreadId),
