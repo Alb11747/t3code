@@ -421,7 +421,7 @@ function TurnForkButton(props: {
     sourceThreadId: props.projectedItem.sourceThreadId,
     sourceItemId: props.projectedItem.sourceItemId,
   });
-  const forkFromRun = useAtomCommand(threadEnvironment.forkFromRun, "fork from response");
+  const forkFromRun = useAtomCommand(threadEnvironment.forkFromRun, "fork conversation");
   const selectDetail = useSelectWorkspaceDetail();
   const [busy, setBusy] = useState(false);
   const isCompaction = props.projectedItem.item.type === "compaction";

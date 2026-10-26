@@ -1117,7 +1117,7 @@ it.effect.each([
         creationSource: input.creationSource,
       });
       const launched = yield* launches.launch(input);
-      assert.isTrue(launched.resumed);
+      assert.isFalse(launched.resumed);
       assert.equal(launched.projection.messages.length, 1);
       assert.equal(launched.projection.runs.length, 1);
       assert.deepEqual(launched.projection.runs[0]?.workspacePreparation, {
@@ -1127,6 +1127,8 @@ it.effect.each([
       yield* Deferred.await(setupStarted);
       assert.equal(harness.runSetup.mock.calls[0]?.[0]?.worktreePath, "/scratch/already-claimed");
       assert.equal(harness.createWorktree.mock.calls.length, 0);
+      const replayed = yield* launches.launch(input);
+      assert.isTrue(replayed.resumed);
     }).pipe(Effect.provide(harness.layer));
   }),
 );

@@ -468,7 +468,7 @@ export const layerWithOptions = (
                   dropMcpCredentialReservation(threadId, existing.providerSessionId);
                   // Only this provider's credential rotates. Another provider's
                   // session may still be attached to the thread with its MCP
-                  // client built around its own credential (#16565, #18852).
+                  // client built around its own credential.
                   yield* mcpSessionRegistry.revokeProviderSession(existing.providerSessionId);
                 }
                 const credential = yield* mcpSessionRegistry.issue({

@@ -50,6 +50,44 @@ function setup(initial: MintResult) {
 }
 
 describe("makeRevisionedAssetUrlFamily", () => {
+  it("keeps URLs from different replies separate while refreshing a file revision", () => {
+    const registry = AtomRegistry.make();
+    const queries = Atom.family((_reply: string | undefined) => Atom.make(minted(0)));
+    const revisioned = makeRevisionedAssetUrlFamily(({ input }) => queries(input.cacheRevision));
+    const first = revisioned({
+      environmentId,
+      input: { resource, cacheRevision: "reply-1" },
+      revision: "edit-1",
+    });
+    const second = revisioned({
+      environmentId,
+      input: { resource, cacheRevision: "reply-2" },
+      revision: "edit-1",
+    });
+    const unmountFirst = registry.mount(first);
+    const unmountSecond = registry.mount(second);
+
+    registry.set(queries("reply-1"), minted(1));
+    registry.set(queries("reply-2"), minted(2));
+    expect(registry.get(first)).toMatchObject({ _tag: "Success", value: { relativeUrl: "/a/1" } });
+    expect(registry.get(second)).toMatchObject({ _tag: "Success", value: { relativeUrl: "/a/2" } });
+
+    const edited = revisioned({
+      environmentId,
+      input: { resource, cacheRevision: "reply-2" },
+      revision: "edit-2",
+    });
+    const unmountEdited = registry.mount(edited);
+    registry.set(queries("reply-2"), minted(3));
+    expect(registry.get(edited)).toMatchObject({ _tag: "Success", value: { relativeUrl: "/a/3" } });
+    expect(registry.get(first)).toMatchObject({ _tag: "Success", value: { relativeUrl: "/a/1" } });
+
+    unmountEdited();
+    unmountSecond();
+    unmountFirst();
+    registry.dispose();
+  });
+
   it("re-mints a settled URL on first read and on each new revision, not on remount", () => {
     const { mount, settle, mints } = setup(minted(0));
 

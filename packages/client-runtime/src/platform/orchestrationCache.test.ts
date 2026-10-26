@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { EnvironmentId, EventId, TurnItemId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -19,6 +20,11 @@ import {
 } from "../state/orchestrationV2TestFixtures.ts";
 
 import { applyOrchestrationV2ProjectionEvent } from "../state/orchestrationV2Projection.ts";
+import {
+  COMPACT_THREAD_CACHE_SCHEMA_VERSION,
+  decodeStoredThreadSnapshot,
+  encodeStoredThreadSnapshot,
+} from "./threadCacheEncoding.ts";
 
 const environmentId = EnvironmentId.make("environment-cache-test");
 const StoredThreadSnapshotJson = Schema.fromJsonString(StoredOrchestrationThreadSnapshot);
@@ -35,6 +41,24 @@ class TestCacheDecodeError extends Schema.TaggedError<TestCacheDecodeError>()(
 ) {}
 
 describe("orchestration cache envelopes", () => {
+  it.effect("rejects compact caches that predate the combined fork history format", () =>
+    Effect.gen(function* () {
+      const encoded = yield* encodeStoredThreadSnapshot({
+        environmentId,
+        threadId: v2ThreadId,
+        snapshot: { snapshotSequence: 4, projection: v2Projection },
+      });
+      for (const version of [5, 6]) {
+        const stale = encoded.replace(
+          `"schemaVersion":${COMPACT_THREAD_CACHE_SCHEMA_VERSION}`,
+          `"schemaVersion":${version}`,
+        );
+        const result = yield* decodeStoredThreadSnapshot(stale).pipe(Effect.exit);
+        expect(Exit.isFailure(result)).toBe(true);
+      }
+    }),
+  );
+
   it("preserves live provider notices through persisted thread snapshots", () => {
     const item = {
       id: TurnItemId.make("notice-cache"),
@@ -81,7 +105,7 @@ describe("orchestration cache envelopes", () => {
       threadId: v2ThreadId,
       snapshot: { snapshotSequence: 4, projection: v2Projection },
     });
-    for (const staleVersion of [3, 4]) {
+    for (const staleVersion of [3, 4, 5, 6]) {
       const staleThread = currentThread.replace(
         `"schemaVersion":${ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION}`,
         `"schemaVersion":${staleVersion}`,

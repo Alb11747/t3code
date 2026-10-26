@@ -2484,19 +2484,9 @@ function claudeRuntimeQueryPolicyKey(policy: ClaudeRuntimeQueryPolicy): string {
 
 type ClaudePromptCaching = "default" | "disabled";
 
-/**
- * Prompt caching for a compaction turn. With `uncachedColdCompaction` on, a
- * cold compaction runs uncached: its summary replaces the old history, so
- * writing that history to the cache again buys nothing. Cold means the cache
- * of the thread's latest turn has expired, by the TTL Claude reported for it,
- * and its CLI process is gone (idle release), so the compaction starts a
- * process anyway. An unknown expiry keeps caching: a fully cached request
- * reports no TTL, and a wrong "cold" turns cheap cache reads into full input.
- * If Claude switches TTL mid-session, a 1h prefix can outlive the latest
- * request's 5m expiry; usage can't tell which layer holds most of the
- * history, so that case is accepted rather than guessed.
- * A live process is never replaced for this; it may run background work.
- */
+// Cold compaction replaces history, so caching it again buys nothing. Require a
+// reported expiry and an already released process: unknown TTLs may still be cached,
+// and live processes may run background work. Mixed TTLs use the latest reported expiry.
 function claudeCompactionPromptCaching(input: {
   readonly uncachedColdCompaction: boolean;
   readonly hasLiveProcess: boolean;
@@ -2511,13 +2501,8 @@ function claudeCompactionPromptCaching(input: {
     : "default";
 }
 
-/**
- * Environment for a process whose requests must stay uncached. Claude Code
- * then sends no cache_control markers. A gateway may still add its own:
- * CLIProxyAPI does for clients it doesn't recognize as native Claude Code,
- * which includes the Agent SDK, unless the request asks for its explicit
- * cache mode with this header. Other endpoints don't use the header.
- */
+// Claude omits cache markers; CLIProxyAPI also needs this header to avoid adding
+// markers for Agent SDK requests. Other endpoints ignore the header.
 function uncachedClaudeEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const header = "X-CPA-Prompt-Cache-Mode: explicit";
   const customHeaders = environment.ANTHROPIC_CUSTOM_HEADERS?.trim();
@@ -9874,12 +9859,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(appendSystemPromptFileText === undefined ? {} : { appendSystemPromptFileText }),
             ...(toolSearchOverride === undefined ? {} : { toolSearchOverride }),
           });
-          // Native steering cancels running tools, so agent updates wait in the
-          // app queue. The root agent's tool-batch and stop boundaries take them
-          // as context: the tool has finished and, at Stop, the turn continues.
-          // The claim commits before the SDK reads the context: delivery is at
-          // most once, and a crash in that window loses the claimed updates. A
-          // cancelled hook interrupts the claim before its next promotion.
+          // Native steering cancels tools; root tool-batch and Stop hooks take queued
+          // agent text as context instead. Claims commit before SDK delivery, so a crash
+          // can lose claimed text. Cancellation stops the claim before its next promotion.
           const takeAgentMessages: HookCallback = (hookInput, _toolUseId, { signal }) =>
             runPromise(
               Effect.gen(function* () {

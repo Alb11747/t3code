@@ -272,7 +272,7 @@ export const layer = Layer.effectDiscard(
             })
             // A refusal leaves the update queued. An aborted hook interrupts this
             // fiber instead, which must stop the loop before the next promotion.
-            .pipe(Effect.catch(() => Effect.succeed(undefined)));
+            .pipe(Effect.orElseSucceed(() => undefined));
           // Deliver what the promotion committed, which may postdate the snapshot.
           const joined = result?.storedEvents.find(
             ({ event }) => event.type === "message.updated" && event.payload.id === message.id,
