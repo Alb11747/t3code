@@ -400,18 +400,21 @@ describe("MessagesTimeline scroll position", () => {
     const onIsAtEndChange = vi.fn();
     function Chat({ routeThreadKey = props.routeThreadKey }: { routeThreadKey?: string }) {
       const [liveFollowEnabled, setLiveFollowEnabled] = useState(true);
-      // The chat view stops following the live edge when the reader scrolls.
+      // The chat view releases follow for viewport navigation, including restores.
       return (
-        <div className="contents" onWheelCapture={() => setLiveFollowEnabled(false)}>
-          <MessagesTimeline
-            {...props}
-            routeThreadKey={routeThreadKey}
-            timelineEntries={tallEntries}
-            liveFollowEnabled={liveFollowEnabled}
-            onManualNavigation={() => setLiveFollowEnabled(false)}
-            onIsAtEndChange={onIsAtEndChange}
-          />
-        </div>
+        <MessagesTimeline
+          {...props}
+          routeThreadKey={routeThreadKey}
+          timelineEntries={tallEntries}
+          liveFollowEnabled={liveFollowEnabled}
+          onViewportAttach={(viewport) =>
+            viewport.subscribe(() => {
+              setLiveFollowEnabled(false);
+              viewport.followReleased();
+            })
+          }
+          onIsAtEndChange={onIsAtEndChange}
+        />
       );
     }
     await using initial = await renderElement(<Chat />);
@@ -434,8 +437,11 @@ describe("MessagesTimeline scroll position", () => {
     await vi.waitFor(() =>
       expect(Math.abs(reopenedViewport.scrollTop - offset)).toBeLessThanOrEqual(1),
     );
-    // Restoration disables live follow before normal scroll handling resumes.
-    await vi.waitFor(() => expect(onIsAtEndChange).toHaveBeenCalledWith(false));
+    // Scroll reporting resumes after the restore releases the viewport.
+    await vi.waitFor(async () => {
+      await act(() => reopenedViewport.dispatchEvent(new Event("scroll")));
+      expect(onIsAtEndChange).toHaveBeenCalledWith(false);
+    });
     expect(readTimelinePosition(props.routeThreadKey)?.atEnd).toBe(false);
 
     await reopened.rerender(timeline(`${props.routeThreadKey}-other`));
