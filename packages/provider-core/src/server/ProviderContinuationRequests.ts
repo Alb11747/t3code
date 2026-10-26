@@ -24,11 +24,7 @@ export interface ProviderContinuationRequest {
     readonly generation: number;
     readonly messageId: MessageId;
   };
-  /**
-   * `adapter_buffered` (default) is the provider-native wake: the adapter has already buffered the
-   * CLI's wake output, and the dispatched message only triggers ingestion. `message_text` is for
-   * app-owned work with no buffered provider output, such as a delegated child finishing.
-   */
+  /** adapter_buffered (default) ingests existing CLI output; message_text delivers app-owned wake text. */
   readonly delivery?: "adapter_buffered" | "message_text";
   readonly messageId?: MessageId;
   readonly dispatchIfCurrent?: <A, E, R>(
