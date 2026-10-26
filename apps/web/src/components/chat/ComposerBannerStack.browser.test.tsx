@@ -90,7 +90,8 @@ it("keeps only the usage limit attached while an active goal waits in the collap
   expect(visibleBanners()).toHaveLength(1);
 
   await expect.element(peek).toHaveFocus();
-  await userEvent.hover(peek);
+  // Pointer entry hides the peek, but the stack remains mounted during expansion.
+  await userEvent.hover(container.querySelector<HTMLElement>("[data-composer-banner-stack]")!);
   await expect.element(goal).toBeVisible();
   await expect.element(limit).toBeVisible();
   await expect.poll(visibleBanners).toHaveLength(2);
