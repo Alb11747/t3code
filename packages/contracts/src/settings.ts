@@ -630,7 +630,7 @@ export const CodexSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Composer predictions",
         description:
-          "After each turn, predict your next prompt with ChatGPT's composer prediction service and show it in the empty composer (Right Arrow or Tab to use it). Needs ChatGPT sign-in; whether it counts against usage is unverified.",
+          "After a turn started by your prompt, predict your next prompt with ChatGPT's composer prediction service and show it in the empty composer (Right Arrow or Tab to use it). Skips agent messages and scheduled tasks. Needs ChatGPT sign-in; whether it counts against usage is unverified.",
         providerSettingsForm: { control: "switch" },
       }),
     ),

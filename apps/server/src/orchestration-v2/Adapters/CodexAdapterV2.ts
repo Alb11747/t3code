@@ -6553,6 +6553,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const prediction = predictions.get(input.context.input.threadId);
               if (
                 adapterOptions.settings.promptSuggestions &&
+                input.context.input.message.createdBy === "user" &&
+                (input.context.input.message.creationSource === "web" ||
+                  input.context.input.message.creationSource === "mobile") &&
+                input.context.input.message.scheduledTaskId === undefined &&
                 input.context.subagent === null &&
                 input.status === "completed" &&
                 !holdsForGoal &&

@@ -95,8 +95,11 @@ for command and file approvals.
 ## Composer predictions
 
 Turn on **Composer predictions** in the Codex provider settings to predict your
-next prompt when a turn finishes. On web and desktop the prediction appears in
-the empty composer. Press **Right Arrow** or **Tab** to put it in the composer,
+next prompt when a turn started by your message finishes. Agent messages,
+automatic wakes, and scheduled tasks do not request predictions. You can still
+get predictions in an agent-created thread by sending a message yourself.
+On web and desktop the prediction appears in the empty composer. Press
+**Right Arrow** or **Tab** to put it in the composer,
 where you can edit it before you send, or **Esc** to dismiss it. The prediction
 disappears when you send your next message.
 

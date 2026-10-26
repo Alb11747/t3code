@@ -31,6 +31,7 @@ import {
   ProviderTurnId,
   RunAttemptId,
   RunId,
+  ScheduledTaskId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -1053,6 +1054,113 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         awaitTerminal: (count: number) => changes.until(() => terminalEvents().length >= count),
       };
     });
+
+  it.effect.each([
+    {
+      name: "web prompt in an agent-created thread",
+      message: { createdBy: "user", creationSource: "web" },
+      predict: true,
+    },
+    {
+      name: "mobile prompt in an agent-created thread",
+      message: { createdBy: "user", creationSource: "mobile" },
+      predict: true,
+    },
+    {
+      name: "agent launch or follow-up",
+      message: { createdBy: "agent", creationSource: "mcp" },
+      predict: false,
+    },
+    {
+      name: "automatic provider wake",
+      message: { createdBy: "agent", creationSource: "provider" },
+      predict: false,
+    },
+    {
+      name: "system prompt",
+      message: { createdBy: "system", creationSource: "server" },
+      predict: false,
+    },
+    {
+      name: "user-created scheduled task",
+      message: {
+        createdBy: "user",
+        creationSource: "web",
+        scheduledTaskId: ScheduledTaskId.make("scheduled-prediction"),
+      },
+      predict: false,
+    },
+  ] as const)("only requests composer predictions for a direct user prompt: $name", (testCase) =>
+    Effect.gen(function* () {
+      const nativeThreadId = "prediction-origin-thread";
+      const nativeTurnId = "prediction-origin-turn";
+      const prompt = "Implement";
+      const completed = yield* Deferred.make<void>();
+      const authRequests: unknown[] = [];
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({
+          scenario: `prediction-origin-${testCase.name}`,
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
+            {
+              type: "emit_inbound",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                },
+              },
+            },
+          ],
+        }),
+        undefined,
+        undefined,
+        undefined,
+        { settings: { ...DEFAULT_CODEX_SETTINGS, promptSuggestions: true } },
+        (client) => ({
+          ...client,
+          request: ((method: string, params: unknown) => {
+            if (method === "getAuthStatus") {
+              authRequests.push(params);
+              return Effect.succeed({ authMethod: null, authToken: null });
+            }
+            return client.raw.request(method, params);
+          }) as CodexClient.CodexAppServerClient["Service"]["request"],
+          handleServerNotification: (method, handler) =>
+            client.handleServerNotification(method, (payload) =>
+              handler(payload).pipe(
+                Effect.tap(() =>
+                  method === "turn/completed"
+                    ? Deferred.succeed(completed, undefined)
+                    : Effect.void,
+                ),
+              ),
+            ),
+        }),
+      );
+      const turnInput = makeCodexTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make("prediction-origin-attempt"),
+        text: prompt,
+      });
+      yield* harness.runtime.startTurn({
+        ...turnInput,
+        appThread: { ...turnInput.appThread, createdBy: "agent", creationSource: "mcp" },
+        message: { ...turnInput.message, ...testCase.message },
+      });
+      yield* Deferred.await(completed);
+      yield* TestClock.adjust("0 millis");
+      assert.lengthOf(authRequests, testCase.predict ? 1 : 0);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
 
   it.effect.each([
     { action: "next turn", late: false },
