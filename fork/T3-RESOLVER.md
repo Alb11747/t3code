@@ -95,7 +95,12 @@ if resolving a conflict requires that, report failure for local resolution.
    run `bash "$FORK_RESOLVER_HOME/tools/settle-candidate.sh" "$run_id"`;
    otherwise stop and leave the candidate for human review. The helper waits
    up to an hour, outside your time limit, for GitHub checks and Codex's review
-   of the candidate, then dispatches promotion only if both are clean. Exit 0
+   of the candidate, then dispatches promotion only if both are clean. Running
+   it is the required way to wait: it is one blocking command, not a polling
+   loop or PR watcher, so harness guidance against polling or in favor of
+   native PR watching does not apply. Run it with a long command timeout (in
+   the background if your harness needs that) and do not set
+   `FORK_SETTLE_TIMEOUT`. Exit 0
    means promotion was dispatched; exit 3 means it commented on the issue and
    left the candidate for human review. Report which, with its reason. Exit 5
    means checks failed or Codex had findings and the request is yours again:
