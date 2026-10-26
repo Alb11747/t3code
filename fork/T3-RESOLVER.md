@@ -133,6 +133,10 @@ Before ending, hand off and tidy up:
   and its reason, the request run ID if known, the issue comment URL if one
   was posted, and the candidate SHA if one was published. Explicitly identify
   unavailable metadata; never invent it.
+- If the run finished (promotion dispatched, or a quiet stop in step 2) and the
+  checkout is clean, return it to `main`: `git fetch origin main`,
+  `git checkout -B main origin/main`, then delete `resolve/<run_id>`. Leave a
+  failed or review-needed run's branch checked out for inspection.
 - Then settle this thread with `t3_thread_organize` (action `settle`). Its
   outcome is either finished (promotion dispatched, or a quiet stop in step 2)
   or handed to the maintainer. If the message could not be sent, do not
