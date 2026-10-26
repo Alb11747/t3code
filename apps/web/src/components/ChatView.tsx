@@ -63,7 +63,6 @@ import {
   type MessageId,
   type ModelSelection,
   type PreviewAnnotationPayload,
-  ProviderInstanceId,
   type ServerProvider,
   type ScopedThreadRef,
   type ThreadId,
@@ -311,6 +310,8 @@ import { resolveThreadSyncPhase } from "../threadSync";
 import {
   hasAvailableCompactionProvider,
   hasDismissedResumeCompaction,
+  resolveResumeCompactionProviderThread,
+  resolveResumeCompactionContext,
   shouldOfferResumeCompaction,
 } from "./chat/ContextWindowMeter.logic";
 import {
@@ -1206,7 +1207,7 @@ export default function ChatView(props: ChatViewProps) {
       activeThreadModelInstanceId,
       activeProjectDefaultModelSelection?.instanceId,
     ],
-    lockedProvider,
+    lockedProvider: modelPickerLockedProvider,
     lockedInstanceId: activeRuntime?.providerInstanceId ?? activeThreadModelInstanceId,
   });
   const selectedProvider = selectedProviderEntry?.driverKind ?? requestedDriverKind;
@@ -2455,12 +2456,20 @@ export default function ChatView(props: ChatViewProps) {
           ? "Compaction is unavailable for this provider"
           : "Compacting is unavailable right now"
     : null;
-  const resumeCompactionTokens =
-    activeContextWindow &&
-    resolveIdleCompaction(
-      settings,
-      activeProviderInstanceId ?? ProviderInstanceId.make("claudeAgent"),
-    ) !== "off" &&
+  const resumeCompactionProviderThread = resolveResumeCompactionProviderThread({
+    providerThreads: serverProjection?.providerThreads ?? [],
+    threadId,
+    instanceId: activeProviderInstanceId,
+  });
+  const resumeCompactionContext = resolveResumeCompactionContext({
+    providerThread: resumeCompactionProviderThread,
+    providerTurns: serverProjection?.providerTurns ?? [],
+    entries: serverVisibleTurnItems,
+  });
+  const resumeCompaction =
+    resumeCompactionProviderThread?.driver === "claudeAgent" &&
+    resumeCompactionContext &&
+    resolveIdleCompaction(settings, resumeCompactionProviderThread.providerInstanceId) !== "off" &&
     !resumeCompactionPermanentlyDismissed &&
     !nativeResumeCompactionDismissed &&
     !compactDisabled &&
@@ -2468,12 +2477,17 @@ export default function ChatView(props: ChatViewProps) {
     multipleModelSelections === null &&
     shouldOfferResumeCompaction({
       provider: selectedProvider,
-      usedTokens: activeContextWindow.usedTokens,
-      updatedAt: activeContextWindow.updatedAt,
-      promptCacheTtlMs: activeThreadLiveTokenUsage?.promptCacheTtlMs,
+      usedTokens: resumeCompactionContext.usedTokens,
+      updatedAt: resumeCompactionContext.updatedAt,
+      promptCacheTtlMs: resumeCompactionContext.promptCacheTtlMs,
       now: `${nowMinute}:00.000Z`,
     })
-      ? activeContextWindow.usedTokens
+      ? {
+          usedTokens: resumeCompactionContext.usedTokens,
+          providerInstanceId: resumeCompactionProviderThread.providerInstanceId,
+          providerThreadId: resumeCompactionProviderThread.id,
+          sourceUpdatedAt: resumeCompactionContext.sourceUpdatedAt,
+        }
       : null;
   const [fullHistoryThreadKeys, setFullHistoryThreadKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -2806,7 +2820,7 @@ export default function ChatView(props: ChatViewProps) {
     panelAnimationsActive,
     panelAnimationDurationMs,
     keepFullHistory,
-    resumeCompactionTokens,
+    resumeCompaction,
     showPlanFollowUpPrompt,
     usageLimitsKey,
     usageLimitsOffered,
@@ -3495,7 +3509,7 @@ export default function ChatView(props: ChatViewProps) {
                               bannerItems={composerBannerItems}
                               promptSuggestion={promptSuggestion}
                               onDismissPromptSuggestion={dismissPromptSuggestion}
-                              resumeCompactionTokens={resumeCompactionTokens}
+                              resumeCompaction={resumeCompaction}
                               keepFullHistory={keepFullHistory}
                               onToggleKeepFullHistory={toggleKeepFullHistoryStable}
                               onUsageLimitsCommand={

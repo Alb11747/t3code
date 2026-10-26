@@ -1,5 +1,9 @@
 import { type OrchestrationV2ProviderTurn, type RunAttemptId } from "@t3tools/contracts";
 import {
+  type ResumeCompaction,
+  resumeCompactionTokensForSelection,
+} from "./chat/ContextWindowMeter.logic";
+import {
   deriveLatestThreadRun,
   deriveThreadRuntime,
 } from "@t3tools/client-runtime/state/thread-execution";
@@ -1415,7 +1419,10 @@ export function planComposerTurn(input: {
   readonly sendEnvMode: DraftThreadEnvMode;
   readonly worktreePath: string | null;
   readonly activeThreadBranch: string | null;
-  readonly resumeCompactionTokens: number | null;
+  readonly resumeCompaction: ResumeCompaction | null;
+  readonly destinationProviderThreadId: Thread["activeProviderThreadId"];
+  readonly selectedProvider: ProviderDriverKind;
+  readonly selectedModelSelection: ModelSelection;
   readonly keepFullHistory: boolean;
   readonly phase: SessionPhase;
   readonly dispatchMode: ComposerDispatchMode;
@@ -1428,7 +1435,11 @@ export function planComposerTurn(input: {
   // old history. The message queues behind the /compact run, since steering into it is
   // rejected.
   const compactBeforeSend =
-    input.resumeCompactionTokens !== null &&
+    resumeCompactionTokensForSelection({
+      ...input,
+      selectedInstanceId: input.selectedModelSelection.instanceId,
+    }) !== null &&
+    input.resumeCompaction?.providerThreadId === input.destinationProviderThreadId &&
     !input.keepFullHistory &&
     !COMPACT_COMMAND_PATTERN.test(input.messageText);
   return {

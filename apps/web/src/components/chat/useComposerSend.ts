@@ -82,7 +82,12 @@ import {
   previewAnnotationContextReference,
 } from "../../lib/composerContextRecords";
 import { environmentServerConfigsAtom } from "../../state/server";
-import { threadEnvironment } from "../../state/threads";
+import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
+import {
+  type ResumeCompaction,
+  resolveResumeCompactionProviderThread,
+  resolveResumeCompactionContext,
+} from "./ContextWindowMeter.logic";
 import { runMobileComposerTransition } from "./draftHeroTransition";
 import { useClientSettingsHydrated, useEnvironmentSettings } from "../../hooks/useSettings";
 import { environmentPresentations } from "../../state/presentation";
@@ -202,7 +207,7 @@ interface ComposerSendInput {
   readonly panelAnimationsActive: boolean;
   readonly panelAnimationDurationMs: number;
   readonly keepFullHistory: boolean;
-  readonly resumeCompactionTokens: number | null;
+  readonly resumeCompaction: ResumeCompaction | null;
   readonly showPlanFollowUpPrompt: boolean;
   readonly usageLimitsKey: string | null;
   readonly usageLimitsOffered: boolean;
@@ -294,7 +299,7 @@ export function useComposerSend(input: ComposerSendInput) {
     panelAnimationsActive,
     panelAnimationDurationMs,
     keepFullHistory,
-    resumeCompactionTokens,
+    resumeCompaction,
     showPlanFollowUpPrompt,
     usageLimitsKey,
     usageLimitsOffered,
@@ -781,25 +786,43 @@ export function useComposerSend(input: ComposerSendInput) {
       threadContexts: composerThreadContextsSnapshot,
       messageText: messageTextForSend,
     } = sendSnapshot;
-    const {
-      missingWorktreeBaseBranch,
-      baseBranchForWorktree,
-      compactBeforeSend,
-      turnDispatchMode,
-      shouldQueueBehindActiveRun,
-    } = planComposerTurn({
-      messageText: messageTextForSend,
-      sendQueuesBehindSetup,
-      isServerThread,
-      activeMessageCount,
-      sendEnvMode,
-      worktreePath: activeThread.worktreePath,
-      activeThreadBranch,
-      resumeCompactionTokens,
-      keepFullHistory,
-      phase,
-      dispatchMode,
-    });
+    const readTurnPlan = () => {
+      const projection = appAtomRegistry.get(
+        environmentThreadDetails.quietThreadAtom(scopeThreadRef(environmentId, threadIdForSend)),
+      )?.projection;
+      const destination = resolveResumeCompactionProviderThread({
+        providerThreads: projection?.providerThreads ?? [],
+        threadId: threadIdForSend,
+        instanceId: ctxSelectedModelSelection.instanceId,
+      });
+      const context = resolveResumeCompactionContext({
+        providerThread: destination,
+        providerTurns: projection?.providerTurns ?? [],
+        entries: projection?.visibleTurnItems ?? [],
+      });
+      return planComposerTurn({
+        messageText: messageTextForSend,
+        sendQueuesBehindSetup,
+        isServerThread,
+        activeMessageCount,
+        sendEnvMode,
+        worktreePath: activeThread.worktreePath,
+        activeThreadBranch,
+        resumeCompaction:
+          resumeCompaction?.sourceUpdatedAt === context?.sourceUpdatedAt &&
+          resumeCompaction?.usedTokens === context?.usedTokens
+            ? resumeCompaction
+            : null,
+        destinationProviderThreadId: destination?.id ?? null,
+        selectedProvider: ctxSelectedProvider,
+        selectedModelSelection: ctxSelectedModelSelection,
+        keepFullHistory,
+        phase,
+        dispatchMode,
+      });
+    };
+    const { missingWorktreeBaseBranch, baseBranchForWorktree, shouldQueueBehindActiveRun } =
+      readTurnPlan();
     if (missingWorktreeBaseBranch) {
       setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
       return;
@@ -1204,6 +1227,8 @@ export function useComposerSend(input: ComposerSendInput) {
       failure = turnAttachmentsResult;
     }
 
+    // Uploads and settings persistence can outlive the source conversation.
+    const { compactBeforeSend, turnDispatchMode } = readTurnPlan();
     if (failure === null && compactBeforeSend) {
       const compactResult = await startThreadTurn({
         environmentId,
