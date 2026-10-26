@@ -71,6 +71,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Random from "effect/Random";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -2717,6 +2718,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly promptSuggestions?: ClaudeAdapterV2.ClaudeAdapterV2Options["promptSuggestions"];
     readonly claimAgentMessages?: ProviderContinuationRequests.ClaimAgentMessages;
     readonly allocateSessionId?: Effect.Effect<string>;
+    readonly queryFailure?: Effect.Effect<never, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
+    readonly reopenFailure?: Effect.Effect<void, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
+    readonly offerFailure?: Effect.Effect<void, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
   }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -2801,6 +2805,17 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           open: (input) =>
             Effect.gen(function* () {
               openedOptions = input.options;
+              if (processQueues.length > 0 && options?.reopenFailure !== undefined) {
+                yield* options.reopenFailure;
+              }
+              const offer = (message: SDKUserMessage) =>
+                Effect.gen(function* () {
+                  if (offeredMessages.length > 0 && options?.offerFailure !== undefined) {
+                    yield* options.offerFailure;
+                  }
+                  offeredMessages.push(message);
+                  yield* changes.notify;
+                });
               const processMessages =
                 options?.freshQueueOnReopen === true && processQueues.length > 0
                   ? yield* Queue.unbounded<SDKMessage>()
@@ -2820,15 +2835,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     ),
                   ),
                 ),
+                (stream) =>
+                  options?.queryFailure === undefined
+                    ? stream
+                    : Stream.merge(stream, Stream.fromEffect(options.queryFailure)),
               );
               if (options?.freshQueueOnReopen === true && processQueues.length > 0) {
                 processQueues.push(processMessages);
                 return {
                   messages,
-                  offer: (message: SDKUserMessage) =>
-                    Effect.sync(() => {
-                      offeredMessages.push(message);
-                    }).pipe(Effect.andThen(changes.notify)),
+                  offer,
                   setModel: () => Effect.void,
                   applyFlagSettings: () => Effect.void,
                   setPermissionMode: (mode) =>
@@ -2846,10 +2862,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               processQueues.push(sdkMessages);
               return {
                 messages,
-                offer: (message) =>
-                  Effect.sync(() => {
-                    offeredMessages.push(message);
-                  }).pipe(Effect.andThen(changes.notify)),
+                offer,
                 setModel: (model) =>
                   Effect.sync(() => {
                     liveSelectionChanges.push({ model });
@@ -5058,14 +5071,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* Queue.offerAll(messages(), [
           makeAssistantErrorFrame({
             uuid: uuid(),
-            error: scenario === "non-limit failure" ? "server_error" : undefined,
+            error: scenario === "non-limit failure" ? "invalid_request" : undefined,
           }),
           makeResultFrame({
             uuid: uuid(),
             result: scenario === "successful recovery" ? "Done." : "API Error",
             terminalReason: scenario === "successful recovery" ? "completed" : "api_error",
             isError: scenario === "non-limit failure",
-            ...(scenario === "non-limit failure" ? { apiErrorStatus: 500 } : {}),
+            ...(scenario === "non-limit failure" ? { apiErrorStatus: 400 } : {}),
           }),
         ]);
         const terminal = yield* Queue.take(harness.terminalReceipts);
@@ -5415,13 +5428,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       result: "API Error: 400 Request rejected.",
       errors: ["[ede_diagnostic] internal detail", "Tool execution failed: EACCES"],
       expected: "Tool execution failed: EACCES",
-    },
-    {
-      name: "an HTTP 529 overload",
-      isError: true,
-      result: "API Error: 529 Specific overload detail.",
-      apiErrorStatus: 529,
-      expected: "Claude API is overloaded (529). Try again shortly.",
     },
     {
       name: "an HTTP 429 rate limit",
@@ -6165,6 +6171,19 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           apiErrorStatus: input.status,
         }),
       ]);
+      if (input.status === 503 && input.seconds === 0) {
+        yield* harness.until(() =>
+          harness.events.some(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "error" &&
+              event.turnItem.status === "running" &&
+              event.turnItem.retry?.maxAttempts === null,
+          ),
+        );
+        assert.lengthOf(harness.terminalEvents(), 0);
+        return;
+      }
       const terminal = yield* Queue.take(harness.terminalReceipts);
       assert.equal(terminal.status, "failed");
       if (terminal.status !== "failed") return;
@@ -8141,7 +8160,813 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
-  it.effect.each(["api_error", "overloaded_status"] as const)(
+  describe("exhausted API retries", () => {
+    const retryItems = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
+      events.flatMap((event) =>
+        event.type === "turn_item.updated" &&
+        event.turnItem.type === "error" &&
+        event.turnItem.retry !== undefined
+          ? [event.turnItem]
+          : [],
+      );
+    const recoveryLayers = Layer.mergeAll(
+      IdAllocator.layer,
+      McpProviderSessions.layer,
+      NodeServices.layer,
+      Layer.succeed(Random.Random, { nextDoubleUnsafe: () => 0.5, nextIntUnsafe: () => 0 }),
+    );
+    const start = Effect.fnUntraced(function* (harness: Effect.Success<typeof makeWakeHarness>) {
+      const turnInput = makeClaudeTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make("attempt-claude-recovery"),
+        text: "Finish the task.",
+        attachments: [],
+      });
+      yield* harness.runtime.startTurn(turnInput);
+      return turnInput;
+    });
+
+    const overload = (harness: Effect.Success<typeof makeWakeHarness>) =>
+      harness.offerAndWait(
+        makeResultFrame({
+          uuid: "00000000-0000-4000-8000-000000000930",
+          result: "API Error: Repeated 529 Overloaded errors",
+          isError: true,
+          apiErrorStatus: 529,
+          terminalReason: "api_error",
+        }),
+      );
+
+    it.effect("a second steer preserves an earlier steer after its SDK offer fails", () =>
+      Effect.gen(function* () {
+        let fail = true;
+        const harness = yield* makeWakeHarnessWithOptions({
+          freshQueueOnReopen: true,
+          offerFailure: Effect.suspend(() => {
+            if (!fail) return Effect.void;
+            fail = false;
+            return Effect.fail(
+              new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                method: "offer",
+                cause: { code: "ECONNRESET" },
+              }),
+            );
+          }),
+        });
+        const input = yield* start(harness);
+        const steer = (text: string) =>
+          harness.runtime.steerTurn({
+            threadId: harness.threadId,
+            runId: input.runId,
+            providerThread: harness.providerThread,
+            providerTurnId: IdAllocator.derive.providerTurn({
+              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+              nativeTurnId: `turn:${input.attemptId}`,
+            }),
+            message: { ...input.message, text },
+          });
+        yield* overload(harness);
+        yield* Queue.shutdown(harness.sdkMessages);
+        yield* TestClock.adjust(1_000);
+        yield* steer("FIRST: do not deploy.");
+        yield* TestClock.adjust(6_500);
+        yield* harness.until(() => retryItems(harness.events).at(-1)?.retry?.attempt === 2);
+        yield* steer("SECOND: also run the tests.");
+        yield* TestClock.adjust(15_000);
+        yield* harness.until(
+          () => harness.offeredMessages.length === 2 || harness.terminalEvents().length > 0,
+        );
+        const delivered = JSON.stringify(harness.offeredMessages.slice(1));
+        assert.include(delivered, "FIRST: do not deploy.");
+        assert.include(delivered, "SECOND: also run the tests.");
+        assert.isBelow(delivered.indexOf("FIRST:"), delivered.indexOf("SECOND:"));
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000951",
+            result: "Followed both instructions.",
+          }),
+        );
+        yield* harness.awaitTerminal(1);
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+      }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
+    it.effect.each([
+      { initialized: false, stderr: "SyntaxError", recovers: false },
+      { initialized: true, stderr: "SyntaxError", recovers: true },
+      // Network evidence keeps a pre-init crash transient.
+      { initialized: false, stderr: "Error: connect ECONNREFUSED 127.0.0.1:443", recovers: true },
+    ])(
+      "a nonzero process exit with $stderr retries when transient (received init: $initialized)",
+      ({ initialized, stderr, recovers }) =>
+        Effect.gen(function* () {
+          const errors = yield* Queue.unbounded<ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>();
+          const harness = yield* makeWakeHarnessWithOptions({
+            freshQueueOnReopen: true,
+            queryFailure: Queue.take(errors).pipe(Effect.flatMap(Effect.fail)),
+          });
+          yield* start(harness);
+          yield* overload(harness);
+          yield* Queue.shutdown(harness.sdkMessages);
+          yield* TestClock.adjust(7_500);
+          yield* harness.until(() => harness.offeredMessages.length === 2);
+          if (initialized) yield* harness.offerAndWait(wakeTurnInit);
+          yield* Queue.offer(
+            errors,
+            new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+              method: "fromAsyncIterable",
+              cause: Object.assign(
+                new Error(`Claude Code process exited with code 1. stderr: ${stderr}`),
+                {
+                  errorClass: "process_exited_nonzero",
+                  exitCode: 1,
+                },
+              ),
+            }),
+          );
+          yield* harness.until(
+            () =>
+              harness.terminalEvents().length > 0 ||
+              retryItems(harness.events).at(-1)?.retry?.attempt === 2,
+          );
+          if (recovers) {
+            assert.lengthOf(harness.terminalEvents(), 0);
+            yield* TestClock.adjust(15_000);
+            yield* harness.until(() => harness.offeredMessages.length === 3);
+            yield* harness.offerAndWait(
+              makeResultFrame({
+                uuid: "00000000-0000-4000-8000-000000000952",
+                result: "Recovered after the process exit.",
+              }),
+            );
+          } else assert.equal(harness.terminalEvents()[0]?.status, "failed");
+          yield* harness.awaitTerminal(1);
+          assert.equal(harness.terminalEvents()[0]?.status, recovers ? "completed" : "failed");
+        }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
+    it.effect.each(["EAGAIN", "ENOMEM"])(
+      "a transient startup %s keeps retrying before init",
+      (code) =>
+        Effect.gen(function* () {
+          const errors = yield* Queue.unbounded<ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>();
+          const harness = yield* makeWakeHarnessWithOptions({
+            freshQueueOnReopen: true,
+            queryFailure: Queue.take(errors).pipe(Effect.flatMap(Effect.fail)),
+          });
+          yield* start(harness);
+          yield* Queue.offer(
+            errors,
+            new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+              method: "fromAsyncIterable",
+              cause: { code, errorClass: "spawn_failed" },
+            }),
+          );
+          yield* harness.until(
+            () => retryItems(harness.events).length > 0 || harness.terminalEvents().length > 0,
+          );
+          assert.lengthOf(harness.terminalEvents(), 0);
+          yield* TestClock.adjust(7_500);
+          yield* harness.until(() => harness.offeredMessages.length === 2);
+          yield* harness.offerAndWait(
+            makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000000953",
+              result: "Recovered after the spawn failure.",
+            }),
+          );
+          yield* harness.awaitTerminal(1);
+          assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
+    it.effect("reopening an accepted turn resumes beyond its original rollback cutoff", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({ freshQueueOnReopen: true });
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: {
+              ...harness.providerThread,
+              nativeConversationHeadRef: {
+                driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+                nativeId: "00000000-0000-4000-8000-000000000444",
+                strength: "weak",
+              },
+            },
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-retry-rollback"),
+            text: "New task after rollback.",
+            attachments: [],
+          }),
+        );
+        assert.equal(
+          harness.getOpenedOptions()?.resumeSessionAt,
+          "00000000-0000-4000-8000-000000000444",
+        );
+        yield* harness.offerAndWait(
+          makeAssistantTextFrame({
+            uuid: "00000000-0000-4000-8000-000000000931",
+            text: "Made progress on the new task.",
+          }),
+        );
+        yield* overload(harness);
+        yield* Queue.shutdown(harness.sdkMessages);
+        yield* TestClock.adjust(7_500);
+        yield* harness.until(
+          () => harness.offeredMessages.length === 2 || harness.terminalEvents().length > 0,
+        );
+        assert.lengthOf(harness.terminalEvents(), 0);
+        assert.equal(harness.getOpenedOptions()?.resume, WAKE_NATIVE_SESSION);
+        assert.isUndefined(harness.getOpenedOptions()?.resumeSessionAt);
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000935",
+            result: "Finished the new task.",
+          }),
+        );
+        yield* harness.awaitTerminal(1);
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+      }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
+    it.effect(
+      "delivers steering accepted during a closed-process backoff instead of a synthetic prompt",
+      () =>
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarnessWithOptions({ freshQueueOnReopen: true });
+          const input = yield* start(harness);
+          yield* overload(harness);
+          yield* Queue.shutdown(harness.sdkMessages);
+          yield* TestClock.adjust(1_000);
+          for (const text of ["Do this instead.", "Keep these additional requirements."]) {
+            yield* harness.runtime.steerTurn({
+              threadId: harness.threadId,
+              runId: input.runId,
+              providerThread: harness.providerThread,
+              providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+                driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+                nativeTurnId: `turn:${input.attemptId}`,
+              }),
+              message: { ...input.message, text },
+            });
+          }
+          assert.lengthOf(harness.offeredMessages, 1);
+          yield* TestClock.adjust(6_500);
+          yield* harness.until(
+            () => harness.offeredMessages.length === 2 || harness.terminalEvents().length > 0,
+          );
+          assert.lengthOf(harness.terminalEvents(), 0);
+          assert.isUndefined(harness.offeredMessages[1]?.isSynthetic);
+          assert.include(String(harness.offeredMessages[1]?.message.content), "Do this instead.");
+          assert.include(
+            String(harness.offeredMessages[1]?.message.content),
+            "Keep these additional requirements.",
+          );
+          yield* harness.offerAndWait(
+            makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000000936",
+              result: "Followed the new instructions.",
+            }),
+          );
+          yield* harness.awaitTerminal(1);
+          assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
+    it.effect.each(["stream", "reopen"] as const)(
+      "fails permanent SDK startup errors during %s",
+      (phase) =>
+        Effect.gen(function* () {
+          const errors = yield* Queue.unbounded<ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>();
+          const error = new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+            method: phase === "stream" ? "fromAsyncIterable" : "query",
+            cause:
+              phase === "stream"
+                ? Object.assign(new Error("Failed to spawn Claude Code process"), {
+                    code: "EACCES",
+                    errorClass: "executable_launch_failed",
+                  })
+                : { errorClass: "configuration_error", startupFatal: true },
+          });
+          const harness = yield* makeWakeHarnessWithOptions({
+            freshQueueOnReopen: true,
+            queryFailure: Queue.take(errors).pipe(Effect.flatMap(Effect.fail)),
+            ...(phase === "reopen" ? { reopenFailure: Effect.fail(error) } : {}),
+          });
+          yield* start(harness);
+          if (phase === "stream") yield* Queue.offer(errors, error);
+          else {
+            yield* overload(harness);
+            yield* Queue.shutdown(harness.sdkMessages);
+            yield* TestClock.adjust(7_500);
+          }
+          yield* harness.until(
+            () =>
+              harness.terminalEvents().length > 0 ||
+              (phase === "stream"
+                ? retryItems(harness.events).length > 0
+                : retryItems(harness.events).at(-1)?.retry?.attempt === 2),
+          );
+          assert.equal(harness.terminalEvents()[0]?.status, "failed");
+          yield* TestClock.adjust("5 minutes");
+          assert.lengthOf(harness.offeredMessages, 1);
+        }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
+    it.effect.each(["authentication_failed", "invalid_request"] as const)(
+      "does not inherit overload retryability after %s",
+      (error) =>
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          yield* start(harness);
+          yield* overload(harness);
+          yield* TestClock.adjust(7_500);
+          yield* harness.until(() => harness.offeredMessages.length === 2);
+          yield* harness.offerAndWait(
+            makeAssistantErrorFrame({
+              uuid: "00000000-0000-4000-8000-000000000932",
+              error,
+              text: "This request cannot continue.",
+            }),
+          );
+          yield* harness.offerAndWait(
+            makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000000933",
+              result: "This request cannot continue.",
+              isError: true,
+              terminalReason: "api_error",
+            }),
+          );
+          yield* harness.until(
+            () =>
+              harness.terminalEvents().length > 0 ||
+              retryItems(harness.events).at(-1)?.retry?.attempt === 2,
+          );
+          assert.equal(harness.terminalEvents()[0]?.status, "failed");
+          yield* TestClock.adjust("5 minutes");
+          assert.lengthOf(harness.offeredMessages, 2);
+        }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
+    it.effect.each(["reopen", "offer"] as const)("recovers from a temporary %s failure", (phase) =>
+      Effect.gen(function* () {
+        let fail = true;
+        const temporaryFailure = Effect.suspend(() => {
+          if (!fail) return Effect.void;
+          fail = false;
+          return Effect.fail(
+            new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+              method: phase === "reopen" ? "setMcpServers" : "offer",
+              cause:
+                phase === "reopen"
+                  ? "Claude Code did not answer the MCP server registration."
+                  : { code: "ECONNRESET" },
+            }),
+          );
+        });
+        const harness = yield* makeWakeHarnessWithOptions({
+          freshQueueOnReopen: true,
+          ...(phase === "reopen"
+            ? { reopenFailure: temporaryFailure }
+            : { offerFailure: temporaryFailure }),
+        });
+        const input = yield* start(harness);
+        yield* overload(harness);
+        yield* Queue.shutdown(harness.sdkMessages);
+        yield* TestClock.adjust(1_000);
+        if (phase === "offer") {
+          yield* harness.runtime.steerTurn({
+            threadId: harness.threadId,
+            runId: input.runId,
+            providerThread: harness.providerThread,
+            providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+              nativeTurnId: `turn:${input.attemptId}`,
+            }),
+            message: { ...input.message, text: "Preserve this steering across the failed offer." },
+          });
+        }
+        yield* TestClock.adjust(6_500);
+        yield* harness.until(
+          () =>
+            harness.terminalEvents().length > 0 ||
+            retryItems(harness.events).at(-1)?.retry?.attempt === 2,
+        );
+        assert.lengthOf(harness.terminalEvents(), 0);
+        yield* TestClock.adjust(15_000);
+        yield* harness.until(
+          () => harness.offeredMessages.length === 2 || harness.terminalEvents().length > 0,
+        );
+        assert.lengthOf(harness.terminalEvents(), 0);
+        if (phase === "offer") {
+          assert.include(
+            String(harness.offeredMessages[1]?.message.content),
+            "Preserve this steering across the failed offer.",
+          );
+          assert.isUndefined(harness.offeredMessages[1]?.isSynthetic);
+        }
+        yield* harness.offerAndWait(
+          makeResultFrame({ uuid: "00000000-0000-4000-8000-000000000934", result: "Recovered." }),
+        );
+        yield* harness.awaitTerminal(1);
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+      }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
+    it.effect.each([529, 500, 503, 408, undefined])(
+      "continues the same run after an exhausted API failure (%s)",
+      (status) =>
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          yield* start(harness);
+          yield* harness.offerAndWait(
+            makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000000901",
+              result:
+                status === undefined
+                  ? "API Error: Connection error."
+                  : "API Error: Repeated failures.",
+              isError: status !== 529,
+              terminalReason: status === 529 ? null : "api_error",
+              ...(status === undefined ? {} : { apiErrorStatus: status }),
+            }),
+          );
+          yield* harness.until(
+            () => retryItems(harness.events).length > 0 || harness.terminalEvents().length > 0,
+          );
+          const running = retryItems(harness.events)[0];
+          assert.equal(running?.status, "running");
+          assert.deepEqual(running?.retry, { attempt: 1, maxAttempts: null, retryDelayMs: 7_500 });
+          assert.lengthOf(harness.terminalEvents(), 0);
+          yield* TestClock.adjust(7_499);
+          assert.lengthOf(harness.offeredMessages, 1);
+          yield* TestClock.adjust(1);
+          yield* harness.until(() => harness.offeredMessages.length === 2);
+          const continuation = harness.offeredMessages[1]!;
+          assert.isTrue(continuation.isSynthetic);
+          assert.notEqual(continuation.uuid, harness.promptUuid(0));
+          assert.equal(continuation.session_id, WAKE_NATIVE_SESSION);
+          yield* harness.offerAndWait(
+            makeAssistantTextFrame({
+              uuid: "00000000-0000-4000-8000-000000000902",
+              text: "Resuming the task.",
+            }),
+          );
+          yield* harness.offerAndWait(
+            makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000000903",
+              result: "Done.",
+            }),
+          );
+          yield* harness.awaitTerminal(1);
+          const recovered = retryItems(harness.events).at(-1);
+          assert.equal(recovered?.id, running?.id);
+          assert.equal(recovered?.status, "completed");
+          assert.equal(recovered?.title, "Provider recovered");
+          assert.deepEqual(
+            harness.terminalEvents().map((event) => event.status),
+            ["completed"],
+          );
+          assert.isFalse(
+            harness.events.some(
+              (event) => event.type === "message.updated" && event.message.role === "user",
+            ),
+          );
+          assert.lengthOf(harness.continuationRequests, 0);
+        }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
+    it.effect("resumes the same native session if the exhausted process closes", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({ freshQueueOnReopen: true });
+        yield* start(harness);
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000911",
+            result: "API Error: Repeated 529 Overloaded errors",
+            isError: true,
+            apiErrorStatus: 529,
+            terminalReason: "api_error",
+          }),
+        );
+        yield* Queue.shutdown(harness.sdkMessages);
+        yield* TestClock.adjust(7_500);
+        yield* harness.until(
+          () => harness.offeredMessages.length === 2 || harness.terminalEvents().length > 0,
+        );
+        assert.lengthOf(harness.terminalEvents(), 0);
+        assert.lengthOf(harness.processQueues, 2);
+        assert.equal(harness.getOpenedOptions()?.resume, WAKE_NATIVE_SESSION);
+        assert.lengthOf(harness.terminalEvents(), 0);
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000912",
+            result: "Recovered.",
+          }),
+        );
+        yield* harness.awaitTerminal(1);
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+      }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
+    it.effect.each([undefined, 503, 400, 429])(
+      "handles an SDK stream failure with HTTP status %s",
+      (status) =>
+        Effect.gen(function* () {
+          const errors = yield* Queue.unbounded<ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>();
+          const harness = yield* makeWakeHarnessWithOptions({
+            freshQueueOnReopen: true,
+            queryFailure: Queue.take(errors).pipe(Effect.flatMap(Effect.fail)),
+          });
+          yield* start(harness);
+          yield* Queue.offer(
+            errors,
+            new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+              method: "fromAsyncIterable",
+              cause: { message: "Connection failed.", ...(status === undefined ? {} : { status }) },
+            }),
+          );
+          const recoverable = status === undefined || status === 503;
+          yield* harness.until(
+            () => retryItems(harness.events).length > 0 || harness.terminalEvents().length > 0,
+          );
+          if (recoverable) {
+            assert.lengthOf(harness.terminalEvents(), 0);
+            yield* TestClock.adjust(7_500);
+            yield* harness.until(() => harness.offeredMessages.length === 2);
+            yield* harness.offerAndWait(
+              makeResultFrame({
+                uuid: "00000000-0000-4000-8000-000000000915",
+                result: "Recovered.",
+              }),
+            );
+          }
+          yield* harness.awaitTerminal(1);
+          assert.equal(harness.terminalEvents()[0]?.status, recoverable ? "completed" : "failed");
+          yield* TestClock.adjust("5 minutes");
+          assert.lengthOf(harness.offeredMessages, recoverable ? 2 : 1);
+        }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
+    it.effect("steering replaces the pending internal continuation", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const input = yield* start(harness);
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000913",
+            result: "API Error: Repeated 529 Overloaded errors",
+            isError: true,
+            apiErrorStatus: 529,
+            terminalReason: "api_error",
+          }),
+        );
+        yield* harness.runtime.steerTurn({
+          threadId: harness.threadId,
+          runId: input.runId,
+          providerThread: harness.providerThread,
+          providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeTurnId: `turn:${input.attemptId}`,
+          }),
+          message: { ...input.message, text: "Follow the updated instructions." },
+        });
+        yield* TestClock.adjust("5 minutes");
+        yield* harness.until(
+          () => harness.offeredMessages.length === 2 || harness.terminalEvents().length > 0,
+        );
+        assert.lengthOf(harness.offeredMessages, 2);
+        assert.isUndefined(harness.offeredMessages[1]?.isSynthetic);
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000914",
+            result: "Done.",
+          }),
+        );
+        yield* harness.awaitTerminal(1);
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+      }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
+    it.effect("backs off without an attempt cap and resets only after root progress", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* start(harness);
+        const failure = (includeStatus = true) =>
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000906",
+            result: "API Error: Request failed.",
+            ...(includeStatus ? { apiErrorStatus: 529 } : {}),
+            terminalReason: "api_error",
+            isError: true,
+          });
+        const delays = [7_500, 15_000, 30_000, 60_000, 120_000, 135_000, 135_000];
+        for (const [index, delay] of delays.entries()) {
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              type: "system",
+              subtype: "api_retry",
+              attempt: 10,
+              max_retries: 10,
+              retry_delay_ms: 1_000,
+              error_status: null,
+              error: "connection_error",
+              uuid: "00000000-0000-4000-8000-000000000916",
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+          yield* harness.offerAndWait(
+            makeAssistantErrorFrame({
+              uuid: "00000000-0000-4000-8000-000000000907",
+              error: "server_error",
+              text: "API Error: Repeated 529 Overloaded errors",
+            }),
+          );
+          yield* harness.offerAndWait(
+            makeAssistantErrorFrame({
+              uuid: "00000000-0000-4000-8000-000000000908",
+              error: undefined,
+              parentToolUseId: "nested-agent-tool",
+            }),
+          );
+          yield* harness.offerAndWait(failure(index !== 0));
+          yield* harness.until(
+            () => retryItems(harness.events).at(-1)?.retry?.retryDelayMs === delay,
+          );
+          assert.deepEqual(retryItems(harness.events).at(-1)?.retry, {
+            attempt: index + 1,
+            maxAttempts: null,
+            retryDelayMs: delay,
+          });
+          yield* TestClock.adjust(delay);
+          yield* harness.until(() => harness.offeredMessages.length === index + 2);
+        }
+        assert.lengthOf(harness.terminalEvents(), 0);
+        assert.isFalse(
+          harness.events.some(
+            (event) => event.type === "message.updated" && event.message.text.includes("API Error"),
+          ),
+        );
+        yield* harness.offerAndWait(
+          makeAssistantTextFrame({
+            uuid: "00000000-0000-4000-8000-000000000909",
+            text: "Made progress.",
+          }),
+        );
+        yield* harness.offerAndWait(failure());
+        yield* harness.until(
+          () =>
+            retryItems(harness.events).at(-1)?.status === "running" &&
+            retryItems(harness.events).at(-1)?.retry?.attempt === 1,
+        );
+        assert.equal(retryItems(harness.events).at(-1)?.retry?.retryDelayMs, 7_500);
+        yield* TestClock.adjust(7_500);
+        yield* harness.until(() => harness.offeredMessages.length === 9);
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000910",
+            result: "Done.",
+          }),
+        );
+        yield* harness.awaitTerminal(1);
+        assert.equal(retryItems(harness.events).at(-1)?.status, "completed");
+      }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
+    it.effect("recovers a background-task wake without opening another T3 run", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const input = yield* start(harness);
+        yield* harness.offerAndWait(wakeTaskStarted);
+        yield* harness.offerAndWait(turnOneResult);
+        yield* harness.awaitTerminal(1);
+        yield* harness.offerAndWait(wakeNotification);
+        yield* harness.offerAndWait(wakeTurnInit);
+        yield* harness.awaitContinuation(1);
+        yield* harness.runtime.startTurn({
+          ...input,
+          attemptId: RunAttemptId.make("attempt-claude-recovery-wake"),
+          providerTurnOrdinal: 2,
+          message: {
+            ...input.message,
+            createdBy: "agent",
+            creationSource: "provider",
+            text: "Background task completed.",
+          },
+        });
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000917",
+            result: "API Error: Repeated 529 Overloaded errors",
+            isError: true,
+            apiErrorStatus: 529,
+            terminalReason: "api_error",
+            origin: { kind: "task-notification" },
+          }),
+        );
+        yield* TestClock.adjust(7_500);
+        yield* harness.until(() => harness.offeredMessages.length === 2);
+        assert.lengthOf(harness.terminalEvents(), 1);
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000918",
+            result: "Finished the background work.",
+          }),
+        );
+        yield* harness.awaitTerminal(2);
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => event.status),
+          ["completed", "completed"],
+        );
+        assert.lengthOf(harness.continuationRequests, 1);
+        assert.equal(retryItems(harness.events).at(-1)?.status, "completed");
+      }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
+    it.effect.each(["backoff", "continuation", "closed process", "queued steering"] as const)(
+      "Stop cancels an exhausted API retry during %s",
+      (phase) =>
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarnessWithOptions({ close: Queue.shutdown });
+          const input = yield* start(harness);
+          yield* harness.offerAndWait(
+            makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000000904",
+              result: "API Error: Repeated 529 Overloaded errors",
+              isError: true,
+              apiErrorStatus: 529,
+              terminalReason: "api_error",
+            }),
+          );
+          yield* harness.until(
+            () => retryItems(harness.events).length > 0 || harness.terminalEvents().length > 0,
+          );
+          assert.lengthOf(harness.terminalEvents(), 0);
+          if (phase === "closed process" || phase === "queued steering") {
+            yield* Queue.shutdown(harness.sdkMessages);
+            yield* TestClock.adjust(7_499);
+          }
+          if (phase === "queued steering") {
+            yield* harness.runtime.steerTurn({
+              threadId: harness.threadId,
+              runId: input.runId,
+              providerThread: harness.providerThread,
+              providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+                driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+                nativeTurnId: `turn:${input.attemptId}`,
+              }),
+              message: { ...input.message, text: "This steering must be cancelled by Stop." },
+            });
+          }
+          if (phase === "continuation") {
+            yield* TestClock.adjust(7_500);
+            yield* harness.until(() => harness.offeredMessages.length === 2);
+          }
+          yield* harness.runtime.interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+              nativeTurnId: `turn:${input.attemptId}`,
+            }),
+          });
+          yield* harness.awaitTerminal(1);
+          yield* TestClock.adjust("5 minutes");
+          assert.lengthOf(harness.offeredMessages, phase === "continuation" ? 2 : 1);
+          assert.deepEqual(
+            harness.terminalEvents().map((event) => event.status),
+            ["interrupted"],
+          );
+          assert.equal(retryItems(harness.events).at(-1)?.status, "interrupted");
+        }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
+    it.effect.each([400, 401, 403, 429])("still fails a nonrecoverable API status %s", (status) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* start(harness);
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000905",
+            result: `API Error: ${status} rejected.`,
+            isError: true,
+            apiErrorStatus: status,
+            terminalReason: "api_error",
+          }),
+        );
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(terminal.status, "failed");
+        if (terminal.status !== "failed") return;
+        assert.equal(terminal.failure.class, status === 429 ? "usage_limit" : "provider_error");
+        yield* TestClock.adjust("5 minutes");
+        assert.lengthOf(harness.offeredMessages, 1);
+        assert.lengthOf(retryItems(harness.events), 0);
+      }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+  });
+
+  it.effect.each(["api_error", "client_error_status"] as const)(
     "fails a success-shaped Claude result with %s",
     (terminalReason) =>
       Effect.scoped(
@@ -8164,8 +8989,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               uuid: "00000000-0000-4000-8000-000000000205",
               result: "Provider failure details.",
               isError: false,
-              ...(terminalReason === "overloaded_status"
-                ? { apiErrorStatus: 529 }
+              ...(terminalReason === "client_error_status"
+                ? { apiErrorStatus: 400 }
                 : { terminalReason }),
             }),
           );
@@ -8183,7 +9008,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
           assert.equal(
             terminal.failure.code,
-            terminalReason === "overloaded_status" ? "api_error_529" : terminalReason,
+            terminalReason === "client_error_status" ? "api_error_400" : terminalReason,
           );
         }).pipe(
           Effect.provide(

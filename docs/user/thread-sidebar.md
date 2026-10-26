@@ -214,7 +214,11 @@ keeps the provider's explanation. Retry after the limit resets, or switch to
 another provider instance.
 Codex instead keeps retrying model capacity, rate-limit, server, and connection
 failures, and usage limits with no known reset time, waiting up to 3 minutes
-between tries, with some randomness so many threads don't retry at once; the conversation shows the retry, and **Stop** cancels it.
+between tries, with some randomness so many threads don't retry at once; the
+conversation shows the retry, and **Stop** cancels it.
+Claude also retries temporary API overloads, server errors, and connection
+failures with a backoff of up to 3 minutes. The retry row shows its progress,
+and **Stop** cancels it; usage limits still follow the reset handling below.
 On web and desktop, press **Resume** in an empty composer to continue a limited
 or interrupted turn manually.
 Queued messages stay saved while the limit blocks the thread. They run after
