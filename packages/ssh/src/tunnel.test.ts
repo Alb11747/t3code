@@ -575,11 +575,7 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
       const { launched, pid } = yield* launchManaged;
       process.kill(pid, "SIGKILL");
 
-      // A crashed server whose parent never reaps it stays a zombie, which
-      // kill -0 still reports. Its pid file and runtime record keep naming it.
-      // The child is killed only after sh has exec'd into node, which never
-      // reaps it (sh would), and its pid is printed once SIGCHLD confirms the
-      // zombie exists.
+      // Unlike sh, node leaves the child unreaped; SIGCHLD confirms the zombie exists.
       const parent = yield* spawner.spawn(
         ChildProcess.make("sh", [
           "-c",

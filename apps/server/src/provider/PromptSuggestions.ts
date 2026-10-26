@@ -11,21 +11,8 @@ interface PromptSuggestionChange {
   readonly suggestion: PromptSuggestion | null;
 }
 
-/**
- * The latest suggested next prompt per thread, in memory only.
- *
- * A thread's suggestion belongs to the run that last claimed it. Adapters
- * claim when they start a turn, which clears the previous suggestion. A
- * provider session can outlive a switch to another provider, so its late
- * predictions and cleanups name their run, and the store ignores any run that
- * no longer owns the thread. Clearing ends the claim, and adapters clear when
- * their session closes, which bounds the map to live sessions.
- *
- * The default reference drops everything, keeping adapter construction
- * dependency-free in tests. The live layer must be the same layer reference in
- * the adapter infrastructure and the WebSocket routes so layer memoization
- * yields one shared map.
- */
+// Provider sessions can outlive a provider switch, so late predictions need run ownership.
+// Adapters and WebSocket routes must share the live layer reference to share its map.
 export class PromptSuggestions extends Context.Reference<{
   readonly claim: (threadId: ThreadId, runId: RunId) => Effect.Effect<void>;
   readonly publish: (threadId: ThreadId, suggestion: PromptSuggestion) => Effect.Effect<void>;
