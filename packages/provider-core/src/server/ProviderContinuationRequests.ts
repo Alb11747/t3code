@@ -62,8 +62,11 @@ export const layer = Layer.effect(
     const queue = yield* Queue.unbounded<ProviderContinuationRequest>();
     const claim = yield* Ref.make<ClaimAgentMessages>(() => Effect.succeed([]));
     return {
-      offer: (request: ProviderContinuationRequest) =>
-        Queue.offer(queue, request).pipe(Effect.asVoid),
+      offer: Effect.fn("ProviderContinuationRequests.offer")(function (
+        request: ProviderContinuationRequest,
+      ) {
+        return Queue.offer(queue, request).pipe(Effect.asVoid);
+      }),
       take: Queue.take(queue),
       claimAgentMessages: (input) => Ref.get(claim).pipe(Effect.flatMap((serve) => serve(input))),
       serveAgentMessages: (serve) => Ref.set(claim, serve),
