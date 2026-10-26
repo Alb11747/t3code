@@ -120,8 +120,13 @@ jobs:
             node apps/web/node_modules/playwright/cli.js install --with-deps --only-shell chromium
           fi
 
+      # Document layout needs the runner without competing browser or unit files.
+      - name: Test attachment previews
+        run: vp run --filter @t3tools/web test src/components/files/AttachmentFilePreview.browser.test.tsx --no-file-parallelism
+
       - name: Test
-        run: vp run --filter @t3tools/web test
+        if: ${{ !cancelled() }}
+        run: vp run --filter @t3tools/web test --exclude '**/AttachmentFilePreview.browser.test.tsx'
 
   test_server:
     name: Server tests ${{ matrix.shard }}
