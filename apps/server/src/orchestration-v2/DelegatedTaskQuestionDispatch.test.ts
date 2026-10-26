@@ -65,13 +65,36 @@ const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "test-model" };
 
 it.effect.each([
-  { interruptsTools: false, stop: false, label: "steers a question into a running parent turn" },
-  { interruptsTools: true, stop: false, label: "queues and deduplicates retryable questions" },
-  { interruptsTools: true, stop: true, label: "Stop drops question notices from earlier cohorts" },
-])("$label", ({ interruptsTools, stop }) =>
+  {
+    interruptsTools: false,
+    stop: false,
+    atToolBoundary: false,
+    label: "steers a question into a running parent turn",
+  },
+  {
+    interruptsTools: true,
+    stop: false,
+    atToolBoundary: false,
+    label: "queues and deduplicates retryable questions",
+  },
+  {
+    interruptsTools: true,
+    stop: true,
+    atToolBoundary: false,
+    label: "Stop drops question notices from earlier cohorts",
+  },
+  {
+    interruptsTools: true,
+    stop: false,
+    atToolBoundary: true,
+    label: "keeps a question notification when joining at a tool boundary",
+  },
+])("$label", ({ interruptsTools, stop, atToolBoundary }) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const cwd = yield* checkpointWorkspace(`delegated-question-${interruptsTools}-${stop}`);
+      const cwd = yield* checkpointWorkspace(
+        `delegated-question-${interruptsTools}-${stop}-${atToolBoundary}`,
+      );
       const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
       const started: Array<ProviderAdapter.ProviderAdapterV2TurnInput> = [];
       const steered: Array<string> = [];
@@ -276,6 +299,42 @@ it.effect.each([
           assert.equal(
             projection.messages.find((message) => message.id === messageId)?.runId,
             first.runId,
+          );
+        }
+
+        if (atToolBoundary) {
+          const queued = projection.runs.find((run) => run.userMessageId === messageId)!;
+          yield* orchestrator.dispatch({
+            type: "queued-message.promote-to-steer",
+            commandId: CommandId.make("claim-question-at-tool-boundary"),
+            threadId: parentThreadId,
+            queuedRunId: queued.id,
+            targetRunId: first.runId,
+            atToolBoundary: true,
+          });
+          yield* worker.drain();
+          assert.lengthOf(steered, 0);
+        }
+        const delivered = yield* orchestrator.getThreadProjection(parentThreadId);
+        assert.deepEqual(
+          delivered.messages.find((message) => message.id === messageId)?.notification,
+          notice.notification,
+        );
+        if (!interruptsTools || atToolBoundary) {
+          assert.equal(
+            delivered.messages.find((message) => message.id === messageId)?.runId,
+            first.runId,
+          );
+          assert.deepEqual(
+            delivered.turnItems
+              .filter((item) => item.type === "notification")
+              .map(({ source, outcome, summary }) => ({ source, outcome, summary })),
+            [notice.notification],
+          );
+          assert.isFalse(
+            delivered.turnItems.some(
+              (item) => item.type === "user_message" && item.messageId === messageId,
+            ),
           );
         }
 

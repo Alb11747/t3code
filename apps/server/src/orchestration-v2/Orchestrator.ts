@@ -4358,6 +4358,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly senderThreadId?: OrchestrationV2ConversationMessage["senderThreadId"];
     readonly idleCompaction?: OrchestrationV2ConversationMessage["idleCompaction"];
     readonly delegatedCompletion?: OrchestrationV2ConversationMessage["delegatedCompletion"];
+    readonly notification?: OrchestrationV2ConversationMessage["notification"];
     readonly forceRestart: boolean;
     /** The provider delivers the message at a tool boundary; record it without a steer effect. */
     readonly atToolBoundary?: boolean;
@@ -4512,6 +4513,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(input.delegatedCompletion === undefined
             ? {}
             : { delegatedCompletion: input.delegatedCompletion }),
+          ...(input.notification === undefined ? {} : { notification: input.notification }),
           ...(input.scheduledTaskId === undefined
             ? {}
             : { scheduledTaskId: input.scheduledTaskId }),
@@ -5541,6 +5543,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             : (projection.runs.find((run) => run.id === dispatchMode.targetRunId)?.modelSelection ??
               modelSelection),
         delegatedCompletion,
+        ...(command.notification === undefined ? {} : { notification: command.notification }),
         targetRunId: dispatchMode.targetRunId,
         messageId: command.messageId,
         text: dispatchText,
@@ -8629,6 +8632,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...(queuedMessage.delegatedCompletion === undefined
         ? {}
         : { delegatedCompletion: queuedMessage.delegatedCompletion }),
+      ...(queuedMessage.notification === undefined
+        ? {}
+        : { notification: queuedMessage.notification }),
       atToolBoundary,
       targetRunId: command.targetRunId,
       messageId: queuedMessage.id,
