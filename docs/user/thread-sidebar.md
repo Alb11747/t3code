@@ -212,6 +212,9 @@ for custom configuration.
 **Limited** means the provider stopped on a usage or rate limit. The conversation
 keeps the provider's explanation. Retry after the limit resets, or switch to
 another provider instance.
+Codex instead keeps retrying model capacity, rate-limit, server, and connection
+failures, and usage limits with no known reset time, waiting up to 3 minutes
+between tries; the conversation shows the retry, and **Stop** cancels it.
 On web and desktop, press **Resume** in an empty composer to continue a limited
 or interrupted turn manually.
 Queued messages stay saved while the limit blocks the thread. They run after

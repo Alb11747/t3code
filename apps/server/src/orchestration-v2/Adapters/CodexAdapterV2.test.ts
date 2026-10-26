@@ -4975,12 +4975,6 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       expectedClass: "provider_error",
     },
     {
-      name: "late-reset",
-      code: "usageLimitExceeded",
-      notification: false,
-      expectedClass: "usage_limit",
-    },
-    {
       name: "matching-details",
       code: "usageLimitExceeded",
       notification: true,
@@ -4994,16 +4988,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     },
     { name: "retry", code: "usageLimitExceeded", notification: true, expectedClass: "usage_limit" },
     {
-      name: "exhausted-429",
-      code: "responseTooManyFailedAttempts",
-      errorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 429 } },
-      notification: false,
-      expectedClass: "usage_limit",
-    },
-    {
-      name: "exhausted-500",
-      code: "responseTooManyFailedAttempts",
-      errorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 500 } },
+      name: "client-error",
+      code: "httpConnectionFailed",
+      errorInfo: { httpConnectionFailed: { httpStatusCode: 403 } },
       notification: false,
       expectedClass: "provider_error",
     },
@@ -5039,7 +5026,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           scenario: `codex-limit-${scenario.name}`,
           entries: [
             ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Continue." }),
-            ...(scenario.name === "deferred-reset" ? [snapshot] : []),
+            // A usage limit with no known reset is retried (see overload retries).
+            snapshot,
             ...(scenario.name === "deferred-reset"
               ? [
                   {
@@ -5123,7 +5111,6 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 },
               },
             },
-            ...(scenario.name === "late-reset" ? [snapshot] : []),
             ...(scenario.name === "deferred-reset"
               ? [
                   {
@@ -5160,14 +5147,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               : []),
           ],
         });
-        const resetReceipt = yield* Deferred.make<void>();
-        const harness = yield* makeCodexReplayHarness(transcript, (event) =>
-          event.type === "turn_item.updated" &&
-          event.turnItem.type === "error" &&
-          event.turnItem.failure.resetAt === resetAt
-            ? Deferred.succeed(resetReceipt, undefined)
-            : Effect.void,
-        );
+        const harness = yield* makeCodexReplayHarness(transcript);
         yield* harness.runtime.startTurn(
           makeCodexTestTurnInput({
             threadId: harness.threadId,
@@ -5186,16 +5166,6 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         if (scenario.name === "deferred-reset") assert.equal(terminal.failure.resetAt, resetAt);
         if (scenario.name === "matching-details")
           assert.equal(terminal.failure.message, "Detailed provider allowance explanation.");
-        if (scenario.name === "late-reset") {
-          yield* Deferred.await(resetReceipt);
-          const item = harness.events.find(
-            (event) =>
-              event.type === "turn_item.updated" &&
-              event.turnItem.type === "error" &&
-              event.turnItem.failure.resetAt === resetAt,
-          );
-          assert.isDefined(item);
-        }
         if (scenario.name === "retry") assert.equal(terminal.retry?.attempt, 1);
         if (scenario.name === "chatgpt-workspace-limit") {
           assert.equal(terminal.failure.code, scenario.details);
@@ -5207,117 +5177,6 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ),
       ),
     ),
-  );
-
-  // regression: #17501 Codex 429 retry exhaustion classifies as a usage limit
-  it.effect.each([
-    {
-      notificationStatus: 500,
-      completionStatus: 429,
-      willRetry: false,
-      expectedClass: "usage_limit",
-    },
-    {
-      notificationStatus: 429,
-      completionStatus: 500,
-      willRetry: true,
-      expectedClass: "provider_error",
-    },
-    {
-      notificationStatus: 429,
-      completionStatus: null,
-      willRetry: false,
-      expectedClass: "usage_limit",
-    },
-    {
-      notificationStatus: 429,
-      completionStatus: null,
-      willRetry: true,
-      expectedClass: "usage_limit",
-    },
-  ] as const)(
-    "honors completion HTTP status from $notificationStatus to $completionStatus (retry: $willRetry)",
-    ({ notificationStatus, completionStatus, expectedClass, willRetry }) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const name = `${notificationStatus}-${completionStatus}-${willRetry}`;
-          const nativeThreadId = `native-exhaustion-status-${name}`;
-          const nativeTurnId = `turn-exhaustion-status-${name}`;
-          const message = "Provider stopped this request.";
-          const additionalDetails = "Detailed notification evidence.";
-          const transcript = makeCodexReplayTranscript({
-            scenario: `codex-exhaustion-status-${name}`,
-            entries: [
-              ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Continue." }),
-              {
-                type: "emit_inbound",
-                label: "error",
-                frame: {
-                  method: "error",
-                  params: {
-                    threadId: nativeThreadId,
-                    turnId: nativeTurnId,
-                    willRetry,
-                    error: {
-                      message,
-                      codexErrorInfo: {
-                        responseTooManyFailedAttempts: { httpStatusCode: notificationStatus },
-                      },
-                      additionalDetails,
-                    },
-                  },
-                },
-              },
-              {
-                type: "emit_inbound",
-                label: "turn/completed",
-                frame: {
-                  method: "turn/completed",
-                  params: {
-                    threadId: nativeThreadId,
-                    turn: {
-                      ...makeCodexReplayTurn({ id: nativeTurnId, status: "failed" }),
-                      error: {
-                        message,
-                        codexErrorInfo: {
-                          responseTooManyFailedAttempts: { httpStatusCode: completionStatus },
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-            ],
-          });
-          const harness = yield* makeCodexReplayHarness(transcript);
-          yield* harness.runtime.startTurn(
-            makeCodexTestTurnInput({
-              threadId: harness.threadId,
-              providerThread: harness.providerThread,
-              now: yield* DateTime.now,
-              text: "Continue.",
-              attemptId: RunAttemptId.make(`attempt-exhaustion-status-${name}`),
-            }),
-          );
-          yield* harness.firstTerminal;
-          const terminal = harness.terminalEvents()[0];
-          assert.equal(terminal?.status, "failed");
-          if (terminal?.status !== "failed") return;
-          assert.equal(terminal.failure.class, expectedClass);
-          assert.equal(terminal.failure.code, "responseTooManyFailedAttempts");
-          assert.equal(terminal.threadDisposition, "reusable");
-          const notificationClass = notificationStatus === 429 ? "usage_limit" : "provider_error";
-          assert.equal(
-            terminal.failure.message,
-            expectedClass === notificationClass ? additionalDetails : message,
-          );
-          if (willRetry) assert.equal(terminal.retry?.attempt, 1);
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
-          ),
-        ),
-      ),
   );
 
   const FAILED_SCENARIO = "codex-failed-mid-command";
@@ -7954,17 +7813,22 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
     );
 
-    it.effect("exhausts retries after one hour with three-minute waits", () =>
+    it.effect("keeps retrying past an hour and restarts the backoff after progress", () =>
       Effect.gen(function* () {
-        const attempts = Array.from({ length: 24 }, (_, index) => index + 1);
-        const retryTurn = (attempt: number): Array<CodexReplay.CodexAppServerReplayEntry> => {
-          const id = `turn-${attempt + 1}`;
+        // Thirty failed retries outlast the former one-hour, 24-attempt cap. The
+        // next retry makes progress before failing, so its wait starts over.
+        const failedRetries = 30;
+        const retryTurn = (
+          retry: number,
+          outcome: "failed" | "progress" | "completed",
+        ): Array<CodexReplay.CodexAppServerReplayEntry> => {
+          const id = `turn-${retry + 1}`;
           return [
             {
               type: "expect_outbound",
-              label: `retry ${attempt} turn/start`,
+              label: `retry ${retry} turn/start`,
               frame: {
-                id: attempt + 3,
+                id: retry + 3,
                 method: "turn/start",
                 params: {
                   threadId: nativeThreadId,
@@ -7981,15 +7845,15 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             },
             {
               type: "emit_inbound",
-              label: `retry ${attempt} turn/start`,
+              label: `retry ${retry} turn/start`,
               frame: {
-                id: attempt + 3,
+                id: retry + 3,
                 result: { turn: makeCodexReplayTurn({ id, status: "inProgress" }) },
               },
             },
             {
               type: "emit_inbound",
-              label: `retry ${attempt} turn/started`,
+              label: `retry ${retry} turn/started`,
               frame: {
                 method: "turn/started",
                 params: {
@@ -7998,64 +7862,361 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 },
               },
             },
-            turnCompleted(id, "failed"),
+            ...(outcome === "progress"
+              ? [
+                  {
+                    type: "emit_inbound" as const,
+                    label: `retry ${retry} agent message`,
+                    frame: {
+                      method: "item/agentMessage/delta",
+                      params: {
+                        threadId: nativeThreadId,
+                        turnId: id,
+                        itemId: `message-${id}`,
+                        delta: "Working",
+                      },
+                    },
+                  },
+                ]
+              : []),
+            turnCompleted(id, outcome === "completed" ? "completed" : "failed"),
           ];
         };
         const transcript = makeCodexReplayTranscript({
-          scenario: "overload-retry-exhausted",
+          scenario: "overload-retry-persistent",
           entries: [
             ...codexReplayPreamble({ nativeThreadId, nativeTurnId: "turn-1", prompt }),
             turnCompleted("turn-1", "failed"),
-            ...attempts.flatMap(retryTurn),
+            ...Array.from({ length: failedRetries }, (_, index) =>
+              retryTurn(index + 1, "failed"),
+            ).flat(),
+            ...retryTurn(failedRetries + 1, "progress"),
+            ...retryTurn(failedRetries + 2, "completed"),
           ],
         });
         const harness = yield* makeCodexReplayHarness(transcript);
         yield* harness.runtime.startTurn(yield* runInput(harness));
-        const delays: Array<number> = [];
-        for (const attempt of attempts) {
-          yield* harness.until(() =>
-            retryRows(harness.events).some((row) => row[1] === attempt && row[2] !== null),
+        const scheduled = () =>
+          harness.events.flatMap((event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "error" &&
+            event.turnItem.status === "running" &&
+            event.turnItem.retry?.retryDelayMs != null
+              ? [event.turnItem.retry]
+              : [],
           );
-          const retryEvent = harness.events.find(
-            (event) =>
-              event.type === "turn_item.updated" &&
-              event.turnItem.type === "error" &&
-              event.turnItem.retry?.attempt === attempt &&
-              event.turnItem.retry.retryDelayMs !== null,
-          );
-          if (retryEvent?.type !== "turn_item.updated" || retryEvent.turnItem.type !== "error") {
-            return assert.fail("Expected a scheduled retry row");
-          }
-          const retry = retryEvent.turnItem.retry;
-          assert.equal(retry?.maxAttempts, 24);
-          const delay = retry?.retryDelayMs;
-          if (delay == null) return assert.fail("Expected a retry delay");
-          assert.isAtMost(delay, 180_000);
-          delays.push(delay);
+        for (let count = 1; count <= failedRetries + 2; count++) {
+          yield* harness.until(() => scheduled().length >= count);
           assert.lengthOf(harness.terminalEvents(), 0);
-          if (attempt === 24) {
-            yield* TestClock.adjust(delay - 1);
-            assert.lengthOf(harness.terminalEvents(), 0);
-            yield* TestClock.adjust(1);
-          } else {
-            yield* TestClock.adjust(delay);
-          }
+          yield* TestClock.adjust(scheduled()[count - 1]?.retryDelayMs ?? 0);
         }
         yield* harness.firstTerminal;
 
-        assert.equal(
-          delays.reduce((total, delay) => total + delay, 0),
-          3_600_000,
+        const retries = scheduled();
+        assert.deepEqual(
+          retries.map((retry) => retry.attempt),
+          [...Array.from({ length: failedRetries + 1 }, (_, index) => index + 1), 1],
         );
-        assert.equal(Math.max(...delays), 180_000);
-        const [terminal] = harness.terminalEvents();
-        assert.equal(terminal?.providerTurnId, yield* providerTurnId("turn-25"));
-        assert.equal(terminal?.status, "failed");
-        assert.equal(
-          terminal?.status === "failed" ? terminal.failure.code : null,
-          "serverOverloaded",
+        assert.deepEqual(
+          retries.slice(0, 7).map((retry) => retry.retryDelayMs),
+          [10_000, 20_000, 40_000, 80_000, 160_000, 180_000, 180_000],
         );
-        assert.deepEqual(retryRows(harness.events).at(-1), ["failed", 24, null]);
+        assert.equal(retries.at(-1)?.retryDelayMs, 10_000);
+        assert.isTrue(retries.every((retry) => retry.maxAttempts === null));
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => [event.providerTurnId, event.status]),
+          [[yield* providerTurnId(`turn-${failedRetries + 3}`), "completed"]],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+
+    it.effect.each([
+      { name: "rate limit", errorInfo: "rateLimitExceeded" },
+      {
+        name: "429 exhaustion",
+        errorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 429 } },
+      },
+      { name: "503 connection", errorInfo: { httpConnectionFailed: { httpStatusCode: 503 } } },
+    ] as const)(
+      "retries a $name failure without waiting for a usage reset until Stop",
+      ({ name, errorInfo }) =>
+        Effect.gen(function* () {
+          const transcript = makeCodexReplayTranscript({
+            scenario: `throttle-retry-${name}`,
+            entries: [
+              ...codexReplayPreamble({ nativeThreadId, nativeTurnId: "turn-1", prompt }),
+              // A stale full-allowance snapshot must not turn throttling into a reset wait.
+              {
+                type: "emit_inbound",
+                label: "account/rateLimits/updated",
+                frame: {
+                  method: "account/rateLimits/updated",
+                  params: {
+                    rateLimits: {
+                      limitId: "codex",
+                      primary: { usedPercent: 100, resetsAt: 2000100000, windowDurationMins: 300 },
+                    },
+                  },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "turn/completed turn-1",
+                frame: {
+                  method: "turn/completed",
+                  params: {
+                    threadId: nativeThreadId,
+                    turn: {
+                      ...makeCodexReplayTurn({ id: "turn-1", status: "failed" }),
+                      error: { message: "Too many requests.", codexErrorInfo: errorInfo },
+                    },
+                  },
+                },
+              },
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(transcript);
+          yield* harness.runtime.startTurn(yield* runInput(harness));
+          yield* harness.until(() => retryRows(harness.events).length > 0);
+          const row = harness.events.find(
+            (event) => event.type === "turn_item.updated" && event.turnItem.type === "error",
+          );
+          if (row?.type !== "turn_item.updated" || row.turnItem.type !== "error") {
+            return assert.fail("Expected a retry row");
+          }
+          assert.equal(row.turnItem.failure.class, "provider_error");
+          assert.equal(row.turnItem.failure.resetAt ?? null, null);
+          assert.equal(row.turnItem.retry?.retryDelayMs, 10_000);
+
+          yield* harness.runtime.interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId: yield* providerTurnId("turn-1"),
+          });
+          yield* harness.firstTerminal;
+          assert.deepEqual(
+            harness.terminalEvents().map((event) => event.status),
+            ["interrupted"],
+          );
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+    );
+
+    it.effect(
+      "rechecks a usage limit with no known reset, then waits for the reset it learns",
+      () =>
+        Effect.gen(function* () {
+          const usageLimited = (id: string) =>
+            ({
+              type: "emit_inbound",
+              label: `turn/completed ${id}`,
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: {
+                    ...makeCodexReplayTurn({ id, status: "failed" }),
+                    error: {
+                      message: "You've hit your usage limit.",
+                      codexErrorInfo: "usageLimitExceeded",
+                    },
+                  },
+                },
+              },
+            }) satisfies CodexReplay.CodexAppServerReplayEntry;
+          const preamble = codexReplayPreamble({ nativeThreadId, nativeTurnId: "turn-1", prompt });
+          const startEntry = preamble.at(-3)!;
+          if (startEntry.type !== "expect_outbound")
+            return yield* Effect.die("expected turn/start");
+          const transcript = makeCodexReplayTranscript({
+            scenario: "usage-limit-recheck",
+            entries: [
+              ...preamble,
+              usageLimited("turn-1"),
+              {
+                type: "emit_inbound",
+                label: "account/rateLimits/updated",
+                frame: {
+                  method: "account/rateLimits/updated",
+                  params: {
+                    rateLimits: {
+                      limitId: "codex",
+                      primary: { usedPercent: 100, resetsAt: 2000100000, windowDurationMins: 300 },
+                    },
+                  },
+                },
+              },
+              {
+                type: "expect_outbound",
+                frame: {
+                  ...(startEntry.frame as { params: object }),
+                  id: 4,
+                  params: { ...(startEntry.frame as { params: object }).params, input: [] },
+                },
+              },
+              {
+                type: "emit_inbound",
+                frame: {
+                  id: 4,
+                  result: { turn: makeCodexReplayTurn({ id: "turn-2", status: "inProgress" }) },
+                },
+              },
+              {
+                type: "emit_inbound",
+                frame: {
+                  method: "turn/started",
+                  params: {
+                    threadId: nativeThreadId,
+                    turn: makeCodexReplayTurn({ id: "turn-2", status: "inProgress" }),
+                  },
+                },
+              },
+              usageLimited("turn-2"),
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(transcript);
+          yield* harness.runtime.startTurn(yield* runInput(harness));
+          yield* harness.until(() => retryRows(harness.events).length > 0);
+          assert.lengthOf(harness.terminalEvents(), 0);
+          yield* TestClock.adjust("10 seconds");
+          yield* harness.firstTerminal;
+
+          const [terminal] = harness.terminalEvents();
+          assert.equal(terminal?.providerTurnId, yield* providerTurnId("turn-2"));
+          if (terminal?.status !== "failed") return assert.fail("Expected a usage-limit failure");
+          assert.equal(terminal.failure.class, "usage_limit");
+          assert.equal(terminal.failure.resetAt, "2033-05-19T07:20:00.000Z");
+          assert.deepEqual(retryRows(harness.events).at(-1)?.slice(0, 2), ["failed", 1]);
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+    );
+
+    it.effect.each([
+      { name: "overloaded", code: -32001 },
+      { name: "internal error", code: -32603 },
+    ] as const)("handles a retry start Codex rejects as $name", ({ name, code }) =>
+      Effect.gen(function* () {
+        const preamble = codexReplayPreamble({ nativeThreadId, nativeTurnId: "turn-1", prompt });
+        const startEntry = preamble.at(-3)!;
+        if (startEntry.type !== "expect_outbound") return yield* Effect.die("expected turn/start");
+        const retryStart = (id: number) =>
+          ({
+            type: "expect_outbound",
+            frame: {
+              ...(startEntry.frame as { params: object }),
+              id,
+              params: { ...(startEntry.frame as { params: object }).params, input: [] },
+            },
+          }) satisfies CodexReplay.CodexAppServerReplayEntry;
+        const transcript = makeCodexReplayTranscript({
+          scenario: `overload-retry-start-rejected-${name}`,
+          entries: [
+            ...preamble,
+            turnCompleted("turn-1", "failed"),
+            retryStart(4),
+            { type: "emit_inbound", frame: { id: 4, error: { code, message: "Rejected." } } },
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+        yield* harness.runtime.startTurn(yield* runInput(harness));
+        yield* harness.until(() => retryRows(harness.events).length > 0);
+        yield* TestClock.adjust("10 seconds");
+        if (code === -32603) {
+          yield* harness.firstTerminal;
+          const [terminal] = harness.terminalEvents();
+          assert.equal(
+            terminal?.status === "failed" ? terminal.failure.code : null,
+            "serverOverloaded",
+          );
+          assert.deepEqual(retryRows(harness.events).at(-1)?.slice(0, 2), ["failed", 1]);
+          return;
+        }
+        // Nothing started, so the run waits out the next backoff until Stop.
+        yield* harness.until(() =>
+          retryRows(harness.events).some((row) => row[0] === "running" && row[1] === 2),
+        );
+        assert.lengthOf(harness.terminalEvents(), 0);
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: yield* providerTurnId("turn-1"),
+        });
+        yield* harness.firstTerminal;
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => event.status),
+          ["interrupted"],
+        );
+        assert.deepEqual(retryRows(harness.events).slice(-2), [
+          ["running", 2, 20_000],
+          ["interrupted", 2, 20_000],
+        ]);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+
+    it.effect("keeps a notified client-error status when the completion omits it", () =>
+      Effect.gen(function* () {
+        const message = "Request failed after retries.";
+        const transcript = makeCodexReplayTranscript({
+          scenario: "notified-client-error-status",
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId: "turn-1", prompt }),
+            {
+              type: "emit_inbound",
+              frame: {
+                method: "error",
+                params: {
+                  threadId: nativeThreadId,
+                  turnId: "turn-1",
+                  willRetry: false,
+                  error: {
+                    message,
+                    codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 403 } },
+                  },
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: {
+                    ...makeCodexReplayTurn({ id: "turn-1", status: "failed" }),
+                    error: {
+                      message,
+                      codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: null } },
+                    },
+                  },
+                },
+              },
+            },
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+        yield* harness.runtime.startTurn(yield* runInput(harness));
+        yield* harness.firstTerminal;
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => event.status),
+          ["failed"],
+        );
+        assert.lengthOf(retryRows(harness.events), 0);
       }).pipe(
         Effect.scoped,
         Effect.provide(

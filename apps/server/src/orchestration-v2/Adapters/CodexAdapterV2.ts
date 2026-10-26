@@ -944,15 +944,46 @@ function describeCodexGoal(goal: OrchestrationV2ProviderGoal): string {
 // Codex starts the next goal turn milliseconds after the last one completes.
 const CODEX_GOAL_CONTINUATION_GRACE = "5 seconds";
 
-// Codex fails a turn at once on `serverOverloaded` ("Selected model is at
-// capacity") unless the server sent Retry-After. The run instead continues
-// with empty-input turns, which see the failed turn's recorded work, after
-// 10s, 20s, 40s, 80s, 160s, eighteen 3-minute waits and a final 50s: one hour total.
-const CODEX_OVERLOAD_RETRY_MAX_ATTEMPTS = 24;
+// Codex fails turns on capacity at once and on throttling or transport failures
+// after a few quick retries. The run instead continues with empty-input turns,
+// which see the failed turn's recorded work, until one makes progress: waits
+// start at 10s and double up to 3 minutes, with no attempt cap.
 const codexOverloadRetryDelayMs = (attempt: number) =>
-  attempt === CODEX_OVERLOAD_RETRY_MAX_ATTEMPTS
-    ? 50_000
-    : Math.min(10_000 * 2 ** (attempt - 1), 180_000);
+  Math.min(10_000 * 2 ** (attempt - 1), 180_000);
+
+const CODEX_RECOVERABLE_FAILURE_CODES = new Set([
+  "serverOverloaded",
+  "rateLimitExceeded",
+  "internalServerError",
+  "httpConnectionFailed",
+  "responseStreamConnectionFailed",
+  "responseStreamDisconnected",
+  "responseTooManyFailedAttempts",
+]);
+
+function codexHttpStatus(errorInfo: CodexErrorInfo | null | undefined): number | null {
+  const detail =
+    typeof errorInfo === "object" && errorInfo !== null ? Object.values(errorInfo)[0] : undefined;
+  return detail !== undefined && "httpStatusCode" in detail
+    ? (detail.httpStatusCode ?? null)
+    : null;
+}
+
+/**
+ * A client-error HTTP status other than 408 or 429 will fail the same way again.
+ * A completion repeating the notified failure may omit the status it reported.
+ */
+function codexFailureRecoverable(
+  errorInfo: CodexErrorInfo | null | undefined,
+  notified: CodexErrorInfo | null | undefined,
+): boolean {
+  const code = codexErrorInfoCode(errorInfo);
+  if (code === null || !CODEX_RECOVERABLE_FAILURE_CODES.has(code)) return false;
+  const status =
+    codexHttpStatus(errorInfo) ??
+    (codexErrorInfoCode(notified) === code ? codexHttpStatus(notified) : null);
+  return status === null || status < 400 || status >= 500 || status === 408 || status === 429;
+}
 
 const providerTurnsForThread = (
   providerTurns: ReadonlyArray<OrchestrationV2ProviderTurn>,
@@ -1109,27 +1140,12 @@ function codexErrorInfoCode(value: unknown): string | null {
 type CodexErrorInfo = CodexSchema.ServerNotification__CodexErrorInfo;
 
 /**
- * Retry exhaustion only says why it failed through the last attempt's HTTP
- * status. Exhaustion on 429 is a usage or rate limit, so it keeps the Limited
- * state and resume controls; other statuses stay provider or transport errors.
+ * Only an exhausted allowance waits for a reset. Throttling (`rateLimitExceeded`
+ * or retries exhausted on HTTP 429) clears on its own and is retried, and a
+ * reset time from a stale quota snapshot would schedule false resumes.
  */
-function codexExhaustionHttpStatus(errorInfo: CodexErrorInfo | null | undefined): number | null {
-  return typeof errorInfo === "object" &&
-    errorInfo !== null &&
-    "responseTooManyFailedAttempts" in errorInfo
-    ? (errorInfo.responseTooManyFailedAttempts.httpStatusCode ?? null)
-    : null;
-}
-
-function codexUsageLimitError(
-  code: string | null,
-  errorInfo: CodexErrorInfo | null | undefined,
-): boolean {
-  return (
-    code === "usageLimitExceeded" ||
-    code === "rateLimitExceeded" ||
-    codexExhaustionHttpStatus(errorInfo) === 429
-  );
+function codexUsageLimitError(code: string | null): boolean {
+  return code === "usageLimitExceeded";
 }
 
 /**
@@ -1151,6 +1167,7 @@ interface ActiveCodexTurnContext {
   latestProviderFailure?: {
     readonly nativeMessage: string;
     readonly nativeCode: string | null;
+    readonly nativeErrorInfo: CodexErrorInfo | null | undefined;
     readonly failure: OrchestrationV2ProviderFailure;
   };
   readonly nativeStartReady?: Deferred.Deferred<void>;
@@ -1219,7 +1236,7 @@ interface CodexGoalHold {
    * the retry row, and the failure to settle with if the retry cannot start.
    */
   readonly overloadRetry?: {
-    readonly state: ActiveCodexProviderRetry;
+    state: ActiveCodexProviderRetry;
     readonly failed: CodexRootTerminalEvent;
   };
 }
@@ -1925,7 +1942,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const goalActivations = new Map<string, { stopped: boolean }>();
         // Held runs must not complete while Stop resolves its target.
         const goalStops = new Map<string, number>();
-        // Overload retries the current run used, by native thread. A new run resets it.
+        // Overload retries since the run last made progress, by native thread. A new run resets it.
         const overloadRetryAttempts = new Map<string, number>();
         const latestGoalTurnId = (providerTurnId: ProviderTurnId) =>
           goalRuns.get(providerTurnId)?.at(-1)?.providerTurnId ?? providerTurnId;
@@ -1998,6 +2015,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           });
           if (providerRetry === undefined) {
             return;
+          }
+          const nativeThreadId = context.providerThread.nativeThreadRef?.nativeId;
+          if (context.subagent === null && nativeThreadId != null) {
+            overloadRetryAttempts.delete(nativeThreadId);
           }
           yield* emitProviderEvent({
             type: "turn_item.updated",
@@ -4783,11 +4804,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               context.latestProviderFailure = {
                 nativeMessage: payload.error.message,
                 nativeCode: notificationCode,
+                nativeErrorInfo: payload.error.codexErrorInfo,
                 failure: withCodexManagedFailure(
                   makeProviderFailure({
                     message: payload.error.additionalDetails?.trim() || payload.error.message,
                     code: notificationCode,
-                    class: codexUsageLimitError(notificationCode, payload.error.codexErrorInfo)
+                    class: codexUsageLimitError(notificationCode)
                       ? "usage_limit"
                       : "provider_error",
                   }),
@@ -4813,7 +4835,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     ? payload.error.message
                     : additionalDetails,
                 code,
-                class: codexUsageLimitError(code, payload.error.codexErrorInfo)
+                class: codexUsageLimitError(code)
                   ? "usage_limit"
                   : code?.startsWith("http") === true || code?.startsWith("responseStream") === true
                     ? "transport_error"
@@ -5874,25 +5896,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 input.failureErrorInfo === undefined
                   ? undefined
                   : codexErrorInfoCode(input.failureErrorInfo);
-              const failureClass = codexUsageLimitError(failureCode ?? null, input.failureErrorInfo)
-                ? "usage_limit"
-                : "provider_error";
               // The notification carries the richer message, so it wins when the
-              // completion repeats it. An explicit exhaustion status on the
-              // completion still decides the class; a missing one is not evidence.
-              const exhaustionStatus = codexExhaustionHttpStatus(input.failureErrorInfo);
+              // completion repeats it.
               const failure =
                 previousFailure !== undefined &&
                 (input.failureMessage === undefined ||
                   input.failureMessage === previousFailure.nativeMessage) &&
-                (failureCode === undefined || failureCode === previousFailure.nativeCode) &&
-                (exhaustionStatus === null || previousFailure.failure.class === failureClass)
+                (failureCode === undefined || failureCode === previousFailure.nativeCode)
                   ? previousFailure.failure
                   : withCodexManagedFailure(
                       makeProviderFailure({
                         message: input.failureMessage,
                         code: failureCode,
-                        class: failureClass,
+                        class: codexUsageLimitError(failureCode ?? null)
+                          ? "usage_limit"
+                          : "provider_error",
                       }),
                       input.failureMessage,
                     );
@@ -5981,8 +5999,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         });
 
         /**
-         * The retry attempt a root turn that failed with `serverOverloaded`
-         * gets, or undefined when its failure settles the run.
+         * The retry attempt a root turn with a recoverable failure gets, or
+         * undefined when its failure settles the run.
          */
         const overloadRetryAttempt = Effect.fnUntraced(function* (input: {
           readonly context: ActiveCodexTurnContext;
@@ -5997,13 +6015,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             input.status !== "failed"
           )
             return undefined;
-          const code =
-            codexErrorInfoCode(input.failureErrorInfo) ??
-            input.context.latestProviderFailure?.nativeCode;
-          const attempt = (overloadRetryAttempts.get(nativeThreadId) ?? 0) + 1;
+          const notified = input.context.latestProviderFailure?.nativeErrorInfo;
+          const errorInfo = input.failureErrorInfo ?? notified;
+          // A usage limit with an upcoming reset waits for limit recovery; without
+          // one, nothing would ever resume the run, so it rechecks like a failure.
+          const resetAt = codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot));
+          const usageLimitWithoutReset =
+            codexErrorInfoCode(errorInfo) === "usageLimitExceeded" &&
+            (resetAt === null ||
+              Date.parse(resetAt) <= DateTime.toEpochMillis(yield* DateTime.now));
           if (
-            code !== "serverOverloaded" ||
-            attempt > CODEX_OVERLOAD_RETRY_MAX_ATTEMPTS ||
+            !(codexFailureRecoverable(errorInfo, notified) || usageLimitWithoutReset) ||
             (yield* Ref.get(interruptingNativeTurns)).has(input.nativeTurnId) ||
             // Codex drives goal runs' turns itself.
             goalsByNativeThread.get(nativeThreadId)?.status === "active" ||
@@ -6011,7 +6033,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ) {
             return undefined;
           }
-          return attempt;
+          return (overloadRetryAttempts.get(nativeThreadId) ?? 0) + 1;
         });
 
         /**
@@ -6031,11 +6053,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           overloadRetryAttempts.set(nativeThreadId, attempt);
           const state: ActiveCodexProviderRetry = {
             nativeMessage: event.failure.message,
-            nativeCode: "serverOverloaded",
+            nativeCode: event.failure.code,
             failure: { ...event.failure, retryable: true },
             retry: {
               attempt,
-              maxAttempts: CODEX_OVERLOAD_RETRY_MAX_ATTEMPTS,
+              maxAttempts: null,
               retryDelayMs: codexOverloadRetryDelayMs(attempt),
             },
             startedAt: input.providerRetry?.startedAt ?? (yield* DateTime.now),
@@ -6074,7 +6096,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           nativeThreadId: string,
           hold: CodexGoalHold,
           delayMs: number,
-        ) {
+        ): Effect.fn.Return<
+          void,
+          ProviderAdapter.ProviderAdapterProtocolError | Schema.SchemaError
+        > {
           yield* Effect.sleep(delayMs);
           const stillHeld = () =>
             goalHolds.get(nativeThreadId) === hold && !goalStops.has(nativeThreadId);
@@ -6107,6 +6132,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     cause,
                   });
                   if (!stillHeld() || hold.overloadRetry === undefined) return;
+                  // Codex rejected the start before creating a turn, so the run keeps waiting.
+                  if (
+                    Schema.is(CodexErrors.CodexAppServerRequestError)(cause) &&
+                    cause.code === -32001
+                  ) {
+                    const attempt = (overloadRetryAttempts.get(nativeThreadId) ?? 0) + 1;
+                    overloadRetryAttempts.set(nativeThreadId, attempt);
+                    const retryDelayMs = codexOverloadRetryDelayMs(attempt);
+                    const { state } = hold.overloadRetry;
+                    hold.overloadRetry.state = {
+                      ...state,
+                      retry: { ...state.retry, attempt, retryDelayMs },
+                    };
+                    yield* emitOverloadRetryRow(hold.context, hold.overloadRetry.state, "running");
+                    yield* retryOverloadedTurn(nativeThreadId, hold, retryDelayMs).pipe(
+                      Effect.forkIn(scope),
+                    );
+                    return;
+                  }
                   goalHolds.delete(nativeThreadId);
                   yield* emitProviderEvent({
                     type: "provider_turn.updated",
