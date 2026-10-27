@@ -9,14 +9,14 @@ ARM64. Installed desktop copies update through the in-app **Install update** but
 To set up another computer, follow [Install the fork](INSTALL.md) for downloads,
 installation, remote connections and updates.
 
-Read this before changing anything here, from freshly fetched `origin/main`
-rather than a local checkout, which may hold an older copy. Upstream's
-`AGENTS.md` still governs code style, testing and conventions.
+It's best to read this before changing anything here, from freshly fetched
+`origin/main` rather than a local checkout, which may hold an older copy.
+Upstream's `AGENTS.md` still covers code style, testing and conventions.
 
-Diagnosis that turns into a fix in the same thread still starts at
+Diagnosis that turns into a fix in the same thread usually still starts at
 _Adding a change_, step 1. Upstream often fixes a bug within days of the
-fork's base, so check fetched `upstream/main` before writing any code. If a
-fetch fails, stop and report it instead of working from stale refs.
+fork's base, so it pays to check fetched `upstream/main` before writing code.
+If a fetch fails, it's best to stop and report it rather than work from stale refs.
 
 ## Layout
 
@@ -34,15 +34,16 @@ fetch fails, stop and report it instead of working from stale refs.
 
 Everything else is upstream code. Upstream's own workflows are disabled in the
 fork's GitHub settings (they need upstream's runners and credentials, or
-automate upstream's issues and PRs), so the fork never edits them. The one
+automate upstream's issues and PRs), so the fork leaves them alone. The one
 exception is `release-desktop.yml`, which `fork-release.yml` calls.
 
 ## Branches and history
 
 - `main` is the fork's commits with upstream nightlies merged in. Its history
   is never rewritten: never force-push it, and never rebase, amend, or drop
-  commits that are already on it. Change or remove a fork change with a new
-  commit or `git revert`. (Before 2026-10-20 sync rebased `main`; history
+  commits that are already on it, because sync promotion and every checkout's
+  `--ff-only` refresh rely on fast-forwards and stable SHAs. Change or remove a
+  fork change with a new commit or `git revert`. (Before 2026-10-20 sync rebased `main`; history
   before then is linear.)
 - Rewriting fork commits gives them new SHAs, and GitHub adds a "referenced this
   pull request" entry to the upstream PR for every new SHA whose message links
@@ -57,25 +58,25 @@ exception is `release-desktop.yml`, which `fork-release.yml` calls.
   written by the sync workflow or T3 publisher.
 - Locally, `origin` is the fork (`https://github.com/Alb11747/t3code.git`) and
   `upstream` is pingdotgg (`git remote add upstream https://github.com/pingdotgg/t3code.git`);
-  `upstream/main` is upstream's `main`. Keep the main checkout (the original
-  clone) on a local `main` that tracks `origin/main`, so agents starting there
-  read this guide. Refresh a clean `main` with `git pull --ff-only origin main`.
+  `upstream/main` is upstream's `main`. It's best to keep the main checkout (the
+  original clone) on a local `main` that tracks `origin/main`, so agents
+  starting there read this guide. Refresh a clean `main` with `git pull --ff-only origin main`.
   An older checkout with `origin` = upstream and `fork` = the fork migrates with
   `git remote rename origin upstream` followed by `git remote rename fork origin`.
-- Commits follow Conventional Commits, as upstream does.
+- Commits usually follow Conventional Commits, as upstream does.
 
 ## Planning a fork feature
 
 Features stay fork-only (see _Fixing bugs_), so the fork
 carries each one through every sync. Eligible pushes to `main` start the
 release workflow; successful builds become available for installed copies
-to download and install. For requested work, post a short plan in the task's
-thread (never commit it), then proceed within the authorized scope without
-waiting for another approval. Cover:
+to download and install. For requested work, it helps to post a short plan in
+the task's thread (rather than committing it), then proceed within the
+authorized scope without waiting for another approval. A good plan covers:
 
 1. **Outcome and entry point.** What the user can do, and the least intrusive
-   place to reach it. Extend an existing menu, header, or setting before
-   adding always-visible UI.
+   place to reach it. Prefer extending an existing menu, header, or setting
+   over adding always-visible UI.
 2. **Existing path and real constraint.** Find the closest existing service,
    contract, and permission, and confirm in the code what actually blocks the
    feature. It is often on the server, not in the UI: the chat file-link
@@ -95,29 +96,28 @@ waiting for another approval. Cover:
 7. **Release.** One commit plus its `CHANGES.md` entry (_Adding a change_).
    Complete validation, commit, and push `main` once the change is finished
    (_Release lineage_) as part of authorized fork work; report what is still
-   untested. No upstream issue, PR, or discussion for
-   features unless explicitly requested. Do not ask for a separate
-   confirmation just to push or start the automated release. Ask only when the
-   scope or release target remains unclear.
+   untested. Don't open an upstream issue, PR, or discussion for a feature unless
+   the user asks for one: those are public actions on a repository we don't maintain. There's no need to ask for a separate confirmation just to push or start
+   the automated release; ask when the scope or release target remains unclear.
 
-Build on a branch from the fork's `main` on GitHub (`git fetch origin` first;
-local `main` may be stale), in a separate worktree. If a helper agent
-investigates or implements, the agent that owns the plan reviews the diff and
-reruns the tests itself before committing.
+It's best to build on a branch from the fork's `main` on GitHub (`git fetch
+origin` first; local `main` may be stale), in a separate worktree. If a helper
+agent investigates or implements, the agent that owns the plan should review
+the diff and rerun the tests itself before committing.
 
 Before pushing task changes to the fork (`main`, fix branches, and babysitting
-follow-ups; upstream-sync automation is exempt), have Sol (`gpt-6.1-sol` at
-`xhigh`; in T3 Code, `delegate_task` with provider `codex`) review the commits
-being pushed against their base.
+follow-ups; upstream-sync automation is exempt), it's best to have Sol
+(`gpt-6.1-sol` at `xhigh`; in T3 Code, `delegate_task` with provider `codex`)
+review the commits being pushed against their base.
 Give it the request, the diff range, and the checks you ran. Fix real
 findings, give a reason for each dismissed one, and send substantial rework
 back for another round before pushing.
 
-Never switch the branch of the repository's main checkout (the original
-clone, not a worktree), even temporarily: the developer and other agents
-assume it stays on `main`. Do branch work in a separate worktree. If you find
-it on another branch or holding changes you didn't make, leave it and say so
-in your report.
+Don't switch the branch of the repository's main checkout (the original
+clone, not a worktree), even temporarily: the developer and other agents use
+it concurrently and assume it stays on `main`. Branch work belongs in a separate worktree.
+If you find it on another branch or holding changes you didn't make, leave it
+and say so in your report.
 
 ## Release lineage
 
@@ -125,36 +125,37 @@ Every push to the fork's `main` becomes a release that installed copies
 update to. Each release should ship a finished feat or fix, not another
 attempt at the previous one.
 
-- **Push when it's finished, not when it first works.** Push to `main` only
-  after local validation, every Sol review round, and a green Fork PR checks run
-  (_Adding a change_, step 5). If the change is still moving, wait: a late
-  release beats two releases.
-- **With an upstream PR, finish its review rounds first.** Open the PR and
-  let its review rounds finish, including your fixes and the follow-up
-  reviews they trigger, then carry the final commit to `main` once
+- **Push when it's finished, not when it first works.** Aim to finish
+  local validation and every Sol review round before pushing to `main`, and get
+  a green Fork PR checks run first (_Adding a change_, step 5). If the change is still moving, it's
+  usually better to wait: a late release beats two releases.
+- **With an upstream PR, finish its review rounds first.** It works best to
+  open the PR and let its review rounds finish, including your fixes and the
+  follow-up reviews they trigger, then carry the final commit to `main` once
   (_Fixing bugs_, step 6).
-- **After the push, only a person reopens it.** Change a released commit
-  again when a maintainer or another person asks for changes on its PR or
-  issue, or the user reports a problem. Then fix it, let review settle again,
-  and push once. Your own polish and bot nits wait for that round; a bug that
-  users would hit still gets fixed right away.
+- **After the push, usually only a person reopens it.** Change a released
+  commit again when a maintainer or another person asks for changes on its PR
+  or issue, or the user reports a problem. Then fix it, let review settle
+  again, and push once. Your own polish and bot nits can wait for that round;
+  a bug that users would hit still gets fixed right away.
 - **Documentation needs no release.** A push that changes only `fork/*.md`
   builds nothing unless code is still waiting to release (_Adding a change_,
   step 6), so push it when it's done.
 
 ## Adding a change
 
-1. Before an app or workflow feat or fix, fetch `origin` and resolve any pending
-   sync review or failed sync first, following _Syncing with upstream_. If
-   blocked by a sync request, report it and arrange automatic continuation
-   (_Waiting for a sync_); do not leave the task waiting for another user message.
+1. Before an app or workflow feat or fix, it's best to fetch `origin` and
+   resolve any pending sync review or failed sync first, following _Syncing
+   with upstream_. If blocked by a sync request, report it and arrange
+   automatic continuation (_Waiting for a sync_) rather than leaving the task
+   waiting for another user message.
    Main may lag upstream's newest nightly while you
    work; step 6 syncs it before the push. Guide-only edits to `fork/*.md` are
    exempt, but no push to `main` may land while a sync request is open:
    promotion rejects the candidate as stale once main moves, so wait for it to
    settle. Start from fork `main` in a new worktree
    (`git fetch origin && git worktree add -b <branch> <path> origin/main`).
-2. Make one focused commit per change. Keep the diff small and inside existing
+2. Prefer one focused commit per change. Keep the diff small and inside existing
    files' structure: every line touched in an upstream file is a potential
    conflict on each sync. Prefer new files and narrow hooks over edits spread
    across upstream files (_Reducing conflict surface_).
@@ -223,8 +224,8 @@ attempt at the previous one.
    short because a fork push is a change you want soon; it batches a quick
    follow-up or another thread's push close behind. Upstream syncs wait far
    longer (_Syncing with upstream_). A newer push cancels the older run at any
-   stage, so pushes from several threads close together build once. Don't hold
-   a finished change for other threads' work.
+   stage, so pushes from several threads close together build once. There's
+   no need to hold a finished change for other threads' work.
    If the push is rejected because another thread pushed first,
    `git fetch origin`, rebase onto `origin/main`, and push again. After the
    wait, Fork release compares files with the newest published release and
@@ -235,8 +236,8 @@ attempt at the previous one.
    in the last 24 hours (`FORK_JOB_BUDGET` repository variable), they fail
    before the checks and builds start. A full release uses 16 jobs (9 when it
    reuses passed checks), a check run 8; a blocked run uses 1. If
-   one fails this way, rerun it once older runs age out; don't push again to
-   retry.
+   one fails this way, rerun it once older runs age out rather than pushing
+   again to retry.
 
 To change or fix a fork change already on `main`, add a commit with the same
 `Upstream-PR:` trailer (if it has one) and update its `CHANGES.md` entry; sync
@@ -260,8 +261,8 @@ with upstream before pushing it.
 A fork patch's sync risk is its current diff in upstream files:
 `git diff $(git merge-base HEAD upstream/main) HEAD -- <file>`. To shrink it,
 move cohesive fork-only code into fork-owned files and leave the upstream file
-with an import and a narrow call. Make each move a behaviour-preserving
-`refactor` commit; it is not a fork change, so it needs no `CHANGES.md` entry.
+with an import and a narrow call. Each move works best as a
+behaviour-preserving `refactor` commit; it is not a fork change, so it needs no `CHANGES.md` entry.
 
 - **Never move code from an `Upstream-PR` commit that sync will revert.** Sync
   reverts that commit once its PR merges, and the revert only applies while
@@ -269,12 +270,13 @@ with an import and a narrow call. Make each move a behaviour-preserving
   `Related-PR` trailer is kept, not reverted, so its code may move. This includes tests a later fork commit renamed and
   fork-only follow-ups tangled into that code. Find a block's origin with
   `git log -S'<distinctive text>' --no-merges --format='%h %s | %(trailers:key=Upstream-PR,valueonly)' <base>..HEAD`.
-- **Restore incidental upstream text.** Re-indentation, reordering, and older
-  comments brought back by a merge are pure conflict surface.
-- **Keep fork-only tests in companion files**, overriding `AGENTS.md`'s rule
-  to put tests in the module's existing test file. Never import from a test
-  file: that registers its tests twice. When fork tests need a harness that is
-  local to an upstream test file, put them in a `<Name>.fork.testkit.ts`
+- **Restore incidental upstream text where you can.** Re-indentation,
+  reordering, and older comments brought back by a merge are pure conflict
+  surface.
+- **Prefer companion files for fork-only tests**, overriding `AGENTS.md`'s
+  rule to put tests in the module's existing test file. Avoid importing from a
+  test file, because that registers its tests twice. When fork tests need a
+  harness that is local to an upstream test file, put them in a `<Name>.fork.testkit.ts`
   function that the upstream file calls once with its harness, as
   `runCodexAdapterForkSuite` does. Test-only lint rules skip `*.testkit.ts`
   files, so after editing one, lint a temporary `*.test.ts` copy.
@@ -282,17 +284,17 @@ with an import and a narrow call. Make each move a behaviour-preserving
   copies small upstream fixtures so the upstream test file has no fork lines.
   When upstream changes those fixtures, especially its layers or provider
   snapshot, update the copies or switch to the call-from-upstream pattern.
-- Copying whole upstream components, harnesses or workflows trades conflicts
-  for silent drift; don't.
+- Avoid copying whole upstream components, harnesses or workflows: it trades
+  conflicts for silent drift.
 
 ### Waiting for a sync
 
 A sync conflict pauses the push, not ownership of the task. Watch its exact
 tracking issue and continue the authorized work after resolution without asking
-the user to restart it. Use a native issue watch when available. Otherwise,
+the user to restart it. Prefer a native issue watch when available. Otherwise,
 reuse or create one thread-bound `schedule_task` with `bindToCurrentThread: true`
-and an interval of ten minutes. Do not use a PR watch for an issue, a shell
-polling loop, or a new top-level thread.
+and an interval of ten minutes. A PR watch won't work for an issue (it
+rejects issue URLs); avoid shell polling loops and new top-level threads too.
 
 Give the watcher the issue URL, task worktree and branch, pending commits,
 completed validation/review, and remaining push/release/install steps. Each check
@@ -368,7 +370,8 @@ refuse an existing release, and publish only after the complete asset inventory
 matches GitHub's uploaded names, sizes and SHA-256 digests. A failed or cancelled
 upload leaves a draft. Inspect it, delete only that unpublished draft (and its
 tag if it points at the wrong source), then rerun; never replace a published
-release. Keep the usual fork budget unchanged.
+release. Keep the usual fork budget unchanged; it protects against another GitHub
+Actions freeze.
 
 ```sh
 # Defaults to dry-run: all checks, builds and asset validation, no release writes.
@@ -440,12 +443,13 @@ budget-blocked fork; this fallback deliberately spends no fork jobs.
 
 ## Fixing bugs
 
-Bug fixes go into the fork **and** upstream. Features and product-behaviour
-changes stay fork-only: upstream's [CONTRIBUTING.md](../CONTRIBUTING.md)
-doesn't accept unsolicited features. Read CONTRIBUTING.md and
-`.github/pull_request_template.md` before opening a PR.
+Bug fixes usually go into the fork **and** upstream. Features and
+product-behaviour changes stay fork-only: upstream's
+[CONTRIBUTING.md](../CONTRIBUTING.md) doesn't accept unsolicited features.
+It's worth reading CONTRIBUTING.md and `.github/pull_request_template.md`
+before opening a PR.
 
-Judge upstream PRs, existing ones and your own draft, with the repository's
+It helps to judge upstream PRs, existing ones and your own draft, with the repository's
 `contribution-triage` skill (`.agents/skills/contribution-triage/SKILL.md`)
 as an explicit **dry run**: it checks eligibility, scope, and evidence against
 CONTRIBUTING.md. We are not maintainers, so never let it close, comment on,
@@ -463,7 +467,7 @@ label, or request review for an upstream PR.
    - **Upstream already fixed it:** bring it in through _Syncing with upstream_
      instead of adding a fork patch (use `upstream=main` if it is not in a nightly yet).
    - **A sound PR exists** (it passes triage and its fix holds up in review):
-     carry it instead of writing a competing one.
+     prefer carrying it over writing a competing one.
      Fetch it (`git fetch https://github.com/pingdotgg/t3code.git pull/<n>/head`),
      squash it into one fork commit with its `Upstream-PR:` trailer, and
      continue at step 6. Put any fixes of your own in a separate commit on top
@@ -538,7 +542,8 @@ maintenance guidance, including the `babysit-pr` skill:
 - Never rebase or force-push a taken-over branch. Update it by merging the
   base in, so their commits keep their hashes.
 - Their latest push or takeover comment under 4 hours ago: they are likely
-  mid-work. Push nothing; post conflicts, failures and findings as PR comments.
+  mid-work, so hold pushes and post conflicts, failures and findings as PR
+  comments.
 - 4 hours or more: also merge the base in to resolve conflicts, fix only the
   failures that merge causes, and push normally once checks pass.
 - 3 days or more: also push fixes for bugs, failing checks and actionable
@@ -726,7 +731,7 @@ After a crashed claim, retry after three hours or inspect/reset its ledger
 deliberately. The helpers serialize mutations and reject a second active request
 for the shared checkout. Failed/expired artifacts and stale requests require
 local inspection; manual `sync` can generate a fresh request. Keep the issue
-fallback until an actual signed webhook → candidate → resume trial succeeds.
+fallback (resolver claims and `sync-before-push.sh` rely on the open issue) until an actual signed webhook → candidate → resume trial succeeds.
 
 ## Releases and updates
 
