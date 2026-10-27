@@ -1,4 +1,5 @@
 import { assert, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   MessageId,
@@ -31,6 +32,10 @@ import {
   orchestrationCommandsTotal,
 } from "../observability/Metrics.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import { ServerConfig } from "../config.ts";
+import * as IssueWatchService from "../issueWatch/IssueWatchService.ts";
+import { ServerActivation } from "../serverActivation.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as DelegatedTaskQuestionReactor from "./DelegatedTaskQuestionReactor.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -60,6 +65,90 @@ const layerTest = Layer.mergeAll(
     ProviderAdapterRegistry.layerFromAdapters([adapter]),
     { databaseLayer: layerDatabase, runEffectWorker: false },
   ),
+);
+
+it.effect.each(["active", "thread.settle", "thread.archive"] as const)(
+  "delivers issue watch wakes only to active threads (%s)",
+  (type) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make(`thread:issue-watch-race:${type}`);
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create-issue-watch-race:${type}`),
+        threadId,
+        projectId: ProjectId.make("project:issue-watch-race"),
+        title: "Watch an issue",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      let closed = false;
+      const watches = yield* IssueWatchService.make.pipe(
+        Effect.provideService(ServerActivation, Effect.never),
+        Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
+        Effect.provideService(Orchestrator.OrchestratorV2, {
+          ...orchestrator,
+          // The user mutation commits after the watch's last read, before its wake acquires the lock.
+          dispatch: (command) =>
+            type === "active"
+              ? orchestrator.dispatch(command)
+              : orchestrator
+                  .dispatch({
+                    type,
+                    threadId,
+                    commandId: CommandId.make(`stop-issue-watch-race:${type}`),
+                  })
+                  .pipe(Effect.andThen(orchestrator.dispatch(command))),
+        }),
+        Effect.provide(
+          Layer.mergeAll(
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-issue-watch-race-" }),
+            Layer.mock(VcsProcess.VcsProcess)({
+              run: (input) =>
+                Effect.succeed({
+                  exitCode: 0 as VcsProcess.VcsProcessOutput["exitCode"],
+                  stdout: JSON.stringify(
+                    input.args.at(-1) === "user"
+                      ? { login: "agent" }
+                      : input.args.at(-1)?.includes("/comments?")
+                        ? []
+                        : { state: closed ? "closed" : "open", updated_at: "2026-10-01T00:00:00Z" },
+                  ),
+                  stderr: "",
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                }),
+            }),
+          ).pipe(Layer.provideMerge(NodeServices.layer)),
+        ),
+      );
+      yield* watches.watch(threadId, {
+        host: "github.com",
+        repository: "acme/app",
+        number: 7,
+        url: "https://github.com/acme/app/issues/7",
+      });
+      closed = true;
+      yield* watches.sweep;
+      const projection = yield* projections.getThreadProjection(threadId);
+      if (type === "active") {
+        assert.lengthOf(projection.messages, 1);
+        assert.include(projection.messages[0]?.text, "The issue was closed.");
+        assert.equal(projection.messages[0]?.notification?.source.kind, "monitor");
+        assert.lengthOf(projection.runs, 1);
+        return;
+      }
+      if (type === "thread.settle") assert.equal(projection.thread.settledOverride, "settled");
+      else assert.isNotNull(projection.thread.archivedAt);
+      assert.deepEqual(projection.messages, []);
+      assert.deepEqual(projection.runs, []);
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
 );
 
 it.effect(

@@ -3235,6 +3235,14 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
 
 // Excluded from dispatchCommand so only the server can send these.
 const OrchestrationV2InternalCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("thread.issue-watch.wake"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    messageId: MessageId,
+    text: Schema.String,
+    notification: OrchestrationV2Notification,
+  }),
   // Guest share commands the server issues after checking T3 Connect and the guest token.
   Schema.Struct({
     type: Schema.Literal("thread.guest-share.open"),

@@ -315,22 +315,18 @@ export const make = Effect.gen(function* () {
         }
         let kept = next;
         if (wake !== undefined) {
-          // The read took a while; a wake would reopen a thread the user settled meanwhile.
+          // Drop inactive watches here; dispatch rechecks under the orchestration lock.
           if (inactive(yield* projections.getThreadShell(watch.threadId))) {
             kept = null;
           } else {
             const id = yield* crypto.randomUUIDv4();
             yield* engine.dispatch({
-              type: "message.dispatch",
+              type: "thread.issue-watch.wake",
               commandId: CommandId.make(`server:issue-watch:${watch.threadId}:${id}`),
               threadId: watch.threadId,
               messageId: MessageId.make(`message:issue-watch:${id}`),
               text: wake.text,
               notification: wake.notification,
-              attachments: [],
-              dispatchMode: { type: "queue_after_active" },
-              createdBy: "agent",
-              creationSource: "server",
             });
           }
         }

@@ -486,6 +486,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.pull-request-link.sync":
     case "thread.pull-request.watch":
     case "thread.pull-request-watch.sync":
+    case "thread.issue-watch.wake":
     case "thread.pull-request.sync":
     case "thread.title.regeneration.complete":
     case "thread.runtime-mode.set":
@@ -12124,6 +12125,42 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.pull-request-watch.sync":
         yield* dispatchPullRequestWatchSync(command, events, effects);
         break;
+      case "thread.issue-watch.wake": {
+        const thread = yield* projectionStore
+          .getThread(command.threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+            ),
+          );
+        // Host reads happen outside this lock; user settlement or archival must win over a late wake.
+        if (
+          thread.deletedAt !== null ||
+          thread.archivedAt !== null ||
+          thread.settledOverride === "settled" ||
+          thread.settledAt !== null ||
+          thread.lineage.relationshipToParent === "subagent"
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "The issue watch's thread became inactive while it was read.",
+          });
+        }
+        yield* dispatchMessage(
+          {
+            ...command,
+            type: "message.dispatch",
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "agent",
+            creationSource: "server",
+          },
+          events,
+          effects,
+        );
+        break;
+      }
       case "thread.guest-share.open":
       case "thread.guest-share.redeem":
       case "thread.guest-share.close":

@@ -114,7 +114,9 @@ const setup = () => {
     Effect.provideService(ServerActivation, Effect.never),
   );
   const wakes = () =>
-    dispatched.flatMap((command) => (command.type === "message.dispatch" ? [command.text] : []));
+    dispatched.flatMap((command) =>
+      command.type === "thread.issue-watch.wake" ? [command.text] : [],
+    );
   return { github, dispatched, wakes, layer, service };
 };
 
