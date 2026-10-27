@@ -1244,7 +1244,33 @@ export function useComposerSend(input: ComposerSendInput) {
     }
 
     // Uploads and settings persistence can outlive the source conversation.
-    const { compactBeforeSend, turnDispatchMode } = readTurnPlan();
+    const {
+      compactBeforeSend,
+      turnDispatchMode,
+      shouldQueueBehindActiveRun: queueAfterPreparation,
+    } = readTurnPlan();
+    if (failure === null && shouldQueueBehindActiveRun !== queueAfterPreparation) {
+      setOptimisticUserMessages((existing) =>
+        existing.map((message) =>
+          message.id === messageIdForSend
+            ? {
+                ...message,
+                inputIntent: queueAfterPreparation
+                  ? "queued_turn"
+                  : phase === "running" && dispatchMode === "steer"
+                    ? "steer"
+                    : undefined,
+              }
+            : message,
+        ),
+      );
+      if (!queueAfterPreparation) {
+        anchorNewTurn(
+          scopedThreadKey(scopeThreadRef(activeThread.environmentId, threadIdForSend)),
+          messageIdForSend,
+        );
+      }
+    }
     if (failure === null && compactBeforeSend) {
       const compactResult = await startThreadTurn({
         environmentId,

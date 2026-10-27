@@ -10,6 +10,7 @@ import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environ
 import { act, render } from "../../../test/render";
 import { makeThreadFixture } from "../../test-fixtures";
 import type { ChatComposerHandle } from "./ChatComposer";
+import type { ChatMessage } from "../../types";
 import { useComposerSend } from "./useComposerSend";
 
 const mocks = await vi.hoisted(async () => {
@@ -183,6 +184,7 @@ function setup(
     validateProviderInput: () => true,
     resetCursorState: () => {},
   };
+  let optimisticMessages: ChatMessage[] = [];
   const input: SendInput = {
     environmentId,
     routeThreadKey: key,
@@ -269,7 +271,9 @@ function setup(
     captureDraftHeroComposerRect: vi.fn(),
     setDockedDraftHeroThreadKey: vi.fn(),
     setSetupQueueSendThreadKey: vi.fn(),
-    setOptimisticUserMessages: vi.fn(),
+    setOptimisticUserMessages: (update) => {
+      optimisticMessages = typeof update === "function" ? update(optimisticMessages) : update;
+    },
     setFeedbackSubmissionsByThreadKey: vi.fn(),
     setThreadError: vi.fn(),
     setKeepFullHistory: vi.fn(),
@@ -281,7 +285,11 @@ function setup(
       .fn()
       .mockResolvedValue({ _tag: "Success", value: undefined }),
   };
-  return { input, sender: { current: null } as { current: Sender | null } };
+  return {
+    input,
+    sender: { current: null } as { current: Sender | null },
+    getOptimisticMessages: () => optimisticMessages,
+  };
 }
 
 describe("resume compaction dispatch", () => {
@@ -304,10 +312,21 @@ describe("resume compaction dispatch", () => {
     );
   });
 
-  it.each(["replaced", "refreshed", "usage-refreshed", "compacted"])(
-    "drops compaction and forced queueing when the source is %s during upload",
-    async (change) => {
-      const { input, sender } = setup();
+  it.each([
+    { change: "replaced", dispatchMode: "auto" },
+    { change: "refreshed", dispatchMode: "auto" },
+    { change: "usage-refreshed", dispatchMode: "auto" },
+    { change: "compacted", dispatchMode: "auto" },
+    { change: "refreshed", dispatchMode: "queue" },
+    { change: "refreshed", dispatchMode: "steer" },
+  ] as const)(
+    "preserves $dispatchMode dispatch when the source is $change during upload",
+    async ({ change, dispatchMode }) => {
+      const { input: initialInput, sender, getOptimisticMessages } = setup();
+      const input: SendInput = {
+        ...initialInput,
+        phase: dispatchMode === "auto" ? "ready" : "running",
+      };
       let finishUpload!: () => void;
       const upload = new Promise<void>((resolve) => {
         finishUpload = resolve;
@@ -321,7 +340,7 @@ describe("resume compaction dispatch", () => {
         return upload;
       });
       await using _screen = await render(<Harness input={input} sender={sender} />);
-      const send = sender.current!.onSend();
+      const send = sender.current!.onSend(undefined, dispatchMode);
       await started;
       if (change === "replaced") mocks.destinationProviderThreadId = "replacement-conversation";
       else if (change === "refreshed") mocks.contextUpdatedAt = "2026-10-26T19:00:00.000Z";
@@ -331,11 +350,21 @@ describe("resume compaction dispatch", () => {
         finishUpload();
         await send;
       });
+      expect(getOptimisticMessages()).toHaveLength(1);
+      expect(getOptimisticMessages()[0]?.inputIntent).toBe(
+        dispatchMode === "queue" ? "queued_turn" : dispatchMode === "steer" ? "steer" : undefined,
+      );
+      if (dispatchMode === "queue") expect(input.anchorNewTurn).not.toHaveBeenCalled();
+      else
+        expect(input.anchorNewTurn).toHaveBeenCalledExactlyOnceWith(
+          input.activeThreadKey,
+          getOptimisticMessages()[0]!.id,
+        );
       expect(mocks.startTurn).toHaveBeenCalledTimes(1);
       expect(mocks.startTurn).toHaveBeenCalledWith(
         expect.objectContaining({
           input: expect.objectContaining({
-            dispatchMode: "auto",
+            dispatchMode,
             message: expect.objectContaining({
               text: "Keep the attachment",
               attachments: [expect.objectContaining({ id: "uploaded-image" })],
@@ -349,13 +378,15 @@ describe("resume compaction dispatch", () => {
   it.each(["claudeAgent", "codex"])(
     "compacts the saved Claude destination when returning from %s",
     async (currentProvider) => {
-      const { input, sender } = setup(
+      const { input, sender, getOptimisticMessages } = setup(
         ProviderDriverKind.make("claudeAgent"),
         "Keep the attachment",
         currentProvider,
       );
       await using _screen = await render(<Harness input={input} sender={sender} />);
       await act(() => sender.current!.onSend());
+      expect(getOptimisticMessages()[0]?.inputIntent).toBe("queued_turn");
+      expect(input.anchorNewTurn).not.toHaveBeenCalled();
       expect(mocks.startTurn).toHaveBeenCalledTimes(2);
       expect(mocks.startTurn.mock.calls[0]![0].input.modelSelection.instanceId).toBe("claudeAgent");
       expect(
