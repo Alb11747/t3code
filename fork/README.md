@@ -47,6 +47,11 @@ exception is `release-desktop.yml`, which `fork-release.yml` calls.
 - Rewriting fork commits gives them new SHAs, and GitHub adds a "referenced this
   pull request" entry to the upstream PR for every new SHA whose message links
   it. Merging keeps each fork commit's SHA, so an upstream PR is referenced once.
+- Old fork commits add no conflict risk. A merge compares only the current
+  files, and a commit cancelled by its revert contributes nothing, so
+  collapsing reverts or squashing history would not prevent a single conflict.
+  To reduce conflicts, shrink the fork's current diff (_Reducing conflict
+  surface_).
 - `upstream-main` is the upstream commit (normally a nightly) in the latest
   candidate, for review diffs; `sync/candidate` is that candidate. Both are
   written by the sync workflow or T3 publisher.
@@ -152,7 +157,7 @@ attempt at the previous one.
 2. Make one focused commit per change. Keep the diff small and inside existing
    files' structure: every line touched in an upstream file is a potential
    conflict on each sync. Prefer new files and narrow hooks over edits spread
-   across upstream files.
+   across upstream files (_Reducing conflict surface_).
 3. Unless the PR was taken over (see _Maintaining your upstream PRs_),
    if the change has an upstream PR (yours or someone else's), end the commit
    message with a trailer so sync reverts it automatically once upstream merges:
@@ -249,6 +254,36 @@ deleted, name the replacing upstream PR in the revert message, and rerun the
 sync, so the merge takes upstream's version. When `main` already carries the
 merge, a revert can also remove upstream's equivalent code; compare the result
 with upstream before pushing it.
+
+### Reducing conflict surface
+
+A fork patch's sync risk is its current diff in upstream files:
+`git diff $(git merge-base HEAD upstream/main) HEAD -- <file>`. To shrink it,
+move cohesive fork-only code into fork-owned files and leave the upstream file
+with an import and a narrow call. Make each move a behaviour-preserving
+`refactor` commit; it is not a fork change, so it needs no `CHANGES.md` entry.
+
+- **Never move code from an `Upstream-PR` commit that sync will revert.** Sync
+  reverts that commit once its PR merges, and the revert only applies while
+  the code stays where the commit put it. A PR also named in a fork commit's
+  `Related-PR` trailer is kept, not reverted, so its code may move. This includes tests a later fork commit renamed and
+  fork-only follow-ups tangled into that code. Find a block's origin with
+  `git log -S'<distinctive text>' --no-merges --format='%h %s | %(trailers:key=Upstream-PR,valueonly)' <base>..HEAD`.
+- **Restore incidental upstream text.** Re-indentation, reordering, and older
+  comments brought back by a merge are pure conflict surface.
+- **Keep fork-only tests in companion files**, overriding `AGENTS.md`'s rule
+  to put tests in the module's existing test file. Never import from a test
+  file: that registers its tests twice. When fork tests need a harness that is
+  local to an upstream test file, put them in a `<Name>.fork.testkit.ts`
+  function that the upstream file calls once with its harness, as
+  `runCodexAdapterForkSuite` does. Test-only lint rules skip `*.testkit.ts`
+  files, so after editing one, lint a temporary `*.test.ts` copy.
+- **Copied fixtures can drift silently.** `OrchestratorMcpToolkit.fork.testkit.ts`
+  copies small upstream fixtures so the upstream test file has no fork lines.
+  When upstream changes those fixtures, especially its layers or provider
+  snapshot, update the copies or switch to the call-from-upstream pattern.
+- Copying whole upstream components, harnesses or workflows trades conflicts
+  for silent drift; don't.
 
 ### Waiting for a sync
 
