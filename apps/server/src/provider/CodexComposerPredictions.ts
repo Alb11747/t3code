@@ -1,10 +1,16 @@
+import type { RunId, ThreadId } from "@t3tools/contracts";
 import type * as CodexClient from "effect-codex-app-server/client";
+import type * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Sse from "effect/encoding/Sse";
 import { HttpClient, HttpClientRequest } from "effect/http";
+
+import type { PromptSuggestions } from "./PromptSuggestions.ts";
 
 const PredictionConfig = Schema.Struct({
   is_enabled: Schema.Boolean,
@@ -245,4 +251,62 @@ export const makeCodexComposerPredictions = Effect.gen(function* () {
   );
 
   return { predict };
+});
+
+/**
+ * Per-session claims: the latest root turn per app thread holds its suggestion claim.
+ * Owner identity guards late predictions even if the HTTP request outlives interruption.
+ */
+export const makeCodexPredictionClaims = Effect.fnUntraced(function* (input: {
+  readonly composerPredictions: Effect.Success<typeof makeCodexComposerPredictions>;
+  readonly promptSuggestions: Omit<typeof PromptSuggestions.Service, "stream">;
+  readonly crypto: Crypto.Crypto;
+}) {
+  const { composerPredictions, promptSuggestions, crypto } = input;
+  const scope = yield* Scope.Scope;
+  const predictions = new Map<
+    ThreadId,
+    { readonly owner: object; readonly runId: RunId; fiber?: Fiber.Fiber<void> }
+  >();
+
+  const revoke = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const prediction = predictions.get(threadId);
+    if (prediction === undefined) return;
+    predictions.delete(threadId);
+    yield* promptSuggestions.clear(threadId, prediction.runId);
+    if (prediction.fiber) yield* Fiber.interrupt(prediction.fiber);
+  });
+  yield* Effect.addFinalizer(() => Effect.forEach(predictions.keys(), revoke, { discard: true }));
+
+  const claim = Effect.fnUntraced(function* (threadId: ThreadId, runId: RunId, owner: object) {
+    yield* revoke(threadId);
+    // Recorded before claiming so a later revoke releases the claim
+    // even if this start is abandoned.
+    predictions.set(threadId, { owner, runId });
+    yield* promptSuggestions.claim(threadId, runId);
+  });
+
+  /** Predicts after the owner's completed turn, if it still holds the thread's claim. */
+  const predictAfter = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    owner: object,
+    request: Omit<Parameters<typeof composerPredictions.predict>[0], "turnId">,
+  ) {
+    const prediction = predictions.get(threadId);
+    if (prediction?.owner !== owner) return;
+    prediction.fiber = yield* Effect.gen(function* () {
+      const id = yield* crypto.randomUUIDv4();
+      const text = yield* composerPredictions.predict({ ...request, turnId: id });
+      if (text && predictions.get(threadId) === prediction) {
+        yield* promptSuggestions.publish(threadId, { id, runId: prediction.runId, text });
+      }
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.logDebug("Codex composer prediction unavailable.", { reason: cause._tag }),
+      ),
+      Effect.forkIn(scope),
+    );
+  });
+
+  return { claim, revoke, predictAfter };
 });

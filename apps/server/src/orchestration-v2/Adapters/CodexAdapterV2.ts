@@ -1,9 +1,13 @@
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
-import { makeCodexComposerPredictions } from "../../provider/CodexComposerPredictions.ts";
+import {
+  makeCodexComposerPredictions,
+  makeCodexPredictionClaims,
+} from "../../provider/CodexComposerPredictions.ts";
 import * as PromptSuggestions from "../../provider/PromptSuggestions.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
+import { codexFailureRetryable, codexOverloadRetryDelayMs } from "./CodexRetryPolicy.ts";
 import {
   mcpToolPresentation,
   type McpToolPresentation,
@@ -93,7 +97,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
-import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -922,49 +925,6 @@ function describeCodexGoal(goal: OrchestrationV2ProviderGoal): string {
 // Codex starts the next goal turn milliseconds after the last one completes.
 const CODEX_GOAL_CONTINUATION_GRACE = "5 seconds";
 
-// After Codex gives up on capacity, throttling or transport failures, the run
-// continues with empty-input turns until one makes progress. Waits start at 10s
-// and double up to 3 minutes with no attempt cap; each is drawn from the upper
-// half of its step so threads that failed together don't retry in lockstep.
-const codexOverloadRetryDelayMs = (attempt: number) => {
-  const step = Math.min(10_000 * 2 ** (attempt - 1), 180_000);
-  return Effect.map(Random.next, (draw) => step - Math.floor((draw * step) / 2));
-};
-
-const CODEX_RECOVERABLE_FAILURE_CODES = new Set([
-  "serverOverloaded",
-  "rateLimitExceeded",
-  "internalServerError",
-  "httpConnectionFailed",
-  "responseStreamConnectionFailed",
-  "responseStreamDisconnected",
-  "responseTooManyFailedAttempts",
-]);
-
-function codexHttpStatus(errorInfo: CodexErrorInfo | null | undefined): number | null {
-  const detail =
-    typeof errorInfo === "object" && errorInfo !== null ? Object.values(errorInfo)[0] : undefined;
-  return detail !== undefined && "httpStatusCode" in detail
-    ? (detail.httpStatusCode ?? null)
-    : null;
-}
-
-/**
- * A client-error HTTP status other than 408 or 429 will fail the same way again.
- * A completion repeating the notified failure may omit the status it reported.
- */
-function codexFailureRecoverable(
-  errorInfo: CodexErrorInfo | null | undefined,
-  notified: CodexErrorInfo | null | undefined,
-): boolean {
-  const code = codexErrorInfoCode(errorInfo);
-  if (code === null || !CODEX_RECOVERABLE_FAILURE_CODES.has(code)) return false;
-  const status =
-    codexHttpStatus(errorInfo) ??
-    (codexErrorInfoCode(notified) === code ? codexHttpStatus(notified) : null);
-  return status === null || status < 400 || status >= 500 || status === 408 || status === 429;
-}
-
 const providerTurnsForThread = (
   providerTurns: ReadonlyArray<OrchestrationV2ProviderTurn>,
   providerThread: OrchestrationV2ProviderThread,
@@ -1788,22 +1748,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           new Map<ProviderThreadId, Extract<OrchestrationV2TurnItem, { type: "error" }>>(),
         );
         const activeTurns = yield* Ref.make(new Map<string, ActiveCodexTurnContext>());
-        // The latest root turn per app thread, which holds its suggestion claim.
-        // Identity guards late predictions even if the HTTP request outlives interruption.
-        const predictions = new Map<
-          ThreadId,
-          { context: ActiveCodexTurnContext; fiber?: Fiber.Fiber<void> }
-        >();
-        const revokePrediction = Effect.fnUntraced(function* (threadId: ThreadId) {
-          const prediction = predictions.get(threadId);
-          if (prediction === undefined) return;
-          predictions.delete(threadId);
-          yield* promptSuggestions.clear(threadId, prediction.context.input.runId);
-          if (prediction.fiber) yield* Fiber.interrupt(prediction.fiber);
+        const predictions = yield* makeCodexPredictionClaims({
+          composerPredictions,
+          promptSuggestions,
+          crypto,
         });
-        yield* Effect.addFinalizer(() =>
-          Effect.forEach(predictions.keys(), revokePrediction, { discard: true }),
-        );
         const turnTokenUsageByThread = new Map<string, CodexTurnTokenUsageState>();
         const usageStateForThread = (nativeThreadId: string) => {
           let state = turnTokenUsageByThread.get(nativeThreadId);
@@ -2075,11 +2024,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             fileChangeKindsByItem: new Map(),
             runningCompactionItemIds: new Set(),
           };
-          yield* revokePrediction(input.turnInput.threadId);
-          // Recorded before claiming so a later revoke releases the claim
-          // even if this start is abandoned.
-          predictions.set(input.turnInput.threadId, { context });
-          yield* promptSuggestions.claim(input.turnInput.threadId, input.turnInput.runId);
+          yield* predictions.claim(input.turnInput.threadId, input.turnInput.runId, context);
           // Cleanup may suspend while the public start caller is cancelled.
           // Do not publish the native turn that its run has already abandoned.
           if (isAbandoned()) return context;
@@ -6013,16 +5958,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           )
             return undefined;
           const notified = input.context.latestProviderFailure?.nativeErrorInfo;
-          const errorInfo = input.failureErrorInfo ?? notified;
-          // A usage limit with an upcoming reset waits for limit recovery; without
-          // one, nothing would ever resume the run, so it rechecks like a failure.
-          const resetAt = codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot));
-          const usageLimitWithoutReset =
-            codexErrorInfoCode(errorInfo) === "usageLimitExceeded" &&
-            (resetAt === null ||
-              Date.parse(resetAt) <= DateTime.toEpochMillis(yield* DateTime.now));
+          const retryable = codexFailureRetryable({
+            errorInfo: input.failureErrorInfo ?? notified,
+            notified,
+            usageLimitResetAt: codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot)),
+            nowMs: DateTime.toEpochMillis(yield* DateTime.now),
+          });
           if (
-            !(codexFailureRecoverable(errorInfo, notified) || usageLimitWithoutReset) ||
+            !retryable ||
             (yield* Ref.get(interruptingNativeTurns)).has(input.nativeTurnId) ||
             // Codex drives goal runs' turns itself.
             goalsByNativeThread.get(nativeThreadId)?.status === "active" ||
@@ -6635,7 +6578,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* Deferred.succeed(input.context.nativeStartReady, undefined);
               }
               yield* flushReadyRootTerminals();
-              const prediction = predictions.get(input.context.input.threadId);
               if (
                 adapterOptions.settings.promptSuggestions &&
                 input.context.input.message.createdBy === "user" &&
@@ -6646,33 +6588,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 input.status === "completed" &&
                 !holdsForGoal &&
                 overloadAttempt === undefined &&
-                nativeThreadId != null &&
-                prediction?.context === input.context
+                nativeThreadId != null
               ) {
-                prediction.fiber = yield* Effect.gen(function* () {
-                  const id = yield* crypto.randomUUIDv4();
-                  const text = yield* composerPredictions.predict({
-                    client,
-                    environment: resolvedRuntime?.environment ?? adapterOptions.environment,
-                    nativeThreadId,
-                    model: input.context.input.modelSelection.model,
-                    turnId: id,
-                  });
-                  if (text && predictions.get(input.context.input.threadId) === prediction) {
-                    yield* promptSuggestions.publish(input.context.input.threadId, {
-                      id,
-                      runId: input.context.input.runId,
-                      text,
-                    });
-                  }
-                }).pipe(
-                  Effect.catch((cause) =>
-                    Effect.logDebug("Codex composer prediction unavailable.", {
-                      reason: cause._tag,
-                    }),
-                  ),
-                  Effect.forkIn(scope),
-                );
+                yield* predictions.predictAfter(input.context.input.threadId, input.context, {
+                  client,
+                  environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+                  nativeThreadId,
+                  model: input.context.input.modelSelection.model,
+                });
               }
               if (!retainSettledContext && !interruptInProgress) {
                 yield* Ref.update(runningCommandItemsByTurn, (current) => {
@@ -7356,12 +7279,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ? parseGoalCommand(turnInput.message)
                 : null;
             if (goalCommand !== null) {
-              return revokePrediction(turnInput.threadId).pipe(
-                Effect.andThen(runGoalCommand(turnInput, goalCommand)),
-              );
+              return predictions
+                .revoke(turnInput.threadId)
+                .pipe(Effect.andThen(runGoalCommand(turnInput, goalCommand)));
             }
             return Effect.gen(function* () {
-              yield* revokePrediction(turnInput.threadId);
+              yield* predictions.revoke(turnInput.threadId);
               yield* startNativeTurn(
                 turnInput,
                 turnInput.restartContinuationOfRunId === undefined
@@ -7959,7 +7882,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           rollbackThread: Effect.fn("CodexAdapterV2.rollbackThread")(
             function* (threadInput) {
               if (threadInput.providerThread.appThreadId !== null) {
-                yield* revokePrediction(threadInput.providerThread.appThreadId);
+                yield* predictions.revoke(threadInput.providerThread.appThreadId);
               }
               const threadId = yield* getNativeThreadId(threadInput.providerThread);
               const numTurns = yield* resolveCodexRollbackTurnCount(threadInput);
