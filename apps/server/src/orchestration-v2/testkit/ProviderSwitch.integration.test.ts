@@ -41,6 +41,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { CommandPolicyCapabilityUnsupportedError } from "../CommandPolicy.ts";
 import {
+  ClaudeAgentSdkQueryRunnerError,
   ClaudeAppendSystemPromptFileError,
   ClaudeBackgroundWorkBlocksQueryReplacementError,
   ClaudeProviderCapabilitiesV2,
@@ -412,6 +413,12 @@ const waitForIdle = Effect.fn("ProviderSwitchTest.waitForIdle")(function* (
   }
   return idle;
 });
+
+// Same tag as the adapter's unexported error raised when Claude never answers setMcpServers.
+class ClaudeMcpRegistrationTimeoutError extends Schema.TaggedError<ClaudeMcpRegistrationTimeoutError>()(
+  "ClaudeMcpRegistrationTimeoutError",
+  {},
+) {}
 
 describe("orchestration v2 provider switching", () => {
   it.live.each([
@@ -1330,6 +1337,14 @@ describe("orchestration v2 provider switching", () => {
       (deferred) =>
         [
           [deferred, "background work", new ClaudeBackgroundWorkBlocksQueryReplacementError()],
+          [
+            deferred,
+            "an MCP registration timeout",
+            new ClaudeAgentSdkQueryRunnerError({
+              method: "setMcpServers",
+              cause: new ClaudeMcpRegistrationTimeoutError(),
+            }),
+          ],
           [
             deferred,
             "an unreadable append file",
