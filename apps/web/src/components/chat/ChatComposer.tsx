@@ -1241,7 +1241,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     !isSendBusy &&
     !showComposerTopDrawer &&
     !isComposerCollapsedMobile &&
-    !isTasksDrawerOpen &&
     prompt.length === 0 &&
     !composerSendState.hasSendableContent
       ? props.promptSuggestion
