@@ -1,12 +1,129 @@
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderThreadId,
+  ThreadId,
+  NodeId,
+  type OrchestrationV2ProviderThread,
+  type ServerProvider,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
   hasAvailableCompactionProvider,
   hasDismissedResumeCompaction,
   resolveContextWindowModelDisplayName,
+  resolveResumeCompactionProviderThread,
+  resumeCompactionTokensForSelection,
+  shouldOfferResumeCompaction,
   shouldReserveContextWindowMeter,
 } from "./ContextWindowMeter.logic";
+
+describe("resume compaction", () => {
+  const instanceId = ProviderInstanceId.make("claude-primary");
+  const providerThreadId = ProviderThreadId.make("claude-conversation");
+  const recommendation = {
+    usedTokens: 120_000,
+    providerInstanceId: instanceId,
+    providerThreadId,
+    sourceUpdatedAt: 0,
+  };
+  const selection = {
+    resumeCompaction: recommendation,
+    selectedProvider: ProviderDriverKind.make("claudeAgent"),
+    selectedInstanceId: instanceId,
+  };
+
+  it("uses the latest root conversation belonging to the destination instance", () => {
+    const threadId = ThreadId.make("thread");
+    const at = DateTime.makeUnsafe("2026-10-26T17:00:00.000Z");
+    const source: OrchestrationV2ProviderThread = {
+      id: providerThreadId,
+      driver: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: instanceId,
+      providerSessionId: null,
+      appThreadId: threadId,
+      ownerNodeId: null,
+      nativeThreadRef: null,
+      nativeConversationHeadRef: null,
+      status: "idle",
+      firstRunOrdinal: 1,
+      lastRunOrdinal: 1,
+      handoffIds: [],
+      forkedFrom: null,
+      pendingBackgroundTasks: [],
+      contextUsage: { usedTokens: 250_000 },
+      nativeMetadata: null,
+      goal: null,
+      createdAt: at,
+      updatedAt: at,
+    };
+    const newest = DateTime.makeUnsafe("2026-10-26T19:00:00.000Z");
+    const replacement = {
+      ...source,
+      id: ProviderThreadId.make("replacement"),
+      updatedAt: DateTime.makeUnsafe("2026-10-26T18:00:00.000Z"),
+    };
+    const providerThreads = [
+      source,
+      replacement,
+      {
+        ...source,
+        id: ProviderThreadId.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        updatedAt: newest,
+      },
+      {
+        ...source,
+        id: ProviderThreadId.make("child"),
+        ownerNodeId: NodeId.make("child-node"),
+        updatedAt: newest,
+      },
+      {
+        ...source,
+        id: ProviderThreadId.make("other-app-thread"),
+        appThreadId: ThreadId.make("other-thread"),
+        updatedAt: newest,
+      },
+    ];
+    expect(
+      resolveResumeCompactionProviderThread({ providerThreads, threadId, instanceId }),
+    ).toEqual(replacement);
+    expect(
+      resolveResumeCompactionProviderThread({
+        providerThreads,
+        threadId,
+        instanceId: ProviderInstanceId.make("claude-new"),
+      }),
+    ).toBeNull();
+  });
+
+  it("shows the suggestion only for the matching Claude destination", () => {
+    expect(resumeCompactionTokensForSelection(selection)).toBe(120_000);
+    for (const override of [
+      { selectedProvider: ProviderDriverKind.make("codex") },
+      { selectedInstanceId: ProviderInstanceId.make("claude-work") },
+      { resumeCompaction: null },
+    ]) {
+      expect(resumeCompactionTokensForSelection({ ...selection, ...override })).toBeNull();
+    }
+  });
+
+  it("offers compaction after the cache TTL, preserving warm and small contexts", () => {
+    const usage = {
+      provider: "claudeAgent",
+      usedTokens: 250_000,
+      updatedAt: "2026-10-26T17:00:00.000Z",
+      promptCacheTtlMs: 5 * 60_000,
+      now: "2026-10-26T17:05:00.000Z",
+    };
+    expect(shouldOfferResumeCompaction(usage)).toBe(true);
+    expect(shouldOfferResumeCompaction({ ...usage, now: "2026-10-26T17:04:59.000Z" })).toBe(false);
+    expect(shouldOfferResumeCompaction({ ...usage, usedTokens: 1_000 })).toBe(false);
+    expect(shouldOfferResumeCompaction({ ...usage, provider: "codex" })).toBe(false);
+  });
+});
 
 function claudeProvider(input: {
   instanceId: string;

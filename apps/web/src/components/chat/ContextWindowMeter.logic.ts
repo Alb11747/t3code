@@ -1,4 +1,13 @@
-import type { ModelSelection, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import type {
+  ModelSelection,
+  OrchestrationV2ProviderThread,
+  OrchestrationV2ProviderTurn,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderThreadId,
+  ThreadId,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import {
   CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
   COMPACTION_SUGGESTION_MIN_TOKENS,
@@ -9,6 +18,10 @@ import {
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { getDisplayModelName, type ModelEsque } from "./providerIconUtils";
+import {
+  deriveLatestContextWindowSnapshot,
+  latestProviderTurnTokenUsage,
+} from "../../lib/contextWindow";
 
 // Fallback TTL: Claude's 1h cache plus slack.
 const CLAUDE_RESUME_COMPACTION_FALLBACK_MS = 70 * 60_000;
@@ -59,6 +72,75 @@ export function hasDismissedResumeCompaction(
         answer === CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
     );
   });
+}
+
+export interface ResumeCompaction {
+  readonly usedTokens: number;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly providerThreadId: ProviderThreadId;
+  readonly sourceUpdatedAt: number;
+}
+
+export function resolveResumeCompactionContext(input: {
+  readonly providerThread: OrchestrationV2ProviderThread | null;
+  readonly providerTurns: ReadonlyArray<OrchestrationV2ProviderTurn>;
+  readonly entries: Parameters<typeof deriveLatestContextWindowSnapshot>[0];
+}) {
+  const { providerThread } = input;
+  if (providerThread === null) return null;
+  const usage = latestProviderTurnTokenUsage(
+    input.providerTurns.filter((turn) => turn.providerThreadId === providerThread.id),
+  );
+  const context = deriveLatestContextWindowSnapshot(
+    input.entries.filter(({ item }) => item.providerThreadId === providerThread.id),
+    usage,
+    providerThread,
+  );
+  return context === null
+    ? null
+    : {
+        usedTokens: context.usedTokens,
+        updatedAt: context.updatedAt,
+        promptCacheTtlMs: usage?.promptCacheTtlMs,
+        sourceUpdatedAt: Math.max(
+          DateTime.toEpochMillis(providerThread.updatedAt),
+          Date.parse(context.updatedAt),
+        ),
+      };
+}
+
+export function resolveResumeCompactionProviderThread(input: {
+  readonly providerThreads: ReadonlyArray<OrchestrationV2ProviderThread>;
+  readonly threadId: ThreadId;
+  readonly instanceId: ProviderInstanceId | null;
+}): OrchestrationV2ProviderThread | null {
+  // Match the retained root conversation chosen by ProviderSwitchService.
+  return (
+    input.providerThreads
+      .filter(
+        (thread) =>
+          thread.appThreadId === input.threadId &&
+          thread.ownerNodeId === null &&
+          thread.providerInstanceId === input.instanceId,
+      )
+      .toSorted(
+        (left, right) =>
+          DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
+      )[0] ?? null
+  );
+}
+
+export function resumeCompactionTokensForSelection(input: {
+  readonly resumeCompaction: ResumeCompaction | null;
+  readonly selectedProvider: ProviderDriverKind;
+  readonly selectedInstanceId: ProviderInstanceId;
+}): number | null {
+  const { resumeCompaction } = input;
+  return resumeCompaction !== null &&
+    input.selectedProvider === "claudeAgent" &&
+    input.selectedInstanceId === resumeCompaction.providerInstanceId
+    ? resumeCompaction.usedTokens
+    : null;
 }
 
 export function shouldOfferResumeCompaction(input: {

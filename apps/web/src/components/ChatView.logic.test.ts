@@ -1033,7 +1033,13 @@ describe("planComposerTurn", () => {
     sendEnvMode: "worktree" as const,
     worktreePath: null,
     activeThreadBranch: "main",
-    resumeCompactionTokens: null,
+    resumeCompaction: null,
+    destinationProviderThreadId: ProviderThreadId.make("claude-conversation"),
+    selectedProvider: ProviderDriverKind.make("claudeAgent"),
+    selectedModelSelection: {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-opus-4-6",
+    },
     keepFullHistory: false,
     phase: "ready" as const,
     dispatchMode: "auto" as const,
@@ -1055,7 +1061,15 @@ describe("planComposerTurn", () => {
   });
 
   it("queues behind a compaction of a stale session, except for /compact itself", () => {
-    const stale = { ...base, resumeCompactionTokens: 120_000 };
+    const stale = {
+      ...base,
+      resumeCompaction: {
+        usedTokens: 120_000,
+        sourceUpdatedAt: 0,
+        providerInstanceId: base.selectedModelSelection.instanceId,
+        providerThreadId: base.destinationProviderThreadId,
+      },
+    };
     for (const messageText of ["hello", "/compactfoo"]) {
       expect(planComposerTurn({ ...stale, messageText })).toMatchObject({
         compactBeforeSend: true,
@@ -1070,6 +1084,109 @@ describe("planComposerTurn", () => {
         shouldQueueBehindActiveRun: false,
       });
     }
+  });
+
+  it("sends directly when the live composer selects Codex with a stale Claude recommendation", () => {
+    const entries = deriveProviderInstanceEntries(
+      ["claudeAgent", "codex"].map((driver) => ({
+        driver: ProviderDriverKind.make(driver),
+        instanceId: ProviderInstanceId.make(driver),
+        enabled: true,
+        installed: true,
+        status: "ready",
+        auth: { status: "authenticated" },
+        version: null,
+        checkedAt: now,
+        models: [],
+        slashCommands: [],
+        skills: [],
+      })),
+    );
+    const selection = {
+      entries,
+      candidateInstanceIds: [
+        ProviderInstanceId.make("codex"),
+        base.selectedModelSelection.instanceId,
+      ],
+      lockedInstanceId: base.selectedModelSelection.instanceId,
+    };
+    // ChatView keeps the conversation lock; the composer unlocks it for provider handoff.
+    const parent = resolveComposerProviderSelection({
+      ...selection,
+      lockedProvider: base.selectedProvider,
+    });
+    const composer = resolveComposerProviderSelection({ ...selection, lockedProvider: null });
+    const staleParent = {
+      ...base,
+      resumeCompaction: {
+        usedTokens: 120_000,
+        sourceUpdatedAt: 0,
+        providerInstanceId: parent.selectedProviderEntry!.instanceId,
+        providerThreadId: ProviderThreadId.make("claude-conversation"),
+      },
+      destinationProviderThreadId: ProviderThreadId.make("claude-conversation"),
+    };
+    const liveSendContext = {
+      selectedProvider: composer.selectedProviderEntry!.driverKind,
+      selectedModelSelection: {
+        instanceId: composer.selectedProviderEntry!.instanceId,
+        model: "gpt-6.1-sol",
+      },
+    };
+
+    expect(planComposerTurn({ ...staleParent, ...liveSendContext })).toMatchObject({
+      compactBeforeSend: false,
+      turnDispatchMode: "auto",
+      shouldQueueBehindActiveRun: false,
+    });
+  });
+
+  it("does not reuse eligibility for another Claude instance or conversation", () => {
+    const stale = {
+      ...base,
+      resumeCompaction: {
+        usedTokens: 120_000,
+        sourceUpdatedAt: 0,
+        providerInstanceId: base.selectedModelSelection.instanceId,
+        providerThreadId: base.destinationProviderThreadId,
+      },
+    };
+    for (const override of [
+      {
+        selectedModelSelection: {
+          ...base.selectedModelSelection,
+          instanceId: ProviderInstanceId.make("claude-work"),
+        },
+      },
+      { destinationProviderThreadId: ProviderThreadId.make("new-claude-conversation") },
+      { destinationProviderThreadId: null },
+      { keepFullHistory: true },
+    ]) {
+      expect(planComposerTurn({ ...stale, ...override })).toMatchObject({
+        compactBeforeSend: false,
+        turnDispatchMode: "auto",
+        shouldQueueBehindActiveRun: false,
+      });
+    }
+  });
+
+  it("compacts a cold Claude destination when returning from Codex", () => {
+    const returning = {
+      ...base,
+      activeProviderThreadId: ProviderThreadId.make("codex-conversation"),
+      destinationProviderThreadId: base.destinationProviderThreadId,
+      resumeCompaction: {
+        usedTokens: 250_000,
+        sourceUpdatedAt: 0,
+        providerInstanceId: base.selectedModelSelection.instanceId,
+        providerThreadId: base.destinationProviderThreadId,
+      },
+    };
+    expect(planComposerTurn(returning)).toMatchObject({
+      compactBeforeSend: true,
+      turnDispatchMode: "queue",
+      shouldQueueBehindActiveRun: true,
+    });
   });
 
   it("queues behind a running turn only when asked to", () => {
