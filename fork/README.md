@@ -141,7 +141,9 @@ attempt at the previous one.
 
 1. Before an app or workflow feat or fix, fetch `origin` and resolve any pending
    sync review or failed sync first, following _Syncing with upstream_. If
-   blocked, stop and report. Main may lag upstream's newest nightly while you
+   blocked by a sync request, report it and arrange automatic continuation
+   (_Waiting for a sync_); do not leave the task waiting for another user message.
+   Main may lag upstream's newest nightly while you
    work; step 6 syncs it before the push. Guide-only edits to `fork/*.md` are
    exempt, but no push to `main` may land while a sync request is open:
    promotion rejects the candidate as stale once main moves, so wait for it to
@@ -197,8 +199,9 @@ attempt at the previous one.
    newest nightly. It returns at once when main already has it; otherwise it
    runs **Fork sync** (or joins a running one) and waits for a clean merge to
    be checked and promoted, about 25 minutes. Exit 3 means the sync hit a
-   conflict and a request is open: wait for the resolver to promote it, or
-   resolve it (_Syncing with upstream_), then run the script again. The sync's
+   conflict and a request is open: watch that issue and resume automatically
+   (_Waiting for a sync_), or resolve it (_Syncing with upstream_), then run
+   the script again. The sync's
    own release is cancelled by your push if it follows within Fork release's
    15-minute wait, so this builds once. Then fetch `origin` and rebase the
    task branch's own commits onto current `origin/main` (they are not on
@@ -246,6 +249,31 @@ deleted, name the replacing upstream PR in the revert message, and rerun the
 sync, so the merge takes upstream's version. When `main` already carries the
 merge, a revert can also remove upstream's equivalent code; compare the result
 with upstream before pushing it.
+
+### Waiting for a sync
+
+A sync conflict pauses the push, not ownership of the task. Watch its exact
+tracking issue and continue the authorized work after resolution without asking
+the user to restart it. Use a native issue watch when available. Otherwise,
+reuse or create one thread-bound `schedule_task` with `bindToCurrentThread: true`
+and an interval of ten minutes. Do not use a PR watch for an issue, a shell
+polling loop, or a new top-level thread.
+
+Give the watcher the issue URL, task worktree and branch, pending commits,
+completed validation/review, and remaining push/release/install steps. Each check
+reads the issue once. While it is open, stay quiet unless a new actionable
+failure needs attention. If reading it fails, retry on the next scheduled check;
+after three consecutive failures, report the access problem and pause the task's
+watcher rather than silently dropping it.
+
+When the issue closes, fetch `origin` and rerun `sync-before-push.sh`: closure or
+a successful resolver handoff alone does not prove promotion. If another sync
+issue blocks it, update the same watcher to follow that issue. Once the script
+succeeds, disable the watcher before resuming work, rebase the task's unpublished
+commits onto current `origin/main`, and repeat checks affected by the rebase.
+Continue through the normal exact-commit checks and push/release/install steps
+within the user's authorized scope. If no wake mechanism is available, report
+that limitation explicitly; do not claim the issue is being watched.
 
 ### Labs checks: Lazarus, then Blacksmith
 
