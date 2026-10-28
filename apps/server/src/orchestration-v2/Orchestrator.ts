@@ -1393,7 +1393,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(rootNode === undefined ? {} : { nodeId: rootNode.id }),
         providerInstanceId: queuedRun.providerInstanceId,
         occurredAt: now,
-        payload: item,
+        payload: { ...item, status: "failed" as const, completedAt: now, updatedAt: now },
       })),
       ...(attempt !== undefined && rootNode !== undefined
         ? [

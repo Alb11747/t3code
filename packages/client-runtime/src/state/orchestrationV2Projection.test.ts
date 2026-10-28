@@ -539,14 +539,22 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
       ...steer,
       runId: queuedRunId,
       inputIntent: "queued_turn",
+      status: "pending",
+      startedAt: null,
+      completedAt: null,
     });
     const requeued = apply(accepted, [event("run.updated", queuedRun), queuedSteer]);
     expect(visibleIds(requeued)).toEqual([reply.id]);
 
     // Servers publish the start's user item and run update in either order.
     const starting = event("run.updated", { ...queuedRun, status: "starting" });
-    expect(visibleIds(apply(requeued, [queuedSteer, starting]))).toEqual([steer.id, reply.id]);
-    expect(visibleIds(apply(requeued, [starting, queuedSteer]))).toEqual([steer.id, reply.id]);
+    const dispatchedSteer = event("turn-item.updated", {
+      ...steer,
+      runId: queuedRunId,
+      inputIntent: "queued_turn",
+    });
+    expect(visibleIds(apply(requeued, [dispatchedSteer, starting]))).toEqual([steer.id, reply.id]);
+    expect(visibleIds(apply(requeued, [starting, dispatchedSteer]))).toEqual([steer.id, reply.id]);
     const cancelled = event("run.updated", { ...queuedRun, status: "cancelled" });
     expect(visibleIds(apply(requeued, [cancelled]))).toEqual([reply.id]);
 
@@ -558,10 +566,16 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
     };
     const partial = { partialTimeline: true, latestLocalTurnOrdinal: reply.ordinal };
     const failed = event("run.updated", { ...queuedRun, status: "failed" });
-    expect(visibleIds(apply(bounded, [queuedSteer, failed], partial))).toEqual([
-      steer.id,
-      reply.id,
-    ]);
+    const failedSteer = event("turn-item.updated", {
+      ...steer,
+      runId: queuedRunId,
+      inputIntent: "queued_turn",
+      status: "failed",
+      startedAt: null,
+    });
+    const retained = apply(bounded, [failedSteer], partial);
+    expect(visibleIds(retained)).toEqual([reply.id]);
+    expect(visibleIds(apply(retained, [failed], partial))).toEqual([steer.id, reply.id]);
     // Leaving the queue never invents an item the client did not receive.
     expect(visibleIds(apply(bounded, [failed], partial))).toEqual([reply.id]);
   });

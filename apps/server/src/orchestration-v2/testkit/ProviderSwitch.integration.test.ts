@@ -2886,6 +2886,10 @@ describe("orchestration v2 provider switching", () => {
           );
           assert.equal(queuedItem?.runId, queued.runs[1]?.id);
           assert.equal(queuedItem?.providerThreadId, queued.runs[1]?.providerThreadId);
+          assert.equal(queuedItem?.status, "pending");
+          assert.isNull(queuedItem?.startedAt);
+          assert.isNull(queuedItem?.completedAt);
+          assert.isFalse(queued.visibleTurnItems.some((row) => row.item.id === queuedItem?.id));
           const queuedSequence = yield* eventSink.latestSequence({ threadId: rejectedThreadId });
           yield* eventSink.write({
             events: [
@@ -2929,6 +2933,16 @@ describe("orchestration v2 provider switching", () => {
               event.payload.messageId === rejectedMessageId,
           );
           assert.isAtLeast(republished, 0);
+          const restored = failureEvents[republished];
+          assert.equal(restored?.type, "turn-item.updated");
+          if (restored?.type === "turn-item.updated") {
+            assert.deepEqual(restored.payload, {
+              ...queuedItem,
+              status: "failed",
+              completedAt: restored.occurredAt,
+              updatedAt: restored.occurredAt,
+            });
+          }
           assert.isBelow(
             republished,
             failureEvents.findIndex(
