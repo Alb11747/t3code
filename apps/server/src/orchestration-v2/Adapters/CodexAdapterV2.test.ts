@@ -5867,7 +5867,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
   it.effect("stops native children when capacity retry startup fails", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const retrying = yield* Deferred.make<void>();
+        const retrying = yield* Deferred.make<number>();
         const starting = yield* Deferred.make<void>();
         const interrupts: unknown[] = [];
         let starts = 0;
@@ -5937,8 +5937,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           (event) =>
             event.type === "turn_item.updated" &&
             event.turnItem.type === "error" &&
-            event.turnItem.status === "running"
-              ? Deferred.succeed(retrying, undefined)
+            event.turnItem.status === "running" &&
+            event.turnItem.retry?.retryDelayMs != null
+              ? Deferred.succeed(retrying, event.turnItem.retry.retryDelayMs)
               : Effect.void,
           (method, params) =>
             Effect.gen(function* () {
@@ -5957,11 +5958,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             text: RESUME_PROMPT,
           }),
         );
-        yield* Deferred.await(retrying);
+        const retryDelayMs = yield* Deferred.await(retrying);
         const root = harness.events.find((event) => event.type === "provider_turn.updated");
         assert.equal(root?.type, "provider_turn.updated");
         if (root?.type !== "provider_turn.updated") return;
-        yield* TestClock.adjust("10 seconds");
+        yield* TestClock.adjust(retryDelayMs);
         yield* Deferred.await(starting);
         yield* harness.until(() => harness.subagentUpdates().at(-1)?.subagent.status === "running");
         const stopping = yield* harness.runtime

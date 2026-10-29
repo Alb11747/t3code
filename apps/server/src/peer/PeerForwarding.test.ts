@@ -443,11 +443,22 @@ it.effect("keeps a forwarded wait short and its retries scoped to the caller", (
       expect(waited.structuredContent).toEqual({
         threadId: boxThread,
         runId: boxRun,
+        status: "running",
+        timedOut: true,
+      });
+      const retry = () =>
+        a.call("thread:laptop-full", "t3_thread_wait", {
+          environmentId: box.environmentId,
+          threadId: boxThread,
+          runId: boxRun,
+          timeoutMs: 600_000,
+        });
+      expect((yield* retry()).structuredContent).toMatchObject({ timedOut: true });
+      expect((yield* retry()).structuredContent).toMatchObject({
         status: "completed",
         timedOut: false,
       });
-      // Three pieces of at most 50 s each, the later ones pinned to the run
-      // the first one found.
+      // Each call returns within the fork's MCP budget; retries pin the first run.
       expect(
         (yield* Ref.get(seen)).waits.map(({ timeoutMs, runId }) => [timeoutMs, runId]),
       ).toEqual([
