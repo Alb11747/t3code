@@ -50,6 +50,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
   ContextHandoffBackgroundWorkError,
+  ContextHandoffBudgetError,
   knownProviderFailureMessage,
   makeProviderFailure,
 } from "@t3tools/provider-core/server/failure";
@@ -1150,7 +1151,30 @@ export const layer: Layer.Layer<
             Effect.as(true),
             Effect.catchTags({ ContextHandoffBudgetError: () => Effect.succeed(false) }),
           );
-          if (!fitsFresh) return resumed.success;
+          if (!fitsFresh) {
+            // Recovery cannot drop incoming provider history; missed native input stays deferrable.
+            if (
+              !handoffs.some(
+                (handoff) =>
+                  handoff.fromProviderThreadIds.some((id) => id !== providerThread.id) &&
+                  (resumed.success.nativeThreadRef === null ||
+                    handoff.delivery?.nativeThreadId !== resumed.success.nativeThreadRef.nativeId ||
+                    handoff.delivery?.status === "pending"),
+              )
+            )
+              return resumed.success;
+            return yield* loadFromProvider(
+              Effect.fail(
+                new ProviderAdapter.ProviderAdapterTurnStartError({
+                  driver: session.driver,
+                  threadId: projection.thread.id,
+                  providerThreadId: providerThread.id,
+                  runId,
+                  cause: new ContextHandoffBudgetError(),
+                }),
+              ),
+            );
+          }
           const hasPendingWork = yield* (
             session.hasPendingBackgroundWorkForThread?.(resumed.success, {
               includeSubagents: true,
