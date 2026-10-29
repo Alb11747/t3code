@@ -215,6 +215,18 @@ it.effect("preserves pull request context without inheriting any watches", () =>
       thread: {
         ...makeSourceThread(),
         pullRequests: watchedLinks,
+        issueWatches: [
+          {
+            host: "github.com",
+            repository: "example/repo",
+            number: 7,
+            url: "https://github.com/example/repo/issues/7",
+            startedAt: DateTime.formatIso(sourceCreatedAt),
+            commentsThrough: DateTime.formatIso(snoozedAt),
+            commentIds: [1],
+            wakes: 2,
+          },
+        ],
         linkedPullRequest: legacyLink,
         branchPullRequest: legacyLink,
       },
@@ -222,6 +234,7 @@ it.effect("preserves pull request context without inheriting any watches", () =>
     const result = yield* planFork(sourceRun, sourceProjection);
 
     assert.deepEqual(result.targetThread.pullRequests, links);
+    assert.deepEqual(result.targetThread.issueWatches, []);
     assert.deepEqual(result.targetThread.linkedPullRequest, legacyLink);
     assert.deepEqual(result.targetThread.branchPullRequest, legacyLink);
     assert.deepEqual(sourceProjection.thread.pullRequests, watchedLinks);

@@ -433,6 +433,18 @@ const LenientThreadOpens = Schema.NullOr(OrchestrationV2ThreadOpens).pipe(
   Schema.catchDecoding(() => Effect.succeedSome(null)),
 );
 
+export const OrchestrationV2IssueWatch = Schema.Struct({
+  host: Schema.String,
+  repository: Schema.String,
+  number: Schema.Int,
+  url: Schema.String,
+  startedAt: Schema.String,
+  commentsThrough: Schema.String,
+  commentIds: Schema.Array(Schema.Int),
+  wakes: Schema.Int,
+});
+export type OrchestrationV2IssueWatch = typeof OrchestrationV2IssueWatch.Type;
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -446,6 +458,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   pullRequests: Schema.optional(Schema.Array(ThreadPullRequestLink)),
+  issueWatches: Schema.optional(Schema.Array(OrchestrationV2IssueWatch)),
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
@@ -2045,6 +2058,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   pullRequests: Schema.optional(Schema.Array(ThreadPullRequestLink)),
+  issueWatches: Schema.optional(Schema.Array(OrchestrationV2IssueWatch)),
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(OrchestrationV2AppThread.fields.forkedFrom),
@@ -3327,6 +3341,23 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
 
 // Excluded from dispatchCommand so only the server can send these.
 const OrchestrationV2InternalCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("thread.issue-watch.sync"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    host: Schema.String,
+    repository: Schema.String,
+    number: Schema.Int,
+    startedAt: Schema.optional(Schema.String),
+    watch: Schema.NullOr(OrchestrationV2IssueWatch),
+    wake: Schema.optional(
+      Schema.Struct({
+        messageId: MessageId,
+        text: Schema.String,
+        notification: OrchestrationV2Notification,
+      }),
+    ),
+  }),
   Schema.Struct({
     type: Schema.Literal("thread.issue-watch.wake"),
     commandId: CommandId,

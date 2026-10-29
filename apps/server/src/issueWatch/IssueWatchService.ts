@@ -1,6 +1,7 @@
 import {
   CommandId,
   MessageId,
+  OrchestrationV2IssueWatch,
   type OrchestrationV2ThreadShell,
   ThreadId,
   type VcsError,
@@ -17,7 +18,6 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
-import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import { ServerConfig } from "../config.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -35,8 +35,8 @@ import {
 
 /**
  * Fork-only: watches GitHub issues for threads and wakes them through the same monitor
- * message a pull request watch sends. Watches live in a file under the state directory
- * rather than in orchestration state, so the fork carries no contract or projection changes.
+ * message a pull request watch sends. Thread-owned records keep their awaited monitor
+ * work and GitHub cursors in the same transaction as each wake.
  */
 
 const SWEEP_MINUTES = 2;
@@ -45,20 +45,14 @@ const COMMENT_PAGE = 100;
 
 const IssueWatch = Schema.Struct({
   threadId: ThreadId,
-  host: Schema.String,
-  repository: Schema.String,
-  number: Schema.Int,
-  url: Schema.String,
-  startedAt: Schema.String,
-  commentsThrough: Schema.String,
-  commentIds: Schema.Array(Schema.Int),
-  wakes: Schema.Int,
+  ...OrchestrationV2IssueWatch.fields,
 });
 type IssueWatch = typeof IssueWatch.Type;
 
 const IssueWatchFile = Schema.fromJsonString(
   Schema.Struct({ version: Schema.Literal(1), watches: Schema.Array(IssueWatch) }),
 );
+const encodeIssueWatchFile = Schema.encodeEffect(IssueWatchFile);
 
 const GitHubIssue = Schema.fromJsonString(
   Schema.Struct({
@@ -113,8 +107,7 @@ export class IssueWatchService extends Context.Service<
   }
 >()("t3/issueWatch/IssueWatchService") {}
 
-const sameIssue = (watch: IssueWatch, threadId: ThreadId, issue: IssueRef) =>
-  watch.threadId === threadId &&
+const sameIssue = (watch: Pick<IssueWatch, "host" | "repository" | "number">, issue: IssueRef) =>
   watch.host === issue.host &&
   watch.repository.toLowerCase() === issue.repository.toLowerCase() &&
   watch.number === issue.number;
@@ -127,7 +120,6 @@ export const inactive = (thread: OrchestrationV2ThreadShell | null) =>
   thread.deletedAt !== null ||
   thread.archivedAt !== null ||
   thread.settledOverride === "settled" ||
-  thread.settledAt !== null ||
   thread.lineage.relationshipToParent === "subagent";
 
 const isRateLimited = (error: VcsError) =>
@@ -152,20 +144,10 @@ export const make = Effect.gen(function* () {
         Effect.catchCause((cause) =>
           Effect.logWarning("issue watches could not be read; starting with none", {
             cause,
-          }).pipe(Effect.as<ReadonlyArray<IssueWatch>>([])),
+          }).pipe(Effect.as<ReadonlyArray<IssueWatch> | undefined>(undefined)),
         ),
       )
-    : [];
-  // Writes go through this ref, so a stop that lands during a host read wins over the sweep.
-  const watches = yield* SynchronizedRef.make<ReadonlyArray<IssueWatch>>(initial);
-  const save = (next: ReadonlyArray<IssueWatch>) =>
-    writeFileStringAtomically({
-      filePath,
-      contents: `${JSON.stringify({ version: 1, watches: next }, null, 2)}\n`,
-    }).pipe(
-      Effect.provideService(FileSystem.FileSystem, fs),
-      Effect.provideService(Path.Path, path),
-    );
+    : undefined;
 
   const gh = Effect.fn("IssueWatchService.gh")(function* (
     operation: string,
@@ -233,111 +215,95 @@ export const make = Effect.gen(function* () {
           }),
         );
 
-  const update = <A>(
-    f: (current: ReadonlyArray<IssueWatch>) => readonly [A, ReadonlyArray<IssueWatch> | null],
-  ) =>
-    SynchronizedRef.modifyEffect(watches, (current) => {
-      const [result, next] = f(current);
-      return next === null
-        ? Effect.succeed([result, current] as const)
-        : save(next).pipe(Effect.as([result, next] as const));
+  const findWatch = Effect.fn("IssueWatchService.findWatch")(function* (
+    threadId: ThreadId,
+    issue: IssueRef,
+  ) {
+    const thread = yield* projections.getThreadShell(threadId);
+    const watch = thread?.issueWatches?.find((watch) => sameIssue(watch, issue));
+    return watch === undefined ? undefined : { ...watch, threadId };
+  });
+
+  const sync = Effect.fn("IssueWatchService.sync")(function* (
+    watch: IssueWatch,
+    next: IssueWatch | null,
+    startedAt?: string,
+    wake?: IssueWatchWake,
+  ) {
+    const { threadId, ...record } = watch;
+    const id = yield* crypto.randomUUIDv4();
+    yield* engine.dispatch({
+      type: "thread.issue-watch.sync",
+      commandId: CommandId.make(`server:issue-watch:${threadId}:${id}`),
+      threadId,
+      host: watch.host,
+      repository: watch.repository,
+      number: watch.number,
+      ...(startedAt === undefined ? {} : { startedAt }),
+      watch:
+        next === null
+          ? null
+          : {
+              ...record,
+              commentsThrough: next.commentsThrough,
+              commentIds: next.commentIds,
+              wakes: next.wakes,
+            },
+      ...(wake === undefined
+        ? {}
+        : {
+            wake: { ...wake, messageId: MessageId.make(`message:issue-watch:${id}`) },
+          }),
     });
+  });
 
   const watch: IssueWatchService["Service"]["watch"] = Effect.fn("IssueWatchService.watch")(
     function* (threadId, issue) {
-      const already = (yield* SynchronizedRef.get(watches)).some((existing) =>
-        sameIssue(existing, threadId, issue),
-      );
-      if (already) return { ...issue, watching: true, wasWatching: true };
+      if (yield* findWatch(threadId, issue)) return { ...issue, watching: true, wasWatching: true };
       const current = yield* readIssue(issue);
       if (current.pull_request !== undefined) {
         return yield* new IssueWatchError({
           detail: `${issue.url} is a pull request. Call watch_pull_request instead.`,
         });
       }
-      if (current.state !== "open") {
+      if (current.state !== "open")
         return yield* new IssueWatchError({ detail: `Issue #${issue.number} is closed.` });
-      }
-      // Every existing comment was updated no later than the issue, so only later ones are news.
       const boundary = yield* readComments(issue, current.updated_at);
-      const startedAt = DateTime.formatIso(yield* DateTime.now);
       const added: IssueWatch = {
         threadId,
         ...issue,
-        startedAt,
+        startedAt: DateTime.formatIso(yield* DateTime.now),
         commentsThrough: current.updated_at,
         commentIds: boundary
           .filter((comment) => comment.updatedAt === current.updated_at)
           .map((comment) => comment.id),
         wakes: 0,
       };
-      const wasWatching = yield* update((all) =>
-        all.some((existing) => sameIssue(existing, threadId, issue))
-          ? [true, null]
-          : [false, [...all, added]],
-      );
-      return { ...issue, watching: true, wasWatching };
+      yield* sync(added, added);
+      if (!(yield* findWatch(threadId, issue)))
+        return yield* new IssueWatchError({ detail: "The issue watch's thread became inactive." });
+      return { ...issue, watching: true, wasWatching: false };
     },
-    Effect.mapError((error) =>
-      error._tag === "IssueWatchError"
-        ? error
-        : new IssueWatchError({
-            detail: `Could not read the issue: ${error.message}`,
-            cause: error,
-          }),
+    Effect.mapError((cause) =>
+      cause._tag === "IssueWatchError"
+        ? cause
+        : new IssueWatchError({ detail: "Could not start watching the issue.", cause }),
     ),
   );
 
   const unwatch: IssueWatchService["Service"]["unwatch"] = Effect.fn("IssueWatchService.unwatch")(
     function* (threadId, issue) {
-      const wasWatching = yield* update((all) => {
-        const rest = all.filter((existing) => !sameIssue(existing, threadId, issue));
-        return rest.length === all.length ? [false, null] : [true, rest];
-      });
-      return { ...issue, watching: false, wasWatching };
+      const current = yield* findWatch(threadId, issue);
+      if (current !== undefined) yield* sync(current, null);
+      return { ...issue, watching: false, wasWatching: current !== undefined };
     },
     Effect.mapError(
-      (cause) => new IssueWatchError({ detail: "Could not save issue watches.", cause }),
+      (cause) => new IssueWatchError({ detail: "Could not stop watching the issue.", cause }),
     ),
   );
 
-  /**
-   * Replaces or removes `watch` only while it is still the same watch. The wake is sent under
-   * the same lock before the new cursor is saved, so an unwatch that returned can never be
-   * followed by a wake, and a failed dispatch is retried on the next sweep. Unlike a PR watch,
-   * dispatch and save are not one transaction: a failed save repeats the wake rather than lose it.
-   */
   const settle = (watch: IssueWatch, next: IssueWatch | null, wake?: IssueWatchWake) =>
-    SynchronizedRef.modifyEffect(watches, (all) =>
-      Effect.gen(function* () {
-        if (!all.some((existing) => keyOf(existing) === keyOf(watch))) {
-          return [undefined, all] as const;
-        }
-        let kept = next;
-        if (wake !== undefined) {
-          // Drop inactive watches here; dispatch rechecks under the orchestration lock.
-          if (inactive(yield* projections.getThreadShell(watch.threadId))) {
-            kept = null;
-          } else {
-            const id = yield* crypto.randomUUIDv4();
-            yield* engine.dispatch({
-              type: "thread.issue-watch.wake",
-              commandId: CommandId.make(`server:issue-watch:${watch.threadId}:${id}`),
-              threadId: watch.threadId,
-              messageId: MessageId.make(`message:issue-watch:${id}`),
-              text: wake.text,
-              notification: wake.notification,
-            });
-          }
-        }
-        const updated =
-          kept === null
-            ? all.filter((existing) => keyOf(existing) !== keyOf(watch))
-            : all.map((existing) => (keyOf(existing) === keyOf(watch) ? kept : existing));
-        yield* save(updated);
-        return [undefined, updated] as const;
-      }),
-    );
+    sync(watch, next, watch.startedAt, wake);
 
   const readFailures = new Map<string, number>();
 
@@ -390,11 +356,23 @@ export const make = Effect.gen(function* () {
             exhausted,
           })
         : undefined;
+    if (
+      next !== null &&
+      wake === undefined &&
+      next.commentsThrough === watch.commentsThrough &&
+      next.wakes === watch.wakes &&
+      next.commentIds.length === watch.commentIds.length &&
+      next.commentIds.every((id, index) => id === watch.commentIds[index])
+    )
+      return;
     yield* settle(watch, next, wake);
   });
 
   const sweep = Effect.gen(function* () {
-    const all = yield* SynchronizedRef.get(watches);
+    const threads = yield* projections.getThreadsWithIssueWatches();
+    const all = threads.flatMap((thread) =>
+      (thread.issueWatches ?? []).map((watch) => ({ ...watch, threadId: thread.id })),
+    );
     const present = new Set(all.map(keyOf));
     for (const key of readFailures.keys()) if (!present.has(key)) readFailures.delete(key);
     yield* Effect.forEach(
@@ -409,7 +387,28 @@ export const make = Effect.gen(function* () {
         ),
       { concurrency: 4, discard: true },
     );
-  }).pipe(Effect.withSpan("IssueWatchService.sweep"));
+  }).pipe(
+    Effect.withSpan("IssueWatchService.sweep"),
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.interrupt
+        : Effect.logWarning("issue watch sweep failed", { cause }),
+    ),
+  );
+
+  if (initial !== undefined) {
+    for (const watch of initial) {
+      if (!inactive(yield* projections.getThreadShell(watch.threadId))) yield* sync(watch, watch);
+    }
+    // Clear only after all imports commit; existing generations win if startup is retried.
+    yield* writeFileStringAtomically({
+      filePath,
+      contents: `${yield* encodeIssueWatchFile({ version: 1, watches: [] })}\n`,
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+    );
+  }
 
   yield* forkParked(sweep.pipe(Effect.repeat(Schedule.spaced(`${SWEEP_MINUTES} minutes`))));
 

@@ -16,6 +16,33 @@ describe("backgroundWorkHoldsCompletion", () => {
   });
 });
 
+it.each([null, "completed", "running"] as const)(
+  "holds inactive threads with an issue watch (latest run: %s)",
+  (status) => {
+    const input = {
+      latestRun: status === null ? null : { id: "run-1" as never, ordinal: 1, status },
+      providerThreads: [],
+      turnItems: [],
+      issueWatches: [{ host: "GitHub.com", repository: "Acme/App", number: 7 }],
+    };
+    const tasks = derivePendingBackgroundWork(input);
+    expect(tasks).toEqual(
+      status === "running"
+        ? []
+        : [
+            {
+              taskId: "issue-watch:github.com/acme/app#7",
+              description: "Watching issue #7",
+              kind: "monitor",
+              awaited: true,
+            },
+          ],
+    );
+    expect(backgroundWorkHoldsCompletion(tasks)).toBe(status !== "running");
+    expect(derivePendingBackgroundWork({ ...input, issueWatches: [] })).toEqual([]);
+  },
+);
+
 describe("derivePendingBackgroundWork", () => {
   it("takes each subagent item's instance from its joined owner", () => {
     const owner = ProviderInstanceId.make("claude-owner");

@@ -239,9 +239,10 @@ export function deriveThreadStructureRuntime(
       activeProviderThreadId: projection.thread.activeProviderThreadId,
       runs: projection.runs,
       pullRequests: projection.thread.pullRequests,
+      issueWatches: projection.thread.issueWatches,
     }),
   );
-  // A pull request watch can hold a thread that never ran.
+  // A watch can hold a thread that never ran.
   if (
     latestRun === null &&
     projection.thread.activeProviderThreadId === null &&

@@ -1,5 +1,6 @@
 import type {
   OrchestrationV2PendingBackgroundTask,
+  OrchestrationV2IssueWatch,
   OrchestrationV2ProviderThread,
   OrchestrationV2Run,
   OrchestrationV2TurnItem,
@@ -234,6 +235,9 @@ export function derivePendingBackgroundWork(input: {
   /** Excludes rolled-back runs; optional only when the caller already filtered them, as SQL shell reads do. */
   readonly runs?: ReadonlyArray<PendingBackgroundWorkRun>;
   readonly pullRequests?: ReadonlyArray<PendingBackgroundWorkPullRequest> | undefined;
+  readonly issueWatches?:
+    | ReadonlyArray<Pick<OrchestrationV2IssueWatch, "host" | "repository" | "number">>
+    | undefined;
 }): ReadonlyArray<PendingBackgroundWorkTask> {
   const hasActiveRun =
     input.hasActiveRun ??
@@ -245,7 +249,7 @@ export function derivePendingBackgroundWork(input: {
     return [];
   }
   if (input.latestRun == null) {
-    return pullRequestWatchTasks(input.pullRequests);
+    return [...pullRequestWatchTasks(input.pullRequests), ...issueWatchTasks(input.issueWatches)];
   }
   if (!isLatestRunSettledForBackgroundWait(input.latestRun)) {
     return [];
@@ -284,9 +288,26 @@ export function derivePendingBackgroundWork(input: {
     byTaskId.set(taskId, pendingTaskFromTurnItem(taskId, item));
   }
 
-  for (const task of pullRequestWatchTasks(input.pullRequests)) byTaskId.set(task.taskId, task);
+  for (const task of [
+    ...pullRequestWatchTasks(input.pullRequests),
+    ...issueWatchTasks(input.issueWatches),
+  ])
+    byTaskId.set(task.taskId, task);
 
   return Array.from(byTaskId.values());
+}
+
+function issueWatchTasks(
+  issueWatches:
+    | ReadonlyArray<Pick<OrchestrationV2IssueWatch, "host" | "repository" | "number">>
+    | undefined,
+): Array<PendingBackgroundWorkTask> {
+  return (issueWatches ?? []).map((watch) => ({
+    taskId: `issue-watch:${watch.host.toLowerCase()}/${watch.repository.toLowerCase()}#${watch.number}`,
+    description: `Watching issue #${watch.number}`,
+    kind: "monitor",
+    awaited: true,
+  }));
 }
 
 function pullRequestWatchTasks(

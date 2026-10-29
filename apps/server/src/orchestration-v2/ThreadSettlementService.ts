@@ -604,6 +604,10 @@ export const make = Effect.gen(function* () {
     switch (event.type) {
       case "thread.settled":
         return cleanUpSettledThread(event.threadId);
+      case "thread.metadata-updated":
+        return event.payload.issueWatches === undefined
+          ? Effect.void
+          : enqueueThread(event.threadId);
       case "thread.pull-request-link-updated":
       case "thread.pull-request-synced":
       case "provider-session.detached":

@@ -1,13 +1,16 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   type OrchestrationV2ServerCommand,
+  type OrchestrationV2IssueWatch,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 
 import { ServerConfig } from "../config.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -34,6 +37,8 @@ interface FakeGitHub {
   };
   comments: Array<{ id: number; updated_at: string; login: string; body: string }>;
   settledAt: string | null;
+  settledOverride: "settled" | null;
+  issueWatches: ReadonlyArray<OrchestrationV2IssueWatch>;
   dispatchFailures: number;
 }
 
@@ -42,6 +47,8 @@ const setup = () => {
     issue: { state: "open", updated_at: "2026-10-01T00:00:00Z" },
     comments: [{ id: 1, updated_at: "2026-09-30T00:00:00Z", login: "alice", body: "old" }],
     settledAt: null,
+    settledOverride: null,
+    issueWatches: [],
     dispatchFailures: 0,
   };
   const dispatched: Array<OrchestrationV2ServerCommand> = [];
@@ -81,14 +88,26 @@ const setup = () => {
         github.dispatchFailures-- > 0
           ? Effect.die(new Error("orchestrator unavailable"))
           : Effect.sync(() => {
+              if (command.type === "thread.issue-watch.sync") {
+                const matches = (watch: OrchestrationV2IssueWatch) => watch.url === ISSUE.url;
+                const current = github.issueWatches.find(matches);
+                if (command.startedAt !== undefined && current?.startedAt !== command.startedAt)
+                  return { sequence: dispatched.length, storedEvents: [] };
+                if (github.settledOverride === "settled" && command.watch !== null)
+                  return { sequence: dispatched.length, storedEvents: [] };
+                github.issueWatches = [
+                  ...github.issueWatches.filter((watch) => !matches(watch)),
+                  ...(command.watch === null ? [] : [command.watch]),
+                ];
+              }
               dispatched.push(command);
               return { sequence: dispatched.length, storedEvents: [] };
             }),
     }),
     Layer.mock(ProjectionStore.ProjectionStoreV2)({
       getThreadShell: (threadId) =>
-        Effect.succeed(
-          v2PullRequestThread({
+        Effect.succeed({
+          ...v2PullRequestThread({
             id: threadId,
             projectId: ProjectId.make("project-1"),
             title: "Thread",
@@ -102,9 +121,16 @@ const setup = () => {
             createdAt: "2026-10-01T00:00:00.000Z",
             updatedAt: "2026-10-01T00:00:00.000Z",
             archivedAt: null,
-            settledOverride: null,
+            settledOverride: github.settledOverride,
             settledAt: github.settledAt,
           }),
+          issueWatches: github.issueWatches,
+        }),
+      getThreadsWithIssueWatches: () =>
+        Effect.succeed(
+          github.issueWatches.length === 0
+            ? []
+            : [{ id: THREAD_ID, issueWatches: github.issueWatches }],
         ),
     }),
     ServerConfig.layerTest(process.cwd(), { prefix: "t3-issue-watch-" }),
@@ -115,14 +141,14 @@ const setup = () => {
   );
   const wakes = () =>
     dispatched.flatMap((command) =>
-      command.type === "thread.issue-watch.wake" ? [command.text] : [],
+      command.type === "thread.issue-watch.sync" && command.wake ? [command.wake.text] : [],
     );
   return { github, dispatched, wakes, layer, service };
 };
 
 describe("IssueWatchService", () => {
   it.effect("wakes on comments from others after the watch starts, once each", () => {
-    const { github, wakes, layer, service } = setup();
+    const { github, wakes, dispatched, layer, service } = setup();
     return Effect.gen(function* () {
       const watches = yield* service;
       expect(yield* watches.watch(THREAD_ID, ISSUE)).toMatchObject({
@@ -133,6 +159,7 @@ describe("IssueWatchService", () => {
 
       yield* watches.sweep;
       expect(wakes()).toEqual([]);
+      expect(dispatched).toHaveLength(1);
 
       github.issue = { state: "open", updated_at: "2026-10-01T00:10:00Z" };
       github.comments.push(
@@ -150,18 +177,49 @@ describe("IssueWatchService", () => {
   it.effect("stops after unwatch, and keeps watches across restarts", () => {
     const { github, wakes, layer, service } = setup();
     return Effect.gen(function* () {
-      yield* Effect.scoped(Effect.flatMap(service, (watches) => watches.watch(THREAD_ID, ISSUE)));
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const legacyPath = path.join(config.stateDir, "issue-watches.json");
+      yield* fs.makeDirectory(config.stateDir, { recursive: true });
+      yield* fs.writeFileString(
+        legacyPath,
+        JSON.stringify({
+          version: 1,
+          watches: [
+            {
+              threadId: THREAD_ID,
+              ...ISSUE,
+              startedAt: "2026-10-01T00:00:00.000Z",
+              commentsThrough: "2026-10-01T00:00:00Z",
+              commentIds: [1],
+              wakes: 0,
+            },
+          ],
+        }),
+      );
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const watches = yield* service;
+          expect((yield* watches.watch(THREAD_ID, ISSUE)).wasWatching).toBe(true);
+        }),
+      );
+      expect(JSON.parse(yield* fs.readFileString(legacyPath)) as unknown).toEqual({
+        version: 1,
+        watches: [],
+      });
       const restarted = yield* service;
       github.issue = { state: "open", updated_at: "2026-10-01T00:10:00Z" };
       github.comments.push({ id: 2, updated_at: "2026-10-01T00:10:00Z", login: "bob", body: "hi" });
       yield* restarted.sweep;
       expect(wakes()).toHaveLength(1);
-
       expect((yield* restarted.unwatch(THREAD_ID, ISSUE)).wasWatching).toBe(true);
       github.issue = { state: "open", updated_at: "2026-10-01T00:20:00Z" };
       github.comments.push({ id: 3, updated_at: "2026-10-01T00:20:00Z", login: "bob", body: "?" });
       yield* restarted.sweep;
       expect(wakes()).toHaveLength(1);
+      const afterUnwatch = yield* service;
+      expect((yield* afterUnwatch.unwatch(THREAD_ID, ISSUE)).wasWatching).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(layer));
   });
 
@@ -183,12 +241,28 @@ describe("IssueWatchService", () => {
     }).pipe(Effect.scoped, Effect.provide(layer));
   });
 
-  it.effect("ends the watch silently when its thread settles", () => {
+  it.effect("keeps watching through normal turn completion and the next sweep", () => {
+    const { github, wakes, layer, service } = setup();
+    return Effect.gen(function* () {
+      const watches = yield* service;
+      yield* watches.watch(THREAD_ID, ISSUE);
+      github.settledAt = "2026-10-01T00:05:00.000Z";
+      yield* watches.sweep;
+      github.issue = { state: "open", updated_at: "2026-10-01T00:10:00Z" };
+      github.comments.push({ id: 2, updated_at: "2026-10-01T00:10:00Z", login: "bob", body: "hi" });
+      yield* watches.sweep;
+      expect(wakes()).toHaveLength(1);
+      expect((yield* watches.unwatch(THREAD_ID, ISSUE)).wasWatching).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(layer));
+  });
+
+  it.effect("ends the watch silently when its thread is explicitly settled", () => {
     const { github, wakes, layer, service } = setup();
     return Effect.gen(function* () {
       const watches = yield* service;
       yield* watches.watch(THREAD_ID, ISSUE);
       github.settledAt = "2026-10-02T00:00:00.000Z";
+      github.settledOverride = "settled";
       github.issue = { state: "open", updated_at: "2026-10-02T00:00:00Z" };
       github.comments.push({ id: 2, updated_at: "2026-10-02T00:00:00Z", login: "bob", body: "hi" });
       yield* watches.sweep;

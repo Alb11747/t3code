@@ -485,6 +485,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.pull-request.watch":
     case "thread.pull-request-watch.sync":
     case "thread.issue-watch.wake":
+    case "thread.issue-watch.sync":
     case "thread.pull-request.sync":
     case "thread.title.regeneration.complete":
     case "thread.runtime-mode.set":
@@ -3306,6 +3307,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             titleRegeneration: null,
             guestShare: null,
             pullRequests: thread.pullRequests?.map((link) => withPullRequestWatch(link, undefined)),
+            issueWatches: [],
             updatedAt: now,
           };
         case "thread.unarchive":
@@ -3319,6 +3321,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             settledOverride: "settled",
             settledAt: alreadySettled ? thread.settledAt : (command.settledAt ?? now),
             pullRequests: thread.pullRequests?.map((link) => withPullRequestWatch(link, undefined)),
+            issueWatches: [],
             unsettledAt: null,
             pinnedAt: null,
             pinOrderKey: null,
@@ -10519,7 +10522,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     const pullRequests = thread.pullRequests ?? [];
-    if (pullRequests.some((link) => link.watch !== undefined)) {
+    if (
+      pullRequests.some((link) => link.watch !== undefined) ||
+      (thread.issueWatches?.length ?? 0) > 0
+    ) {
       yield* emitEvent({
         type: "thread.pull-request-synced",
         threadId: thread.id,
@@ -10528,6 +10534,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         payload: {
           ...thread,
           pullRequests: pullRequests.map((link) => withPullRequestWatch(link, undefined)),
+          issueWatches: [],
         },
       });
     }
@@ -12733,6 +12740,64 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           events,
           effects,
         );
+        break;
+      }
+      case "thread.issue-watch.sync": {
+        const emitEvent = emit(events, command);
+        const thread = yield* projectionStore
+          .getThread(command.threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+            ),
+          );
+        const matches = (watch: NonNullable<typeof thread.issueWatches>[number]) =>
+          watch.host.toLowerCase() === command.host.toLowerCase() &&
+          watch.repository.toLowerCase() === command.repository.toLowerCase() &&
+          watch.number === command.number;
+        const current = thread.issueWatches?.find(matches);
+        if (command.startedAt !== undefined && current?.startedAt !== command.startedAt) break;
+        if (command.startedAt === undefined && current !== undefined && command.watch !== null)
+          break;
+        const inactive =
+          thread.deletedAt !== null ||
+          thread.archivedAt !== null ||
+          thread.settledOverride === "settled" ||
+          thread.lineage.relationshipToParent === "subagent";
+        // Explicit settlement and unwatch win over host reads already in flight.
+        if (inactive && command.watch !== null) break;
+        const now = yield* DateTime.now;
+        yield* emitEvent({
+          type: "thread.metadata-updated",
+          threadId: thread.id,
+          providerInstanceId: thread.providerInstanceId,
+          occurredAt: now,
+          payload: {
+            ...thread,
+            issueWatches: [
+              ...(thread.issueWatches ?? []).filter((watch) => !matches(watch)),
+              ...(command.watch === null ? [] : [command.watch]),
+            ],
+            ...(command.watch === null ? {} : { settledAt: null }),
+            ...(command.startedAt === undefined ? { updatedAt: now } : {}),
+          },
+        });
+        if (command.wake !== undefined && !inactive) {
+          yield* dispatchMessage(
+            {
+              type: "message.dispatch",
+              commandId: command.commandId,
+              threadId: thread.id,
+              ...command.wake,
+              attachments: [],
+              dispatchMode: { type: "queue_after_active" },
+              createdBy: "agent",
+              creationSource: "server",
+            },
+            events,
+            effects,
+          );
+        }
         break;
       }
       case "thread.guest-share.open":

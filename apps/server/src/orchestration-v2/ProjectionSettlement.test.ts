@@ -144,6 +144,21 @@ it.effect(
       const idle = yield* createThread("idle");
       const completed = yield* createThread("completed");
       yield* createRun(completed);
+      const watchingIssue = yield* createThread("watching-issue", {
+        issueWatches: [
+          {
+            host: "github.com",
+            repository: "acme/app",
+            number: 7,
+            url: "https://github.com/acme/app/issues/7",
+            startedAt: DateTime.formatIso(old),
+            commentsThrough: DateTime.formatIso(old),
+            commentIds: [],
+            wakes: 0,
+          },
+        ],
+      });
+      yield* createRun(watchingIssue);
       for (const [name, overrides] of [
         ["archived", { archivedAt: old }],
         ["deleted", { deletedAt: old }],
@@ -245,6 +260,10 @@ it.effect(
       });
       const candidates = yield* store.getSettlementCandidates();
       const shell = yield* store.getShellSnapshot({ location: "active" });
+      assert.include(
+        shell.threads.find((thread) => thread.id === watchingIssue)?.pendingBackgroundTasks?.[0],
+        { taskId: "issue-watch:github.com/acme/app#7", kind: "monitor", awaited: true },
+      );
       const eligible = candidates.filter((thread) =>
         isAutoSettlementCandidate(thread, DateTime.toEpochMillis(now)),
       );

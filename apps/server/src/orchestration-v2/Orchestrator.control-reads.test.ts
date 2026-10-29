@@ -67,13 +67,26 @@ const layerTest = Layer.mergeAll(
   ),
 );
 
-it.effect.each(["active", "thread.settle", "thread.archive"] as const)(
+it.effect.each(["active", "thread.settle", "thread.archive", "thread.stop", "rewatch"] as const)(
   "delivers issue watch wakes only to active threads (%s)",
   (type) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const projections = yield* ProjectionStore.ProjectionStoreV2;
       const threadId = ThreadId.make(`thread:issue-watch-race:${type}`);
+      const issue = {
+        host: "github.com",
+        repository: "acme/app",
+        number: 7,
+        url: "https://github.com/acme/app/issues/7",
+      };
+      const replacementWatch = {
+        ...issue,
+        startedAt: "2026-10-02T00:00:00.000Z",
+        commentsThrough: "2026-10-02T00:10:00Z",
+        commentIds: [42],
+        wakes: 3,
+      };
       yield* orchestrator.dispatch({
         type: "thread.create",
         commandId: CommandId.make(`create-issue-watch-race:${type}`),
@@ -96,15 +109,35 @@ it.effect.each(["active", "thread.settle", "thread.archive"] as const)(
           ...orchestrator,
           // The user mutation commits after the watch's last read, before its wake acquires the lock.
           dispatch: (command) =>
-            type === "active"
+            type === "active" ||
+            command.type !== "thread.issue-watch.sync" ||
+            command.wake === undefined
               ? orchestrator.dispatch(command)
-              : orchestrator
-                  .dispatch({
-                    type,
-                    threadId,
-                    commandId: CommandId.make(`stop-issue-watch-race:${type}`),
-                  })
-                  .pipe(Effect.andThen(orchestrator.dispatch(command))),
+              : Effect.gen(function* () {
+                  if (type === "rewatch") {
+                    yield* orchestrator.dispatch({
+                      type: "thread.issue-watch.sync",
+                      commandId: CommandId.make("unwatch-issue-watch-race"),
+                      threadId,
+                      ...issue,
+                      watch: null,
+                    });
+                    yield* orchestrator.dispatch({
+                      type: "thread.issue-watch.sync",
+                      commandId: CommandId.make("rewatch-issue-watch-race"),
+                      threadId,
+                      ...issue,
+                      watch: replacementWatch,
+                    });
+                  } else {
+                    yield* orchestrator.dispatch({
+                      type,
+                      threadId,
+                      commandId: CommandId.make(`stop-issue-watch-race:${type}`),
+                    });
+                  }
+                  return yield* orchestrator.dispatch(command);
+                }),
         }),
         Effect.provide(
           Layer.mergeAll(
@@ -128,11 +161,11 @@ it.effect.each(["active", "thread.settle", "thread.archive"] as const)(
           ).pipe(Layer.provideMerge(NodeServices.layer)),
         ),
       );
-      yield* watches.watch(threadId, {
-        host: "github.com",
-        repository: "acme/app",
-        number: 7,
-        url: "https://github.com/acme/app/issues/7",
+      yield* watches.watch(threadId, issue);
+      assert.include((yield* projections.getThreadShell(threadId))?.pendingBackgroundTasks?.[0], {
+        taskId: "issue-watch:github.com/acme/app#7",
+        kind: "monitor",
+        awaited: true,
       });
       closed = true;
       yield* watches.sweep;
@@ -144,10 +177,15 @@ it.effect.each(["active", "thread.settle", "thread.archive"] as const)(
         assert.lengthOf(projection.runs, 1);
         return;
       }
-      if (type === "thread.settle") assert.equal(projection.thread.settledOverride, "settled");
-      else assert.isNotNull(projection.thread.archivedAt);
       assert.deepEqual(projection.messages, []);
       assert.deepEqual(projection.runs, []);
+      if (type === "rewatch") {
+        assert.deepEqual(projection.thread.issueWatches, [replacementWatch]);
+      } else {
+        if (type === "thread.settle") assert.equal(projection.thread.settledOverride, "settled");
+        if (type === "thread.archive") assert.isNotNull(projection.thread.archivedAt);
+        assert.deepEqual(projection.thread.issueWatches, []);
+      }
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
 );
 
@@ -879,7 +917,7 @@ it.effect("settles only the stopped run's background work, once", () =>
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("keeps delegated child pull-request links independent of the parent", () =>
+it.effect("keeps child pull requests and issue watches independent of the parent", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -910,6 +948,25 @@ it.effect("keeps delegated child pull-request links independent of the parent", 
       commandId: CommandId.make("link-parent-pr"),
       threadId: parentThreadId,
       linkedPullRequest: parentPullRequest,
+    });
+    const parentIssueWatch = {
+      host: "github.com",
+      repository: "pingdotgg/t3code",
+      number: 789,
+      url: "https://github.com/pingdotgg/t3code/issues/789",
+      startedAt: "2026-10-01T00:00:00.000Z",
+      commentsThrough: "2026-10-01T00:00:00Z",
+      commentIds: [],
+      wakes: 0,
+    };
+    yield* orchestrator.dispatch({
+      type: "thread.issue-watch.sync",
+      commandId: CommandId.make("watch-parent-issue"),
+      threadId: parentThreadId,
+      host: parentIssueWatch.host,
+      repository: parentIssueWatch.repository,
+      number: parentIssueWatch.number,
+      watch: parentIssueWatch,
     });
     yield* orchestrator.dispatch({
       type: "message.dispatch",
@@ -942,6 +999,7 @@ it.effect("keeps delegated child pull-request links independent of the parent", 
     const child = yield* projections.getThreadProjection(childThreadId);
     assert.isNull(child.thread.linkedPullRequest);
     assert.deepEqual(child.thread.pullRequests, []);
+    assert.deepEqual(child.thread.issueWatches, []);
     assert.equal(child.thread.branch, parent.thread.branch);
     assert.equal(child.thread.worktreePath, parent.thread.worktreePath);
     assert.equal(child.thread.lineage.parentThreadId, parentThreadId);
@@ -966,6 +1024,7 @@ it.effect("keeps delegated child pull-request links independent of the parent", 
     const parentAfterChildLink = yield* projections.getThreadProjection(parentThreadId);
     assert.deepEqual(parentAfterChildLink.thread.linkedPullRequest, parentPullRequest);
     assert.deepEqual(parentAfterChildLink.thread.pullRequests, parent.thread.pullRequests);
+    assert.deepEqual(parentAfterChildLink.thread.issueWatches, [parentIssueWatch]);
   }).pipe(Effect.provide(layerTest)),
 );
 
