@@ -103,7 +103,7 @@ export function makeRevisionedAssetUrlFamily(
     );
 }
 
-export const revisionedAssetUrl = makeRevisionedAssetUrlFamily(assetEnvironment.createUrl);
+const revisionedAssetUrl = makeRevisionedAssetUrlFamily(assetEnvironment.createUrl);
 
 /**
  * Pass `revision` for a workspace file whose bytes can change under the same

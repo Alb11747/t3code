@@ -21,7 +21,6 @@ const testState = vi.hoisted(() => ({
   updateServer: vi.fn(),
   toast: vi.fn(),
   clipboard: vi.fn(),
-  continueThreadsAfterServerUpdate: false,
   sessionAtom: null as unknown,
   configAtom: null as unknown,
 }));
@@ -35,16 +34,6 @@ vi.mock(import("~/hooks/useCopyToClipboard"), async (original) => ({
     },
     isCopied: false,
   })) as never,
-}));
-vi.mock(import("~/hooks/useSettings"), async (original) => ({
-  ...(await original()),
-  useEnvironmentSettings: ((
-    _environmentId: EnvironmentId,
-    selector: (settings: { continueThreadsAfterServerUpdate: boolean }) => unknown,
-  ) =>
-    selector({
-      continueThreadsAfterServerUpdate: testState.continueThreadsAfterServerUpdate,
-    })) as never,
 }));
 vi.mock(import("~/state/session"), async (original) => {
   const actual = await original();
@@ -110,7 +99,6 @@ function setup(): Disposable {
   testState.updateServer.mockReset();
   testState.toast.mockReset();
   testState.clipboard.mockReset();
-  testState.continueThreadsAfterServerUpdate = false;
   sessionAtom = Atom.make<SessionResult>(AsyncResult.success(currentSession));
   testState.sessionAtom = sessionAtom;
   testState.configAtom = Atom.make({ environment: { serverVersion: "0.0.30" } });
@@ -253,16 +241,12 @@ describe("ServerUpdatesAction", () => {
       serverLabel: "Laptop",
       selfUpdate: "boot-service",
       targetVersion: "0.0.31",
-      threadContinuation: true,
-      continueThreadsAfterServerUpdate: true,
     },
     {
       environmentId: "batch-b" as EnvironmentId,
       serverLabel: "Office",
       selfUpdate: "respawn",
       targetVersion: "0.0.31",
-      threadContinuation: true,
-      continueThreadsAfterServerUpdate: false,
     },
     {
       environmentId: "batch-c" as EnvironmentId,
