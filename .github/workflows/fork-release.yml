@@ -192,13 +192,9 @@ jobs:
             !/.repos/
           sparse-checkout-cone-mode: false
 
-      - uses: voidzero-dev/setup-vp@v1
+      - uses: ./.github/actions/setup-ci-deps
         with:
-          node-version-file: package.json
-          cache: true
-          run-install: |
-            args:
-              - --filter=@t3tools/scripts...
+          install-args: --filter=@t3tools/scripts...
 
       # Versions are the upstream nightly the fork is built on plus `.fork` or
       # `.fork.<n>`; fork/scripts/release-version.cjs explains the numbering.
@@ -254,6 +250,14 @@ jobs:
           path: release-notes.md
           retention-days: 1
 
+      - name: Upload dependency verification
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-dependency-verification
+          path: ${{ runner.temp }}/pnpm-metadata/lockfile-verified.jsonl
+          retention-days: 1
+
   checks:
     name: Checks
     needs: [settle, preflight]
@@ -296,14 +300,9 @@ jobs:
             !/.repos/
           sparse-checkout-cone-mode: false
 
-      - uses: voidzero-dev/setup-vp@v1
+      - uses: ./.github/actions/setup-ci-deps
         with:
-          node-version-file: package.json
-          cache: true
-          run-install: false
-
-      - name: Install bundle dependencies
-        run: vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+          install-args: --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
 
       - name: Align package versions to release version
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
@@ -432,14 +431,9 @@ jobs:
           git sparse-checkout set --no-cone '/*' '!/.repos/'
           git -c checkout.workers=0 checkout --detach FETCH_HEAD
 
-      - uses: voidzero-dev/setup-vp@v1
+      - uses: ./.github/actions/setup-ci-deps
         with:
-          node-version-file: package.json
-          cache: ${{ matrix.platform != 'win' }}
-          run-install: false
-
-      - name: Install CLI dependencies
-        run: vp install --filter=t3... --filter=@t3tools/scripts...
+          install-args: --filter=t3... --filter=@t3tools/scripts...
 
       - name: Align package versions to release version
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
