@@ -4761,6 +4761,17 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           text: "Run the slow build.",
           attachments: [],
         });
+        const sessions = yield* McpProviderSessions.McpProviderSessions;
+        yield* sessions.set({
+          environmentId: EnvironmentId.make("environment-agent-boundary"),
+          threadId: harness.threadId,
+          providerSessionId: "provider-session-claude-wake",
+          providerInstanceId: CLAUDE_TEST_MODEL_SELECTION.instanceId,
+          endpoint: "http://127.0.0.1:1234/mcp",
+          authorizationHeader: "Bearer test-token",
+          browserToolsAvailable: false,
+          capabilities: new Set(["device"]),
+        });
         yield* harness.runtime.startTurn(input);
         const hooks = harness.getOpenedOptions()?.hooks;
         const signal = yield* Effect.abortSignal;
@@ -4769,6 +4780,25 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           transcript_path: "",
           cwd: "",
         };
+        assert.lengthOf(hooks?.SubagentStart ?? [], 1);
+        const deviceInstructions = yield* Effect.promise(() =>
+          hooks!.SubagentStart![0]!.hooks[0]!(
+            {
+              ...base,
+              hook_event_name: "SubagentStart",
+              agent_id: "agent-1",
+              agent_type: "general-purpose",
+            },
+            undefined,
+            { signal },
+          ),
+        );
+        assert.deepEqual(deviceInstructions, {
+          hookSpecificOutput: {
+            hookEventName: "SubagentStart",
+            additionalContext: T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
+          },
+        });
         const batch = yield* Effect.promise(() =>
           hooks!.PostToolBatch![0]!.hooks[0]!(
             { ...base, hook_event_name: "PostToolBatch", tool_calls: [] },

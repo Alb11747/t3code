@@ -10180,6 +10180,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               options: {
                 ...queryOptions,
                 hooks: {
+                  ...queryOptions.hooks,
                   PostToolBatch: [{ hooks: [takeAgentMessages] }],
                   Stop: [{ hooks: [takeAgentMessages] }],
                 },
