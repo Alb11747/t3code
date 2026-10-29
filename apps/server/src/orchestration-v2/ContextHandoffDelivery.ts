@@ -5,6 +5,7 @@ import type {
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { ContextHandoffBudgetError } from "@t3tools/provider-core/server/failure";
 import {
   historyCost,
   renderHistory,
@@ -18,6 +19,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly budget: number | Effect.Effect<number, BudgetError>;
     readonly deferInline?: boolean;
+    readonly rejectOversized?: boolean;
     readonly alreadyDeliveredItemIds: ReadonlySet<string>;
     readonly inject?: (
       history: ProviderAdapter.ProviderAdapterV2HistoricalContext,
@@ -71,6 +73,9 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     });
     if (historyCost(selected.messages, selected.context) > budget) {
       if (input.deferInline) return { context: "", delivered: Effect.void, unsent: Effect.void };
+      // Recovery probes reject new history; deferred history never forces session replacement.
+      if (input.rejectOversized && pending.some((handoff) => handoff.deferred !== true))
+        return yield* new ContextHandoffBudgetError();
       yield* Effect.forEach(
         pending.filter((handoff) => handoff.deferred !== true),
         (handoff) => input.persist({ ...handoff, deferred: true }),

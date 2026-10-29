@@ -93,7 +93,6 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
-import * as Function from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -5974,13 +5973,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             usageLimitResetAt: codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot)),
             nowMs: DateTime.toEpochMillis(yield* DateTime.now),
           });
-          if (
-            !retryable ||
-            (yield* Ref.get(interruptingNativeTurns)).has(input.nativeTurnId) ||
-            // Codex drives goal runs' turns itself.
-            goalsByNativeThread.get(nativeThreadId)?.status === "active" ||
-            goalActivations.has(nativeThreadId)
-          ) {
+          if (!retryable || (yield* Ref.get(interruptingNativeTurns)).has(input.nativeTurnId)) {
             return undefined;
           }
           return (overloadRetryAttempts.get(nativeThreadId) ?? 0) + 1;
@@ -6371,7 +6364,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ),
                 });
               }
-              if (input.status !== "completed") {
+              if (
+                input.status !== "completed" &&
+                (input.status !== "failed" || input.context.subagent !== null)
+              ) {
                 yield* Ref.update(terminalizedNonCompletedNativeTurns, (current) => {
                   const updated = new Set(current);
                   for (const turn of continuedRuns.get(input.context.providerTurnId) ?? [
@@ -6506,8 +6502,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   parent.subagent === null &&
                   (input.status === "completed" || input.status === "failed") &&
                   !(yield* Ref.get(terminalizedNonCompletedNativeTurns)).has(parent.nativeTurnId) &&
-                  (parentNativeThreadId == null ||
-                    !goalHolds.has(parentNativeThreadId)) &&
+                  (yield* Ref.get(deferredRootTerminals)).get(parent.nativeTurnId)
+                    ?.overloadRetry === undefined &&
+                  (parentNativeThreadId == null || !goalHolds.has(parentNativeThreadId)) &&
                   ![...(yield* Ref.get(activeTurns)).values()].some(
                     (active) =>
                       active.subagent === null &&

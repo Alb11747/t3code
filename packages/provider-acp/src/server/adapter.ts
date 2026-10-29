@@ -7173,7 +7173,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           sessionId: string,
         ) {
           const prompt: Array<EffectAcpSchema.ContentBlock> = [];
-          const mcpSession = yield* mcpSessions.read(turnInput.threadId);
+          const mcpSession = yield* mcpSessions.read(turnInput.threadId, options.instanceId);
           const instructionState = {
             interactionMode: turnInput.runtimePolicy.interactionMode,
             hasT3Mcp: acpMcpContext(mcpSession, self).servers.length > 0,

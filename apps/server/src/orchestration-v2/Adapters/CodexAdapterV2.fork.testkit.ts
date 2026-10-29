@@ -54,6 +54,7 @@ export interface CodexAdapterForkSuiteInput {
       readonly providerThread: OrchestrationV2ProviderThread;
       readonly threadId: ThreadId;
       readonly events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>;
+      readonly continuationRequests: ReadonlyArray<unknown>;
       readonly terminalEvents: () => ReadonlyArray<
         Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "turn.terminal" }>
       >;
@@ -1932,6 +1933,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
         yield* TestClock.adjust("10 seconds");
         yield* harness.firstTerminal;
 
+        assert.isEmpty(harness.continuationRequests);
         assert.deepEqual(
           harness.terminalEvents().map((event) => [event.providerTurnId, event.status]),
           [[yield* providerTurnId("turn-2"), "completed"]],

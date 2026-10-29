@@ -614,6 +614,7 @@ export class OrchestrationEffectWorkerV2 extends Context.Service<
 >()("t3/orchestration-v2/EffectWorker/OrchestrationEffectWorkerV2") {}
 
 export interface OrchestrationEffectWorkerOptions {
+  readonly leaseDurationMs?: number;
   readonly workerId?: string;
   readonly maxAttempts?: number;
 }
@@ -633,6 +634,8 @@ export const layerWithOptions = (
       const workerScope = yield* Effect.scope;
       const workerId = options.workerId ?? `orchestration-v2:${process.pid}`;
       const maxAttempts = Math.max(1, options.maxAttempts ?? 5);
+      // This bounds worker occupancy; the outbox retains ownership until settlement.
+      const leaseDurationMs = Math.max(1, options.leaseDurationMs ?? 30_000);
       const wasCancelled = (effectId: string) =>
         outbox.get(effectId).pipe(
           Effect.map(

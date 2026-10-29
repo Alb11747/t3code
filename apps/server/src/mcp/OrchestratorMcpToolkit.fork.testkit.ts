@@ -45,10 +45,18 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
+import { PeerForwarding } from "../peer/PeerForwarding.ts";
+import { PeerLinkRequests } from "../peer/PeerLinkRequests.ts";
+import { PeerLinks } from "../peer/PeerLinks.ts";
+import { RemoteDelegation } from "../peer/RemoteDelegation.ts";
 
 export const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+  Layer.provide(Layer.mock(PeerForwarding)({})),
+  Layer.provide(Layer.mock(PeerLinkRequests)({})),
+  Layer.provide(Layer.mock(PeerLinks)({})),
+  Layer.provide(Layer.mock(RemoteDelegation)({})),
 );
 
 export const parentThreadId = ThreadId.make("thread:mcp-orchestrator-parent");
@@ -62,7 +70,7 @@ export const delegatedPrompt = "Inspect the delegated API boundary and return th
 export const delegatedResult = "Delegated API boundary inspected.";
 export const cancellationPrompt = "Remain active until the parent cancels this delegated task.";
 export const decodeDelegateTaskResult = Schema.decodeUnknownEffect(
-  OrchestratorMcpDelegateTaskResult,
+  Schema.Struct({ ...OrchestratorMcpDelegateTaskResult.fields, childThreadId: ThreadId }),
 );
 export const decodeThreadInterruptResult = Schema.decodeUnknownEffect(
   OrchestratorMcpThreadInterruptResult,

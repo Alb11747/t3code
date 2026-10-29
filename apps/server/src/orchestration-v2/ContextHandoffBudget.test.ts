@@ -646,6 +646,14 @@ describe("handoff delivery", () => {
               persisted.push(durable);
             }),
         };
+        const rejected = yield* deliverContextHandoffs({
+          ...input,
+          handoffs: [durable],
+          budget: 0,
+          rejectOversized: true,
+        }).pipe(Effect.flip);
+        assert.equal(rejected._tag, "ContextHandoffBudgetError");
+        assert.lengthOf(persisted, 0);
         const first = yield* deliverContextHandoffs({ ...input, handoffs: [durable], budget: 0 });
         assert.equal(first.context, "");
         yield* first.delivered;
@@ -657,8 +665,20 @@ describe("handoff delivery", () => {
 
         const stillTooSmall = yield* deliverContextHandoffs({
           ...input,
-          handoffs: [durable],
+          handoffs: [
+            {
+              ...handoff,
+              id: ContextHandoffId.make("handoff:already-delivered"),
+              delivery: {
+                nativeThreadId: "native:target",
+                status: "injected",
+                itemIds: [],
+              },
+            },
+            durable,
+          ],
           budget: 0,
+          rejectOversized: true,
         });
         assert.equal(stillTooSmall.context, "");
         assert.equal(durable.deferred, true);

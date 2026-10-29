@@ -41,6 +41,7 @@ import {
   ArrowRightLeftIcon,
   ArrowRightIcon,
   GitForkIcon,
+  MinusIcon,
   MessageSquareIcon,
 } from "lucide-react";
 

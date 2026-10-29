@@ -48,7 +48,10 @@ vi.mock("../../state/server", async (original) => ({
 }));
 vi.mock("../../state/presentation", async (original) => ({
   ...(await original<typeof import("../../state/presentation")>()),
-  environmentPresentations: { presentationsAtom: mocks.presentations },
+  environmentPresentations: {
+    presentationsAtom: mocks.presentations,
+    serverConfigsAtom: mocks.config,
+  },
 }));
 vi.mock("../../state/threads", async (original) => {
   const { Atom } = await import("effect/reactivity");
@@ -164,6 +167,7 @@ function setup(
       previewAnnotations: [],
       reviewComments: [],
       threadContexts: [],
+      environmentContexts: [],
       selectedPromptEffort: null,
       selectedModelOptionsForDispatch: undefined,
       selectedModelSelection: {
@@ -233,7 +237,6 @@ function setup(
       removeEditingAttachment: vi.fn(),
       saveEdit: vi.fn(),
     },
-    isConnecting: false,
     isRevertingCheckpoint: false,
     threadDetailLoading: false,
     activeEnvironmentUnavailable: false,

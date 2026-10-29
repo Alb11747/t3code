@@ -1,7 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
-import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation";
+import * as JsonSchema from "effect/JsonSchema";
+import * as Schema from "effect/Schema";
+import * as SchemaRepresentation from "effect/SchemaRepresentation";
 import {
   CommandId,
   EnvironmentId,
@@ -859,10 +860,14 @@ describe("orchestrator MCP toolkit", () => {
               nextCursor: 1,
             });
             const queueDefinition = server.tools.find(({ tool }) => tool.name === "t3_queue");
-            const validateQueue = new AjvJsonSchemaValidator().getValidator(
-              queueDefinition!.tool.outputSchema! as JsonSchemaType,
+            const validateQueue = Schema.is(
+              SchemaRepresentation.fromJsonSchemaDocument(
+                JsonSchema.fromSchemaDraft07(
+                  queueDefinition!.tool.outputSchema! as JsonSchema.JsonSchema,
+                ),
+              ),
             );
-            expect(validateQueue(queueFirstPage.structuredContent).valid).toBe(true);
+            expect(validateQueue(queueFirstPage.structuredContent)).toBe(true);
             const missingThreadId = ThreadId.make("00000000-0000-4000-8000-000000000000");
             const missingThreadQueue = yield* invoke("t3_queue", {
               action: "list",
@@ -876,7 +881,7 @@ describe("orchestrator MCP toolkit", () => {
               message: "The thread was not found.",
             });
             expect(missingThreadQueue.structuredContent).toBeUndefined();
-            expect(validateQueue({ items: "invalid", nextCursor: null }).valid).toBe(false);
+            expect(validateQueue({ items: "invalid", nextCursor: null })).toBe(false);
             const missingThreadRead = yield* invoke("t3_thread_read", {
               threadId: missingThreadId,
             });

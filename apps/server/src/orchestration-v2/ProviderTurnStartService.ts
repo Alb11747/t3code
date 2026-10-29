@@ -1124,6 +1124,7 @@ export const layer: Layer.Layer<
           resumedHandoffContext = context;
           resumedRetryHandoff = yield* prepareRetryHandoff(context);
           const fits = yield* deliverContextHandoffs({
+            rejectOversized: true,
             handoffs: [...handoffs, ...resumedRetryHandoff],
             providerThread: { ...resumed.success, id: providerThread.id },
             budget: context.budget,
@@ -1139,6 +1140,7 @@ export const layer: Layer.Layer<
           const freshContext = handoffContextForThread(freshThread);
           const { handoff } = yield* recoveryHandoff;
           const fitsFresh = yield* deliverContextHandoffs({
+            rejectOversized: true,
             handoffs: withRecoveryHandoff(handoff),
             providerThread: freshThread,
             budget: freshContext.budget,

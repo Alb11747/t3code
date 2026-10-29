@@ -562,9 +562,11 @@ describe("MessagesTimeline scroll position", () => {
     }
     await using initial = await renderElement(<Chat />);
     const viewport = await waitForList(props);
+    await vi.waitFor(() => expect(onIsAtEndChange).toHaveBeenCalledWith(true));
     await vi.waitFor(() => expect(readTimelinePosition(props.routeThreadKey)?.atEnd).toBe(true));
 
     await userEvent.wheel(viewport, { delta: { y: -600 } });
+    await act(() => viewport.dispatchEvent(new Event("scroll")));
     await vi.waitFor(() => expect(readTimelinePosition(props.routeThreadKey)?.atEnd).toBe(false));
     const offset = viewport.scrollTop;
     await initial.unmount();
