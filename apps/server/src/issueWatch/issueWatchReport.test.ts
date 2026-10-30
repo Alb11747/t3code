@@ -29,7 +29,7 @@ describe("advanceIssueWatch", () => {
 
   it("tells only unseen comments by others and moves the cursor past all of them", () => {
     const { fresh, next } = advanceIssueWatch(
-      start,
+      { ...start, wakes: 3 },
       [
         comment(1, "2026-10-01T00:00:00Z"),
         comment(2, "2026-10-01T00:00:00Z"),
@@ -44,11 +44,24 @@ describe("advanceIssueWatch", () => {
 
   it("does not count a wake when only the viewer commented", () => {
     const { fresh, next } = advanceIssueWatch(
-      start,
+      { ...start, wakes: 9 },
       [comment(5, "2026-10-01T00:01:00Z", "me")],
       "me",
     );
     expect(fresh).toEqual([]);
     expect(next).toEqual({ commentsThrough: "2026-10-01T00:01:00Z", commentIds: [5], wakes: 0 });
+  });
+
+  it("resets the streak on a quiet sweep and still limits consecutive updates", () => {
+    const quiet = advanceIssueWatch({ ...start, wakes: 9 }, [], "me");
+    expect(quiet.next.wakes).toBe(0);
+    const resumed = advanceIssueWatch(quiet.next, [comment(2, "2026-10-01T00:01:00Z")], "me");
+    expect(resumed.next.wakes).toBe(1);
+    const consecutive = advanceIssueWatch(
+      { ...start, wakes: 9 },
+      [comment(2, "2026-10-01T00:01:00Z")],
+      "me",
+    );
+    expect(consecutive.next.wakes).toBe(10);
   });
 });

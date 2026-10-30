@@ -71,6 +71,8 @@ export function advanceIssueWatch(
   const fresh = unseen.filter(
     (comment) => own === undefined || comment.author?.toLowerCase() !== own,
   );
+  const viewerReplied =
+    own !== undefined && unseen.some((comment) => comment.author?.toLowerCase() === own);
   return {
     fresh,
     next: {
@@ -79,7 +81,7 @@ export function advanceIssueWatch(
         ...(latest === through ? cursor.commentIds : []),
         ...atLatest.map((comment) => comment.id),
       ],
-      wakes: cursor.wakes + (fresh.length > 0 ? 1 : 0),
+      wakes: fresh.length === 0 ? 0 : (viewerReplied ? 0 : cursor.wakes) + 1,
     },
   };
 }
