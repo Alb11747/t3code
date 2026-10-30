@@ -1,5 +1,3 @@
-import type { VcsStatusResult } from "@t3tools/contracts";
-
 import * as Logger from "effect/Logger";
 
 import { SourceControlProviderKind } from "@t3tools/contracts";

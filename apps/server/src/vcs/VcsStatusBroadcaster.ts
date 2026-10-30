@@ -545,7 +545,6 @@ export const make = Effect.gen(function* () {
         const autoPullEnabled = refreshUpstream && (yield* isAutoPullEnabled([rawCwd]));
         // Fetch can move the base, and a concurrent refresh can have cached pre-fetch state.
         const local = yield* refreshLocalStatusCore(cwd);
-        yield* updateCachedLocalStatus(cwd, local, { publish: true });
         // Without a fetch, the cached behind count cannot justify an automatic pull.
         const pulled = yield* maybeAutoPull(cwd, remoteRead, autoPullEnabled, local);
         if (pulled !== null) return mergeGitStatusParts(pulled.local, pulled.remote);
