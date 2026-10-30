@@ -10,6 +10,7 @@ import {
 import type { EnvironmentOption } from "../components/BranchToolbar.logic";
 import {
   deriveLogicalProjectKeyFromSettings,
+  isOlderProject,
   selectProjectGroupingSettings,
 } from "@t3tools/client-runtime/state/project-grouping";
 import { useProjects } from "../state/entities";
@@ -59,13 +60,13 @@ export function useLogicalProjectEnvironments(
     }
   } else {
     const logicalKey = deriveLogicalProjectKeyFromSettings(activeProject, projectGroupingSettings);
-    const seen = new Set<string>();
+    const projectByEnvironment = new Map<EnvironmentId, EnvironmentProject>();
     for (const p of allProjects) {
-      if (seen.has(p.environmentId)) continue;
       if (deriveLogicalProjectKeyFromSettings(p, projectGroupingSettings) !== logicalKey) continue;
-      seen.add(p.environmentId);
-      pushEnvironment(p.environmentId, p.id);
+      const current = projectByEnvironment.get(p.environmentId);
+      if (!current || isOlderProject(p, current)) projectByEnvironment.set(p.environmentId, p);
     }
+    for (const p of projectByEnvironment.values()) pushEnvironment(p.environmentId, p.id);
   }
   envs.sort((a, b) => {
     if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;

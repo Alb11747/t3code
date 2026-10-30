@@ -9,6 +9,7 @@ the sync script deletes the line of a change whose upstream PR merged. Closing
 an issue alone does not revert a patch. See `fork/README.md` for how to add or drop
 an entry.
 
+- `fix(web,mobile): new threads in a repository group open in the first-added project`: when several clones of one repository share a sidebar group on a machine (such as agent-made clones with the same origin), new threads and the draft's machine picker target the project added first instead of whichever clone the project list happens to put first. Issue: none linked. PR: none yet
 - `fix(server): recognize invalid worktree gitfiles during cleanup`: treats Git's invalid gitfile diagnostic as a missing repository, keeping the worktree with the existing repository-changed reason instead of failing cleanup; restores the existing regression test on newer Git. Issue: none linked. PR: none yet
 - `fix(web): skip stale Claude compaction after switching providers`: follows the composer's handoff selection, evaluates the destination's own saved Claude context, hides mismatched suggestions, and rechecks the destination conversation after send preparation before compacting and queueing a message. Returning from Codex to a long, cold Claude conversation still offers compaction; manual compaction and opt-outs remain available. Issue: https://github.com/pingdotgg/t3code/issues/25943 (related: https://github.com/pingdotgg/t3code/issues/23086). PR: none yet
 

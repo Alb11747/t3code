@@ -261,6 +261,16 @@ function shouldReplacePhysicalProjectWinner<TProject extends EnvironmentProject>
   return freshnessDelta > 0 || (freshnessDelta === 0 && candidate.id > existing.id);
 }
 
+// Agents add their own clones of repositories the user already added; the
+// first-added project stays a group's target for new threads in its environment.
+export function isOlderProject(
+  candidate: Pick<EnvironmentProject, "id" | "createdAt">,
+  current: Pick<EnvironmentProject, "id" | "createdAt">,
+): boolean {
+  const delta = Date.parse(candidate.createdAt) - Date.parse(current.createdAt);
+  return delta < 0 || (delta === 0 && candidate.id < current.id);
+}
+
 function selectProjectIdentitySource<TProject extends EnvironmentProject>(
   projects: ReadonlyArray<TProject>,
   winner: TProject,
@@ -345,10 +355,15 @@ export function buildProjectGroups<TProject extends EnvironmentProject>(input: {
 
   const preferredEnvironmentId = input.preferredEnvironmentId ?? null;
   return Array.from(groupedMembers, ([key, members]) => {
-    const representative =
-      (preferredEnvironmentId
-        ? members.find((member) => member.project.environmentId === preferredEnvironmentId)?.project
-        : null) ?? members[0]!.project;
+    const representativeEnvironmentId =
+      preferredEnvironmentId !== null &&
+      members.some((member) => member.project.environmentId === preferredEnvironmentId)
+        ? preferredEnvironmentId
+        : members[0]!.project.environmentId;
+    const representative = members
+      .map((member) => member.project)
+      .filter((project) => project.environmentId === representativeEnvironmentId)
+      .reduce((current, candidate) => (isOlderProject(candidate, current) ? candidate : current));
     return {
       key,
       label:

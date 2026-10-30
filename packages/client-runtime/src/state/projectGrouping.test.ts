@@ -249,7 +249,7 @@ describe("buildProjectGroups", () => {
     const projects = [
       makeProject("t3code", "/work/t3code"),
       makeProject("t3code-2", "/work/t3code-2"),
-      makeProject("t3code-3", "/work/t3code-3"),
+      makeProject("t3code-3", "/work/t3code-3", { createdAt: "2026-06-01T00:00:00.000Z" }),
     ];
 
     for (const mode of ["repository", "repository_path"] as const) {
@@ -261,6 +261,7 @@ describe("buildProjectGroups", () => {
         "t3code-3",
       ]);
       expect(groups[0]?.memberProjectRefs).toHaveLength(3);
+      expect(groups[0]?.representative.id).toBe("t3code-3");
     }
   });
 
