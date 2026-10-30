@@ -61,6 +61,7 @@ describe("collectServerUpdateTargets", () => {
           machine("other-desktop", "0.0.46-nightly.20261014.3100.fork", "desktop-managed"),
         ],
         fork,
+        true,
       );
 
       expect(targets.map((target) => [target.serverLabel, target.targetVersion])).toEqual([
