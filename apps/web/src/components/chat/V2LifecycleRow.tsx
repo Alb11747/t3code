@@ -69,7 +69,6 @@ export function V2LifecycleRow(props: {
   readonly resourceSummary?: boolean | undefined;
   readonly runs: ReadonlyArray<HandoffTimelineRun>;
   readonly onOpenThread: (threadId: ThreadId) => void;
-  readonly compactionAction?: ReactNode;
 }) {
   const { item } = props;
   if (item.type === "run_interrupt_result") {
@@ -91,9 +90,7 @@ export function V2LifecycleRow(props: {
             ? "Compacting context"
             : "Context compacted";
     return (
-      <TimelineSystemDivider label={label} detail={item.summary ?? tokenDetail} icon={MinusIcon}>
-        {props.compactionAction}
-      </TimelineSystemDivider>
+      <TimelineSystemDivider label={label} detail={item.summary ?? tokenDetail} icon={MinusIcon} />
     );
   }
   if (item.type === "handoff") {

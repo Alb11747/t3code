@@ -1152,7 +1152,7 @@ it("renders automatic compaction as one live divider that finishes with its reas
       beforeTokenCount: 899_000,
     },
   };
-  const entries = (completed: boolean) =>
+  const entries = (completed: boolean, settled: boolean) =>
     deriveTimelineEntriesFromVisibleTurnItems({
       visibleTurnItems: [
         {
@@ -1161,6 +1161,14 @@ it("renders automatic compaction as one live divider that finishes with its reas
         },
         {
           ...compaction,
+          compactionForkSupport: {
+            runStatus: settled ? "completed" : "running",
+            nativeTurnRef: {
+              driver: ProviderDriverKind.make("codex"),
+              nativeId: "compaction-turn",
+              strength: "strong",
+            },
+          },
           item: {
             ...compaction.item,
             status: completed ? "completed" : "running",
@@ -1171,18 +1179,20 @@ it("renders automatic compaction as one live divider that finishes with its reas
       optimisticMessages: [],
     });
   const props = baseProps();
-  const ui = (completed: boolean) => (
+  const onForkFromRun = vi.fn().mockResolvedValue(undefined);
+  const ui = (completed: boolean, settled = completed) => (
     <MessagesTimeline
       {...props}
-      timelineEntries={entries(completed)}
-      isWorking={!completed}
+      timelineEntries={entries(completed, settled)}
+      onForkFromRun={onForkFromRun}
+      isWorking={!settled}
       isCompacting={!completed}
       activeTurnStartedAt={fixture.time(5)}
       latestRun={{
         runId: fixture.runId,
-        status: completed ? "completed" : "running",
+        status: settled ? "completed" : "running",
         startedAt: fixture.time(5),
-        completedAt: completed ? fixture.time(9) : null,
+        completedAt: settled ? fixture.time(9) : null,
       }}
     />
   );
@@ -1196,6 +1206,13 @@ it("renders automatic compaction as one live divider that finishes with its reas
   expect(container.textContent).not.toContain("Thinking");
   expect(container.textContent).not.toContain("Working");
   expect(container.querySelectorAll('[role="separator"]')).toHaveLength(1);
+  await expect
+    .element(screen.getByRole("button", { name: "Fork after this turn" }))
+    .not.toBeInTheDocument();
+  await screen.rerender(ui(true, false));
+  await expect
+    .element(screen.getByRole("button", { name: "Fork after this turn" }))
+    .not.toBeInTheDocument();
   await screen.rerender(ui(true));
   await expect
     .element(
@@ -1206,6 +1223,13 @@ it("renders automatic compaction as one live divider that finishes with its reas
     .toBeVisible();
   expect(container.querySelectorAll('[role="separator"]')).toHaveLength(1);
   expect(container.textContent).not.toContain("Compacting before");
+  const fork = screen.getByRole("button", { name: "Fork after this turn" });
+  await expect.element(fork).toBeVisible();
+  await userEvent.click(fork);
+  expect(onForkFromRun).toHaveBeenCalledWith({
+    sourceThreadId: compaction.sourceThreadId,
+    runId: fixture.runId,
+  });
 });
 
 it("keeps concurrent approvals actionable outside collapsed work and restores settled rows", async () => {

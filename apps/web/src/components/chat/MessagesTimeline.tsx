@@ -117,6 +117,7 @@ import {
   ProposedPlanTimelineRow,
   HtmlRenderTimelineRow,
   McpAppTimelineRow,
+  TurnForkButton,
 } from "./TimelineAssistantRows";
 import { V2EventTimelineRow } from "./TimelineV2EventRow";
 import { startTimelinePositionRestore } from "./useTimelinePositionRestore";
@@ -1566,6 +1567,7 @@ function ContextCompactionTimelineRow({
         {content}
         {row.active ? <ActivityShimmerOverlay>{content}</ActivityShimmerOverlay> : null}
       </span>
+      {row.projectedItem ? <TurnForkButton projectedItem={row.projectedItem} /> : null}
       <span className={cn("h-px flex-1", row.failed ? "bg-destructive/30" : "bg-border/70")} />
     </div>
   );

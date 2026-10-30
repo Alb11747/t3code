@@ -1,4 +1,3 @@
-import { TurnForkButton } from "./TimelineAssistantRows";
 import { WorkLogBlock } from "./WorkLog";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { useAtomValue } from "@effect/atom-react";
@@ -48,9 +47,6 @@ export function V2EventTimelineRow({ row }: { row: Extract<TimelineRow, { kind: 
       resourceSummary={row.resourceSummary}
       runs={ctx.runs}
       onOpenThread={ctx.onOpenThread}
-      compactionAction={
-        item.type === "compaction" ? <TurnForkButton projectedItem={row.projectedItem} /> : null
-      }
     />
   );
 }

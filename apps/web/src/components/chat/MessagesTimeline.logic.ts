@@ -573,6 +573,7 @@ type MessagesTimelineRowContent =
   | {
       kind: "context-compaction";
       id: string;
+      projectedItem?: OrchestrationV2ProjectedTurnItem;
       createdAt: string;
       label: string;
       tokenCounts: ReturnType<typeof contextCompactionTokenCounts>;
@@ -1766,6 +1767,9 @@ export function deriveMessagesTimelineRows(input: {
       nextRows.push({
         kind: "context-compaction",
         id: timelineEntry.id,
+        ...(timelineEntry.entry.projectedItem
+          ? { projectedItem: timelineEntry.entry.projectedItem }
+          : {}),
         ...(title ? { title } : {}),
         ...(failed ? { failed: true } : {}),
         ...(failure ? { failure } : {}),
@@ -2399,6 +2403,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       const bc = b as typeof a;
       return (
         a.createdAt === bc.createdAt &&
+        a.projectedItem === bc.projectedItem &&
         a.label === bc.label &&
         a.active === bc.active &&
         a.title === bc.title &&
