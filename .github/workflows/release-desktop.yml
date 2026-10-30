@@ -149,11 +149,10 @@ jobs:
         run: |
           set -euo pipefail
           git init .
-          git config remote.origin.url "${GITHUB_SERVER_URL}/${CHECKOUT_REPOSITORY}.git"
+          git remote add origin "${GITHUB_SERVER_URL}/${CHECKOUT_REPOSITORY}.git"
           git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
           git sparse-checkout set --no-cone '/*' '!/.repos/'
-          git -c checkout.workers=0 checkout --force --detach FETCH_HEAD
-          git clean -ffdx
+          git -c checkout.workers=0 checkout --detach FETCH_HEAD
 
       # pnpm checks the lockfile and policy before reusing this result. A missing
       # artifact leaves the cache empty, so installation runs the checks again.
@@ -399,7 +398,7 @@ jobs:
           cp "native/resource-monitor/target/${{ inputs.rust_target }}/release/${binary_name}" "$target_dir/$binary_name"
 
       - uses: ./.github/actions/setup-apt-mirrors
-        if: inputs.platform == 'linux' && inputs.runner != 'lazarus-linux'
+        if: inputs.platform == 'linux'
 
       # The Linux archive ships libatomic.so.1 and points t3's RUNPATH at it.
       - name: Install patchelf
@@ -454,13 +453,8 @@ jobs:
         if: inputs.platform == 'linux'
         shell: bash
         run: |
-          if command -v sudo >/dev/null; then
-              sudo apt-get update
-              sudo apt-get install -y libsecret-1-dev pkg-config
-          else
-              # The isolated Lazarus image supplies these; jobs never elevate.
-              pkg-config --exists libsecret-1
-          fi
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev pkg-config
           if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
               sudo apt-get install -y imagemagick
           fi

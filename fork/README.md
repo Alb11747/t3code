@@ -405,6 +405,10 @@ toolchain and share caches with check jobs, and the variable also moves the
 guard, preflight and publish jobs, the last with `FORK_RELEASE_TOKEN`.
 The rootless runner image needs the release toolchain, `libsecret-1-dev`,
 `pkg-config`, ImageMagick and clean job workspaces; jobs never elevate there.
+Upstream's Linux steps run `sudo apt-get` and the `setup-apt-mirrors` action;
+handle that in the image (a non-elevating `sudo` that accepts installs of
+packages already present), not in `release-desktop.yml`: every fork line there
+conflicts with upstream's frequent edits, and the resolver may not touch it.
 Release image checklist: Node 24.13.1-compatible (and download access for the
 native Node 26.8.2 CLI build), Vite+/pnpm 11.10.0, `gh`, Git, Bash, Rust stable
 with Cargo and `x86_64-unknown-linux-gnu`, a C/C++ compiler and Make
