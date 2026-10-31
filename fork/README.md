@@ -476,12 +476,11 @@ label, or request review for an upstream PR.
      squash it into one fork commit with its `Upstream-PR:` trailer, and
      continue at step 6. Put any fixes of your own in a separate commit on top
      (without the trailer) so sync reverts only the PR's commit when it merges.
-   - **Otherwise** open your own PR (steps 2–6). With no issue, a very small,
-     obvious fix can go without one; for anything larger, file a bug issue
-     first, since CONTRIBUTING.md wants substantial fixes tied to one. Follow
-     the sections of the `via-triage` template
-     (`.github/ISSUE_TEMPLATE/via-triage.yml`), meant for agent-investigated
-     reports, and redact secrets and home directory paths from quoted evidence.
+   - **Otherwise** prepare your own fix (steps 2–6). With no issue, a very small,
+     obvious fix can go without one; substantial fixes need a linked bug issue.
+     Wait to create that issue until the PR branch is ready to publish, as
+     described in step 4. Creating an issue starts a maintainer workflow, so
+     give them the evidence and proposed fix together rather than filing early.
 
    For a bug seen on a real install, gather evidence as the `t3 triage`
    playbook (`.github/triage/PLAYBOOK.md`, section 5) describes: the server
@@ -491,12 +490,13 @@ label, or request review for an upstream PR.
 
 2. Branch from **upstream** `main`, not the fork's, so the PR contains only
    the fix, in a new worktree:
-   `git fetch upstream main && git worktree add -b fix/<issue>-<slug> <path> upstream/main`
+   `git fetch upstream main && git worktree add -b fix/<slug> <path> upstream/main`
    (`upstream` = pingdotgg). Fix exactly one underlying problem, with focused
    tests, following `AGENTS.md`.
-3. Push the branch to the fork (`git push origin fix/<issue>-<slug>`) and run
+3. Finish local validation and review, then push the branch to the fork
+   (`git push origin fix/<slug>`) and run
    upstream's checks on it (see step 5 of _Adding a change_ to wait for the run):
-   `gh workflow run fork-pr-checks.yml -R Alb11747/t3code -f ref=fix/<issue>-<slug>`.
+   `gh workflow run fork-pr-checks.yml -R Alb11747/t3code -f ref=fix/<slug>`.
    Upstream holds CI on PRs from unvouched contributors at "action required"
    until a maintainer approves the run, so don't count on upstream CI; the
    fork run is your evidence. Validate locally first, and rerun it once per
@@ -505,16 +505,30 @@ label, or request review for an upstream PR.
    and recheck whether upstream has fixed the bug in the meantime. If so, sync
    instead of opening the PR. If rebasing changed HEAD, rerun affected checks,
    push the revised branch with an explicit lease, and repeat step 3's fork checks
-   for that revision. Then open the PR with a Conventional Commits title in plain
+   for that revision. Prepare the PR body and triage the branch and drafted body;
+   resolve any gaps before creating an issue or opening the PR.
+
+   If a substantial fix has no existing issue, create the bug issue now, once
+   the fix is implemented, reviewed, validated and ready for PR publication.
+   Follow the sections of the `via-triage` template
+   (`.github/ISSUE_TEMPLATE/via-triage.yml`) and redact secrets and home directory
+   paths from quoted evidence. Include the proposed fix, links to the published
+   fork branch and its comparison against upstream `main`, and the validation
+   results and fork checks run. Explain that the prepared fix is available for
+   maintainers to consider; they decide whether to use it or take another approach.
+   This gives their issue workflow the PR's context from the start. Do not create
+   a duplicate issue when an existing one covers the bug.
+
+   Then open the PR with a Conventional Commits title in plain
    language (`fix(web): …`) and the template's sections: **Problem**,
    **Change**, **Scope and approval** (link the issue, or explain why a tiny
    obvious fix needs none), and **Verification** (focused tests and
    manual checks with results, the fork checks run link, what you couldn't
    check; before/after screenshots for UI). End with the model and harness
-   that did the work. Triage the branch and drafted body first, fix any gap it
-   finds, then open the PR:
-   `gh pr create -R pingdotgg/t3code --base main --head Alb11747:fix/<issue>-<slug> --title "…" --body-file pr.md`.
+   that did the work. Add the new issue link to the drafted body, then open the PR:
+   `gh pr create -R pingdotgg/t3code --base main --head Alb11747:fix/<slug> --title "…" --body-file pr.md`.
    Then comment the PR link on the issue, if there is one.
+
 5. Call `link_pull_request` from the thread that opened the PR, then hand
    watching to a Sol thread: `t3_thread_launch` with model `gpt-6.1-sol` on
    provider `codex`, an `existing_worktree` workspace on the PR branch, and a
