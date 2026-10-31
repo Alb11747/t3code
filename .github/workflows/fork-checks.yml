@@ -120,13 +120,15 @@ jobs:
             node apps/web/node_modules/playwright/cli.js install --with-deps --only-shell chromium
           fi
 
-      # Document layout needs the runner without competing browser or unit files.
-      - name: Test attachment previews
-        run: vp run --filter @t3tools/web test src/components/files/AttachmentFilePreview.browser.test.tsx --no-file-parallelism
+      # These need the runner without competing browser or unit files: document
+      # layout, and a whole-app mount that upstream's 8-vCPU runners finish in 7s
+      # of its 15s limit but these 4-vCPU ones under parallel load do not.
+      - name: Test attachment previews and app mount
+        run: vp run --filter @t3tools/web test src/components/files/AttachmentFilePreview.browser.test.tsx src/components/ChatView.browser.test.tsx --no-file-parallelism
 
       - name: Test
         if: ${{ !cancelled() }}
-        run: vp run --filter @t3tools/web test --exclude '**/AttachmentFilePreview.browser.test.tsx'
+        run: vp run --filter @t3tools/web test --exclude '**/AttachmentFilePreview.browser.test.tsx' --exclude '**/ChatView.browser.test.tsx'
 
   test_server:
     name: Server tests ${{ matrix.shard }}
