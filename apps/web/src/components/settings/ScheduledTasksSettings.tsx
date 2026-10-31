@@ -1185,12 +1185,11 @@ function ScheduledTaskEditorForm({
     environment?.connection.phase,
     environment?.serverConfig,
   );
-  const { projects: scopedProjects, scratchProject, canSelectNoProject } = scheduledTaskProjectChoices(
-    scope,
-    environmentId,
-    allProjects,
-    scratchWorkspaceRoot,
-  );
+  const {
+    projects: scopedProjects,
+    scratchProject,
+    canSelectNoProject,
+  } = scheduledTaskProjectChoices(scope, environmentId, allProjects, scratchWorkspaceRoot);
   const settings = useEnvironmentSettings(environmentId);
   const providers =
     useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS;
@@ -1206,7 +1205,10 @@ function ScheduledTaskEditorForm({
       ? taskToDraft(task)
       : {
           ...EMPTY_DRAFT,
-          projectId: scheduledTaskDefaultProjectId({ projects: scopedProjects, canSelectNoProject }, scope),
+          projectId: scheduledTaskDefaultProjectId(
+            { projects: scopedProjects, canSelectNoProject },
+            scope,
+          ),
         },
   );
   // Pinned first. The chosen project stays listed after it is archived.

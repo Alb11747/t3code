@@ -98,7 +98,10 @@ export function scheduledTaskDefaultProjectId(
   preferNoProject = false,
 ) {
   if (preferNoProject && choices.canSelectNoProject) return null;
-  return defaultScheduledTaskProjectId(choices.projects, scope) || (choices.canSelectNoProject ? null : "");
+  return (
+    defaultScheduledTaskProjectId(choices.projects, scope) ||
+    (choices.canSelectNoProject ? null : "")
+  );
 }
 
 export type ScheduleMode = "fixed" | "interval" | "webhook";

@@ -220,8 +220,12 @@ describe("scheduled task settings scope", () => {
     };
     expect(scheduledTaskDefaultProjectId(choices, all)).toBe("b");
     expect(scheduledTaskDefaultProjectId(choices, all, true)).toBeNull();
-    expect(scheduledTaskDefaultProjectId({ ...choices, projects: [choices.projects[0]!] }, all)).toBeNull();
-    expect(scheduledTaskDefaultProjectId({ ...choices, projects: [choices.projects[0]!] }, scoped)).toBe("x");
+    expect(
+      scheduledTaskDefaultProjectId({ ...choices, projects: [choices.projects[0]!] }, all),
+    ).toBeNull();
+    expect(
+      scheduledTaskDefaultProjectId({ ...choices, projects: [choices.projects[0]!] }, scoped),
+    ).toBe("x");
   });
 
   it("keeps tasks with removed projects manageable at environment scope", () => {
