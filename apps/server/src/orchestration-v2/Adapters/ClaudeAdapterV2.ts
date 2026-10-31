@@ -5129,9 +5129,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           });
         });
 
-        const cancelOverloadRetry = Effect.fn("ClaudeAdapterV2.cancelOverloadRetry")(function* (
-          context: ActiveClaudeTurnContext,
-        ) {
+        // Output frames usually have no pending retry; avoid a span for each no-op.
+        const cancelOverloadRetry = Effect.fnUntraced(function* (context: ActiveClaudeTurnContext) {
           const cancel = context.overloadRetry;
           context.overloadRetry = null;
           if (cancel !== null) yield* Deferred.succeed(cancel, undefined);
