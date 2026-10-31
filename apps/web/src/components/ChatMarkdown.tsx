@@ -207,6 +207,7 @@ import { MarkdownExternalLinkContent } from "./chat/MarkdownExternalLink";
 import { useDownloadMarkdownFile } from "./useDownloadMarkdownFile";
 import { MarkdownFileLink } from "./chat/MarkdownFileLink";
 import { canUseMarkdownFileShellActions } from "./chat/MarkdownFileLink.logic";
+import { rehypeChipPunctuation } from "./chat/markdownChipPunctuation";
 import { handleMarkdownFragmentClick, rehypeHeadingIds } from "./chat/markdownFragments";
 import { rehypeTextDirection } from "./chat/markdownTextDirection";
 import { hastHasText, hastPlainTextDeep, plainHastText } from "./chat/markdownHast.logic";
@@ -243,6 +244,7 @@ interface ChatMarkdownProps {
   /** Mints file media URLs once per revision, such as a reply, instead of reusing a cached one. */
   mediaRevision?: string | undefined;
   onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
+  /** Keep one list per configuration (a module constant): it keys the shared parse cache. */
   extraRemarkPlugins?: NonNullable<ReactMarkdownOptions["remarkPlugins"]>;
   renderContextReference?: ((reference: ChatMarkdownContextReference) => ReactNode) | undefined;
   /** Loads media a source control host keeps behind a credential through the server, which holds
@@ -394,11 +396,13 @@ const CHAT_MARKDOWN_RENDER_REHYPE_PLUGINS = [
   ...CHAT_MARKDOWN_REHYPE_PLUGINS,
   rehypeHeadingIds,
   rehypeTextDirection,
+  rehypeChipPunctuation,
 ] satisfies NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
 
 const CHAT_MARKDOWN_LITERAL_HTML_REHYPE_PLUGINS = [
   rehypeHeadingIds,
   rehypeTextDirection,
+  rehypeChipPunctuation,
 ] satisfies NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
 
 function markdownUrlTransform(href: string) {
@@ -1334,7 +1338,8 @@ const CHAT_MARKDOWN_COMPONENTS = {
       chip
     ) : (
       <span data-markdown-copy={copyMarkdown}>
-        {children} {chip}
+        <span className="whitespace-normal">{children} </span>
+        {chip}
       </span>
     );
   },
@@ -1656,6 +1661,18 @@ const CHAT_MARKDOWN_REMARK_PLUGIN_SETS = {
   mathBreaks: [REMARK_MATH, ...CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS],
 } satisfies Record<string, PluggableList>;
 
+const combinedPlugins = new WeakMap<PluggableList, WeakMap<PluggableList, PluggableList>>();
+
+// One combined list per pair, so a stable extra list shares a renderer and its parse cache.
+function withExtraPlugins(shared: PluggableList, extra: PluggableList): PluggableList {
+  if (extra.length === 0) return shared;
+  let byShared = combinedPlugins.get(extra);
+  if (!byShared) combinedPlugins.set(extra, (byShared = new WeakMap()));
+  let combined = byShared.get(shared);
+  if (!combined) byShared.set(shared, (combined = [...shared, ...extra]));
+  return combined;
+}
+
 const markdownRenderers = new WeakMap<
   PluggableList,
   WeakMap<PluggableList, ReturnType<typeof createMarkdownRenderer>>
@@ -1744,15 +1761,11 @@ function ChatMarkdown({
           ? "breaks"
           : "plain"
     ];
-  // Extra and incremental plugins are per instance, so their output is not shared.
-  const uncachedPlugins = extraRemarkPlugins.length > 0 || incrementalParsing;
-  const remarkPlugins = uncachedPlugins
-    ? [
-        ...sharedRemarkPlugins,
-        ...extraRemarkPlugins,
-        ...(incrementalParsing ? [createIncrementalMarkdownPlugin()] : []),
-      ]
-    : sharedRemarkPlugins;
+  // The incremental parser keeps per-instance state, so its output is not shared.
+  const uncachedPlugins = incrementalParsing;
+  const remarkPlugins = incrementalParsing
+    ? [...sharedRemarkPlugins, ...extraRemarkPlugins, createIncrementalMarkdownPlugin()]
+    : withExtraPlugins(sharedRemarkPlugins, extraRemarkPlugins);
   const blocks = streamingBlocks ?? [text];
 
   return (
