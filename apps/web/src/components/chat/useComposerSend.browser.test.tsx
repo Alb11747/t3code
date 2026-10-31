@@ -211,6 +211,7 @@ function setup(
     activeMessageCount: 2,
     isServerThread: true,
     isLocalDraftThread: false,
+    sideChatDisabledReason: null,
     isGitRepo: false,
     phase: "ready",
     runtimeMode: "full-access",
