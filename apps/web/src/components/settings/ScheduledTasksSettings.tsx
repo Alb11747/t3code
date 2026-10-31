@@ -1185,7 +1185,7 @@ function ScheduledTaskEditorForm({
     environment?.connection.phase,
     environment?.serverConfig,
   );
-  const { projects, scratchProject, canSelectNoProject } = scheduledTaskProjectChoices(
+  const { projects: scopedProjects, scratchProject, canSelectNoProject } = scheduledTaskProjectChoices(
     scope,
     environmentId,
     allProjects,
@@ -1206,9 +1206,18 @@ function ScheduledTaskEditorForm({
       ? taskToDraft(task)
       : {
           ...EMPTY_DRAFT,
-          projectId: scheduledTaskDefaultProjectId({ projects, canSelectNoProject }),
+          projectId: scheduledTaskDefaultProjectId({ projects: scopedProjects, canSelectNoProject }, scope),
         },
   );
+  // Pinned first. The chosen project stays listed after it is archived.
+  const projects = scopedProjects
+    .filter(
+      (project) =>
+        project.archivedAt == null ||
+        project.id === draft.projectId ||
+        project.id === task?.projectId,
+    )
+    .sort((left, right) => Number(right.pinnedAt != null) - Number(left.pinnedAt != null));
   const submissionPending = useRef(false);
   const editingTaskMissing =
     draft.editingId !== null &&
@@ -1393,7 +1402,7 @@ function ScheduledTaskEditorForm({
                 setEnvironmentId(next.environmentId);
                 setDraft((current) => ({
                   ...current,
-                  projectId: scheduledTaskDefaultProjectId(nextChoices, noProject),
+                  projectId: scheduledTaskDefaultProjectId(nextChoices, scope, noProject),
                   threadId: "",
                   modelKey: "",
                   baseModelSelection: null,

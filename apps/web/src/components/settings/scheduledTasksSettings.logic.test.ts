@@ -20,6 +20,7 @@ import {
   scheduledTaskDefaultModel,
   scheduledTaskDefaultProjectId,
   scheduledTaskProjectChoices,
+  defaultScheduledTaskProjectId,
   matchesScheduledTaskScope,
   scheduleFromDraft,
   taskToDraft,
@@ -73,6 +74,8 @@ function group(
     allRemoteMembersAreDesktopLocal: false,
     allRemoteMembersAreWsl: false,
     remoteEnvironmentLabels: [],
+    pinned: false,
+    archived: false,
   };
 }
 
@@ -143,37 +146,37 @@ describe("scheduled task destination defaults", () => {
   it("stores No project when the editor opens before ordinary projects load", () => {
     const scope = resolveSettingsScope({}, groups, environments);
     const choices = scheduledTaskProjectChoices(scope, laptopId, [], "/home/t3/scratch");
-    expect(scheduledTaskDefaultProjectId(choices)).toBeNull();
+    expect(scheduledTaskDefaultProjectId(choices, scope)).toBeNull();
   });
 
   it("defaults to the first scoped project when one is available", () => {
     const scope = resolveSettingsScope({ project: "t3code" }, groups, environments);
     const choices = scheduledTaskProjectChoices(scope, serverId, [other, third], null);
-    expect(scheduledTaskDefaultProjectId(choices)).toBe(third.id);
+    expect(scheduledTaskDefaultProjectId(choices, scope)).toBe(third.id);
   });
 
   it("preserves No project when switching to an environment that supports it", () => {
     const scope = resolveSettingsScope({}, groups, environments);
     const choices = scheduledTaskProjectChoices(scope, serverId, [third], "/remote/scratch");
-    expect(scheduledTaskDefaultProjectId(choices, true)).toBeNull();
+    expect(scheduledTaskDefaultProjectId(choices, scope, true)).toBeNull();
   });
 
   it("switches to an available project when the destination does not support Scratch", () => {
     const scope = resolveSettingsScope({}, groups, environments);
     const choices = scheduledTaskProjectChoices(scope, serverId, [third], null);
-    expect(scheduledTaskDefaultProjectId(choices, true)).toBe(third.id);
+    expect(scheduledTaskDefaultProjectId(choices, scope, true)).toBe(third.id);
   });
 
   it("leaves the destination unset when neither Scratch nor a project is available", () => {
     const scope = resolveSettingsScope({}, groups, environments);
     const choices = scheduledTaskProjectChoices(scope, serverId, [], null);
-    expect(scheduledTaskDefaultProjectId(choices, true)).toBe("");
+    expect(scheduledTaskDefaultProjectId(choices, scope, true)).toBe("");
   });
 
   it("requires a project when the settings scope excludes Scratch", () => {
     const scope = resolveSettingsScope({ project: "t3code" }, groups, environments);
     const choices = scheduledTaskProjectChoices(scope, serverId, [third], "/remote/scratch");
-    expect(scheduledTaskDefaultProjectId(choices, true)).toBe(third.id);
+    expect(scheduledTaskDefaultProjectId(choices, scope, true)).toBe(third.id);
   });
 });
 
@@ -195,6 +198,30 @@ describe("scheduled task settings scope", () => {
         .filter((task) => matchesScheduledTaskScope(scope, task.environmentId, task.projectId))
         .map((task) => task.id),
     ).toEqual(expected);
+  });
+
+  it("defaults a new task to a pinned open project, and to an archived one only when scoped to it", () => {
+    const at = "2026-01-01T00:00:00.000Z";
+    const project = (id: string, pinnedAt: string | null, archivedAt: string | null) => ({
+      id: ProjectId.make(id),
+      pinnedAt,
+      archivedAt,
+    });
+    const all = resolveSettingsScope({}, groups, environments);
+    const scoped = resolveSettingsScope({ project: "t3code" }, groups, environments);
+    expect(
+      defaultScheduledTaskProjectId([project("a", null, null), project("b", at, null)], all),
+    ).toBe("b");
+    expect(defaultScheduledTaskProjectId([project("x", null, at)], all)).toBe("");
+    expect(defaultScheduledTaskProjectId([project("x", null, at)], scoped)).toBe("x");
+    const choices = {
+      projects: [project("x", null, at), project("a", null, null), project("b", at, null)],
+      canSelectNoProject: true,
+    };
+    expect(scheduledTaskDefaultProjectId(choices, all)).toBe("b");
+    expect(scheduledTaskDefaultProjectId(choices, all, true)).toBeNull();
+    expect(scheduledTaskDefaultProjectId({ ...choices, projects: [choices.projects[0]!] }, all)).toBeNull();
+    expect(scheduledTaskDefaultProjectId({ ...choices, projects: [choices.projects[0]!] }, scoped)).toBe("x");
   });
 
   it("keeps tasks with removed projects manageable at environment scope", () => {
