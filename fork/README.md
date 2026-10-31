@@ -3,8 +3,8 @@
 This repository is a personal fork of [pingdotgg/t3code](https://github.com/pingdotgg/t3code):
 upstream `main` plus a short series of patches. GitHub Actions merges upstream
 into the fork, checks the result, and publishes Windows x64 and Linux x64
-desktop builds plus CLI archives for those platforms and Linux, Windows and macOS
-ARM64. Installed desktop copies update through the in-app **Install update** button.
+desktop builds plus CLI archives for those two platforms only; ARM64 and macOS
+are not built, since nobody here uses them. Installed desktop copies update through the in-app **Install update** button.
 
 To set up another computer, follow [Install the fork](INSTALL.md) for downloads,
 installation, remote connections and updates.
@@ -358,7 +358,7 @@ Its budget job must have logged actual budget exhaustion; an API error, runner
 outage, or a failure followed by a newer published release does not qualify.
 The fallback pins current fork `main` (which must contain the blocked commit),
 checks that exact SHA with Labs' existing checks workflow, and builds the same
-installers, updater feeds, WSL runtime and five native CLI archives. The version
+installers, updater feeds, WSL runtime and both native CLI archives. The version
 and notes use the fork's existing scripts. The embedded update feed remains
 `Alb11747/t3code`.
 
@@ -392,14 +392,11 @@ They do not prove cross-repository publication or installed-client updating.
 | Guard, preflight and publish        | Blacksmith Ubuntu 24.04, 2 vCPU                      |
 | JS bundle and Linux x64 desktop/CLI | Blacksmith Ubuntu 24.04, 8 vCPU                      |
 | Windows x64 desktop/CLI             | GitHub `ubuntu-24.04`, verified on `windows-2025`    |
-| Linux ARM64 CLI                     | `blacksmith-4vcpu-ubuntu-2404-arm`                   |
-| macOS ARM64 CLI                     | GitHub `macos-15` (native ARM64)                     |
-| Windows ARM64 CLI                   | GitHub `windows-11-arm`                              |
 | Checks                              | Labs' existing `fork-checks.yml`, managed separately |
 
 Once a Lazarus release runner pool exists, set the **Labs** repository variable
 `FORK_RELEASE_LINUX_RUNNER` to its label; it replaces the Linux x64 entries
-above without changing checks or ARM jobs. Clear it to return to Blacksmith.
+above without changing checks. Clear it to return to Blacksmith.
 The `lazarus-linux` check runners are not that pool: they lack the release
 toolchain and share caches with check jobs, and the variable also moves the
 guard, preflight and publish jobs, the last with `FORK_RELEASE_TOKEN`.
@@ -408,7 +405,7 @@ The rootless runner image needs the release toolchain, `libsecret-1-dev`,
 Upstream's Linux steps run `sudo apt-get` and the `setup-apt-mirrors` action;
 handle that in the image (a non-elevating `sudo` that accepts installs of
 packages already present), not in `release-desktop.yml`: every fork line there
-conflicts with upstream's frequent edits, and the resolver may not touch it.
+conflicts with upstream's frequent edits.
 Release image checklist: Node 24.13.1-compatible (and download access for the
 native Node 26.8.2 CLI build), Vite+/pnpm 11.10.0, `gh`, Git, Bash, Rust stable
 with Cargo and `x86_64-unknown-linux-gnu`, a C/C++ compiler and Make
@@ -417,13 +414,8 @@ with Cargo and `x86_64-unknown-linux-gnu`, a C/C++ compiler and Make
 `unzip`, and standard GNU utilities. The jobs download Electron, Rust crates,
 Node, npm packages and electron-builder packaging tools over HTTPS. A GUI,
 Docker and host access are unnecessary for these release jobs. Install packages
-in the image rather than granting jobs sudo. Linux ARM64 remains on its native
-Blacksmith runner and uses `aarch64-unknown-linux-gnu`.
-[Blacksmith's runner catalog](https://docs.blacksmith.sh/blacksmith-runners/overview)
-lists Linux x64/ARM64, Windows x64 and macOS ARM64. Windows ARM64 has no listed
-Blacksmith runner. The three GitHub-hosted fallback build jobs (Windows x64 and
-ARM64, macOS) are free in the public Labs repository and spend no Blacksmith
-usage (macOS on Blacksmith would also cost its much higher macOS minute rate);
+in the image rather than granting jobs sudo. The GitHub-hosted Windows x64 build
+job is free in the public Labs repository and spends no Blacksmith usage;
 GitHub's own concurrency and rate limits are why the rest stays on Blacksmith.
 
 Install the reviewed `fork-release.yml`, `release-desktop.yml`, and
@@ -772,7 +764,7 @@ fallback (resolver claims and `sync-before-push.sh` rely on the open issue) unti
   build replaces official T3 Code and keeps its data.
 - Desktop builds are unsigned: Windows SmartScreen warns on first install;
   updates still work. macOS desktop is not built (auto-update requires a paid
-  signing identity). Its ARM64 CLI archive is signed ad hoc, without notarization.
+  signing identity), and neither is its CLI archive.
 - T3 Connect uses upstream's production service. The repository variables
   `CLERK_PUBLISHABLE_KEY`, `CLERK_JWT_TEMPLATE`, `CLERK_CLI_OAUTH_CLIENT_ID`
   and `RELAY_URL` hold the public values official builds ship with (taken from

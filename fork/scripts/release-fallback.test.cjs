@@ -59,9 +59,6 @@ function fixture(t) {
     "SHA256SUMS",
     `t3-${version}-linux-x64.tar.gz`,
     `t3-${version}-win32-x64.zip`,
-    `t3-${version}-darwin-arm64.tar.gz`,
-    `t3-${version}-linux-arm64.tar.gz`,
-    `t3-${version}-win32-arm64.zip`,
   ];
   for (const name of names) writeFileSync(path.join(directory, name), name);
   const notes = path.join(directory, "notes.md");
@@ -129,7 +126,7 @@ test("publisher creates a draft, uploads the complete inventory, verifies it, th
   assert.ok(create < upload && upload < edit);
   assert.equal(
     p.calls[upload].filter((arg) => fixtureData.files.some((file) => file.file === arg)).length,
-    12,
+    9,
   );
 });
 
@@ -160,7 +157,7 @@ test("existing releases and newer source prevent any release writes", (t) => {
 
 test("missing native archive or desktop package prevents release creation", (t) => {
   const fixtureData = fixture(t);
-  rmSync(path.join(fixtureData.directory, `t3-${version}-win32-arm64.zip`));
+  rmSync(path.join(fixtureData.directory, `t3-${version}-win32-x64.zip`));
   const p = publisher(fixtureData);
   assert.throws(p.execute, /Missing release asset/);
   assert.equal(p.calls.length, 0);

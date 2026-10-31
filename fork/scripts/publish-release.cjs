@@ -18,9 +18,6 @@ function releaseAssets(directory, version) {
     "SHA256SUMS",
     `t3-${version}-linux-x64.tar.gz`,
     `t3-${version}-win32-x64.zip`,
-    `t3-${version}-darwin-arm64.tar.gz`,
-    `t3-${version}-linux-arm64.tar.gz`,
-    `t3-${version}-win32-arm64.zip`,
   ];
   for (const name of required) {
     if (!files.includes(name)) throw new Error(`Missing release asset: ${name}`);

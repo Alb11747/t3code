@@ -1,11 +1,11 @@
 name: Fork release
 
 # Builds and publishes the fork's desktop apps (Linux x64 AppImage, Windows x64
-# installer) and CLI archives (Linux/Windows x64 and arm64, macOS arm64) as a
-# GitHub prerelease. Installed desktop copies pick it up through the in-app
-# updater. Versions extend the upstream nightly they're built on (see the
-# version step), so installs follow the nightly update channel, and the build's
-# update feed points at this repository (GITHUB_REPOSITORY).
+# installer) and CLI archives for both as a GitHub prerelease; no ARM64 or
+# macOS builds, which nobody here uses. Installed desktop copies pick it up
+# through the in-app updater. Versions extend the upstream nightly they're built
+# on (see the version step), so installs follow the nightly update channel, and
+# the build's update feed points at this repository (GITHUB_REPOSITORY).
 #
 # Upstream's release.yml also deploys services, publishes npm/AUR packages and
 # signs builds with upstream's credentials. It is disabled in this fork; this
@@ -384,137 +384,12 @@ jobs:
       resource_key: win32-x64
       cli_archive: true
 
-  # ARM remotes use the same fork release feed as x64. Package their CLI
-  # archives on native runners without building additional desktop installers.
-  cli_arm64:
-    name: CLI ${{ matrix.resource_key }}
-    needs: [preflight, build_bundle]
-    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.build_bundle.result == 'success' }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            platform: mac
-            rust_target: aarch64-apple-darwin
-            resource_key: darwin-arm64
-          - runner: ${{ github.repository == 'Alb11747/t3code' && 'ubuntu-24.04-arm' || 'blacksmith-4vcpu-ubuntu-2404-arm' }}
-            platform: linux
-            rust_target: aarch64-unknown-linux-gnu
-            resource_key: linux-arm64
-          - runner: windows-11-arm
-            platform: win
-            rust_target: aarch64-pc-windows-msvc
-            resource_key: win32-arm64
-    defaults:
-      run:
-        shell: bash
-    env:
-      T3CODE_CLERK_PUBLISHABLE_KEY: ${{ vars.CLERK_PUBLISHABLE_KEY }}
-      T3CODE_CLERK_JWT_TEMPLATE: ${{ vars.CLERK_JWT_TEMPLATE }}
-      T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: ${{ vars.CLERK_CLI_OAUTH_CLIENT_ID }}
-      T3CODE_RELAY_URL: ${{ vars.RELAY_URL }}
-    steps:
-      # Match release-desktop's checkout: no credentials or submodule cleanup
-      # for the orphaned gitlinks in the excluded .repos tree.
-      - name: Checkout
-        env:
-          GIT_TERMINAL_PROMPT: "0"
-          CHECKOUT_REF: ${{ needs.preflight.outputs.sha }}
-        run: |
-          set -euo pipefail
-          git init .
-          git remote add origin "${GITHUB_SERVER_URL}/Alb11747/t3code.git"
-          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
-          git sparse-checkout set --no-cone '/*' '!/.repos/'
-          git -c checkout.workers=0 checkout --detach FETCH_HEAD
-
-      - uses: ./.github/actions/setup-ci-deps
-        with:
-          install-args: --filter=t3... --filter=@t3tools/scripts...
-
-      - name: Align package versions to release version
-        run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
-
-      # Extract at apps/ to retain server/dist/client from the checked bundle.
-      - name: Download JS bundle
-        uses: actions/download-artifact@v8
-        with:
-          name: js-bundle
-          path: apps
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with:
-          toolchain: stable
-          targets: ${{ matrix.rust_target }}
-
-      - name: Install Spectre-mitigated MSVC libs
-        if: matrix.platform == 'win'
-        shell: pwsh
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $installPath = & $vswhere -products * -latest -property installationPath
-          $setupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
-          $proc = Start-Process -FilePath $setupExe `
-            -ArgumentList "modify", "--installPath", "`"$installPath`"", "--add", `
-            "Microsoft.VisualStudio.Component.VC.Runtimes.ARM64.Spectre", "--quiet", "--norestart" `
-            -Wait -PassThru -NoNewWindow
-          if ($null -eq $proc -or $proc.ExitCode -ne 0) {
-            $code = if ($null -ne $proc) { $proc.ExitCode } else { 1 }
-            Write-Error "Visual Studio Installer failed with exit code $code"
-            exit $code
-          }
-
-      - name: Build resource monitor
-        run: cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target "${{ matrix.rust_target }}"
-
-      - name: Build CLI single-executable
-        env:
-          T3CODE_TELEMETRY_CHANNEL: dev
-        run: node apps/server/scripts/cli.ts build-exe --verbose
-
-      - name: Stage resource monitor for the CLI archive
-        run: |
-          set -euo pipefail
-          binary_name="t3-resource-monitor"
-          if [[ "${{ matrix.platform }}" == "win" ]]; then
-            binary_name="${binary_name}.exe"
-          fi
-          target_dir="$RUNNER_TEMP/cli-resource-monitor/${{ matrix.resource_key }}"
-          mkdir -p "$target_dir"
-          cp "native/resource-monitor/target/${{ matrix.rust_target }}/release/${binary_name}" "$target_dir/$binary_name"
-
-      # The archive script signs macOS binaries ad hoc without credentials.
-      - name: Build CLI archive
-        run: |
-          node scripts/build-cli-archive.ts \
-            --platform "${{ matrix.platform }}" \
-            --arch arm64 \
-            --version "${{ needs.preflight.outputs.version }}" \
-            --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" \
-            --output-dir release-cli
-
-      - name: Smoke-test CLI archive
-        run: node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "${{ needs.preflight.outputs.version }}"
-
-      - name: Upload CLI archive
-        uses: actions/upload-artifact@v7
-        with:
-          name: cli-${{ matrix.platform }}-arm64
-          path: release-cli/*
-          if-no-files-found: error
-          retention-days: 1
-
   release:
     name: Publish GitHub release
-    needs: [preflight, desktop_linux_x64, desktop_win_x64, cli_arm64]
+    needs: [preflight, desktop_linux_x64, desktop_win_x64]
     if: >-
       !cancelled() && needs.preflight.result == 'success' &&
-      needs.desktop_linux_x64.result == 'success' && needs.desktop_win_x64.result == 'success' &&
-      needs.cli_arm64.result == 'success'
+      needs.desktop_linux_x64.result == 'success' && needs.desktop_win_x64.result == 'success'
     runs-on: ${{ github.repository == 'Alb11747/t3code' && 'ubuntu-24.04' || vars.FORK_RELEASE_LINUX_RUNNER || 'blacksmith-2vcpu-ubuntu-2404' }}
     timeout-minutes: 20
     permissions:
@@ -557,14 +432,11 @@ jobs:
           for manifest in *-win-x64.yml; do
             mv "$manifest" "${manifest%-win-x64.yml}.yml"
           done
-          # Require both desktop installers/feeds and all five CLI archives
+          # Require both desktop installers/feeds and both CLI archives
           # before checksumming or publishing a release used by remote installs.
           for required in '*.AppImage' '*.exe' nightly.yml nightly-linux.yml \
             "t3-${RELEASE_VERSION}-linux-x64.tar.gz" \
-            "t3-${RELEASE_VERSION}-win32-x64.zip" \
-            "t3-${RELEASE_VERSION}-darwin-arm64.tar.gz" \
-            "t3-${RELEASE_VERSION}-linux-arm64.tar.gz" \
-            "t3-${RELEASE_VERSION}-win32-arm64.zip"; do
+            "t3-${RELEASE_VERSION}-win32-x64.zip"; do
             compgen -G "$required" > /dev/null || { echo "Missing release asset: $required" >&2; exit 1; }
           done
           sha256sum t3-*.tar.gz t3-*.zip > SHA256SUMS
