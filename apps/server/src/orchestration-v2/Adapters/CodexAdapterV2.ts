@@ -6473,15 +6473,23 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   (yield* Ref.get(activeTurns)).get(context.nativeTurnId) !== context
                 )
                   return;
-                const { data } = yield* client
-                  .request("thread/turns/list", {
-                    threadId: payload.threadId,
-                    limit: 1,
-                    sortDirection: "desc",
-                    itemsView: "notLoaded",
-                  })
-                  .pipe(Effect.timeout("10 seconds"));
-                const turn = data.find((turn) => turn.id === context.nativeTurnId);
+                const turn = yield* Effect.gen(function* () {
+                  let cursor: string | undefined;
+                  while (true) {
+                    if ((yield* Ref.get(activeTurns)).get(context.nativeTurnId) !== context) return;
+                    const page = yield* client.request("thread/turns/list", {
+                      threadId: payload.threadId,
+                      limit: 20,
+                      sortDirection: "desc",
+                      itemsView: "notLoaded",
+                      ...(cursor === undefined ? {} : { cursor }),
+                    });
+                    const matching = page.data.find((turn) => turn.id === context.nativeTurnId);
+                    if (matching !== undefined) return matching;
+                    cursor = page.nextCursor ?? undefined;
+                    if (cursor === undefined) return;
+                  }
+                }).pipe(Effect.timeout("10 seconds"));
                 if (
                   turn === undefined ||
                   turn.status === "inProgress" ||

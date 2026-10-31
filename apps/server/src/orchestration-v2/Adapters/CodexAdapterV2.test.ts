@@ -1319,7 +1319,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                     method: "thread/turns/list",
                     params: {
                       threadId: nativeThreadId,
-                      limit: 1,
+                      limit: 20,
                       sortDirection: "desc",
                       itemsView: "notLoaded",
                     },
@@ -7592,6 +7592,98 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       events.flatMap((event) =>
         event.type === "provider_thread.updated" ? [event.providerThread.goal?.status ?? null] : [],
       );
+
+    it.effect("recovers a missed goal completion behind a newer orphan continuation", () =>
+      Effect.gen(function* () {
+        const prompt = "Continue the goal.";
+        const original = makeCodexReplayTurn({ id: "goal-original", status: "completed" });
+        const newer = makeCodexReplayTurn({ id: "goal-newer", status: "interrupted" });
+        const pageParams = {
+          threadId: nativeThreadId,
+          limit: 20,
+          sortDirection: "desc",
+          itemsView: "notLoaded",
+        };
+        const transcript = makeCodexReplayTranscript({
+          scenario: "goal-missed-completion-history",
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId: "goal-original", prompt }),
+            notification("goal active", "thread/goal/updated", {
+              threadId: nativeThreadId,
+              turnId: "goal-original",
+              goal: codexGoal("active", 10),
+            }),
+            notification("idle before lost completion", "thread/status/changed", {
+              threadId: nativeThreadId,
+              status: { type: "idle" },
+            }),
+            {
+              type: "emit_inbound",
+              label: "goal continuation",
+              frame: {
+                method: "turn/started",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: "goal-newer", status: "inProgress" }),
+                },
+              },
+              afterMs: 100,
+            },
+            ...request(
+              4,
+              "thread/goal/set",
+              { threadId: nativeThreadId, status: "paused" },
+              {
+                goal: codexGoal("paused", 10),
+              },
+            ),
+            notification("goal paused", "thread/goal/updated", {
+              threadId: nativeThreadId,
+              turnId: "goal-newer",
+              goal: codexGoal("paused", 10),
+            }),
+            ...request(5, "turn/interrupt", { threadId: nativeThreadId, turnId: "goal-newer" }, {}),
+            notification("orphan interrupted", "turn/completed", {
+              threadId: nativeThreadId,
+              turn: newer,
+            }),
+            ...request(6, "thread/turns/list", pageParams, {
+              data: [newer],
+              nextCursor: "older-turns",
+            }),
+            ...request(
+              7,
+              "thread/turns/list",
+              { ...pageParams, cursor: "older-turns" },
+              {
+                data: [original],
+                nextCursor: null,
+              },
+            ),
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+        yield* harness.runtime.startTurn(yield* goalTurnInput(harness, prompt));
+        yield* TestClock.adjust("2 seconds");
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => event.status),
+          ["completed"],
+        );
+        assert.deepEqual(
+          harness.events.flatMap((event) =>
+            event.type === "provider_turn.updated" && event.providerTurn.status === "completed"
+              ? [event.providerTurn.nativeTurnRef?.nativeId]
+              : [],
+          ),
+          ["goal-original"],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
 
     it.effect("keeps a /goal run open across the turns Codex continues on its own", () =>
       Effect.gen(function* () {
