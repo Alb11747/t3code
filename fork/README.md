@@ -732,7 +732,9 @@ State defaults to `/root/Local/Agents/Work/t3code-fork-resolver` (override with
 `FORK_RESOLVER_HOME`): dedicated clone `repo/`, ledgers `requests/<run_id>.json`,
 and `logs/`. An optional `maintainer-thread` file there holds the T3 address
 (for example `t3@phoenix:<threadId>`) that failed or review-needed runs message
-through AgentBridge; resolver threads settle themselves once handed off.
+through AgentBridge; resolver threads settle themselves once handed off. The
+maintainer there finishes the request, and when the same stop recurs it changes
+`T3-RESOLVER.md` or the helpers so the resolver handles it next time.
 Helpers require Bash, Git, `gh` on the host, SSH, jq, unzip, and flock.
 GitHub API access defaults to `t3-resolver/lazarus-gh.sh`, which runs `gh` on
 the Lazarus host over SSH with each argument quoted (override with `FORK_GH`, a
