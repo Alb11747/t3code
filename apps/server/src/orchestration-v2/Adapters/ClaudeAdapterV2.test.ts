@@ -14,8 +14,6 @@ import type {
   TaskUpdateInput,
   TaskUpdateOutput,
 } from "@anthropic-ai/claude-agent-sdk/sdk-tools";
-import { type ProviderInstanceEnvironment } from "@t3tools/contracts";
-
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 
 import * as Clock from "effect/Clock";

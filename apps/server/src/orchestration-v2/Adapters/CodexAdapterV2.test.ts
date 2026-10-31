@@ -3819,6 +3819,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 : Effect.void,
           undefined,
           undefined,
+          {},
+          undefined,
           (entry) =>
             entry.label === "first-completed"
               ? Deferred.await(completions.first)

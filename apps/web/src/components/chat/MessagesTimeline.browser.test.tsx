@@ -3,6 +3,7 @@ import { type OrchestrationV2Subagent } from "@t3tools/contracts";
 import { type ReactElement } from "react";
 
 import {
+  ComposerContextId,
   NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
