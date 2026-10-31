@@ -11,10 +11,10 @@ only `publish-candidate.sh` may publish.
 You may change any file the sync needs, including `.github/` workflows and
 actions and other `fork/` files: candidates run with main's workflows and
 reach main only after CI and Codex review, so these are ordinary reviewed
-changes. Name each one in the summary. The limits are what that review cannot
-protect: never edit this procedure or `fork/scripts/t3-resolver/` (your own
-guardrails), and in workflows never add or widen `permissions`, secrets or
-tokens, or triggers. Keep the fork's diff in upstream-owned files minimal.
+changes. Name each one in the summary. Never edit this procedure or
+`fork/scripts/t3-resolver/`: they decide whether your work promotes, and
+upstream never touches them. Keep the fork's diff in upstream-owned files
+minimal.
 
 1. Work in `/root/Local/Agents/Work/t3code-fork-resolver/repo`, whose `origin`
    must be `https://github.com/Alb11747/t3code.git`. If it is missing, clone with
