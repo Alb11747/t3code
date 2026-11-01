@@ -9,6 +9,8 @@ the sync script deletes the line of a change whose upstream PR merged. Closing
 an issue alone does not revert a patch. See `fork/README.md` for how to add or drop
 an entry.
 
+- `fix(chat): show stored titles for missing lineage summaries`: Lineage looks up actual thread titles on demand when a related thread has no client summary, including deleted forks. Live titles take precedence, and returning to a missing thread refreshes its title without reloading the conversation. Issue: none linked. PR: none yet
+
 - `feat(threads): keep reference context current with thread notes`: stores a Markdown note as thread metadata, editable by agents and web, desktop, and mobile users; notes prepend opening reads by default or explicitly replace them without changing conversation history or provider input. Upstream can ignore or discard notes while retaining existing chats. Fork-only. Issue: none linked. PR: none yet
 
 - `fix(fork): accept local validation and skip CI-only releases`: records an exact-commit local validation report as the normal agent release gate, keeps hosted checks for unattended fallback, and excludes workflows, actions and fork tooling from app releases while preserving stale-source and rename checks. Fork-only. Issue: none linked. PR: none yet

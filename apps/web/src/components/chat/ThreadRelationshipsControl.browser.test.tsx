@@ -4,7 +4,16 @@ import { AsyncResult } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 
-const state = vi.hoisted(() => ({ projection: null as unknown, commandSucceeds: false }));
+const state = vi.hoisted(() => ({
+  projection: null as unknown,
+  commandSucceeds: false,
+  threadTitles: {} as Record<string, string>,
+}));
+
+vi.mock(import("../../state/query"), async (original) => ({
+  ...(await original()),
+  useEnvironmentQuery: (() => ({ data: state.threadTitles })) as never,
+}));
 
 vi.mock(import("@effect/atom-react"), async (original) => ({
   ...(await original()),
@@ -43,6 +52,7 @@ const threadId = ThreadId.make("fork");
 
 function setup() {
   state.commandSucceeds = false;
+  state.threadTitles = {};
   state.projection = {
     thread: {
       id: threadId,
@@ -134,6 +144,34 @@ it.each([
   if (action === "disconnect") {
     await expect.element(screen.getByRole("button", { name: "More thread actions" })).toBeEnabled();
   }
+});
+
+it("shows the stored title of a deleted fork without a thread shell", async () => {
+  setup();
+  const projection = makeThreadProjectionFixture();
+  const deletedId = ThreadId.make("510e410f-6819-4f10-8d72-c62ebf6bafe2");
+  const title = "Design Agent Game Automation Architecture fork";
+  state.threadTitles = { [deletedId]: title };
+  state.projection = {
+    ...projection,
+    contextTransfers: [
+      {
+        sourceThreadId: projection.thread.id,
+        targetThreadId: deletedId,
+        status: "pending",
+      },
+    ],
+  };
+  await using screen = await render(
+    <ThreadRelationshipsPanel
+      environmentId={environmentId}
+      threadId={projection.thread.id}
+      showLineage
+      showSideChats
+    />,
+  );
+  await expect.element(screen.getByText(title, { exact: true })).toBeVisible();
+  await expect.element(screen.getByText(deletedId, { exact: true })).not.toBeInTheDocument();
 });
 
 it("opens an idle child from Lineage when its shell has not been loaded", async () => {

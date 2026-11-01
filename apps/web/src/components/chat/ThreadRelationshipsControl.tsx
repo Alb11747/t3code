@@ -74,6 +74,7 @@ import {
 import { threadEnvironment } from "../../state/threads";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useEnvironmentQuery } from "../../state/query";
 import { AgentElapsed } from "./AgentElapsed";
 import { ThreadRelationshipIcon, threadRelationshipStatusLabel } from "./ThreadRelationshipIcon";
 import { ThreadLineageWorkflowRow } from "./ThreadLineageWorkflowRow";
@@ -461,6 +462,20 @@ export function ThreadRelationshipsPanel(props: {
       : { ...row, edge: { ...row.edge, status: workflowGroup.workflow.status } };
   });
   const canMerge = mergeTargetThreadId !== null && latestMergeBackRun !== null;
+  const missingTitleIds = relationshipRows
+    .filter(
+      ({ threadId }) =>
+        !graph.nodes.get(threadId)?.thread && !subagentsByThreadId.get(threadId)?.title,
+    )
+    .map(({ threadId }) => threadId);
+  const threadTitles = useEnvironmentQuery(
+    missingTitleIds.length === 0
+      ? null
+      : orchestrationEnvironment.threadTitles({
+          environmentId: props.environmentId,
+          input: { threadIds: missingTitleIds },
+        }),
+  );
   const canDetach = projection ? canDetachThreadProviderSession(projection) : false;
 
   const {
@@ -641,7 +656,11 @@ export function ThreadRelationshipsPanel(props: {
       ["pending", "running", "waiting"].includes(agent.status);
     const threadTitle = relationshipThreadTitle({
       title:
-        workflowGroup?.workflow.workflowName ?? node?.thread?.title ?? agent?.title ?? threadId,
+        workflowGroup?.workflow.workflowName ??
+        node?.thread?.title ??
+        agent?.title ??
+        threadTitles.data?.[threadId] ??
+        threadId,
       isSubagent,
     });
     const provider = providers?.find(

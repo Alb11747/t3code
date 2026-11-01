@@ -42,6 +42,12 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       ? {}
       : { onAnswer: options.onCheckpointDiffAnswer };
   return {
+    threadTitles: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:thread-titles",
+      tag: ORCHESTRATION_V2_WS_METHODS.getThreadTitles,
+      staleTimeMs: 0,
+      idleTtlMs: 0,
+    }),
     threadTranscript: createEnvironmentCommand(runtime, {
       label: "environment-data:orchestration:thread-transcript",
       execute: Effect.fn("orchestration.execute")(function* (input: {
