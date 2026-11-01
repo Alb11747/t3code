@@ -74,6 +74,22 @@ it("stamps authoritative provenance on commands that create threads or messages"
   });
   expect(stamped).not.toHaveProperty("linkOrigin");
   expect(stamped).not.toHaveProperty("delegatedFrom");
+  const note = ThreadManagementService.withCreationProvenance(
+    {
+      type: "thread.metadata.update",
+      commandId: CommandId.make("command:thread-management:note"),
+      threadId: command.threadId,
+      contextNote: {
+        text: "Thread role",
+        mode: "prepend",
+        author: { kind: "agent", threadId: ThreadId.make("forged-author") },
+      },
+    },
+    { createdBy: "user", creationSource: "web" },
+  );
+  expect(note).toMatchObject({ contextNote: { author: { kind: "user" } } });
+  if (note.type === "thread.metadata.update")
+    expect(note.contextNote?.author).not.toHaveProperty("threadId");
 });
 
 const layerReceiptsTest = CommandReceiptStore.layer.pipe(

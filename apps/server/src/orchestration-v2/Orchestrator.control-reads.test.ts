@@ -42,6 +42,8 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
+import * as EventStore from "./EventStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -65,6 +67,111 @@ const layerTest = Layer.mergeAll(
     ProviderAdapterRegistry.layerFromAdapters([adapter]),
     { databaseLayer: layerDatabase, runEffectWorker: false },
   ),
+);
+
+it.effect(
+  "persists thread notes through metadata edits and projection rebuilds without changing history or starting effects",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const threadId = ThreadId.make("thread:context-note");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("create-context-note"),
+        threadId,
+        projectId: ProjectId.make("project:context-note"),
+        title: "Original purpose",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("original-context-note-message"),
+        threadId,
+        messageId: MessageId.make("original-context-note-message"),
+        text: "The original opening stays readable.",
+        attachments: [],
+        dispatchMode: { type: "defer_start" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const original = yield* projections.getThreadProjection(threadId);
+      const history = yield* projections.getTimelinePage(threadId, {
+        view: "messages",
+        afterPosition: -1,
+        limit: 10,
+      });
+      for (const mode of ["prepend", "replace"] as const) {
+        const commandId = CommandId.make(`set-context-note:${mode}`);
+        const update = {
+          text: "# Current coordinator",
+          mode,
+          author: { kind: "agent" as const, threadId },
+        };
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const result = yield* orchestrator.dispatch({
+          type: "thread.metadata.update",
+          commandId,
+          threadId,
+          contextNote: update,
+        });
+        assert.deepEqual(
+          result.storedEvents.map((stored) => stored.event.type),
+          ["thread.metadata-updated"],
+        );
+        assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
+        yield* orchestrator.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make(`rename-context-note:${mode}`),
+          threadId,
+          title: "Current purpose",
+        });
+        const rebuilt = yield* maintenance.rebuild;
+        assert.isTrue(rebuilt.valid);
+        const current = yield* projections.getThreadProjection(threadId);
+        assert.deepEqual(current.thread.contextNote, { ...update, updatedAt: now });
+        assert.deepEqual(current.messages, original.messages);
+        assert.deepEqual(current.runs, original.runs);
+        assert.deepEqual(current.turnItems, original.turnItems);
+        assert.deepEqual(
+          yield* projections.getTimelinePage(threadId, {
+            view: "messages",
+            afterPosition: -1,
+            limit: 10,
+          }),
+          history,
+        );
+      }
+      yield* orchestrator.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make("clear-context-note"),
+        threadId,
+        contextNote: null,
+      });
+      yield* maintenance.rebuild;
+      assert.isNull((yield* projections.getThread(threadId)).contextNote);
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          layerTest,
+          ProjectionMaintenance.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(EventStore.layer, ProjectionStore.layer).pipe(
+                Layer.provideMerge(layerDatabase),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
 );
 
 it.effect.each(["active", "thread.settle", "thread.archive", "thread.stop", "rewatch"] as const)(

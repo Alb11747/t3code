@@ -7,6 +7,7 @@ import {
   ContextTransferId,
   EnvironmentId,
   NodeId,
+  type OrchestratorMcpThreadReadResult,
   type OrchestrationV2Run,
   ProjectId,
   ProviderDriverKind,
@@ -15,6 +16,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import { McpSchema, McpServer } from "effect/ai";
 
@@ -352,6 +354,50 @@ it.layer(Layer.provideMerge(layerTools, layerOrchestration))("work a link starts
       // The link may change what it started.
       assert.equal((yield* rename(laptop, ownLaunch)).isError, false);
       assert.equal((yield* projections.getThreadShell(ownLaunch))?.title, "Renamed by laptop");
+      const noteInput = {
+        threadId: ownLaunch,
+        action: "set_context_note",
+        contextNote: { text: "    code\n", author: { kind: "user" } },
+        clientRequestId: "context-note-1",
+      };
+      const noted = yield* call(laptop, "t3_thread_update", noteInput);
+      assert.equal(noted.isError, false);
+      const noteThread = yield* projections.getThread(ownLaunch);
+      assert.deepEqual(noteThread.contextNote, {
+        text: "    code\n",
+        mode: "prepend",
+        author: { kind: "agent" },
+        updatedAt: DateTime.formatIso(noteThread.updatedAt),
+      });
+      assert.deepEqual(
+        (yield* call(laptop, "t3_thread_update", noteInput)).structuredContent,
+        noted.structuredContent,
+      );
+      assert.equal(
+        failureCode(yield* call(laptop, "t3_thread_update", { ...noteInput, threadId: users })),
+        "capability_denied",
+      );
+      assert.equal(
+        failureCode(yield* call(desk, "t3_thread_update", noteInput)),
+        "capability_denied",
+      );
+      const noteRead = yield* call(laptop, "t3_thread_read", { threadId: ownLaunch });
+      assert.deepEqual(
+        (noteRead.structuredContent as OrchestratorMcpThreadReadResult).contextNote,
+        {
+          label: "Thread note",
+          ...noteThread.contextNote,
+        },
+      );
+      assert.equal(
+        (yield* call(laptop, "t3_thread_update", {
+          threadId: ownLaunch,
+          action: "set_context_note",
+          contextNote: null,
+        })).isError,
+        false,
+      );
+      assert.isNull((yield* projections.getThread(ownLaunch)).contextNote);
       // Not the user's own thread, nor another link's.
       assert.equal(failureCode(yield* rename(laptop, users)), "capability_denied");
       assert.equal(failureCode(yield* rename(desk, ownLaunch)), "capability_denied");

@@ -1,6 +1,7 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
 import { openGuestShareDialog } from "../components/chat/guestShareDialogState";
+import { openContextNoteDialog } from "../components/chat/contextNoteDialogState";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
@@ -245,6 +246,9 @@ export function useThreadActionMenu(input: {
           return;
         case "rename":
           onStartRename();
+          return;
+        case "context-note":
+          openContextNoteDialog(threadRef);
           return;
         case "regenerate-title":
           if (isRegeneratingTitle) return;

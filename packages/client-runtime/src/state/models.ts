@@ -184,6 +184,7 @@ export interface EnvironmentThreadShell {
   readonly activeOrderKey: string | null;
   readonly pullRequests: ReadonlyArray<import("@t3tools/contracts").ThreadPullRequestLink>;
   readonly linkedPullRequest?: ThreadLinkedPullRequest | null;
+  readonly contextNote?: import("@t3tools/contracts").ThreadContextNote | null;
   readonly branchPullRequest?: ThreadLinkedPullRequest | null;
   /**
    * Server-tracked visited watermark. `undefined` means the environment's
@@ -304,6 +305,7 @@ export function presentThreadShell(
     worktreePath: thread.worktreePath,
     pullRequests: threadPullRequestsOf(thread),
     linkedPullRequest: thread.linkedPullRequest ?? null,
+    contextNote: thread.contextNote ?? null,
     branchPullRequest: thread.branchPullRequest ?? null,
     lineage: thread.lineage,
     forkedFrom: thread.forkedFrom,

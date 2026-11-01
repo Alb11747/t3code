@@ -134,6 +134,7 @@ export interface UpdateThreadMetadataInput extends ThreadCommandInput {
   readonly worktreePath?: string | null;
   readonly regenerateTitle?: boolean;
   readonly linkedPullRequest?: ThreadLinkedPullRequest | null;
+  readonly contextNote?: import("@t3tools/contracts").ThreadContextNoteUpdate | null;
   readonly expectedEmpty?: boolean;
 }
 
@@ -616,6 +617,7 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
       input.worktreePath !== undefined ||
       input.regenerateTitle !== undefined ||
       input.linkedPullRequest !== undefined ||
+      input.contextNote !== undefined ||
       input.limitRecovery !== undefined
     ) {
       result = yield* dispatch({
@@ -624,6 +626,7 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
         commandId,
         threadId: input.threadId,
         ...(input.title === undefined ? {} : { title: input.title }),
+        ...(input.contextNote === undefined ? {} : { contextNote: input.contextNote }),
         ...(input.branch === undefined ? {} : { branch: input.branch }),
         ...(input.worktreePath === undefined ? {} : { worktreePath: input.worktreePath }),
         ...(input.expectedEmpty === true ? { expectedEmpty: true } : {}),

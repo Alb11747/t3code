@@ -3617,6 +3617,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return {
             ...thread,
             ...(command.title === undefined ? {} : { title: command.title }),
+            ...(command.contextNote === undefined
+              ? {}
+              : {
+                  contextNote:
+                    command.contextNote === null
+                      ? null
+                      : { ...command.contextNote, updatedAt: DateTime.formatIso(now) },
+                }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
             ...(command.limitRecovery !== undefined &&
             limitRecovery?.snooze === true &&

@@ -163,7 +163,7 @@ it.effect("keeps a fork awake when its source thread is snoozed", () =>
   }),
 );
 
-it.effect("starts a fork without the source thread's pending title regeneration", () =>
+it.effect("clears title regeneration and context notes on forks", () =>
   Effect.gen(function* () {
     const sourceRun = makeSourceRun("completed");
     const titleRegeneration = {
@@ -172,11 +172,22 @@ it.effect("starts a fork without the source thread's pending title regeneration"
     };
     const sourceProjection = {
       ...makeSourceProjection(sourceRun),
-      thread: { ...makeSourceThread(), titleRegeneration },
+      thread: {
+        ...makeSourceThread(),
+        titleRegeneration,
+        contextNote: {
+          text: "Source purpose",
+          mode: "replace" as const,
+          author: { kind: "user" as const },
+          updatedAt: DateTime.formatIso(snoozedAt),
+        },
+      },
     };
     const result = yield* planFork(sourceRun, sourceProjection);
 
     assert.isNull(result.targetThread.titleRegeneration);
+    assert.isNull(result.targetThread.contextNote);
+    assert.equal(sourceProjection.thread.contextNote.text, "Source purpose");
     assert.deepEqual(sourceProjection.thread.titleRegeneration, titleRegeneration);
   }),
 );

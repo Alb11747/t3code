@@ -63,8 +63,27 @@ function metadataCommand(input: {
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
   readonly update: ThreadMetadataMcpUpdateInput;
+  readonly scope: McpInvocationScope;
 }): Extract<OrchestrationV2Command, { readonly type: "thread.metadata.update" }> {
   switch (input.update.action) {
+    case "set_context_note":
+      return {
+        type: "thread.metadata.update",
+        commandId: input.commandId,
+        threadId: input.threadId,
+        contextNote:
+          input.update.contextNote == null
+            ? null
+            : {
+                ...input.update.contextNote,
+                author: {
+                  kind: "agent",
+                  ...(input.scope.thread === undefined
+                    ? {}
+                    : { threadId: input.scope.thread.threadId }),
+                },
+              },
+      };
     case "rename":
       return {
         type: "thread.metadata.update",
@@ -88,7 +107,7 @@ function resultFromThread(input: {
   readonly sequence: number;
   readonly thread: Pick<
     OrchestrationV2AppThread,
-    "id" | "title" | "titleRegeneration" | "linkedPullRequest" | "updatedAt"
+    "id" | "title" | "titleRegeneration" | "linkedPullRequest" | "updatedAt" | "contextNote"
   >;
 }): ThreadMetadataMcpUpdateResult {
   return {
@@ -97,6 +116,7 @@ function resultFromThread(input: {
     commandId: input.commandId,
     sequence: input.sequence,
     title: input.thread.title,
+    contextNote: input.thread.contextNote ?? null,
     titleRegeneration:
       input.thread.titleRegeneration === undefined || input.thread.titleRegeneration === null
         ? null
@@ -160,6 +180,7 @@ const make = Effect.gen(function* () {
           commandId: updateCommandId,
           threadId,
           update: input,
+          scope,
         }),
       )
       .pipe(

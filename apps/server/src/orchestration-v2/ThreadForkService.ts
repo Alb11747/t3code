@@ -106,6 +106,7 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
           ({ watch: _watch, ...link }) => link,
         ),
         issueWatches: [],
+        contextNote: null,
         createdBy: input.createdBy,
         creationSource: input.creationSource,
         id: input.targetThreadId,

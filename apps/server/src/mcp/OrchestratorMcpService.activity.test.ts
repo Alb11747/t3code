@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   NodeId,
+  PlanId,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
   ProjectId,
@@ -9,6 +10,8 @@ import {
   RunId,
   ScheduledTaskId,
   ThreadId,
+  TurnItemId,
+  type ThreadContextNote,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -119,6 +122,33 @@ function makeRun(input: {
 
 it("readThread preserves caller access errors and prefers activity-run status over a newer cancelled queued run", async () => {
   let callerUnavailable = false;
+  let contextNote: ThreadContextNote | null = null;
+  const rows: OrchestrationV2ThreadProjection["visibleTurnItems"] = [0, 1].map((position) => ({
+    position,
+    visibility: "local",
+    sourceThreadId: parentThreadId,
+    sourceItemId: TurnItemId.make(`plan:${position}`),
+    item: {
+      id: TurnItemId.make(`plan:${position}`),
+      threadId: parentThreadId,
+      runId: activeRunId,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: position,
+      status: "completed",
+      title: null,
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+      type: "proposed_plan",
+      markdown: `Original plan ${position}`,
+      planId: PlanId.make(`plan:${position}`),
+      streaming: false,
+    },
+  }));
   const projection = {
     thread: baseThread({
       threadId: parentThreadId,
@@ -142,7 +172,18 @@ it("readThread preserves caller access errors and prefers activity-run status ov
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
+          getTimelinePage: (_, input) => {
+            const matches = rows.filter((row) =>
+              input.itemId === undefined
+                ? row.position > (input.afterPosition ?? -1)
+                : row.item.id === input.itemId,
+            );
+            return Effect.succeed({
+              items: matches.slice(0, input.limit),
+              totalItems: rows.length,
+              hasMore: matches.length > input.limit,
+            });
+          },
           getThreadRecords: (threadId) =>
             callerUnavailable
               ? Effect.fail(
@@ -152,19 +193,23 @@ it("readThread preserves caller access errors and prefers activity-run status ov
                   }),
                 )
               : threadId === parentThreadId
-                ? Effect.succeed(projection)
+                ? Effect.succeed({ ...projection, thread: { ...projection.thread, contextNote } })
                 : Effect.die(`unexpected thread ${threadId}`),
           getThreadShell: (threadId) =>
             callerUnavailable
               ? Effect.die("A failed caller read must not reach the target")
               : Effect.succeed(
                   threadId === parentThreadId
-                    ? (projection.thread as unknown as OrchestrationV2ThreadShell)
+                    ? ({
+                        ...projection.thread,
+                        contextNote,
+                        visibleItemCount: rows.length,
+                      } as unknown as OrchestrationV2ThreadShell)
                     : null,
                 ),
           getProjectThreadRecords: (input) =>
             input.threadId === parentThreadId
-              ? Effect.succeed(projection)
+              ? Effect.succeed({ ...projection, thread: { ...projection.thread, contextNote } })
               : Effect.die(`unexpected thread ${input.threadId}`),
         } satisfies Partial<ThreadManagementService.ThreadManagementService["Service"]>),
         ServerSettings.layerTest(),
@@ -191,6 +236,53 @@ it("readThread preserves caller access errors and prefers activity-run status ov
     expect(result.thread.status).toBe("running");
     expect(result.thread.latestRunId).toBe(cancelledRunId);
     expect(result.thread.activeRunId).toBe(activeRunId);
+
+    const opening = yield* service.readThread(makeScope(), { threadId: parentThreadId, limit: 1 });
+    expect(opening.contextNote).toBeUndefined();
+    expect(opening.items.map((item) => [item.position, item.text])).toEqual([
+      [0, "Original plan 0"],
+    ]);
+    expect(opening.nextPosition).toBe(0);
+    expect(opening.hasMore).toBe(true);
+    contextNote = {
+      text: "Current role",
+      mode: "prepend",
+      author: { kind: "agent", threadId: parentThreadId },
+      updatedAt: DateTime.formatIso(now),
+    };
+    const prepended = yield* service.readThread(makeScope(), {
+      threadId: parentThreadId,
+      limit: 1,
+    });
+    expect(prepended.items).toEqual(opening.items);
+    expect(prepended.contextNote).toEqual({ label: "Thread note", ...contextNote });
+    contextNote = { ...contextNote, mode: "replace" };
+    const replaced = yield* service.readThread(makeScope(), { threadId: parentThreadId, limit: 1 });
+    expect(replaced.items).toEqual([]);
+    expect(replaced.nextPosition).toBeNull();
+    expect(replaced.hasMore).toBe(false);
+    expect(replaced.thread.itemCount).toBe(2);
+    expect(replaced.contextNote).toEqual({ label: "Thread note", ...contextNote });
+    for (const input of [
+      { includeOriginalMessages: true },
+      { view: "activity" as const },
+      { itemId: rows[0]!.item.id },
+    ]) {
+      const explicit = yield* service.readThread(makeScope(), {
+        threadId: parentThreadId,
+        limit: 1,
+        ...input,
+      });
+      expect(explicit.items).toEqual(opening.items);
+    }
+    const next = yield* service.readThread(makeScope(), {
+      threadId: parentThreadId,
+      afterPosition: 0,
+      limit: 1,
+    });
+    expect(next.items.map((item) => [item.position, item.text])).toEqual([[1, "Original plan 1"]]);
+    expect(next.nextPosition).toBe(1);
+    expect(next.hasMore).toBe(false);
 
     callerUnavailable = true;
     const denied = yield* service

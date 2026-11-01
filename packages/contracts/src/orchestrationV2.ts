@@ -44,6 +44,7 @@ import {
 import { AuthMcpClientAccess } from "./auth.ts";
 import { ChatAttachment } from "./chatAttachment.ts";
 import { ThreadGuestShare } from "./guestShare.ts";
+import { ThreadContextNote, ThreadContextNoteUpdate } from "./threadContextNote.ts";
 import {
   OrchestrationSearchThreadsInput,
   OrchestrationSearchThreadsResult,
@@ -456,6 +457,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   providerInstanceId: ProviderInstanceId,
+  contextNote: Schema.optional(Schema.NullOr(ThreadContextNote)),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
@@ -2087,6 +2089,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
   title: Schema.String,
+  contextNote: Schema.optional(Schema.NullOr(ThreadContextNote)),
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -3051,6 +3054,7 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     title: Schema.optional(TrimmedNonEmptyString),
+    contextNote: Schema.optional(Schema.NullOr(ThreadContextNoteUpdate)),
     regenerateTitle: Schema.optional(Schema.Boolean),
     branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
     worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),

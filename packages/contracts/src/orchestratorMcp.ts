@@ -34,6 +34,7 @@ import {
 } from "./threadPullRequest.ts";
 import { hasOnlyPairedSurrogates } from "./threadMetadataMcp.ts";
 import { ThreadTitleRegeneration } from "./threadTitle.ts";
+import { ThreadContextNote } from "./threadContextNote.ts";
 import {
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
@@ -410,6 +411,10 @@ export const OrchestratorMcpThreadReadInput = Schema.Struct({
   itemId: Schema.optional(TurnItemId),
   textOffset: Schema.optional(NonNegativeInt),
   view: Schema.optional(Schema.Literals(["messages", "activity"])),
+  includeOriginalMessages: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Read the original opening messages even when a thread note replaces their preview.",
+  }),
   afterPosition: Schema.optional(NonNegativeInt),
   limit: Schema.optional(clampedPositiveInt(100)).annotate({
     description: "Max items, 1 to 100.",
@@ -491,6 +496,12 @@ export const OrchestratorMcpThreadTimelineItem = Schema.Struct({
 export type OrchestratorMcpThreadTimelineItem = typeof OrchestratorMcpThreadTimelineItem.Type;
 
 export const OrchestratorMcpThreadReadResult = Schema.Struct({
+  contextNote: Schema.optional(
+    Schema.Struct({
+      label: Schema.Literal("Thread note"),
+      ...ThreadContextNote.fields,
+    }),
+  ),
   thread: OrchestratorMcpThreadDetail,
   recentRuns: Schema.Array(OrchestratorMcpThreadRun),
   items: Schema.Array(OrchestratorMcpThreadTimelineItem),

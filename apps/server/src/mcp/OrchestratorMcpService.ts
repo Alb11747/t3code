@@ -2871,14 +2871,23 @@ const make = Effect.gen(function* () {
       const afterPosition = input.afterPosition ?? -1;
       const limit = input.limit ?? DEFAULT_THREAD_READ_LIMIT;
       const maxChars = input.maxCharsPerItem ?? DEFAULT_THREAD_ITEM_MAX_CHARS;
-      const timeline = yield* threadManagement
-        .getTimelinePage(input.threadId, {
-          afterPosition,
-          limit,
-          view,
-          ...(input.itemId === undefined ? {} : { itemId: input.itemId }),
-        })
-        .pipe(Effect.mapError(threadManagementFailure));
+      const contextNote = target.thread.contextNote;
+      const replaceOpening =
+        contextNote?.mode === "replace" &&
+        view === "messages" &&
+        input.afterPosition === undefined &&
+        input.itemId === undefined &&
+        input.includeOriginalMessages !== true;
+      const timeline = replaceOpening
+        ? { items: [], totalItems: shell.visibleItemCount, hasMore: false }
+        : yield* threadManagement
+            .getTimelinePage(input.threadId, {
+              afterPosition,
+              limit,
+              view,
+              ...(input.itemId === undefined ? {} : { itemId: input.itemId }),
+            })
+            .pipe(Effect.mapError(threadManagementFailure));
       const page = timeline.items;
       const messageIdsByThread = new Map<ThreadId, Array<MessageId>>();
       for (const row of page) {
@@ -2952,6 +2961,9 @@ const make = Effect.gen(function* () {
         }
       }
       return {
+        ...(contextNote == null
+          ? {}
+          : { contextNote: { label: "Thread note" as const, ...contextNote } }),
         thread: threadDetail(
           scope,
           target,

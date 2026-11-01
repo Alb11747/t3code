@@ -55,6 +55,20 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
+## Keep a thread's context current
+
+Choose **Context note…** from a thread's menu, or search for it in the web or desktop
+command palette, to describe the thread's current role. Agents see the Markdown note,
+its author, and its edit time when reading the thread or following an attached thread.
+
+By default, the note appears before the starting messages. Choose **Instead of the
+starting messages** to replace that opening preview. The original conversation stays
+readable. Saving a note does not send a message to the thread's agent. Open the same
+editor to change or remove it.
+
+Notes are a fork feature. Upstream T3 Code can ignore them and may discard them when
+saving thread metadata or rebuilding its database views.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work.

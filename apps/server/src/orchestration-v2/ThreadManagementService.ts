@@ -79,6 +79,10 @@ export function withCreationProvenance(
   provenance: ThreadManagementProvenance,
 ): OrchestrationV2Command {
   switch (command.type) {
+    case "thread.metadata.update":
+      return command.contextNote == null
+        ? command
+        : { ...command, contextNote: { ...command.contextNote, author: { kind: "user" } } };
     case "thread.create": {
       // Only the server stamps a link's origin, so a client cannot set one.
       const { linkOrigin: _linkOrigin, delegatedFrom: _delegatedFrom, ...rest } = command;
