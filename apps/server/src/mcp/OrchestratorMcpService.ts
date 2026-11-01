@@ -90,6 +90,7 @@ import {
 } from "@t3tools/provider-core/server/subagentProjection";
 import {
   DispatchModeLimit,
+  isSubagentParentMessage,
   type DispatchModeRefusal,
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import { runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
@@ -2977,7 +2978,9 @@ const make = Effect.gen(function* () {
     sendToThread: Effect.fn("OrchestratorMcpService.sendToThread")(function* (scope, input) {
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
-      yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);
+      if (!isSubagentParentMessage(parent?.thread, input.threadId, input.message, input.mode)) {
+        yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);
+      }
       yield* resolveInteractionMode(limits.interactionMode, target.thread.interactionMode);
 
       const mode = input.mode ?? "auto";
