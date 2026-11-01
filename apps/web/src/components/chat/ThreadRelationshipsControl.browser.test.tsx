@@ -1,8 +1,9 @@
+import "~/index.css";
 import { EnvironmentId, NodeId, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
 const state = vi.hoisted(() => ({
   projection: null as unknown,
@@ -10,6 +11,7 @@ const state = vi.hoisted(() => ({
   threadTitles: {} as Record<string, string>,
   titleLookup: { isSuccess: true, isPending: false },
   archivedThreads: [] as unknown[],
+  relationshipShells: [] as unknown[],
 }));
 
 vi.mock(import("../../state/query"), async (original) => ({
@@ -27,7 +29,9 @@ vi.mock(import("../../state/entities"), () => ({
   useThreadProjection: ((ref: unknown) =>
     ref === null ? null : { projection: state.projection }) as never,
   useThreadRelationshipShells: (() =>
-    state.projection === null ? [] : [(state.projection as { thread: unknown }).thread]) as never,
+    state.projection === null
+      ? []
+      : [(state.projection as { thread: unknown }).thread, ...state.relationshipShells]) as never,
   useProjects: (() => []) as never,
 }));
 vi.mock(import("../../state/environments"), () => ({
@@ -49,6 +53,7 @@ vi.mock(import("../../state/use-atom-command"), () => ({
 import { render } from "../../../test/render";
 import { makeThreadProjectionFixture } from "../../test-fixtures";
 import { ToastProvider } from "../ui/toast";
+import { ScrollArea } from "../ui/scroll-area";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
 
 const environmentId = EnvironmentId.make("environment");
@@ -59,6 +64,7 @@ function setup() {
   state.threadTitles = { source: "Source" };
   state.titleLookup = { isSuccess: true, isPending: false };
   state.archivedThreads = [];
+  state.relationshipShells = [];
   state.projection = {
     thread: {
       id: threadId,
@@ -239,6 +245,47 @@ it.each([
     }
   },
 );
+
+it.each([1, 18])("continues scrolling the panel past a list of %i subagents", async (count) => {
+  setup();
+  const projection = makeThreadProjectionFixture();
+  state.projection = projection;
+  state.relationshipShells = Array.from({ length: count }, (_, index) => ({
+    id: ThreadId.make(`subagent-${index}`),
+    title: `Subagent ${index}`,
+    forkedFrom: null,
+    lineage: { parentThreadId: projection.thread.id, relationshipToParent: "subagent" },
+    activityRunStatus: "running",
+    status: "running",
+  }));
+  await using screen = await render(
+    <div data-testid="panel" style={{ height: 320, width: 280 }}>
+      <ScrollArea>
+        <ThreadRelationshipsPanel
+          environmentId={environmentId}
+          threadId={projection.thread.id}
+          showLineage
+          showSideChats
+        />
+        <div style={{ height: 600 }} />
+      </ScrollArea>
+    </div>,
+  );
+  if (count > 6) {
+    await screen.getByRole("button", { name: "Show 12 more" }).click();
+    await expect.element(screen.getByText("Subagent 17", { exact: true })).toBeInTheDocument();
+  }
+  const list = screen.getByRole("list", { name: "Related threads" }).element();
+  const viewport = screen
+    .getByTestId("panel")
+    .element()
+    .querySelector<HTMLElement>("[data-slot=scroll-area-viewport]")!;
+  list.scrollTop = list.scrollHeight;
+  if (count > 6) expect(list.scrollTop).toBeGreaterThan(0);
+  viewport.scrollTop = 0;
+  await userEvent.wheel(list, { delta: { y: 300 } });
+  await vi.waitFor(() => expect(viewport.scrollTop).toBeGreaterThan(0));
+});
 
 it("opens an idle child from Lineage when its shell has not been loaded", async () => {
   setup();

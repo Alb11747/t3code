@@ -9,6 +9,8 @@ the sync script deletes the line of a change whose upstream PR merged. Closing
 an issue alone does not revert a patch. See `fork/README.md` for how to add or drop
 an entry.
 
+- `fix(chat): let subagent lists pass scrolling to the panel`: Lineage and side-chat lists keep their own scrolling, then let wheel and trackpad input continue through the enclosing details panel at a list boundary. The outer panel retains scroll containment. Issue: none linked. PR: none yet
+
 - `fix(chat): hide deleted forks from lineage`: Lineage looks up titles for unlisted and archived relationships, omits forks confirmed deleted, and refreshes existence checks on shell removals. Existing omitted/archived threads and historical subagent results remain reachable; context-transfer history stays stored for replay and fork/merge handling. Also affects upstream. Issue: none linked. PR: none yet
 
 - `feat(threads): keep reference context current with thread notes`: stores a Markdown note as thread metadata, editable by agents and web, desktop, and mobile users; notes prepend opening reads by default or explicitly replace them without changing conversation history or provider input. Upstream can ignore or discard notes while retaining existing chats. Fork-only. Issue: none linked. PR: none yet
