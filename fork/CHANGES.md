@@ -9,7 +9,7 @@ the sync script deletes the line of a change whose upstream PR merged. Closing
 an issue alone does not revert a patch. See `fork/README.md` for how to add or drop
 an entry.
 
-- `fix(chat): show stored titles for missing lineage summaries`: Lineage looks up actual thread titles on demand when a related thread has no client summary, including deleted forks. Live titles take precedence, and returning to a missing thread refreshes its title without reloading the conversation. Issue: none linked. PR: none yet
+- `fix(chat): hide deleted forks from lineage`: Lineage looks up titles for unlisted and archived relationships, omits forks confirmed deleted, and refreshes existence checks on shell removals. Existing omitted/archived threads and historical subagent results remain reachable; context-transfer history stays stored for replay and fork/merge handling. Also affects upstream. Issue: none linked. PR: none yet
 
 - `feat(threads): keep reference context current with thread notes`: stores a Markdown note as thread metadata, editable by agents and web, desktop, and mobile users; notes prepend opening reads by default or explicitly replace them without changing conversation history or provider input. Upstream can ignore or discard notes while retaining existing chats. Fork-only. Issue: none linked. PR: none yet
 

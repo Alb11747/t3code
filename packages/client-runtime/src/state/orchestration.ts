@@ -1,6 +1,7 @@
 import {
   ORCHESTRATION_V2_WS_METHODS,
   WS_METHODS,
+  type EnvironmentId,
   type ThreadId,
   type OrchestrationGetTurnDiffResult,
 } from "@t3tools/contracts";
@@ -30,6 +31,7 @@ import { fetchEnvironmentThreadTranscript } from "./threadTranscriptHttp.ts";
 export function createOrchestrationEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | HttpClient.HttpClient | R, E>,
   options: {
+    readonly threadTitlesRefreshTrigger?: (environmentId: EnvironmentId) => Atom.Atom<unknown>;
     /** Runs on each turn-range and full-thread diff the server answers. */
     readonly onCheckpointDiffAnswer?: QueryAnswerHandler<
       { readonly ignoreWhitespace?: boolean },
@@ -47,6 +49,7 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       tag: ORCHESTRATION_V2_WS_METHODS.getThreadTitles,
       staleTimeMs: 0,
       idleTtlMs: 0,
+      refreshTrigger: ({ environmentId }) => options.threadTitlesRefreshTrigger?.(environmentId),
     }),
     threadTranscript: createEnvironmentCommand(runtime, {
       label: "environment-data:orchestration:thread-transcript",

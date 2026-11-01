@@ -7,9 +7,8 @@ export const readThreadTitles = Effect.fn("ThreadTitles.read")(function* (
   threadIds: ReadonlyArray<ThreadId>,
 ) {
   if (threadIds.length === 0) return {};
-  // Historical lineage references still need the names of deleted threads.
   const rows = yield* sql<{ thread_id: ThreadId; title: string }>`
     SELECT thread_id, title FROM orchestration_v2_projection_threads
-    WHERE thread_id IN ${sql.in(threadIds)}`;
+    WHERE deleted_at IS NULL AND thread_id IN ${sql.in(threadIds)}`;
   return Object.fromEntries(rows.map((row) => [row.thread_id, row.title]));
 });

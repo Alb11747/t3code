@@ -8,11 +8,13 @@ const state = vi.hoisted(() => ({
   projection: null as unknown,
   commandSucceeds: false,
   threadTitles: {} as Record<string, string>,
+  titleLookup: { isSuccess: true, isPending: false },
+  archivedThreads: [] as unknown[],
 }));
 
 vi.mock(import("../../state/query"), async (original) => ({
   ...(await original()),
-  useEnvironmentQuery: (() => ({ data: state.threadTitles })) as never,
+  useEnvironmentQuery: (() => ({ data: state.threadTitles, ...state.titleLookup })) as never,
 }));
 
 vi.mock(import("@effect/atom-react"), async (original) => ({
@@ -33,7 +35,9 @@ vi.mock(import("../../state/environments"), () => ({
   useEnvironmentProviders: (() => new Map()) as never,
 }));
 vi.mock(import("../../lib/archivedThreadsState"), () => ({
-  useArchivedThreadSnapshots: (() => ({ snapshots: [] })) as never,
+  useArchivedThreadSnapshots: (() => ({
+    snapshots: [{ environmentId: "environment", snapshot: { threads: state.archivedThreads } }],
+  })) as never,
 }));
 vi.mock(import("../../state/use-atom-command"), () => ({
   useAtomCommand: (() => async () =>
@@ -52,7 +56,9 @@ const threadId = ThreadId.make("fork");
 
 function setup() {
   state.commandSucceeds = false;
-  state.threadTitles = {};
+  state.threadTitles = { source: "Source" };
+  state.titleLookup = { isSuccess: true, isPending: false };
+  state.archivedThreads = [];
   state.projection = {
     thread: {
       id: threadId,
@@ -146,33 +152,93 @@ it.each([
   }
 });
 
-it("shows the stored title of a deleted fork without a thread shell", async () => {
-  setup();
-  const projection = makeThreadProjectionFixture();
-  const deletedId = ThreadId.make("510e410f-6819-4f10-8d72-c62ebf6bafe2");
-  const title = "Design Agent Game Automation Architecture fork";
-  state.threadTitles = { [deletedId]: title };
-  state.projection = {
-    ...projection,
-    contextTransfers: [
-      {
-        sourceThreadId: projection.thread.id,
-        targetThreadId: deletedId,
-        status: "pending",
-      },
-    ],
-  };
-  await using screen = await render(
-    <ThreadRelationshipsPanel
-      environmentId={environmentId}
-      threadId={projection.thread.id}
-      showLineage
-      showSideChats
-    />,
-  );
-  await expect.element(screen.getByText(title, { exact: true })).toBeVisible();
-  await expect.element(screen.getByText(deletedId, { exact: true })).not.toBeInTheDocument();
-});
+it.each([
+  {
+    name: "an omitted existing fork",
+    exists: true,
+    success: true,
+    pending: false,
+    archived: false,
+    visible: true,
+  },
+  {
+    name: "a deleted fork",
+    exists: false,
+    success: true,
+    pending: false,
+    archived: false,
+    visible: false,
+  },
+  {
+    name: "a deleted fork in a stale archived snapshot",
+    exists: false,
+    success: true,
+    pending: false,
+    archived: true,
+    visible: false,
+  },
+  {
+    name: "an unresolved fork",
+    exists: false,
+    success: true,
+    pending: true,
+    archived: false,
+    visible: true,
+  },
+  {
+    name: "a fork after lookup failure",
+    exists: false,
+    success: false,
+    pending: false,
+    archived: false,
+    visible: true,
+  },
+])(
+  "keeps or hides $name after checking its existence",
+  async ({ exists, success, pending, archived, visible }) => {
+    setup();
+    const projection = makeThreadProjectionFixture();
+    const deletedId = ThreadId.make("510e410f-6819-4f10-8d72-c62ebf6bafe2");
+    const title = "Design Agent Game Automation Architecture fork";
+    state.threadTitles = exists ? { [deletedId]: title } : {};
+    state.titleLookup = { isSuccess: success, isPending: pending };
+    if (archived)
+      state.archivedThreads = [
+        {
+          ...projection.thread,
+          id: deletedId,
+          title,
+          archivedAt: projection.thread.updatedAt,
+          lineage: { parentThreadId: projection.thread.id, relationshipToParent: "fork" },
+        },
+      ];
+    state.projection = {
+      ...projection,
+      contextTransfers: [
+        {
+          sourceThreadId: projection.thread.id,
+          targetThreadId: deletedId,
+          status: "pending",
+        },
+      ],
+    };
+    await using screen = await render(
+      <ThreadRelationshipsPanel
+        environmentId={environmentId}
+        threadId={projection.thread.id}
+        showLineage
+        showSideChats
+      />,
+    );
+    if (visible) {
+      await expect
+        .element(screen.getByText(exists || archived ? title : deletedId, { exact: true }))
+        .toBeVisible();
+    } else {
+      await expect.element(screen.getByRole("region", { name: "Lineage" })).not.toBeInTheDocument();
+    }
+  },
+);
 
 it("opens an idle child from Lineage when its shell has not been loaded", async () => {
   setup();
