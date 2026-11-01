@@ -210,6 +210,9 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
       contentContainerClassName="px-5 pb-6"
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 8 }}
     >
+      <Text className="py-3 text-sm text-foreground-muted">
+        Messages are delivered when the agent can safely receive them.
+      </Text>
       {workflow?.isHeld && queuedRuns.length > 0 ? (
         <View className="gap-2 py-3">
           <Text className="text-sm text-foreground-muted">Queue paused</Text>
@@ -231,9 +234,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
         <Text className="py-3 text-sm text-foreground-muted">{editBlockedReason}</Text>
       ) : null}
       {queuedRuns.length === 0 ? (
-        <Text className="pt-6 text-center text-sm text-foreground-muted">
-          No messages waiting in this queue.
-        </Text>
+        <Text className="pt-6 text-center text-sm text-foreground-muted">No pending messages.</Text>
       ) : null}
       {queuedRuns.map(({ run, text, attachments, context, message }, index) => {
         const controls = resolveThreadQueueRowControls({
@@ -333,7 +334,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                   // Outside the edit row and full row height, so a near miss never opens the editor.
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={`Send now, queued message ${index + 1}`}
+                    accessibilityLabel={`Send now, pending message ${index + 1}`}
                     disabled={!controls.canSend}
                     onPress={() => void act(run.id, "steer")}
                     className="shrink-0 justify-center self-stretch pl-4 active:opacity-70 disabled:opacity-40"
@@ -378,7 +379,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                 color={theme["--color-foreground"]}
                 hideBackButton
                 hideShadow={false}
-                title="Queued"
+                title="Pending messages"
                 titleColor={theme["--color-foreground"]}
                 titleFontSize={18}
                 titleFontWeight="800"
@@ -395,7 +396,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <View collapsable={false} className="flex-1 bg-sheet">
         <NativeStackScreenOptions options={{ sheetCornerRadius: 28 }} />
-        <AndroidSheetHeader title="Queued" onBack={() => navigation.goBack()} />
+        <AndroidSheetHeader title="Pending messages" onBack={() => navigation.goBack()} />
         <ScreenContent insetHorizontal={layout.usesSplitView}>{content}</ScreenContent>
       </View>
     </GestureHandlerRootView>

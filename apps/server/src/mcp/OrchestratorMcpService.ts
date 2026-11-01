@@ -3025,6 +3025,12 @@ const make = Effect.gen(function* () {
         ...(result.run.delegatedTaskId === undefined ? {} : { taskId: result.run.delegatedTaskId }),
         status: result.run.status,
         delivery: result.delivery,
+        ...(result.delivery === "queued"
+          ? {
+              deliveryNote:
+                "Pending delivery. Messages are delivered when the agent can safely receive them. With auto or steer delivery, Claude agent text updates may arrive during the current turn at a tool boundary. Explicit queue delivery waits for a later turn. This receipt does not confirm the agent has read the message.",
+            }
+          : {}),
       } satisfies OrchestratorMcpThreadSendResult;
     }),
     waitForThread: Effect.fn("OrchestratorMcpService.waitForThread")(function* (scope, input) {

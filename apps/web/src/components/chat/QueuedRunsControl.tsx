@@ -230,14 +230,22 @@ export function QueuedRunsControl({
 
   return (
     <section
-      aria-label={`${items.length} queued message${items.length === 1 ? "" : "s"}`}
+      aria-label={`${items.length} pending message${items.length === 1 ? "" : "s"}`}
       data-thread-queue="true"
       // Anchors the sr-only live region; unanchored, it escapes the timeline scroller and makes the chat column scroll.
       className="relative mx-auto flex w-full max-w-(--chat-content-max-width) flex-col gap-2 pb-4"
     >
       <span className="sr-only" aria-live="polite">
-        {items.length} queued
+        {items.length} pending
       </span>
+      <h3 className="self-end pe-1 text-xs">
+        <Tooltip>
+          <TooltipTrigger render={<InlineButton tone="muted" />}>Pending messages</TooltipTrigger>
+          <TooltipPopup>
+            Messages are delivered when the agent can safely receive them.
+          </TooltipPopup>
+        </Tooltip>
+      </h3>
       <ol className="flex flex-col items-end gap-3" id={queueListId}>
         {visibleItems.map((item, position) => {
           const previewText = isAttachmentOnlyBootstrapPrompt(item.text)
@@ -251,7 +259,7 @@ export function QueuedRunsControl({
           return (
             <li
               key={item.key}
-              aria-label={`Queued message ${position + 1} of ${items.length}, not sent`}
+              aria-label={`Pending message ${position + 1} of ${items.length}, not sent`}
               aria-posinset={position + 1}
               aria-setsize={items.length}
               aria-current={isEditing ? "true" : undefined}
@@ -302,7 +310,7 @@ export function QueuedRunsControl({
                     <Button
                       size="xs"
                       variant="ghost"
-                      aria-label="Cancel editing queued message"
+                      aria-label="Cancel editing pending message"
                       onClick={props.onCancelEdit}
                     >
                       Cancel
@@ -316,7 +324,7 @@ export function QueuedRunsControl({
                         <Button
                           size="icon-xs"
                           variant="ghost-muted"
-                          aria-label="Edit queued message"
+                          aria-label="Edit pending message"
                           disabled={
                             item.runId === null ||
                             !item.editable ||
@@ -348,7 +356,7 @@ export function QueuedRunsControl({
                           <Button
                             size="icon-xs"
                             variant="ghost-muted"
-                            aria-label="Remove queued message"
+                            aria-label="Remove pending message"
                             disabled={item.runId === null || busyRunId !== null}
                             onClick={() => {
                               if (item.runId !== null) void remove(item.runId);
@@ -358,7 +366,7 @@ export function QueuedRunsControl({
                       >
                         <XIcon />
                       </TooltipTrigger>
-                      <TooltipPopup>Remove from queue</TooltipPopup>
+                      <TooltipPopup>Remove pending message</TooltipPopup>
                     </Tooltip>
                   </>
                 )}
@@ -377,7 +385,7 @@ export function QueuedRunsControl({
             onPointerDown={(event) => event.preventDefault()}
             onClick={() => setShowAll((value) => !value)}
           >
-            {showAll ? "Show fewer" : `Show all ${items.length} queued`}
+            {showAll ? "Show fewer" : `Show all ${items.length} pending`}
             <ChevronDownIcon
               aria-hidden
               className={cn(

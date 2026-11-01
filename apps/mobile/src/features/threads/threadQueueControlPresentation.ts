@@ -2,7 +2,7 @@ import type { EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { isAttachmentOnlyBootstrapPrompt } from "@t3tools/shared/composerContextReferences";
 
-export const REMOVE_QUEUED_MESSAGE_ACCESSIBILITY_LABEL = "Remove queued message";
+export const REMOVE_QUEUED_MESSAGE_ACCESSIBILITY_LABEL = "Remove pending message";
 
 export interface ThreadQueueRowControls {
   readonly canDismiss: boolean;

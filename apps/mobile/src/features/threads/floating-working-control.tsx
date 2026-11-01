@@ -246,8 +246,8 @@ export function FloatingWorkingControl(props: {
       {hasQueue ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`Open queue, ${props.queuedCount} messages`}
-          accessibilityHint="Opens queued messages to send now, edit, or remove"
+          accessibilityLabel={`Open pending messages, ${props.queuedCount} messages`}
+          accessibilityHint="Opens pending messages to send now, edit, or remove"
           onPress={props.onOpenQueue}
           onLayout={(event) => setQueueWidth(settleWidth(event.nativeEvent.layout.width))}
           style={{ maxWidth: Math.min(overlayWidth, windowWidth) * 0.45 }}
@@ -258,7 +258,7 @@ export function FloatingWorkingControl(props: {
           ) : null}
           <SymbolView name="list.number" size={13} tintColorClassName="accent-foreground-muted" />
           <Text className="shrink font-t3-medium text-xs tabular-nums" numberOfLines={1}>
-            {props.queuedCount} queued
+            {props.queuedCount} pending
           </Text>
         </Pressable>
       ) : null}
