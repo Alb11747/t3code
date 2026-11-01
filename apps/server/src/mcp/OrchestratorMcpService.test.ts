@@ -6,7 +6,6 @@ import {
 import { type DispatchModeRefusal } from "../orchestration-v2/DispatchModeLimit.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 
-import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as TestClock from "effect/testing/TestClock";
 import * as NodeServices from "@effect/platform-node/NodeServices";

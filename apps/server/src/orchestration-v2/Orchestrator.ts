@@ -2485,10 +2485,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       payload: updatedTask,
     });
 
+    const { messages: queuedMessages } = yield* projectionStore
+      .getThreadRecords(command.parentThreadId, ["messages"], {
+        messageIds: projection.runs
+          .filter((run) => run.status === "queued")
+          .map((run) => run.userMessageId),
+      })
+      .pipe(mapDispatchError(command));
     yield* cancelQueuedDelegatedQuestions({
       command,
       events,
-      projection,
+      projection: { ...projection, messages: queuedMessages },
       now,
       taskIds: [task.id],
     });
