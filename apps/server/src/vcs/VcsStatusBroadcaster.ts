@@ -490,20 +490,12 @@ export const make = Effect.gen(function* () {
     return yield* withRemoteWriteLock(
       cwd,
       Effect.gen(function* () {
-        const previousRemote = (yield* getCachedStatus(cwd))?.remote?.value;
         const remoteRead = yield* readRemoteStatus(cwd, options);
-        const remote = remoteRead?.value;
         const autoPullEnabled =
           options?.refreshUpstream !== false &&
           (yield* isAutoPullEnabled(options?.policyCwds ?? [cwd]));
-        const local =
-          remote &&
-          (!previousRemote ||
-            previousRemote.aheadCount !== remote.aheadCount ||
-            previousRemote.behindCount !== remote.behindCount ||
-            previousRemote.aheadOfDefaultCount !== remote.aheadOfDefaultCount)
-            ? yield* refreshLocalStatusCore(cwd)
-            : undefined;
+        // Base refs and merge bases can move without changing divergence counts.
+        const local = yield* refreshLocalStatusCore(cwd);
         const pulled = yield* maybeAutoPull(cwd, remoteRead, autoPullEnabled, local);
         if (pulled !== null) return pulled.remote;
         return yield* updateCachedRemoteStatus(cwd, remoteRead, { publish: true });
