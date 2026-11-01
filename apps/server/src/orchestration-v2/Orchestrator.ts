@@ -7913,7 +7913,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       parentThreadId === null ||
       (command.notification === undefined &&
         command.createdBy !== "user" &&
-        command.senderThreadId !== parentThreadId)
+        command.senderThreadId !== parentThreadId &&
+        command.senderThreadId !== child.id)
     )
       return;
     const run =
@@ -7929,9 +7930,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (row) => row.id === message.runId,
       );
     if (run === undefined || run.delegatedTaskId !== undefined) return;
+    const sourceRun =
+      command.senderThreadId === child.id
+        ? latestExecutedRun((yield* projectionStore.getThreadRecords(child.id, ["runs"])).runs)
+        : null;
     const parent = yield* projectionStore
       .getThreadRecords(parentThreadId, ["runs", "subagents", "providerTurns", "attempts"], {
-        subagentIds: child.forkedFrom?.type === "node" ? [child.forkedFrom.nodeId] : [],
+        subagentIds: [
+          ...(child.forkedFrom?.type === "node" ? [child.forkedFrom.nodeId] : []),
+          ...(sourceRun?.delegatedTaskId === undefined ? [] : [sourceRun.delegatedTaskId]),
+        ],
       })
       .pipe(mapDispatchError(command));
     const original = parent.subagents.find(
@@ -7940,7 +7948,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         task.childThreadId === child.id &&
         task.id === (child.forkedFrom?.type === "node" ? child.forkedFrom.nodeId : undefined),
     );
-    if (original === undefined || original.result === null) return;
+    if (original === undefined || (original.result === null && command.senderThreadId !== child.id))
+      return;
+    const sourceTask = parent.subagents.find(
+      (task) => task.id === (sourceRun?.delegatedTaskId ?? original.id),
+    );
+    if (command.senderThreadId === child.id && sourceTask?.completionDelivery?.state === "disposed")
+      return;
     const owner =
       parent.runs.filter(isActiveRun).toSorted((a, b) => b.ordinal - a.ordinal)[0] ??
       latestExecutedRun(parent.runs);
@@ -12439,7 +12453,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         readonly settledContinuationOf?: RunId;
         readonly syncRunId?: RunId;
         readonly task: OrchestrationV2Subagent;
-        readonly resultRun?: OrchestrationV2Run;
       },
     ) {
       const childThreadId = childControls.thread.id;
@@ -12452,10 +12465,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
       const taskRuns = childControls.runs.filter((run) => run.delegatedTaskId === options.task.id);
+      // Legacy original runs have no task ID; bound follow-ups own their own results.
       const childRun =
         taskRuns.length === 0
           ? options.task.id === forkedFrom.nodeId
-            ? options.resultRun
+            ? delegatedTaskProgress({
+                ...childControls,
+                runs: childControls.runs.filter((run) => run.delegatedTaskId === undefined),
+              }).resultRun
             : undefined
           : taskRuns.toSorted((a, b) => b.ordinal - a.ordinal)[0];
       if (childRun === undefined) return;
@@ -12766,7 +12783,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       yield* finalizeAppOwnedSubagentTask(childControls, {
         ...options,
         task,
-        ...(progress.resultRun === undefined ? {} : { resultRun: progress.resultRun }),
       });
     }
 

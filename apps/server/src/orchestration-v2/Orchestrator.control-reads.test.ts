@@ -1142,7 +1142,7 @@ it.effect("keeps child pull requests and issue watches independent of the parent
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("wakes the parent once when its delegated task asks a question", () =>
+it.effect.each(["user", "self", "queued", "stopped"])("relays questions (%s)", (source) =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -1414,30 +1414,50 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
         message.text.includes(`requestId ${waitDelivered.payload.id}.`),
       ),
     );
-    yield* eventSink.write({
-      commandId: CommandId.make("command:runtime-reconcile:question-followup"),
-      events: [
-        {
-          id: EventId.make("event:question-child-completed"),
-          type: "run.updated",
-          threadId: task.childThreadId!,
-          occurredAt: now,
-          payload: { ...childRun, status: "completed", completedAt: now },
-        },
-        {
-          id: EventId.make("event:question-task-completed"),
-          type: "subagent.updated",
-          threadId: parentThreadId,
-          occurredAt: now,
-          payload: {
-            ...task,
-            status: "completed",
-            result: "Sources researched.",
-            completedAt: now,
+    if (source === "queued" || source === "stopped") {
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make("event:question-child-running"),
+            type: "run.updated",
+            threadId: task.childThreadId!,
+            occurredAt: now,
+            payload: { ...childRun, status: "running", startedAt: now },
           },
-        },
-      ],
-    });
+        ],
+      });
+    } else
+      yield* eventSink.write({
+        commandId: CommandId.make("command:runtime-reconcile:question-followup"),
+        events: [
+          {
+            id: EventId.make("event:question-child-completed"),
+            type: "run.updated",
+            threadId: task.childThreadId!,
+            occurredAt: now,
+            payload: { ...childRun, status: "completed", completedAt: now },
+          },
+          {
+            id: EventId.make("event:question-task-completed"),
+            type: "subagent.updated",
+            threadId: parentThreadId,
+            occurredAt: now,
+            payload: {
+              ...task,
+              status: "completed",
+              result: "Sources researched.",
+              completedAt: now,
+            },
+          },
+        ],
+      });
+    if (source === "stopped") {
+      yield* orchestrator.dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make("stop-before-self-followup"),
+        threadId: parentThreadId,
+      });
+    }
     yield* orchestrator.dispatch({
       type: "message.dispatch",
       commandId: CommandId.make("question-followup"),
@@ -1445,15 +1465,62 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
       messageId: MessageId.make("message:question-followup"),
       text: "Check the sources again",
       attachments: [],
-      dispatchMode: { type: "start_immediately" },
-      createdBy: "user",
-      creationSource: "web",
+      dispatchMode: {
+        type:
+          source === "queued" || source === "stopped" ? "queue_after_active" : "start_immediately",
+      },
+      createdBy: source === "user" ? "user" : "agent",
+      creationSource: source === "user" ? "web" : "mcp",
+      ...(source === "user" ? {} : { senderThreadId: task.childThreadId! }),
     });
     const followup = (yield* projections.getThreadRecords(task.childThreadId!, ["runs"])).runs.find(
       (run) => run.userMessageId === "message:question-followup",
     )!;
+    if (source === "stopped") {
+      assert.isUndefined(followup.delegatedTaskId);
+      const lateQuestion = requestEvent(
+        "event:late-question",
+        "request:late-question",
+        "live",
+        "user_input",
+        followup,
+      );
+      yield* eventSink.write({ events: [lateQuestion] });
+      yield* reactor.handle(lateQuestion);
+      const stopped = yield* projections.getThreadRecords(parentThreadId, [
+        "subagents",
+        "messages",
+      ]);
+      assert.equal(stopped.subagents.length, 1);
+      assert.isFalse(
+        stopped.messages.some((message) =>
+          message.text.includes(`requestId ${lateQuestion.payload.id}`),
+        ),
+      );
+      return;
+    }
     assert.isDefined(followup.delegatedTaskId);
     assert.notEqual(followup.delegatedTaskId, task.id);
+    if (source === "queued") {
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make("event:question-original-finished"),
+            type: "run.updated",
+            threadId: task.childThreadId!,
+            occurredAt: now,
+            payload: { ...childRun, status: "completed", completedAt: now },
+          },
+          {
+            id: EventId.make("event:question-followup-started"),
+            type: "run.updated",
+            threadId: task.childThreadId!,
+            occurredAt: now,
+            payload: { ...followup, status: "running", startedAt: now },
+          },
+        ],
+      });
+    }
     const followupQuestion = requestEvent(
       "event:followup-question",
       "request:followup-question",
@@ -1473,6 +1540,55 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
       taskIds: [followup.delegatedTaskId],
       childThreadId: task.childThreadId!,
     });
+    if (source === "queued") {
+      for (const [run, text] of [
+        [childRun, "Original result"],
+        [followup, "Continuation result"],
+      ] as const) {
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make(`event:result:${run.id}`),
+              type: "message.updated",
+              threadId: task.childThreadId!,
+              runId: run.id,
+              occurredAt: now,
+              payload: {
+                id: MessageId.make(`message:result:${run.id}`),
+                threadId: task.childThreadId!,
+                runId: run.id,
+                nodeId: run.rootNodeId,
+                role: "assistant",
+                text,
+                attachments: [],
+                streaming: false,
+                createdBy: "agent",
+                creationSource: "provider",
+                createdAt: now,
+                updatedAt: now,
+              },
+            },
+            {
+              id: EventId.make(`event:finished:${run.id}`),
+              type: "run.updated",
+              threadId: task.childThreadId!,
+              occurredAt: now,
+              payload: { ...run, status: "completed", startedAt: now, completedAt: now },
+            },
+          ],
+        });
+      }
+      yield* orchestrator.recoverDelegatedTasks;
+      const finished = yield* projections.getThreadRecords(parentThreadId, ["subagents"]);
+      for (const [id, result] of [
+        [task.id, "Original result"],
+        [followup.delegatedTaskId, "Continuation result"],
+      ] as const) {
+        const settled = finished.subagents.find((candidate) => candidate.id === id)!;
+        assert.equal(settled.status, "completed");
+        assert.equal(settled.result, result);
+      }
+    }
   }).pipe(Effect.provide(DelegatedTaskQuestionReactor.layer.pipe(Layer.provideMerge(layerTest)))),
 );
 
