@@ -122,6 +122,7 @@ export const layer = McpToolAccess.toLayer(
               status: result.run.status,
             };
           }),
+        { parentMessage: (input) => ({ message: input.message ?? "" }) },
       ),
     };
   }),

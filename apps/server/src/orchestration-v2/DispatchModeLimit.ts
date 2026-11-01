@@ -1,4 +1,10 @@
-import type { ProviderInteractionMode, RuntimeMode, ThreadId } from "@t3tools/contracts";
+import type {
+  OrchestrationV2ThreadShell,
+  OrchestratorMcpThreadSendInput,
+  ProviderInteractionMode,
+  RuntimeMode,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Ref from "effect/Ref";
 
@@ -15,7 +21,22 @@ export interface DispatchModeRefusal extends DispatchModes {
 /** Recheck target modes under the command lock; the user can raise them after preflight. */
 export interface DispatchModeLimitValue extends DispatchModes {
   readonly refused?: Ref.Ref<DispatchModeRefusal | undefined>;
+  readonly parentMessageSender?: ThreadId;
 }
+
+// A delegated child may report to its recorded parent, without controlling other higher-mode threads.
+// Slash commands can change provider state without the parent interpreting the report.
+export const isSubagentParentMessage = (
+  caller: Pick<OrchestrationV2ThreadShell, "runtimeMode" | "lineage"> | undefined,
+  targetThreadId: ThreadId,
+  text: string,
+  mode: OrchestratorMcpThreadSendInput["mode"] = "auto",
+) =>
+  caller?.runtimeMode === "auto" &&
+  caller.lineage.relationshipToParent === "subagent" &&
+  caller.lineage.parentThreadId === targetThreadId &&
+  !text.trimStart().startsWith("/") &&
+  (mode === "auto" || mode === "queue");
 
 export const DispatchModeLimit = Context.Reference<DispatchModeLimitValue | undefined>(
   "t3/orchestration-v2/DispatchModeLimit",

@@ -138,7 +138,11 @@ import { withCommandMetrics } from "../observability/Metrics.ts";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
-import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
+import {
+  DispatchModeLimit,
+  exceededDispatchModeLimit,
+  isSubagentParentMessage,
+} from "./DispatchModeLimit.ts";
 import {
   applyToProjection,
   emptyProjection,
@@ -4219,7 +4223,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       },
     ) {
       const limit = yield* DispatchModeLimit;
-      const exceeded = limit === undefined ? undefined : exceededDispatchModeLimit(limit, modes);
+      let effectiveLimit = limit;
+      if (
+        limit?.parentMessageSender !== undefined &&
+        command.type === "message.dispatch" &&
+        command.senderThreadId === limit.parentMessageSender &&
+        command.dispatchMode.type !== "restart_active"
+      ) {
+        const sender = yield* projectionStore
+          .getThreadShell(limit.parentMessageSender)
+          .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+        if (sender !== null && isSubagentParentMessage(sender, threadId, command.text)) {
+          effectiveLimit = { ...limit, runtimeMode: modes.runtimeMode };
+        }
+      }
+      const exceeded =
+        effectiveLimit === undefined ? undefined : exceededDispatchModeLimit(effectiveLimit, modes);
       if (limit === undefined || exceeded === undefined) return;
       const refusal = {
         threadId,

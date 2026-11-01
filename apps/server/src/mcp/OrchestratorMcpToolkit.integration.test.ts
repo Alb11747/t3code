@@ -37,6 +37,9 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import {
   decodeProviderReplayNdjson,
   materializeReplayTranscriptWorkspace,
@@ -192,6 +195,243 @@ const layerUnusedScheduledTaskStub = Layer.succeed(
 );
 
 describe("orchestrator MCP toolkit", () => {
+  it.effect("lets auto subagents report to their parent without granting control", () => {
+    const adapter = {
+      instanceId: codexInstanceId,
+      driver: ProviderDriverKind.make("codex"),
+      getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+      planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
+      openSession: () => Effect.die("This test does not start provider processes."),
+    } as ProviderAdapter.ProviderAdapterV2["Service"];
+    const database = SqlitePersistence.layerMemory;
+    const registry = ProviderAdapterRegistry.layerFromAdapters([adapter]);
+    const orchestration = ProviderReplayHarness.layerWithRegistry(
+      { name: "subagent-parent-message" },
+      registry,
+      { databaseLayer: database, runEffectWorker: false },
+    );
+    const threads = ThreadManagementService.layer.pipe(
+      Layer.provide(orchestration),
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(database))),
+    );
+    const testLayer = layerOrchestratorToolkit.pipe(
+      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provideMerge(orchestration),
+      Layer.provide(threads),
+      Layer.provide(registry),
+      Layer.provide(ProviderRegistryMock.layer([])),
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(layerUnusedScheduledTaskStub),
+      Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+      Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
+      Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+      Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
+      Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+      Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+      Layer.provide(NodeServices.layer),
+    );
+    return Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const server = yield* McpServer.McpServer;
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("parent-message:create"),
+        threadId: parentThreadId,
+        projectId,
+        title: "Full-access parent",
+        modelSelection: codexSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("parent-message:start"),
+        threadId: parentThreadId,
+        messageId: MessageId.make("parent-message:start"),
+        text: "Supervise a child.",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const parent = yield* orchestrator.getThreadProjection(parentThreadId);
+      const run = parent.runs[0]!;
+      yield* orchestrator.dispatch({
+        type: "delegated_task.request",
+        commandId: CommandId.make("parent-message:delegate"),
+        parentThreadId,
+        parentRunId: run.id,
+        parentNodeId: run.rootNodeId!,
+        task: "Report progress and questions to your parent.",
+        modelSelection: codexSelection,
+        runtimeMode: "auto",
+        interactionMode: "default",
+        createdBy: "agent",
+        creationSource: "mcp",
+      });
+      const delegated = yield* orchestrator.getThreadProjection(parentThreadId);
+      const childThreadId = localChild(delegated.subagents[0]!.childThreadId);
+      const scope: McpInvocationContext.McpInvocationScope = {
+        environmentId: EnvironmentId.make("environment:parent-message"),
+        requestNamespace: "parent-message:child",
+        thread: {
+          threadId: childThreadId,
+          providerSessionId: "parent-message:child",
+          providerInstanceId: codexInstanceId,
+        },
+        client: undefined,
+        capabilities: new Set(["orchestration"]),
+        issuedAt: 1,
+      };
+      const invoke = (name: string, args: Record<string, unknown>, caller = scope) =>
+        server
+          .callTool({ name, arguments: args })
+          .pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, caller),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+      for (const mode of ["queue", "auto"] as const) {
+        const text = `Progress report from the child (${mode}).`;
+        const sent = yield* invoke("t3_thread_send", {
+          threadId: parentThreadId,
+          message: text,
+          mode,
+        });
+        expect(sent.isError).not.toBe(true);
+        const result = yield* decodeThreadSendResult(sent.structuredContent);
+        const updated = yield* orchestrator.getThreadProjection(parentThreadId);
+        expect(updated.messages.find((message) => message.id === result.messageId)).toMatchObject({
+          senderThreadId: childThreadId,
+          text,
+          createdBy: "agent",
+        });
+      }
+      const updated = yield* orchestrator.getThreadProjection(parentThreadId);
+      expect(updated.thread.runtimeMode).toBe("full-access");
+      expect((yield* orchestrator.getThreadProjection(childThreadId)).thread.runtimeMode).toBe(
+        "auto",
+      );
+
+      yield* orchestrator.dispatch({
+        type: "thread.interaction-mode.set",
+        commandId: CommandId.make("parent-message:child-plan"),
+        threadId: childThreadId,
+        interactionMode: "plan",
+      });
+      const planDenied = yield* invoke("t3_thread_send", {
+        threadId: parentThreadId,
+        message: "A plan-mode child must not drive its default-mode parent.",
+      });
+      expect(planDenied.isError).toBe(true);
+      expect(planDenied.content).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "text",
+            text: expect.stringContaining("interaction_mode_escalation_denied"),
+          }),
+        ]),
+      );
+      yield* orchestrator.dispatch({
+        type: "thread.interaction-mode.set",
+        commandId: CommandId.make("parent-message:child-default"),
+        threadId: childThreadId,
+        interactionMode: "default",
+      });
+
+      const forkThreadId = ThreadId.make("parent-message:fork");
+      yield* orchestrator.dispatch({
+        type: "thread.fork",
+        commandId: CommandId.make("parent-message:fork"),
+        sourceThreadId: parentThreadId,
+        targetThreadId: forkThreadId,
+        sourcePoint: { type: "latest_stable" },
+        sideChat: true,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("parent-message:fork-full-access"),
+        threadId: forkThreadId,
+        runtimeMode: "full-access",
+      });
+      for (const [name, args] of [
+        ["t3_thread_send", { threadId: forkThreadId, message: "Unrelated full-access target" }],
+        ["t3_thread_send", { threadId: parentThreadId, message: "Restart", mode: "restart" }],
+        ["t3_thread_send", { threadId: parentThreadId, message: "Steer", mode: "steer" }],
+        ["t3_thread_send", { threadId: parentThreadId, message: "/goal replacement objective" }],
+        ["t3_thread_send", { threadId: parentThreadId, message: " /compact", mode: "queue" }],
+        ["t3_thread_send", { threadId: parentThreadId, message: "/logout" }],
+        ["t3_thread_interrupt", { threadId: parentThreadId }],
+      ] as const) {
+        const denied = yield* invoke(name, args);
+        expect(denied.isError, `${name}: ${JSON.stringify(args)}`).toBe(true);
+        expect(denied.content).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: "text",
+              text: expect.stringContaining("runtime_mode_escalation_denied"),
+            }),
+          ]),
+        );
+      }
+      yield* orchestrator.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("parent-message:fork-auto"),
+        threadId: forkThreadId,
+        runtimeMode: "auto",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("parent-message:fork-start"),
+        threadId: forkThreadId,
+        messageId: MessageId.make("parent-message:fork-start"),
+        text: "Run a side chat.",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const forkDenied = yield* invoke(
+        "t3_thread_send",
+        { threadId: parentThreadId, message: "A fork is not a delegated child." },
+        { ...scope, thread: { ...scope.thread!, threadId: forkThreadId } },
+      );
+      expect(forkDenied.isError).toBe(true);
+      expect(forkDenied.content).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "text",
+            text: expect.stringContaining("runtime_mode_escalation_denied"),
+          }),
+        ]),
+      );
+      yield* orchestrator.dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make("parent-message:stop-child"),
+        threadId: childThreadId,
+      });
+      const stale = yield* invoke("t3_thread_send", {
+        threadId: parentThreadId,
+        message: "Stale child credentials",
+      });
+      expect(stale.isError).toBe(true);
+      expect(stale.content).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "text",
+            text: expect.stringContaining("parent_not_active"),
+          }),
+        ]),
+      );
+    }).pipe(Effect.provide(testLayer));
+  });
+
   it.live.each([
     { label: "distinct", result: queuedFollowupResult, latestSummary: queuedFollowupResult },
     { label: "identical", result: delegatedResult, latestSummary: null },
