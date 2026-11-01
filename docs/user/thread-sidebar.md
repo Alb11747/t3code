@@ -259,7 +259,7 @@ conversation shows the retry, and **Stop** cancels it.
 Claude also retries temporary API overloads, server errors, and connection
 failures with a backoff of up to 3 minutes. The retry row shows its progress,
 and **Stop** cancels it; usage limits still follow the reset handling below.
-On web and desktop, press **Resume** in an empty composer to continue a limited
+Press **Resume** in an empty composer to continue a limited
 or interrupted turn manually.
 Queued messages stay saved while the limit blocks the thread. They run after
 the continuation finishes. If the queue was held by a restart, resume it then.
