@@ -52,10 +52,13 @@ const setup = () => {
     dispatchFailures: 0,
   };
   const dispatched: Array<OrchestrationV2ServerCommand> = [];
+  const apiCalls: Array<string> = [];
   const respond = (apiPath: string) => {
+    apiCalls.push(apiPath);
     if (apiPath === "user") return { login: "agent" };
     const [route, query = ""] = apiPath.split("?");
-    if (route === "repos/acme/app/issues/7") return github.issue;
+    if (route?.startsWith("repos/acme/app/issues/") && !route.endsWith("/comments"))
+      return github.issue;
     const params = new URLSearchParams(query);
     const since = Date.parse(params.get("since")!);
     const perPage = Number(params.get("per_page"));
@@ -89,7 +92,10 @@ const setup = () => {
           ? Effect.die(new Error("orchestrator unavailable"))
           : Effect.sync(() => {
               if (command.type === "thread.issue-watch.sync") {
-                const matches = (watch: OrchestrationV2IssueWatch) => watch.url === ISSUE.url;
+                const matches = (watch: OrchestrationV2IssueWatch) =>
+                  watch.host === command.host &&
+                  watch.repository === command.repository &&
+                  watch.number === command.number;
                 const current = github.issueWatches.find(matches);
                 if (command.startedAt !== undefined && current?.startedAt !== command.startedAt)
                   return { sequence: dispatched.length, storedEvents: [] };
@@ -143,10 +149,41 @@ const setup = () => {
     dispatched.flatMap((command) =>
       command.type === "thread.issue-watch.sync" && command.wake ? [command.wake.text] : [],
     );
-  return { github, dispatched, wakes, layer, service };
+  return { github, dispatched, apiCalls, wakes, layer, service };
 };
 
 describe("IssueWatchService", () => {
+  it.effect("bounds concurrent watches before GitHub reads and reuses released slots", () => {
+    const { github, apiCalls, layer, service } = setup();
+    const issue = (number: number) => ({
+      ...ISSUE,
+      number,
+      url: `https://github.com/acme/app/issues/${number}`,
+    });
+    return Effect.gen(function* () {
+      const watches = yield* service;
+      const results = yield* Effect.all(
+        Array.from({ length: 11 }, (_, index) =>
+          Effect.result(watches.watch(THREAD_ID, issue(index + 1))),
+        ),
+        { concurrency: "unbounded" },
+      );
+      expect(github.issueWatches).toHaveLength(10);
+      expect(results.filter((result) => result._tag === "Success")).toHaveLength(10);
+      const rejected = results.findIndex((result) => result._tag === "Failure") + 1;
+      expect(apiCalls).toHaveLength(20);
+      const existing = github.issueWatches[0]!;
+      expect((yield* watches.watch(THREAD_ID, existing)).wasWatching).toBe(true);
+      const error = yield* Effect.flip(watches.watch(THREAD_ID, issue(rejected)));
+      expect(error.detail).toContain("10");
+      expect(apiCalls).toHaveLength(20);
+      yield* watches.unwatch(THREAD_ID, existing);
+      expect((yield* watches.watch(THREAD_ID, issue(rejected))).wasWatching).toBe(false);
+      expect(github.issueWatches).toHaveLength(10);
+      expect(apiCalls).toHaveLength(22);
+    }).pipe(Effect.scoped, Effect.provide(layer));
+  });
+
   it.effect("wakes on comments from others after the watch starts, once each", () => {
     const { github, wakes, dispatched, layer, service } = setup();
     return Effect.gen(function* () {

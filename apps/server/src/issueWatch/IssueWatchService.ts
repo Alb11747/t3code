@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -42,6 +43,7 @@ import {
 const SWEEP_MINUTES = 2;
 const READ_FAILURE_LIMIT = 8;
 const COMMENT_PAGE = 100;
+const WATCH_LIMIT_PER_THREAD = 10;
 
 const IssueWatch = Schema.Struct({
   threadId: ThreadId,
@@ -257,9 +259,16 @@ export const make = Effect.gen(function* () {
     });
   });
 
+  const watchLocks = yield* KeyedLock.make<ThreadId>();
   const watch: IssueWatchService["Service"]["watch"] = Effect.fn("IssueWatchService.watch")(
     function* (threadId, issue) {
-      if (yield* findWatch(threadId, issue)) return { ...issue, watching: true, wasWatching: true };
+      const thread = yield* projections.getThreadShell(threadId);
+      if (thread?.issueWatches?.some((watch) => sameIssue(watch, issue)))
+        return { ...issue, watching: true, wasWatching: true };
+      if ((thread?.issueWatches?.length ?? 0) >= WATCH_LIMIT_PER_THREAD)
+        return yield* new IssueWatchError({
+          detail: `A thread can watch at most ${WATCH_LIMIT_PER_THREAD} issues. Stop an existing watch before adding another.`,
+        });
       const current = yield* readIssue(issue);
       if (current.pull_request !== undefined) {
         return yield* new IssueWatchError({
@@ -289,6 +298,7 @@ export const make = Effect.gen(function* () {
         ? cause
         : new IssueWatchError({ detail: "Could not start watching the issue.", cause }),
     ),
+    (effect, threadId) => watchLocks.withLock(threadId, effect),
   );
 
   const unwatch: IssueWatchService["Service"]["unwatch"] = Effect.fn("IssueWatchService.unwatch")(
