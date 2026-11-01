@@ -722,12 +722,16 @@ helpers and use resume/review/promotion.
 
 ## T3 webhook setup
 
-Current setup (2026-10-09), on the Lazarus T3 environment: project **"T3 Code
-fork sync resolver"** (workspace `/root/Local/Agents/Work/t3code-fork-resolver/repo`,
-a blobless clone of this fork; default model Codex GPT-6.1-Sol, high) and the
-webhook Scheduled Task **"Fork sync conflict resolver"**, which starts a fresh
-thread in that project per delivery and skips deliveries held longer than 60
-minutes. It needs the T3 server running with working **T3 Connect** remote
+Current setup (2026-11-01), on the Lazarus T3 environment: the webhook Scheduled
+Task **"Fork sync conflict resolver"** lives in the main **"t3code"** project
+(workspace `/srv/Sync/Repos/t3code`). It starts a fresh thread per delivery using
+its saved Codex GPT-6.1-Sol, high selection and skips deliveries held longer
+than 60 minutes. The fixed prompt directs each run to the dedicated blobless
+clone at `/root/Local/Agents/Work/t3code-fork-resolver/repo`.
+Scheduled tasks capture the creating thread's
+model selection, so create this task from a Codex GPT-6.1-Sol, high thread
+without changing the main project's defaults.
+It needs the T3 server running with working **T3 Connect** remote
 access (GitHub-hosted Actions can only reach the public `relay.t3.codes` URL)
 and the Codex provider signed in with ChatGPT, so runs use the plan rather
 than an API key. Its runtime must allow unattended Git, SSH and helper commands.
