@@ -3,6 +3,7 @@ const { createHash } = require("node:crypto");
 const { readFileSync, readdirSync, statSync } = require("node:fs");
 const path = require("node:path");
 const { compareVersions, nightlyVersion } = require("./release-notes.cjs");
+const { hasReleaseChanges } = require("./release-changes.cjs");
 
 function releaseAssets(directory, version) {
   const files = readdirSync(directory).filter(
@@ -73,11 +74,7 @@ function publish({
     const main = api(`repos/${repository}/commits/main`).sha;
     if (main !== sha) {
       const diff = api(`repos/${repository}/compare/${sha}...${main}`);
-      if (
-        diff.status !== "ahead" ||
-        diff.files.length >= 300 ||
-        diff.files.some((file) => !/^fork\/[^/]+\.md$/.test(file.filename))
-      ) {
+      if (diff.status !== "ahead" || diff.files.length >= 300 || hasReleaseChanges(diff.files)) {
         throw new Error(
           "Main changed during the build; rebuild the current source instead of publishing stale code.",
         );

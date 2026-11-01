@@ -30,7 +30,8 @@ If a fetch fails, it's best to stop and report it rather than work from stale re
 | `.github/workflows/fork-sync.yml`      | Per upstream nightly: sync, check, promote or review PR.      |
 | `.github/workflows/fork-checks.yml`    | Upstream's release checks on GitHub-hosted runners.           |
 | `.github/workflows/fork-release.yml`   | On push to `main`: check, build, publish a GitHub prerelease. |
-| `.github/workflows/fork-pr-checks.yml` | On demand: upstream's checks for an upstream PR branch.       |
+| `.github/workflows/fork-pr-checks.yml` | Optional hosted checks, dispatched on demand.                 |
+| `fork/scripts/local-validation.cjs`    | Records local validation on the exact commit for release.     |
 
 Everything else is upstream code. Upstream's own workflows are disabled in the
 fork's GitHub settings (they need upstream's runners and credentials, or
@@ -121,13 +122,13 @@ and say so in your report.
 
 ## Release lineage
 
-Every push to the fork's `main` becomes a release that installed copies
+App changes pushed to the fork's `main` become releases that installed copies
 update to. Each release should ship a finished feat or fix, not another
 attempt at the previous one.
 
 - **Push when it's finished, not when it first works.** Aim to finish
-  local validation and every Sol review round before pushing to `main`, and get
-  a green Fork PR checks run first (_Adding a change_, step 5). If the change is still moving, it's
+  local validation and every Sol review round before pushing to `main`, and record
+  the exact commit's validation (_Adding a change_, step 5). If the change is still moving, it's
   usually better to wait: a late release beats two releases.
 - **With an upstream PR, finish its review rounds first.** It works best to
   open the PR and let its review rounds finish, including your fixes and the
@@ -138,9 +139,11 @@ attempt at the previous one.
   or issue, or the user reports a problem. Then fix it, let review settle
   again, and push once. Your own polish and bot nits can wait for that round;
   a bug that users would hit still gets fixed right away.
-- **Documentation needs no release.** A push that changes only `fork/*.md`
-  builds nothing unless code is still waiting to release (_Adding a change_,
-  step 6), so push it when it's done.
+- **CI and fork tooling need no app release.** Pushes confined to
+  `.github/workflows/**`, `.github/actions/**` and `fork/**` start no release.
+  The release comparison and final publisher ignore the same paths, so a
+  tooling follow-up does not rebuild an app or invalidate a build in progress.
+  A change elsewhere, including a rename across that boundary, still counts.
 
 ## Adding a change
 
@@ -150,8 +153,9 @@ attempt at the previous one.
    automatic continuation (_Waiting for a sync_) rather than leaving the task
    waiting for another user message.
    Main may lag upstream's newest nightly while you
-   work; step 6 syncs it before the push. Guide-only edits to `fork/*.md` are
-   exempt, but no push to `main` may land while a sync request is open:
+   work; step 6 syncs it before an app push. Changes confined to workflows,
+   actions and `fork/` are exempt from starting a sync, but no push to `main`
+   may land while a sync request is open:
    promotion rejects the candidate as stale once main moves, so wait for it to
    settle. Start from fork `main` in a new worktree
    (`git fetch origin && git worktree add -b <branch> <path> origin/main`).
@@ -177,30 +181,48 @@ attempt at the previous one.
    different PR and closes ours as superseded; sync cannot tell, so whoever
    resolves or reviews the sync removes the patch (see below).
 
-5. Validate as `AGENTS.md` describes (package typecheck, touched tests,
-   `vp check` on changed files). Run a package's tests from its directory
+5. Validate locally as `AGENTS.md` describes: focused regression tests,
+   `vp run check:changed`, and a real-client pass when the behavior needs one.
+   For changes confined to fork tooling and workflows, run the relevant Node
+   script tests, shell/workflow validation and changed-file format/lint checks;
+   app-wide tests and typechecks add no evidence for those files.
+   Run a package's tests from its directory
    (`cd apps/web && vp test run <files>`): `--config apps/web/vite.config.ts`
    from the repository root still resolves the config's relative paths
    against the root, so setup files go missing or no tests are found.
-   Then get the full release checks on the
-   branch before it reaches `main`. Push it to a branch on the fork, which
-   starts no release, and run **Fork PR checks** on it:
+   Finish review before pushing to `main`. Write a Markdown validation report
+   outside the checkout with the commands and results, regression/client
+   evidence, and limitations. Explain any baseline failure with a comparison
+   against the unchanged base; unexplained failures block publication. Do not
+   weaken checks or describe skipped checks as passed.
+
+   After committing and syncing/rebasing in step 6, push the exact commit to a
+   temporary branch, then record its local report before pushing it to `main`:
 
    ```sh
-   git push --force-with-lease origin HEAD:refs/heads/check/<branch>
-   # Prints this dispatch's run URL; watch that run, not the latest one in the list.
-   url=$(gh workflow run fork-pr-checks.yml -R Alb11747/t3code -f ref="$(git rev-parse HEAD)" 2>&1 | grep -o 'https://[^ ]*/runs/[0-9]*')
-   gh run watch "${url##*/}" -R Alb11747/t3code --exit-status   # run in the background
+   git push origin HEAD:refs/heads/check/<branch>
+   node fork/scripts/local-validation.cjs record /absolute/path/validation.md
    ```
 
-   Pass the full commit SHA, not the branch name: only a pass on an exact
-   commit lets Fork release skip its checks for that commit (step 6).
-   Run it once per finished round of commits, fix any failure, and delete the
-   branch (`git push origin :check/<branch>`) once the change is on `main`.
-   If the job budget blocks checks, or GitHub-hosted Actions is unavailable or
-   frozen, use _Labs checks_ below instead.
+   The helper requires a clean committed checkout, posts the report as a commit
+   comment, and records a distinct `fork-local-validation` status naming that
+   exact SHA. It attests to the documented local validation, not a full hosted
+   suite pass. A new commit or rebase needs a new report/receipt after the
+   relevant checks. Delete the temporary branch once the change is on `main`.
 
-6. Right before pushing an app or workflow change, run
+   **Fork PR checks** and _Labs checks_ remain optional when their additional
+   platform coverage is needed; do not dispatch them routinely after local
+   validation. Unattended syncs retain their hosted checks. A matching hosted
+   `fork-checks` pass can also satisfy the release gate.
+
+   For an upstream PR, prefer upstream CI over duplicate fork jobs for the
+   same coverage. Confirm the run covers the current PR head (or its tested
+   merge commit), and count only checks that actually ran and passed. Record
+   their SHA, results and links. When integrating into the fork, validate the
+   fork-specific differences locally and record a receipt for the resulting
+   commit; an upstream pass alone does not validate a different fork commit.
+
+6. Right before pushing an app change, run
    `fork/scripts/sync-before-push.sh` so the release builds on upstream's
    newest nightly. It returns at once when main already has it; otherwise it
    runs **Fork sync** (or joins a running one) and waits for a clean merge to
@@ -217,10 +239,11 @@ attempt at the previous one.
    worktree with `git push origin HEAD:main` (a plain push: it must fast-forward).
    **Fork release**
    waits 15 minutes (the `fork-release-delay` environment's wait timer), runs
-   the checks, then builds and publishes, about 30 minutes in all. It skips the
-   checks when Fork PR checks already passed on the exact commit it releases,
-   so push the checked commit itself when `origin/main` has not moved; a rebase
-   gives a new commit, which the release checks again. The wait is
+   the validation gate, then builds and publishes. It skips hosted checks when a
+   local receipt or matching hosted pass exists on the exact release commit.
+   Record the receipt after any rebase and before the main push; otherwise
+   the release falls back to the hosted matrix. Both the normal release and
+   Labs fallback use this gate. The wait is
    short because a fork push is a change you want soon; it batches a quick
    follow-up or another thread's push close behind. Upstream syncs wait far
    longer (_Syncing with upstream_). A newer push cancels the older run at any
@@ -229,13 +252,20 @@ attempt at the previous one.
    If the push is rejected because another thread pushed first,
    `git fetch origin`, rebase onto `origin/main`, and push again. After the
    wait, Fork release compares files with the newest published release and
-   skips the rest when only `fork/*.md` differs, so docs pushes don't release.
+   skips the rest when only workflows, actions or `fork/` differ.
+
+   For a CI-only push, fetch current `origin/main`, confirm no open `fork-sync`
+   issue, rebase and validate the tooling instead of dispatching Fork sync.
+   If you added an upstream workflow, run
+   `bash fork/scripts/disable-upstream-workflows.sh` after pushing; CI-only
+   pushes deliberately have no release job to disable it. Sync promotions
+   handle this automatically.
 
    Fork release and Fork PR checks first check a job budget
    (`fork/scripts/job-budget.sh`): once the fork's workflows have run 150 jobs
    in the last 24 hours (`FORK_JOB_BUDGET` repository variable), they fail
-   before the checks and builds start. A full release uses 16 jobs (9 when it
-   reuses passed checks), a check run 8; a blocked run uses 1. If
+   before the checks and builds start. Local validation saves the hosted check
+   matrix; release builds still count against this budget. If
    one fails this way, rerun it once older runs age out rather than pushing
    again to retry.
 
@@ -314,7 +344,9 @@ that limitation explicitly; do not claim the issue is being watched.
 
 ### Labs checks: Lazarus, then Blacksmith
 
-`Alb11747-Labs/t3code` runs the same checks without the fork's job budget. By
+`Alb11747-Labs/t3code` runs the same checks without the fork's job budget.
+Agents normally use local validation; this is an optional hosted fallback,
+not a required step when the fork's budget is exhausted. By
 default Quality, Tests and Web tests run on self-hosted runners on Lazarus (label
 `lazarus-linux`; setup, security and operations are in
 `Agents/Setup/GitHubRunners/README.md` in Sync), and the three server shards
@@ -419,7 +451,7 @@ job is free in the public Labs repository and spends no Blacksmith usage;
 GitHub's own concurrency and rate limits are why the rest stays on Blacksmith.
 
 Install the reviewed `fork-release.yml`, `release-desktop.yml`, and
-`fork/scripts/{release-fallback,publish-release,release-notes}.cjs` on Labs
+`fork/scripts/{release-fallback,publish-release,release-notes,release-changes}.cjs` on Labs
 `main`, preserving the separately maintained Labs checks workflow. Copy the
 fork's four public `CLERK_*` / `RELAY_URL` repository variables to Labs so builds
 retain T3 Connect. Do not copy any fork secrets.
@@ -486,17 +518,17 @@ label, or request review for an upstream PR.
    (`upstream` = pingdotgg). Fix exactly one underlying problem, with focused
    tests, following `AGENTS.md`.
 3. Finish local validation and review, then push the branch to the fork
-   (`git push origin fix/<slug>`) and run
-   upstream's checks on it (see step 5 of _Adding a change_ to wait for the run):
-   `gh workflow run fork-pr-checks.yml -R Alb11747/t3code -f ref=fix/<slug>`.
-   Upstream holds CI on PRs from unvouched contributors at "action required"
-   until a maintainer approves the run, so don't count on upstream CI; the
-   fork run is your evidence. Validate locally first, and rerun it once per
-   finished round of pushes, not after each push; every run is seven jobs.
+   (`git push origin fix/<slug>`). Retain the exact SHA and local validation
+   report for the PR's verification section.
+   Once the PR is open, use upstream CI for overlapping coverage instead of
+   dispatching Fork PR checks. Upstream may hold CI at "action required" until
+   a maintainer approves it; use the local report while approval is pending.
+   Dispatch fork checks only for additional hosted coverage that is needed,
+   once per finished round rather than every push.
 4. Before opening the upstream PR, fetch and rebase onto latest `upstream/main`
    and recheck whether upstream has fixed the bug in the meantime. If so, sync
    instead of opening the PR. If rebasing changed HEAD, rerun affected checks,
-   push the revised branch with an explicit lease, and repeat step 3's fork checks
+   push the revised branch with an explicit lease, and update step 3's local report
    for that revision. Prepare the PR body and triage the branch and drafted body;
    resolve any gaps before creating an issue or opening the PR.
 
@@ -506,7 +538,7 @@ label, or request review for an upstream PR.
    (`.github/ISSUE_TEMPLATE/via-triage.yml`) and redact secrets and home directory
    paths from quoted evidence. Include the proposed fix, links to the published
    fork branch and its comparison against upstream `main`, and the validation
-   results and fork checks run. Explain that the prepared fix is available for
+   results and any hosted checks run. Explain that the prepared fix is available for
    maintainers to consider; they decide whether to use it or take another approach.
    This gives their issue workflow the PR's context from the start. Do not create
    a duplicate issue when an existing one covers the bug.
@@ -515,7 +547,7 @@ label, or request review for an upstream PR.
    language (`fix(web): …`) and the template's sections: **Problem**,
    **Change**, **Scope and approval** (link the issue, or explain why a tiny
    obvious fix needs none), and **Verification** (focused tests and
-   manual checks with results, the fork checks run link, what you couldn't
+   manual checks with results, any hosted checks run link, what you couldn't
    check; before/after screenshots for UI). End with the model and harness
    that did the work. Add the new issue link to the drafted body, then open the PR:
    `gh pr create -R pingdotgg/t3code --base main --head Alb11747:fix/<slug> --title "…" --body-file pr.md`.
@@ -576,7 +608,8 @@ maintenance after their initial submission. Handle existing conflicts, check
 failures and actionable review findings with the `babysit-pr` skill, then leave
 the watching Sol thread's `watch_pull_request` (step 5 of _Fixing bugs_) active
 until the PR merges or closes. Fix and push scoped follow-ups, use an explicit lease after rebasing,
-and run **Fork PR checks** once the follow-ups for a round are pushed. After the
+and update local validation for the finished round. Reuse upstream CI for
+overlapping coverage; additional fork hosted checks are optional. After the
 fork release, update the fork's copy only for follow-ups that _Release
 lineage_ allows, once that round settles.
 Maintenance does not authorize merging.
@@ -598,8 +631,9 @@ loop can also stop a watch; inspect the reported reason before restarting it.
 Register a PR opened outside T3 with `link_pull_request` and `watch_pull_request`
 in a maintenance thread. Watches cover registered PRs; they do not discover new
 PRs on GitHub or wake merely because a conflict-free branch falls behind upstream.
-Upstream CI awaiting maintainer approval is not validation; use the fork's
-check run as evidence and retain the approval gate as an unresolved limitation.
+Upstream CI awaiting maintainer approval is not validation; use the exact-commit
+local report as evidence, optionally supplemented by hosted checks, and retain
+the approval gate as an unresolved limitation.
 
 ## Syncing with upstream
 

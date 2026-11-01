@@ -345,6 +345,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
+      actions: write
       contents: read
       issues: write
       pull-requests: write
@@ -377,6 +378,9 @@ jobs:
           # The lease alone would allow a rewind; main only ever fast-forwards.
           git merge-base --is-ancestor "$expected" "$CANDIDATE_SHA" || { echo "::error::Candidate does not contain main."; exit 1; }
           git push --force-with-lease="main:$expected" "$remote" "$CANDIDATE_SHA:refs/heads/main"
+
+      - name: Disable upstream workflows, including CI-only syncs
+        run: bash fork/scripts/disable-upstream-workflows.sh
 
       - name: Close review PR and tracking issue
         run: |

@@ -9,6 +9,8 @@ the sync script deletes the line of a change whose upstream PR merged. Closing
 an issue alone does not revert a patch. See `fork/README.md` for how to add or drop
 an entry.
 
+- `fix(fork): accept local validation and skip CI-only releases`: records an exact-commit local validation report as the normal agent release gate, keeps hosted checks for unattended fallback, and excludes workflows, actions and fork tooling from app releases while preserving stale-source and rename checks. Fork-only. Issue: none linked. PR: none yet
+
 - `fix(server): place missed steers in their follow-up run`: moves a user message's timeline position into the run that receives it when steering falls through to a new turn, preserving streaming-item positions. Related issue: https://github.com/pingdotgg/t3code/issues/23403. PR: https://github.com/pingdotgg/t3code/pull/27982
 - `fix(web,mobile): new threads in a repository group open in the first-added project`: when several clones of one repository share a sidebar group on a machine (such as agent-made clones with the same origin), new threads and the draft's machine picker target the project added first instead of whichever clone the project list happens to put first. Issue: none linked. PR: none yet
 - `fix(server): recognize invalid worktree gitfiles during cleanup`: treats Git's invalid gitfile diagnostic as a missing repository, keeping the worktree with the existing repository-changed reason instead of failing cleanup; restores the existing regression test on newer Git. Issue: none linked. PR: none yet

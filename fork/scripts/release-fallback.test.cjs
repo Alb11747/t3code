@@ -74,6 +74,7 @@ function publisher(
     main = sha,
     mainAfterUpload,
     changedFiles = ["apps/server/source.ts"],
+    comparison = "ahead",
   } = {},
 ) {
   const calls = [];
@@ -96,8 +97,8 @@ function publisher(
       ]);
     if (endpoint.includes("/compare/"))
       return JSON.stringify({
-        status: "ahead",
-        files: changedFiles.map((filename) => ({ filename })),
+        status: comparison,
+        files: changedFiles.map((file) => (typeof file === "string" ? { filename: file } : file)),
       });
     throw new Error(`Unexpected test API call: ${endpoint}`);
   };
@@ -148,6 +149,8 @@ test("existing releases and newer source prevent any release writes", (t) => {
     { releases: [{ tag_name: `v${version}`, draft: false }] },
     { releases: [{ tag_name: `v${version.replace("fork.1", "fork.2")}`, draft: false }] },
     { main: "b".repeat(40) },
+    { main: "b".repeat(40), changedFiles: ["fork/README.md"], comparison: "diverged" },
+    { main: "b".repeat(40), changedFiles: Array(300).fill("fork/README.md") },
   ]) {
     const p = publisher(fixtureData, overrides);
     assert.throws(p.execute, /already exists|Main changed|refusing to roll/);
@@ -163,16 +166,32 @@ test("missing native archive or desktop package prevents release creation", (t) 
   assert.equal(p.calls.length, 0);
 });
 
-test("source changes during upload keep the draft private; docs-only changes may publish", (t) => {
+test("source changes during upload keep the draft private; CI-only changes may publish", (t) => {
   const fixtureData = fixture(t);
   const stale = publisher(fixtureData, { mainAfterUpload: "b".repeat(40) });
   assert.throws(stale.execute, /Main changed/);
   assert.ok(stale.calls.some((args) => args[1] === "upload"));
   assert.ok(!stale.calls.some((args) => args[1] === "edit"));
-  const docs = publisher(fixtureData, {
-    mainAfterUpload: "b".repeat(40),
-    changedFiles: ["fork/README.md"],
-  });
-  docs.execute();
-  assert.ok(docs.calls.some((args) => args[1] === "edit"));
+  for (const changedFiles of [
+    ["fork/README.md"],
+    [
+      ".github/workflows/fork-checks.yml",
+      ".github/actions/setup-ci-deps/action.yml",
+      "fork/scripts/local-validation.cjs",
+    ],
+    [{ filename: "fork/scripts/new.cjs", previous_filename: ".github/actions/old.cjs" }],
+  ]) {
+    const p = publisher(fixtureData, { mainAfterUpload: "b".repeat(40), changedFiles });
+    p.execute();
+    assert.ok(p.calls.some((args) => args[1] === "edit"));
+  }
+  for (const changedFiles of [
+    [".github/workflows/fork-checks.yml", "apps/server/source.ts"],
+    [{ filename: "fork/scripts/moved.cjs", previous_filename: "apps/server/source.ts" }],
+    [{ filename: "apps/server/source.ts", previous_filename: "fork/scripts/moved.cjs" }],
+  ]) {
+    const p = publisher(fixtureData, { mainAfterUpload: "b".repeat(40), changedFiles });
+    assert.throws(p.execute, /Main changed/);
+    assert.ok(!p.calls.some((args) => args[1] === "edit"));
+  }
 });

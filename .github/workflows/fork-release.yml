@@ -16,7 +16,9 @@ on:
   push:
     branches: [main]
     paths-ignore:
-      - "fork/*.md"
+      - ".github/workflows/**"
+      - ".github/actions/**"
+      - "fork/**"
   workflow_dispatch:
     inputs:
       blocked_run_id:
@@ -49,7 +51,7 @@ jobs:
   #
   # It also disables upstream workflows that a sync or push added: they need
   # upstream's runners or credentials, or automate upstream's issues, and stay
-  # active until disabled. Every change to main passes through here.
+  # active until disabled. Sync promotion also does this for CI-only syncs.
   #
   # It checks the job budget too, rather than a separate job: a push blocked by
   # the budget then costs one job, which lets an exhausted budget recover
@@ -63,10 +65,8 @@ jobs:
     permissions:
       actions: write
       contents: read
-      statuses: read
     outputs:
       release: ${{ steps.changes.outputs.release }}
-      checked: ${{ steps.checked.outputs.checked }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -77,20 +77,16 @@ jobs:
       - name: Disable upstream workflows
         run: |
           set -euo pipefail
-          gh workflow list --all --limit 500 --json path,state --jq '.[] | select(.state == "active") | .path' |
-            while read -r path; do
-              case "$(basename "$path")" in
-                fork-* | release-desktop.yml) ;;
-                *) gh workflow disable "$(basename "$path")" ;;
-              esac
-            done
+          gh api -H "Accept: application/vnd.github.raw" \
+            "repos/$GITHUB_REPOSITORY/contents/fork/scripts/disable-upstream-workflows.sh?ref=$GITHUB_SHA" > "$RUNNER_TEMP/disable-upstream-workflows.sh"
+          bash "$RUNNER_TEMP/disable-upstream-workflows.sh"
 
       # paths-ignore compares against where the old and new history split, so
-      # folding a fork/*.md fix into an older commit still starts a release.
+      # folding a CI-only fix into an older commit can still start a release.
       # Compare files with the newest published release instead; only tree
       # objects are fetched.
       - id: changes
-        name: Skip docs-only changes
+        name: Skip CI-only changes
         run: |
           set -euo pipefail
           last=$(gh release list --exclude-drafts --limit 100 --json tagName,publishedAt \
@@ -102,9 +98,12 @@ jobs:
             git fetch --quiet --no-tags --depth=1 --filter=blob:none origin \
               "refs/tags/$last:refs/last" "$GITHUB_SHA:refs/head"
             # Assigned first so a failed diff fails the job instead of skipping.
-            changed=$(git diff --name-only --no-renames refs/last refs/head -- . ':(glob,exclude)fork/*.md')
-            if [[ -z $changed ]]; then
-              echo "Only fork/*.md changed since $last; skipping the release."
+            git diff --name-only --no-renames -z refs/last refs/head > "$RUNNER_TEMP/release-paths"
+            gh api -H "Accept: application/vnd.github.raw" \
+              "repos/$GITHUB_REPOSITORY/contents/fork/scripts/release-changes.cjs?ref=$GITHUB_SHA" > "$RUNNER_TEMP/release-changes.cjs"
+            changed=$(node "$RUNNER_TEMP/release-changes.cjs" "$RUNNER_TEMP/release-paths")
+            if [[ $changed == false ]]; then
+              echo "Only workflows, actions or fork tooling changed since $last; skipping the release."
               release=false
             fi
           fi
@@ -117,30 +116,6 @@ jobs:
           gh api -H "Accept: application/vnd.github.raw" \
             "repos/$GITHUB_REPOSITORY/contents/fork/scripts/job-budget.sh?ref=$GITHUB_SHA" > "$RUNNER_TEMP/job-budget.sh"
           bash "$RUNNER_TEMP/job-budget.sh"
-
-      # Fork checks sets a `fork-checks` status on a commit once every check
-      # passed there, naming the commit its workflow file came from. When a sync
-      # candidate or Fork PR checks run already passed on this exact commit,
-      # with the same checks this commit defines, running them again proves
-      # nothing new.
-      - id: checked
-        name: Reuse checks that passed on this commit
-        if: steps.changes.outputs.release == 'true'
-        run: |
-          set -euo pipefail
-          checks_file=.github/workflows/fork-checks.yml
-          status=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status" \
-            --jq '.statuses[] | select(.context == "fork-checks" and .state == "success") | .description')
-          checked=false
-          if [[ $status =~ ^checks@([0-9a-f]{40})$ ]]; then
-            used=$(gh api "repos/$GITHUB_REPOSITORY/contents/$checks_file?ref=${BASH_REMATCH[1]}" --jq .sha)
-            here=$(gh api "repos/$GITHUB_REPOSITORY/contents/$checks_file?ref=$GITHUB_SHA" --jq .sha)
-            if [[ $used == "$here" ]]; then
-              checked=true
-              echo "Fork checks already passed on $GITHUB_SHA; skipping them."
-            fi
-          fi
-          echo "checked=$checked" >> "$GITHUB_OUTPUT"
 
   fallback:
     name: Verify budget fallback
@@ -176,11 +151,16 @@ jobs:
       needs.fallback.result == 'success')
     runs-on: ${{ github.repository == 'Alb11747/t3code' && 'ubuntu-24.04' || vars.FORK_RELEASE_LINUX_RUNNER || 'blacksmith-2vcpu-ubuntu-2404' }}
     timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      statuses: read
     outputs:
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
       name: ${{ steps.meta.outputs.name }}
       sha: ${{ steps.meta.outputs.sha }}
+      checked: ${{ steps.checked.outputs.checked }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -191,6 +171,15 @@ jobs:
             /*
             !/.repos/
           sparse-checkout-cone-mode: false
+
+      - id: checked
+        name: Reuse exact-commit local validation or hosted checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          checked=$(node fork/scripts/local-validation.cjs check "$(git rev-parse HEAD)")
+          echo "checked=$checked" >> "$GITHUB_OUTPUT"
 
       - uses: ./.github/actions/setup-ci-deps
         with:
@@ -260,10 +249,10 @@ jobs:
 
   checks:
     name: Checks
-    needs: [settle, preflight]
+    needs: [preflight]
     # Explicit status checks allow the skipped alternate release path, while
-    # preserving an exact-source pass reused by the normal fork release.
-    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.settle.outputs.checked != 'true' }}
+    # preserving exact-source validation reused by either release path.
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.preflight.outputs.checked != 'true' }}
     permissions:
       contents: read
       statuses: write
@@ -278,8 +267,8 @@ jobs:
   # the jobs below test results explicitly.
   build_bundle:
     name: Build JS bundle
-    needs: [settle, preflight, checks]
-    if: ${{ !cancelled() && needs.preflight.result == 'success' && (needs.checks.result == 'success' || (needs.checks.result == 'skipped' && needs.settle.outputs.checked == 'true')) }}
+    needs: [preflight, checks]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && (needs.checks.result == 'success' || (needs.checks.result == 'skipped' && needs.preflight.outputs.checked == 'true')) }}
     runs-on: ${{ github.repository == 'Alb11747/t3code' && 'ubuntu-24.04' || vars.FORK_RELEASE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 45
     # T3 Connect needs upstream's Clerk/relay deployment. These optional

@@ -3,7 +3,7 @@ name: Fork checks
 # The release gate from upstream's release.yml (quality, tests, sharded server
 # tests) on GitHub-hosted runners, which this fork has instead of Blacksmith.
 # Called by fork-sync.yml before promoting a sync, by fork-pr-checks.yml, and
-# by fork-release.yml before publishing.
+# by fork-release.yml when no exact-commit validation has been recorded.
 #
 # When every check passes on a ref given as a full commit SHA, the record job
 # sets a `fork-checks` commit status on that commit, naming the commit this
