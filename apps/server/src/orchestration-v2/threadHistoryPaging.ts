@@ -501,25 +501,10 @@ function isLocalProjectedRow(
   return row.visibility === "local" || String(row.sourceThreadId) === String(projection.thread.id);
 }
 
-/**
- * Small items clients need outside the visible window: later result pages need interrupt
- * requests for attempt/run reducers, and pending requests read their prompt from their card.
- */
-function isWindowDependency(
-  item: OrchestrationV2TurnItem,
-  pendingRequestIds: ReadonlySet<string>,
-): boolean {
-  return (
-    item.type === "run_interrupt_request" ||
-    ((item.type === "approval_request" || item.type === "user_input_request") &&
-      pendingRequestIds.has(item.requestId))
-  );
-}
-
-function retainedDependencyTurnItems(
+/** Retain small requests outside the visible window; later result pages still need them for attempt/run reducers. */
+function retainedInterruptRequestTurnItems(
   projection: OrchestrationV2ThreadProjection,
   visible: ReadonlyArray<OrchestrationV2ProjectedTurnItem>,
-  pendingRequestIds: ReadonlySet<string>,
 ): OrchestrationV2TurnItem[] {
   const visibleLocalIds = new Set<string>();
   for (const row of visible) {
@@ -530,7 +515,7 @@ function retainedDependencyTurnItems(
 
   const retained: OrchestrationV2TurnItem[] = [];
   for (const item of projection.turnItems) {
-    if (!isWindowDependency(item, pendingRequestIds)) {
+    if (item.type !== "run_interrupt_request") {
       continue;
     }
     if (visibleLocalIds.has(String(item.id))) {
@@ -648,15 +633,10 @@ export function buildBoundedThreadProjection(input: {
   };
   const latestLocalTurnOrdinal = computeLatestLocalTurnOrdinal(input.projection.turnItems);
 
-  const pendingRequestIds = new Set<string>(
-    controlProjection.runtimeRequests.flatMap((request) =>
-      request.status === "pending" ? [request.id] : [],
-    ),
-  );
   const dependencyReserve = (() => {
     let reserve = 0;
     for (const item of controlProjection.turnItems) {
-      if (isWindowDependency(item, pendingRequestIds)) {
+      if (item.type === "run_interrupt_request") {
         reserve += bytesOfJson(item);
       }
     }
@@ -668,9 +648,10 @@ export function buildBoundedThreadProjection(input: {
     turnItems: [],
     visibleTurnItems: [],
   });
-  // Keep the control-only window minimum, but required dependency cards claim their reserve first.
+  // Control state (checkpoint file lists, the latest task list) cannot be paged, so it may claim at most
+  // half the budget; past that the window would shrink to the one row every page admits.
   const windowBudget = Math.max(
-    dependencyReserve === 0 ? policy.maxEncodedBytes / 2 : 0,
+    policy.maxEncodedBytes / 2,
     policy.maxEncodedBytes - dependencyReserve - controlBytes - 1_024,
   );
   const windowPolicy: ThreadHistoryPagePolicy = { ...policy, maxEncodedBytes: windowBudget };
@@ -683,10 +664,9 @@ export function buildBoundedThreadProjection(input: {
   });
   const visibleTurnItems = renumberPositions(window.items);
   const windowTurnItems = localTurnItemsForVisibleWindow(controlProjection, visibleTurnItems);
-  const dependencyTurnItems = retainedDependencyTurnItems(
+  const dependencyTurnItems = retainedInterruptRequestTurnItems(
     controlProjection,
     visibleTurnItems,
-    pendingRequestIds,
   );
   const turnItemById = new Map<string, OrchestrationV2TurnItem>();
   for (const item of windowTurnItems) {
