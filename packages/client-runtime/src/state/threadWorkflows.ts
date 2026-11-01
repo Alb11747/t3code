@@ -24,6 +24,7 @@ const MERGE_BACK_BLOCKING_RUN_STATUSES = new Set<Run["status"]>([
 
 export interface QueuedThreadRun {
   readonly run: Run;
+  readonly delivery: "pending" | "queued";
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly messageId: Message["id"];
@@ -153,13 +154,14 @@ export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQu
     const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
     return {
       run,
+      delivery: message?.atToolBoundary === true ? "pending" : "queued",
       // A queued guest message shows the guest's words; the agent still gets the attributed text.
       text: message?.context?.guest?.text ?? message?.text ?? "Queued message",
       attachments: message?.attachments ?? [],
       messageId: run.userMessageId,
       ...(message?.context ? { context: message.context } : {}),
       ...(message ? { message } : {}),
-    };
+    } satisfies QueuedThreadRun;
   });
 
   return {

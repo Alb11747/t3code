@@ -124,8 +124,9 @@ export function QueuedRunsControl({
     (message) => message.inputIntent === "queued_turn" && !acknowledgedMessageIds.has(message.id),
   );
   const items = [
-    ...queued.map(({ run, text, attachments, context, message }, serverIndex) => ({
+    ...queued.map(({ run, text, attachments, context, message, delivery }, serverIndex) => ({
       key: run.id,
+      delivery,
       message,
       runId: run.id,
       messageId: run.userMessageId,
@@ -145,6 +146,7 @@ export function QueuedRunsControl({
     })),
     ...optimisticQueued.map((message) => ({
       key: message.id,
+      delivery: "queued" as const,
       message: undefined,
       runId: null,
       messageId: null,
@@ -227,22 +229,31 @@ export function QueuedRunsControl({
 
   const collapsible = items.length > QUEUE_VISIBLE_ROWS;
   const visibleItems = collapsible && !showAll ? items.slice(0, QUEUE_VISIBLE_ROWS - 1) : items;
+  const hasPending = items.some((item) => item.delivery === "pending");
+  const hasQueued = items.some((item) => item.delivery !== "pending");
+  const heading = hasPending
+    ? hasQueued
+      ? "Pending and queued messages"
+      : "Pending messages"
+    : "Queued messages";
 
   return (
     <section
-      aria-label={`${items.length} pending message${items.length === 1 ? "" : "s"}`}
+      aria-label={heading}
       data-thread-queue="true"
       // Anchors the sr-only live region; unanchored, it escapes the timeline scroller and makes the chat column scroll.
       className="relative mx-auto flex w-full max-w-(--chat-content-max-width) flex-col gap-2 pb-4"
     >
       <span className="sr-only" aria-live="polite">
-        {items.length} pending
+        {items.length} messages awaiting delivery
       </span>
       <h3 className="self-end pe-1 text-xs">
         <Tooltip>
-          <TooltipTrigger render={<InlineButton tone="muted" />}>Pending messages</TooltipTrigger>
+          <TooltipTrigger render={<InlineButton tone="muted" />}>{heading}</TooltipTrigger>
           <TooltipPopup>
-            Messages are delivered when the agent can safely receive them.
+            {hasPending ? "Messages are delivered when the agent can safely receive them." : null}
+            {hasPending && hasQueued ? <br /> : null}
+            {hasQueued ? "Queued messages wait for a later turn." : null}
           </TooltipPopup>
         </Tooltip>
       </h3>
@@ -256,15 +267,19 @@ export function QueuedRunsControl({
                 ),
               ).trim();
           const isEditing = item.runId !== null && item.runId === props.editingRunId;
+          const deliveryLabel = item.delivery === "pending" ? "Pending" : "Queued";
           return (
             <li
               key={item.key}
-              aria-label={`Pending message ${position + 1} of ${items.length}, not sent`}
+              aria-label={`${deliveryLabel} message ${position + 1} of ${items.length}, not sent`}
               aria-posinset={position + 1}
               aria-setsize={items.length}
               aria-current={isEditing ? "true" : undefined}
               className="group/queued flex w-full flex-col items-end gap-1 transition-opacity duration-150 ease-out starting:opacity-0 motion-reduce:transition-none"
             >
+              {hasPending && hasQueued ? (
+                <span className="pe-1 text-xs text-muted-foreground">{deliveryLabel}</span>
+              ) : null}
               <QueuedMessage
                 environmentId={props.environmentId}
                 message={item.message}
@@ -310,7 +325,7 @@ export function QueuedRunsControl({
                     <Button
                       size="xs"
                       variant="ghost"
-                      aria-label="Cancel editing pending message"
+                      aria-label={`Cancel editing ${deliveryLabel.toLowerCase()} message`}
                       onClick={props.onCancelEdit}
                     >
                       Cancel
@@ -324,7 +339,7 @@ export function QueuedRunsControl({
                         <Button
                           size="icon-xs"
                           variant="ghost-muted"
-                          aria-label="Edit pending message"
+                          aria-label={`Edit ${deliveryLabel.toLowerCase()} message`}
                           disabled={
                             item.runId === null ||
                             !item.editable ||
@@ -356,7 +371,7 @@ export function QueuedRunsControl({
                           <Button
                             size="icon-xs"
                             variant="ghost-muted"
-                            aria-label="Remove pending message"
+                            aria-label={`Remove ${deliveryLabel.toLowerCase()} message`}
                             disabled={item.runId === null || busyRunId !== null}
                             onClick={() => {
                               if (item.runId !== null) void remove(item.runId);
@@ -366,7 +381,7 @@ export function QueuedRunsControl({
                       >
                         <XIcon />
                       </TooltipTrigger>
-                      <TooltipPopup>Remove pending message</TooltipPopup>
+                      <TooltipPopup>Remove {deliveryLabel.toLowerCase()} message</TooltipPopup>
                     </Tooltip>
                   </>
                 )}
@@ -385,7 +400,7 @@ export function QueuedRunsControl({
             onPointerDown={(event) => event.preventDefault()}
             onClick={() => setShowAll((value) => !value)}
           >
-            {showAll ? "Show fewer" : `Show all ${items.length} pending`}
+            {showAll ? "Show fewer" : `Show all ${items.length} messages`}
             <ChevronDownIcon
               aria-hidden
               className={cn(

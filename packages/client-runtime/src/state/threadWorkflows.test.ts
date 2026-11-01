@@ -148,7 +148,7 @@ describe("thread workflows", () => {
             },
           ],
         },
-        { id: "message-later", text: "Later" },
+        { id: "message-later", text: "Later", atToolBoundary: true },
       ],
       providerTurns: [
         {
@@ -173,9 +173,9 @@ describe("thread workflows", () => {
       ],
     } as never);
 
-    expect(state.queuedRuns.map(({ run, text }) => [run.id, text])).toEqual([
-      ["first", "First"],
-      ["later", "Later"],
+    expect(state.queuedRuns.map(({ run, text, delivery }) => [run.id, text, delivery])).toEqual([
+      ["first", "First", "queued"],
+      ["later", "Later", "pending"],
     ]);
     expect(state.queuedRuns.map(({ attachments }) => attachments.map(({ id }) => id))).toEqual([
       ["attachment-first"],
