@@ -416,36 +416,26 @@ export const make = Effect.gen(function* () {
       Effect.map((enabled) => enabled.some(Boolean)),
     );
 
+  const canAutoPull = (remote: VcsStatusRemoteResult | null, autoPullEnabled: boolean) =>
+    remote !== null &&
+    remote.hasUpstream &&
+    remote.aheadCount === 0 &&
+    remote.behindCount > 0 &&
+    autoPullEnabled;
+
   const maybeAutoPull = Effect.fn("VcsStatusBroadcaster.maybeAutoPull")(function* (
     cwd: string,
     remoteRead: CachedRemoteStatus | null,
     autoPullEnabled: boolean,
-    freshLocal?: VcsStatusLocalResult,
+    local: VcsStatusLocalResult | null,
   ) {
     const remote = remoteRead?.value ?? null;
     let pullAttempted = false;
     return yield* Effect.gen(function* () {
-      if (
-        remote === null ||
-        !remote.hasUpstream ||
-        remote.aheadCount > 0 ||
-        remote.behindCount <= 0 ||
-        !autoPullEnabled
-      ) {
+      if (!canAutoPull(remote, autoPullEnabled)) {
         return null;
       }
 
-      const local =
-        freshLocal ??
-        (yield* workflow.invalidateLocalStatus(cwd).pipe(
-          Effect.andThen(workflow.localStatus({ cwd })),
-          Effect.catch((error) =>
-            Effect.logWarning("Automatic project pull guard scan failed", {
-              cwdLength: cwd.length,
-              errorTag: error._tag,
-            }).pipe(Effect.as(null)),
-          ),
-        ));
       if (
         local === null ||
         !local.isRepo ||
@@ -495,7 +485,16 @@ export const make = Effect.gen(function* () {
           options?.refreshUpstream !== false &&
           (yield* isAutoPullEnabled(options?.policyCwds ?? [cwd]));
         // Base refs and merge bases can move without changing divergence counts.
-        const local = yield* refreshLocalStatusCore(cwd);
+        const local = yield* refreshLocalStatusCore(cwd).pipe(
+          Effect.catch((error) =>
+            canAutoPull(remoteRead?.value ?? null, autoPullEnabled)
+              ? Effect.logWarning("Automatic project pull guard scan failed", {
+                  cwdLength: cwd.length,
+                  errorTag: error._tag,
+                }).pipe(Effect.as(null))
+              : Effect.fail(error),
+          ),
+        );
         const pulled = yield* maybeAutoPull(cwd, remoteRead, autoPullEnabled, local);
         if (pulled !== null) return pulled.remote;
         return yield* updateCachedRemoteStatus(cwd, remoteRead, { publish: true });

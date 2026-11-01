@@ -490,11 +490,15 @@ describe("VcsStatusBroadcaster", () => {
     },
   );
 
-  it.effect(
-    "background refresh publishes remote changes when the optional pull guard scan fails",
-    () => {
+  it.effect.each([
+    { autoPullEnabled: true, aheadCount: 0, expected: "updated" },
+    { autoPullEnabled: false, aheadCount: 0, expected: "failed" },
+    { autoPullEnabled: true, aheadCount: 1, expected: "failed" },
+  ] as const)(
+    "background scan failure with auto-pull=$autoPullEnabled and ahead=$aheadCount is $expected",
+    ({ autoPullEnabled, aheadCount, expected }) => {
       let guardScanFails = false;
-      let remote = { ...baseRemoteStatus, behindCount: 2 };
+      let remote = { ...baseRemoteStatus, aheadCount, behindCount: 2 };
       let pullCalls = 0;
       const outcome = Deferred.makeUnsafe<"updated" | "failed">();
       const warnings: Array<ReadonlyArray<unknown>> = [];
@@ -509,7 +513,7 @@ describe("VcsStatusBroadcaster", () => {
         Layer.provide(layerBackgroundPolicy(() => true)),
         Layer.provide(
           Layer.succeed(VcsStatusBroadcaster.VcsAutoPullPolicy, {
-            isEnabled: () => Effect.succeed(true),
+            isEnabled: () => Effect.succeed(autoPullEnabled),
           }),
         ),
         Layer.provide(
@@ -551,17 +555,22 @@ describe("VcsStatusBroadcaster", () => {
         ).pipe(Effect.forkScoped);
         yield* Deferred.await(subscribed);
         guardScanFails = true;
-        remote = { ...remoteStatusWithPr, behindCount: 2 };
+        remote = { ...remoteStatusWithPr, aheadCount, behindCount: 2 };
         yield* TestClock.adjust(Duration.minutes(1));
-        assert.equal(yield* Deferred.await(outcome), "updated");
+        assert.equal(yield* Deferred.await(outcome), expected);
         assert.equal(pullCalls, 0);
-        assert.deepStrictEqual((yield* broadcaster.getStatus({ cwd: "/repo" })).pr, remote.pr);
+        assert.deepStrictEqual(
+          (yield* broadcaster.getStatus({ cwd: "/repo" })).pr,
+          expected === "updated" ? remote.pr : baseRemoteStatus.pr,
+        );
         assert.deepStrictEqual(
           warnings.find((message) => message[0] === "Automatic project pull guard scan failed"),
-          [
-            "Automatic project pull guard scan failed",
-            { cwdLength: "/repo".length, errorTag: "GitManagerError" },
-          ],
+          expected === "updated"
+            ? [
+                "Automatic project pull guard scan failed",
+                { cwdLength: "/repo".length, errorTag: "GitManagerError" },
+              ]
+            : undefined,
         );
       }).pipe(
         Effect.scoped,
