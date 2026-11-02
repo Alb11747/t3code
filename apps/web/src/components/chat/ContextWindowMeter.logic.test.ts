@@ -90,6 +90,16 @@ describe("resume compaction", () => {
     expect(
       resolveResumeCompactionProviderThread({ providerThreads, threadId, instanceId }),
     ).toEqual(replacement);
+    const mostRecentlyRun = { ...source, lastRunOrdinal: 2 };
+    expect(
+      resolveResumeCompactionProviderThread({
+        providerThreads: providerThreads.map((thread) =>
+          thread === source ? mostRecentlyRun : thread,
+        ),
+        threadId,
+        instanceId,
+      }),
+    ).toEqual(mostRecentlyRun);
     expect(
       resolveResumeCompactionProviderThread({
         providerThreads,

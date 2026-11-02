@@ -125,6 +125,7 @@ export function resolveResumeCompactionProviderThread(input: {
       )
       .toSorted(
         (left, right) =>
+          (right.lastRunOrdinal ?? 0) - (left.lastRunOrdinal ?? 0) ||
           DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
       )[0] ?? null
   );
