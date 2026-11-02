@@ -34,6 +34,7 @@ import {
   promoteQueuedRun,
   resumeThreadQueue,
   retryWorkspacePreparation,
+  retryRun,
   linkThreadPullRequest,
   respondToThreadApproval,
   respondToThreadUserInput,
@@ -260,6 +261,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     startTurn: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:start-turn",
       execute: startThreadTurn,
+      scheduler,
+      concurrency,
+    }),
+    retryRun: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:retry-run",
+      execute: retryRun,
       scheduler,
       concurrency,
     }),

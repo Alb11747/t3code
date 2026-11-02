@@ -731,6 +731,7 @@ const make = Effect.gen(function* () {
         );
       case "prepared-run.release":
       case "prepared-run.retry":
+      case "run.retry":
         return orchestrator
           .getThreadRecords(command.threadId, ["runs"], { runIds: [command.runId] })
           .pipe(

@@ -15,6 +15,10 @@
       "types": "./src/orchestrationV2ThreadError.ts",
       "import": "./src/orchestrationV2ThreadError.ts"
     },
+    "./orchestrationV2ClaudeThinkingRecovery": {
+      "types": "./src/orchestrationV2ClaudeThinkingRecovery.ts",
+      "import": "./src/orchestrationV2ClaudeThinkingRecovery.ts"
+    },
     "./delimitedPreview": {
       "types": "./src/delimitedPreview.ts",
       "import": "./src/delimitedPreview.ts"

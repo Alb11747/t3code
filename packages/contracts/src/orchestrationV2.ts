@@ -756,6 +756,7 @@ export const OrchestrationV2RunAttempt = Schema.Struct({
   providerThreadId: ProviderThreadId,
   providerTurnId: Schema.NullOr(ProviderTurnId),
   reason: Schema.Literals(["initial", "steering_restart", "retry", "provider_recovery"]),
+  recovery: Schema.optional(Schema.Literal("drop_thinking")),
   status: Schema.Literals([
     "pending",
     "running",
@@ -3261,6 +3262,14 @@ export const OrchestrationV2Command = Schema.Union([
     runId: RunId,
     reason: Schema.optional(Schema.String),
     holdQueue: Schema.optional(Schema.Boolean),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("run.retry"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    attemptId: RunAttemptId,
+    recovery: Schema.Literal("drop_thinking"),
   }),
   Schema.Struct({
     type: Schema.Literal("queued-message.promote-to-steer"),

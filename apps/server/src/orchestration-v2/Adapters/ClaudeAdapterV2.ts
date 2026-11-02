@@ -12,6 +12,7 @@ import {
   claudeCompactionPromptCaching,
   uncachedClaudeEnvironment,
 } from "./ClaudePromptCaching.ts";
+import { claudeThinkingRecoveryEnvironment } from "./ClaudeThinkingRecovery.ts";
 import {
   dynamicToolTitle,
   formatReadToolLabel,
@@ -2710,6 +2711,9 @@ const decodeClaudeSubagentCacheSettings = Schema.decodeUnknownEffect(
     ),
   ),
 );
+const decodeClaudeRecoverySettingSources = Schema.decodeUnknownEffect(
+  Schema.Array(Schema.Literals(["user", "project", "local"])),
+);
 const decodeClaudeEnvSettings = Schema.decodeUnknownEffect(
   fromLenientJson(
     Schema.StructWithRest(
@@ -3713,7 +3717,11 @@ function isClaudeActiveSteeringAbortResult(message: SDKResultMessage): boolean {
 function isClaudeProviderContinuationTurn(
   input: ProviderAdapter.ProviderAdapterV2TurnInput,
 ): boolean {
-  return input.message.createdBy === "agent" && input.message.creationSource === "provider";
+  return (
+    input.recovery === undefined &&
+    input.message.createdBy === "agent" &&
+    input.message.creationSource === "provider"
+  );
 }
 
 function isClaudePromptEchoGatedFrame(message: SDKMessage): boolean {
@@ -10548,15 +10556,20 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           });
           const queryPolicyKey =
             claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides) +
-            (promptCaching === "disabled" ? ":prompt-caching-disabled" : "");
+            (promptCaching === "disabled" ? ":prompt-caching-disabled" : "") +
+            (turnInput.recovery === "drop_thinking" ? `:drop-thinking:${turnInput.attemptId}` : "");
           const compiledSelection = compileClaudeModelSelection(turnInput.modelSelection);
-          const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
+          const resumeSessionAt =
+            turnInput.recovery === "drop_thinking"
+              ? undefined
+              : yield* getNativeConversationHeadId(turnInput.providerThread);
           const existing = yield* Ref.get(queryContext);
           // Continuations drain existing output without prompting; retain the live process regardless of selection.
           if (
             existing !== null &&
             existing.nativeThreadId === nativeThreadId &&
             !existing.stopping &&
+            !existing.queryPolicyKey.includes(":drop-thinking:") &&
             isClaudeProviderContinuationTurn(turnInput)
           ) {
             return existing;
@@ -10662,7 +10675,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.runtimePolicy.cwd,
             launchArgSettings,
           );
-          const queryOptions = makeClaudeQueryOptions({
+          let queryOptions = makeClaudeQueryOptions({
             modelSelection: turnInput.modelSelection,
             nativeThreadId,
             resume: shouldResume,
@@ -10703,6 +10716,63 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(appendSystemPromptFileText === undefined ? {} : { appendSystemPromptFileText }),
             ...(toolSearchOverride === undefined ? {} : { toolSearchOverride }),
           });
+          if (turnInput.recovery === "drop_thinking") {
+            const sourcesArg = queryOptions.extraArgs?.["setting-sources"];
+            const settingSources = yield* decodeClaudeRecoverySettingSources(
+              sourcesArg === undefined
+                ? (queryOptions.settingSources ?? ["user", "project", "local"])
+                : (sourcesArg ?? "").split(",").filter(Boolean),
+            );
+            const homeSettings =
+              customHome && settingSources.includes("user")
+                ? yield* fileSystem.readFileString(path.join(homePath, "settings.json")).pipe(
+                    Effect.flatMap(decodeClaudeEnvSettings),
+                    Effect.catchReason("PlatformError", "NotFound", () =>
+                      Effect.succeed({ env: undefined }),
+                    ),
+                  )
+                : undefined;
+            const resolved = yield* Effect.tryPromise(() =>
+              resolveClaudeSettings({
+                ...(turnInput.runtimePolicy.cwd === null
+                  ? {}
+                  : { cwd: turnInput.runtimePolicy.cwd }),
+                settingSources: customHome
+                  ? settingSources.filter((source) => source !== "user")
+                  : [...settingSources],
+              }),
+            );
+            const settingsEnv = {
+              ...homeSettings?.env,
+              ...resolved.effective.env,
+              ...launchArgSettings?.env,
+            };
+            const environment: NodeJS.ProcessEnv = { ...queryOptions.env };
+            for (const key of ["CLAUDE_CODE_EXTRA_BODY", "ANTHROPIC_BETAS"] as const) {
+              const value = settingsEnv[key];
+              if (typeof value === "string") environment[key] = value;
+            }
+            const recoveryEnv = claudeThinkingRecoveryEnvironment(
+              environment,
+              queryOptions.thinking?.type !== "disabled" &&
+                queryOptions.thinking?.display === "summarized",
+            );
+            // Flag settings outrank settings files; nothing is written to those files.
+            const flags = typeof queryOptions.settings === "object" ? queryOptions.settings : {};
+            queryOptions = {
+              ...queryOptions,
+              env: recoveryEnv,
+              settings: {
+                ...flags,
+                env: {
+                  ...flags.env,
+                  CLAUDE_CODE_EXTRA_BODY: recoveryEnv.CLAUDE_CODE_EXTRA_BODY,
+                  ANTHROPIC_BETAS: recoveryEnv.ANTHROPIC_BETAS,
+                },
+              },
+              promptSuggestions: false,
+            };
+          }
           // Native steering cancels tools; root tool-batch and Stop hooks take queued
           // agent text as context instead. Claims commit before SDK delivery, so a crash
           // can lose claimed text. Cancellation stops the claim before its next promotion.
@@ -11097,21 +11167,33 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const userMessage =
               promptUuid === null
                 ? null
-                : yield* makeClaudeUserMessageWithAttachments({
-                    text: applyClaudePromptEffortPrefix(
-                      turnInput.message.text,
-                      compileClaudeModelSelection(turnInput.modelSelection).promptEffort,
-                    ),
-                    attachments: turnInput.message.attachments,
-                    attachmentsDir,
-                    fileSystem,
-                    pdfReservation,
-                    skills: yield* userInvocableSkills(turnInput.runtimePolicy.cwd),
-                    uuid: promptUuid,
-                  }).pipe(
-                    Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-                    Effect.provideService(Path.Path, path),
-                  );
+                : turnInput.recovery === "drop_thinking"
+                  ? {
+                      type: "user" as const,
+                      message: {
+                        role: "user" as const,
+                        content: "Continue from where you stopped.",
+                      },
+                      parent_tool_use_id: null,
+                      session_id: nativeThreadId,
+                      uuid: promptUuid,
+                      isSynthetic: true,
+                    }
+                  : yield* makeClaudeUserMessageWithAttachments({
+                      text: applyClaudePromptEffortPrefix(
+                        turnInput.message.text,
+                        compileClaudeModelSelection(turnInput.modelSelection).promptEffort,
+                      ),
+                      attachments: turnInput.message.attachments,
+                      attachmentsDir,
+                      fileSystem,
+                      pdfReservation,
+                      skills: yield* userInvocableSkills(turnInput.runtimePolicy.cwd),
+                      uuid: promptUuid,
+                    }).pipe(
+                      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+                      Effect.provideService(Path.Path, path),
+                    );
             const querySession = yield* openQuery(turnInput, nativeThreadId, promptCaching);
             const context: ActiveClaudeTurnContext = {
               input: turnInput,

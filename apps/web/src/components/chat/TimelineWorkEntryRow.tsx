@@ -1,4 +1,6 @@
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
+import { DroppedThinkingRetryAction } from "./DroppedThinkingRetryAction";
+import { isClaudeThinkingPrefixMismatch } from "@t3tools/shared/orchestrationV2ClaudeThinkingRecovery";
 import { WorkLogDetails, WorkLogRow } from "./WorkLog";
 import {
   getQuestionAnswerPreview,
@@ -261,6 +263,14 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
               Retry
             </Button>
           </div>
+        ) : null}
+        {failureItem.runId !== null && isClaudeThinkingPrefixMismatch(failureItem.failure) ? (
+          <DroppedThinkingRetryAction
+            environmentId={ctx.activeThreadEnvironmentId}
+            threadId={failureItem.threadId}
+            runId={failureItem.runId}
+            nodeId={failureItem.nodeId}
+          />
         ) : null}
       </WorkLogRow>
     );

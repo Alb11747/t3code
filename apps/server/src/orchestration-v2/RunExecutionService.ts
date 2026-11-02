@@ -1694,6 +1694,7 @@ export const layer: Layer.Layer<
           text: entry.text,
         }));
         const turnInput = {
+          ...(input.attempt.recovery === undefined ? {} : { recovery: input.attempt.recovery }),
           appThread: input.appThread,
           threadId: input.run.threadId,
           runId: input.run.id,

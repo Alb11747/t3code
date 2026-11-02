@@ -1,4 +1,6 @@
 import { Button } from "../../components/ui/Button";
+import { DroppedThinkingRetryAction } from "./DroppedThinkingRetryAction";
+import { isClaudeThinkingPrefixMismatch } from "@t3tools/shared/orchestrationV2ClaudeThinkingRecovery";
 import { ThreadSubagentGroup } from "./thread-subagent-group";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import {
@@ -1000,6 +1002,14 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
               environmentId={props.environmentId}
               threadId={failureItem.threadId}
               runId={failureItem.runId}
+            />
+          ) : null}
+          {failureItem.runId !== null && isClaudeThinkingPrefixMismatch(failureItem.failure) ? (
+            <DroppedThinkingRetryAction
+              environmentId={props.environmentId}
+              threadId={failureItem.threadId}
+              runId={failureItem.runId}
+              nodeId={failureItem.nodeId}
             />
           ) : null}
         </View>

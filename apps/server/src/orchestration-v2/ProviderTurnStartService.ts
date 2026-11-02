@@ -120,6 +120,7 @@ export interface ProviderTurnStartServiceV2Shape {
   readonly start: (input: {
     readonly threadId: ThreadId;
     readonly runId: RunId;
+    readonly attemptId?: OrchestrationV2RunAttempt["id"];
     readonly willRetry?: boolean;
   }) => Effect.Effect<void, ProviderTurnStartError>;
 }
@@ -340,6 +341,7 @@ export const layer: Layer.Layer<
     const start = Effect.fn("orchestrationV2.providerTurnStart.start")(function* (input: {
       readonly threadId: ThreadId;
       readonly runId: RunId;
+      readonly attemptId?: OrchestrationV2RunAttempt["id"];
       readonly willRetry?: boolean;
     }) {
       const { runId } = input;
@@ -348,7 +350,10 @@ export const layer: Layer.Layer<
       if (run === undefined) {
         return yield* new ProviderTurnStartError({ runId, cause: `Run ${runId} was not found.` });
       }
-      if (run.status !== "starting") {
+      if (
+        run.status !== "starting" ||
+        (input.attemptId !== undefined && input.attemptId !== run.activeAttemptId)
+      ) {
         return;
       }
       const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
@@ -392,6 +397,7 @@ export const layer: Layer.Layer<
         ContextHandoffService.isSideChatContextHandoff(handoff);
       const handoffs = projection.contextHandoffs.filter(
         (handoff) =>
+          attempt?.recovery === undefined &&
           !isSideChatHandoff(handoff) &&
           (handoff.transferId == null || !subagentResultTransfers.has(handoff.transferId)) &&
           isPendingForRun(handoff),
@@ -399,12 +405,14 @@ export const layer: Layer.Layer<
       // Carried forward until a provider turn accepts it, also after a provider switch.
       const sideChatHandoff = projection.contextHandoffs.find(
         (handoff) =>
+          attempt?.recovery === undefined &&
           isSideChatHandoff(handoff) &&
           handoff.delivery === undefined &&
           isPendingForRun(handoff, true),
       );
       const nativeForkTransfer = projection.contextTransfers.find(
         (transfer) =>
+          attempt?.recovery === undefined &&
           transfer.type === "fork" &&
           transfer.targetThreadId === input.threadId &&
           transfer.targetRunId === run.id &&
@@ -551,7 +559,11 @@ export const layer: Layer.Layer<
           });
         },
       );
-      if (message.attachments.length === 0 && message.text.trimStart().startsWith("/")) {
+      if (
+        attempt.recovery === undefined &&
+        message.attachments.length === 0 &&
+        message.text.trimStart().startsWith("/")
+      ) {
         const isEmptyCompaction =
           message.text.trim().toLowerCase() === "/compact" && !projection.hasConversation;
         // Preparation may select a new provider; account commands still target the last native session.
@@ -846,13 +858,17 @@ export const layer: Layer.Layer<
       });
       let effectiveHandoffs = handoffs;
       let resumeFellBack = false;
-      const userText = projectComposerContextForProvider({
-        text: message.text,
-        records: message.context?.records ?? [],
-      });
+      const userText =
+        attempt.recovery === "drop_thinking"
+          ? "Continue from where you stopped."
+          : projectComposerContextForProvider({
+              text: message.text,
+              records: message.context?.records ?? [],
+            });
       // Codex and Claude parse /goal from the prompt, so it goes verbatim and history waits a turn.
       const goalDriver = session.driver === "codex" || session.driver === "claudeAgent";
-      const goalCommand = goalDriver && parseGoalCommand(message) !== null;
+      const goalCommand =
+        attempt.recovery === undefined && goalDriver && parseGoalCommand(message) !== null;
       // The provider turn marks cancellation work delivered; restart continuations use their own text or resume natively.
       const noteContinuation = isRestartNoteContinuation(
         run,
@@ -1132,6 +1148,17 @@ export const layer: Layer.Layer<
       let resumedHandoffContext: ReturnType<typeof handoffContextForThread> | undefined;
       let portableForkFallback: OrchestrationV2ContextHandoff | undefined;
       const loadedProviderThread = yield* Effect.gen(function* () {
+        if (attempt.recovery === "drop_thinking") {
+          resumedRetryHandoff = [];
+          return yield* loadFromProvider(
+            session.resumeThread({
+              providerThread,
+              threadId: projection.thread.id,
+              modelSelection: run.modelSelection,
+              runtimePolicy: resolvedRuntimePolicy,
+            }),
+          );
+        }
         if (nativeForkTransfer !== undefined) {
           const sourceProjection = yield* projectionStore.getThreadRecords(
             nativeForkTransfer.sourceThreadId,
@@ -1745,7 +1772,7 @@ export const layer: Layer.Layer<
         message: {
           messageId: message.id,
           text: userText,
-          attachments: message.attachments,
+          attachments: attempt.recovery === undefined ? message.attachments : [],
           createdBy: message.createdBy,
           creationSource: message.creationSource,
           ...(message.scheduledTaskId === undefined

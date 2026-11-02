@@ -95,6 +95,20 @@ credentials stay on Lazarus; signing in does not copy them to the computer. You 
 not need local providers just to control remote agents. Lazarus must stay running
 and reachable, and updating the computer app does not update Lazarus's server.
 
+## Recovering a Claude thinking-prefix failure
+
+When Claude rejects preserved thinking because its conversation prefix changed,
+the failure row offers **Retry with dropped thinking**. This explicit retry may
+run without earlier reasoning. It keeps the saved conversation, messages, tool
+results, signatures and files, and continues the failed turn without resending
+the original prompt. Later turns keep their normal preservation policy, so a
+later prefix mismatch may need another explicit recovery.
+
+This action uses Claude Code's native request controls and needs no special
+proxy. A gateway must forward the explicit thinking binding policy and beta
+header unchanged. Authentication, quota and corrupt-signature errors do not
+offer this recovery.
+
 ## Claude follow-ups during a running turn
 
 Choose **Steer** under **Settings → General → Follow-up behavior** to send

@@ -104,6 +104,7 @@ import * as PromptSuggestions from "../../provider/PromptSuggestions.ts";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ClaudeOrchestratorReplayHarness } from "./ClaudeAdapterV2.testkit.ts";
+import { runClaudeThinkingRecoverySuite } from "./ClaudeThinkingRecovery.fork.testkit.ts";
 import { provideDeterministicTestRuntime } from "../testkit/DeterministicRuntime.ts";
 import { runOrchestratorV2Scenario } from "../testkit/OrchestratorScenario.ts";
 import { layerProviderReplay } from "../testkit/ProviderReplayHarness.ts";
@@ -3194,7 +3195,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     ),
                   backgroundTasks: options?.backgroundTasks ?? (() => Effect.succeed(false)),
                   stopTask: options?.stopTask ?? (() => Effect.void),
-                  interrupt: Effect.void,
+                  interrupt: options?.interrupt ?? Effect.void,
                   close: Queue.shutdown(processMessages),
                 };
               }
@@ -3313,6 +3314,25 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       };
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
+
+  runClaudeThinkingRecoverySuite({
+    makeHarness: (environment, interrupt, launchArgs) =>
+      makeWakeHarnessWithOptions({
+        environment,
+        ...(interrupt === undefined ? {} : { interrupt }),
+        ...(launchArgs === undefined
+          ? {}
+          : { settings: { ...DEFAULT_CLAUDE_SETTINGS, launchArgs } }),
+        freshQueueOnReopen: true,
+        close: Queue.shutdown,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+        ),
+      ),
+    makeTurn: makeClaudeTestTurnInput,
+    makeResult: makeResultFrame,
+  });
 
   it.effect.each(["release-after", "cancel-after", "release-before", "resume-pending"] as const)(
     "keeps attachment reservations across compaction: %s boundary",

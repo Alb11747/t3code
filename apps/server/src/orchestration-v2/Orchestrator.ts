@@ -77,6 +77,7 @@ import {
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { modelSwitchSince } from "./modelSwitch.ts";
+import { claudeThinkingRecoveryTarget } from "@t3tools/shared/orchestrationV2ClaudeThinkingRecovery";
 import { recordThreadOpen } from "@t3tools/shared/paletteSearch";
 import {
   backgroundWorkHoldsCompletion,
@@ -575,6 +576,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "prepared-run.retry":
     case "subagent.stop":
     case "run.interrupt":
+    case "run.retry":
     case "queued-message.promote-to-steer":
     case "queued-run.start":
     case "queue.resume":
@@ -13567,6 +13569,132 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ]);
         }
         break;
+      case "run.retry": {
+        const projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+        const target = claudeThinkingRecoveryTarget(projection);
+        if (
+          target?.runId !== command.runId ||
+          target.attemptId !== command.attemptId ||
+          projection.runs.some(isActiveRun)
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "This failed Claude turn can no longer be retried with dropped thinking.",
+          });
+        }
+        const run = projection.runs.find((candidate) => candidate.id === target.runId)!;
+        const providerThread = projection.providerThreads.find(
+          (candidate) => candidate.id === run.providerThreadId,
+        )!;
+        const now = yield* DateTime.now;
+        const attemptOrdinal =
+          Math.max(
+            ...projection.attempts
+              .filter((candidate) => candidate.runId === run.id)
+              .map((candidate) => candidate.attemptOrdinal),
+          ) + 1;
+        const attemptId = idAllocator.derive.runAttempt({ runId: run.id, attemptOrdinal });
+        const rootNodeId = idAllocator.derive.rootNodeAttempt({ runId: run.id, attemptOrdinal });
+        const policy = yield* runtimePolicy
+          .resolve({ thread: projection.thread, modelSelection: run.modelSelection })
+          .pipe(mapDispatchError(command));
+        const checkpointScope = yield* checkpointService
+          .prepareRootRunScope({
+            threadId: command.threadId,
+            runId: run.id,
+            rootNodeId,
+            providerThreadId: providerThread.id,
+            cwd:
+              policy.cwd ??
+              projection.thread.worktreePath ??
+              projection.providerSessions.find(
+                (session) => session.id === providerThread.providerSessionId,
+              )!.cwd,
+            createdAt: now,
+          })
+          .pipe(mapDispatchError(command));
+        const emitEvent = emit(events, command);
+        yield* emitEvent({
+          type: "run.updated",
+          threadId: command.threadId,
+          runId: run.id,
+          occurredAt: now,
+          payload: {
+            ...run,
+            activeAttemptId: attemptId,
+            rootNodeId,
+            status: "starting",
+            completedAt: null,
+          },
+        });
+        yield* emitEvent({
+          type: "run-attempt.created",
+          threadId: command.threadId,
+          runId: run.id,
+          occurredAt: now,
+          payload: {
+            id: attemptId,
+            runId: run.id,
+            attemptOrdinal,
+            rootNodeId,
+            providerInstanceId: run.providerInstanceId,
+            providerThreadId: providerThread.id,
+            providerTurnId: null,
+            reason: "retry",
+            recovery: command.recovery,
+            status: "pending",
+            startedAt: null,
+            completedAt: null,
+          },
+        });
+        yield* emitEvent({
+          type: "node.updated",
+          threadId: command.threadId,
+          runId: run.id,
+          occurredAt: now,
+          payload: {
+            id: rootNodeId,
+            threadId: command.threadId,
+            runId: run.id,
+            parentNodeId: null,
+            rootNodeId,
+            kind: "root_turn",
+            status: "pending",
+            countsForRun: true,
+            providerThreadId: providerThread.id,
+            providerTurnId: null,
+            nativeItemRef: null,
+            runtimeRequestId: null,
+            checkpointScopeId: checkpointScope.id,
+            startedAt: null,
+            completedAt: null,
+          },
+        });
+        yield* emitEvent({
+          type: "checkpoint-scope.created",
+          threadId: command.threadId,
+          runId: run.id,
+          occurredAt: now,
+          payload: checkpointScope,
+        });
+        yield* emitEvent({
+          type: "thread.metadata-updated",
+          threadId: command.threadId,
+          occurredAt: now,
+          payload: { ...projection.thread, settledOverride: null, settledAt: null, updatedAt: now },
+        });
+        yield* Ref.update(effects, (existing) => [
+          ...existing,
+          {
+            id: `effect:${command.commandId}:provider-turn.start:${run.id}`,
+            commandId: command.commandId,
+            threadId: command.threadId,
+            request: { type: "provider-turn.start", runId: run.id, attemptId },
+          } satisfies PendingOrchestrationEffectV2,
+        ]);
+        break;
+      }
       case "thread.stop":
         cancelUnsettledEffects = yield* dispatchThreadStop(command, events, effects);
         break;

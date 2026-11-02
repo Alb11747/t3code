@@ -21,6 +21,7 @@ import {
   type ProviderInteractionMode,
   type ProviderUserInputAnswers,
   type RunId,
+  type RunAttemptId,
   type RuntimeMode,
   type RuntimeRequestId,
   type ThreadId,
@@ -191,6 +192,23 @@ export interface InterruptThreadTurnInput extends ThreadCommandInput {
   readonly subagentId?: NodeId;
   readonly turnId?: string;
 }
+
+export interface RetryRunInput extends ThreadCommandInput {
+  readonly runId: RunId;
+  readonly attemptId: RunAttemptId;
+  readonly recovery: "drop_thinking";
+}
+
+export const retryRun = Effect.fn("EnvironmentCommands.retryRun")(function* (input: RetryRunInput) {
+  return yield* dispatch({
+    type: "run.retry",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    runId: input.runId,
+    attemptId: input.attemptId,
+    recovery: input.recovery,
+  });
+});
 
 export interface RespondToThreadApprovalInput extends ThreadCommandInput {
   readonly requestId: RuntimeRequestId;

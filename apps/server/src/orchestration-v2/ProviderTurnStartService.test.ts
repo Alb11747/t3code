@@ -1039,6 +1039,53 @@ function makeLocalCommandHarness(input: {
   };
 }
 
+effectIt.effect.each([false, true])(
+  "explicit thinking recovery preserves native history when resume fails: %s",
+  (resumeFails) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Do the work once.",
+        nativeTurn: true,
+        ...(resumeFails ? { historyReadFailureAfterFallback: "must not read history" } : {}),
+      });
+      harness.updateProjection((projection) => ({
+        ...projection,
+        attempts: projection.attempts.map((attempt) => ({ ...attempt, recovery: "drop_thinking" })),
+        providerThreads: projection.providerThreads.map((thread) => ({
+          ...thread,
+          nativeThreadRef: {
+            driver: thread.driver,
+            nativeId: "existing-session",
+            strength: "strong",
+          },
+        })),
+      }));
+      const savedMessages = harness.projection().messages;
+      yield* harness.start;
+      expect(harness.projection().messages).toEqual(savedMessages);
+      if (resumeFails) {
+        expect(harness.startRootRun).not.toHaveBeenCalled();
+        expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+        expect(harness.projection().providerThreads.at(-1)?.nativeThreadRef?.nativeId).toBe(
+          "existing-session",
+        );
+      } else {
+        expect(harness.startRootRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            attempt: expect.objectContaining({ recovery: "drop_thinking" }),
+            message: expect.objectContaining({
+              text: "Continue from where you stopped.",
+              attachments: [],
+            }),
+            providerThread: expect.objectContaining({
+              nativeThreadRef: expect.objectContaining({ nativeId: "existing-session" }),
+            }),
+          }),
+        );
+      }
+    }),
+);
+
 effectIt.effect(
   "recovers the local or pushed thread tip, else the current branch, remote default, or detached HEAD",
   () =>
