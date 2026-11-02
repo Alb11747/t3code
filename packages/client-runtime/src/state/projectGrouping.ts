@@ -273,11 +273,14 @@ function shouldReplacePhysicalProjectWinner<TProject extends EnvironmentProject>
 }
 
 // Agents add their own clones of repositories the user already added; the
-// first-added project stays a group's target for new threads in its environment.
-export function isOlderProject(
-  candidate: Pick<EnvironmentProject, "id" | "createdAt">,
-  current: Pick<EnvironmentProject, "id" | "createdAt">,
+// first-added active project stays a group's target for new threads in its environment.
+export function shouldPreferProjectForNewThread(
+  candidate: Pick<EnvironmentProject, "id" | "createdAt" | "archivedAt">,
+  current: Pick<EnvironmentProject, "id" | "createdAt" | "archivedAt">,
 ): boolean {
+  const candidateArchived = candidate.archivedAt != null;
+  const currentArchived = current.archivedAt != null;
+  if (candidateArchived !== currentArchived) return !candidateArchived;
   const delta = Date.parse(candidate.createdAt) - Date.parse(current.createdAt);
   return delta < 0 || (delta === 0 && candidate.id < current.id);
 }
@@ -374,7 +377,9 @@ export function buildProjectGroups<TProject extends EnvironmentProject>(input: {
     const representative = members
       .map((member) => member.project)
       .filter((project) => project.environmentId === representativeEnvironmentId)
-      .reduce((current, candidate) => (isOlderProject(candidate, current) ? candidate : current));
+      .reduce((current, candidate) =>
+        shouldPreferProjectForNewThread(candidate, current) ? candidate : current,
+      );
     return {
       key,
       label:

@@ -10,7 +10,7 @@ import {
 import type { EnvironmentOption } from "../components/BranchToolbar.logic";
 import {
   deriveLogicalProjectKeyFromSettings,
-  isOlderProject,
+  shouldPreferProjectForNewThread,
   selectProjectGroupingSettings,
 } from "@t3tools/client-runtime/state/project-grouping";
 import { useProjects } from "../state/entities";
@@ -64,7 +64,8 @@ export function useLogicalProjectEnvironments(
     for (const p of allProjects) {
       if (deriveLogicalProjectKeyFromSettings(p, projectGroupingSettings) !== logicalKey) continue;
       const current = projectByEnvironment.get(p.environmentId);
-      if (!current || isOlderProject(p, current)) projectByEnvironment.set(p.environmentId, p);
+      if (!current || shouldPreferProjectForNewThread(p, current))
+        projectByEnvironment.set(p.environmentId, p);
     }
     for (const p of projectByEnvironment.values()) pushEnvironment(p.environmentId, p.id);
   }

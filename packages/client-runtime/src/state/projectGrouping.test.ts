@@ -263,6 +263,24 @@ describe("buildProjectGroups", () => {
       ]);
       expect(groups[0]?.memberProjectRefs).toHaveLength(3);
       expect(groups[0]?.representative.id).toBe("t3code-3");
+
+      const archivedOldest = projects.map((project) => ({
+        ...project,
+        archivedAt: project.id === "t3code-3" ? "2026-07-02T00:00:00.000Z" : null,
+      }));
+      expect(
+        buildProjectGroups({ projects: archivedOldest, settings: settings(mode) })[0]
+          ?.representative.id,
+      ).toBe("t3code");
+      expect(
+        buildProjectGroups({
+          projects: archivedOldest.map((project) => ({
+            ...project,
+            archivedAt: "2026-07-02T00:00:00.000Z",
+          })),
+          settings: settings(mode),
+        })[0]?.representative.id,
+      ).toBe("t3code-3");
     }
   });
 
