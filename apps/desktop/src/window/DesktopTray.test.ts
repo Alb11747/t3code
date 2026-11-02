@@ -31,10 +31,11 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as DesktopClientSettings from "../settings/DesktopClientSettings.ts";
+import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopTray from "./DesktopTray.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
-const layerTest = (ico: Option.Option<string>) =>
+const layerTest = (ico: Option.Option<string>, enabled = false) =>
   DesktopTray.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -53,7 +54,13 @@ const layerTest = (ico: Option.Option<string>) =>
           iconPaths: Effect.succeed({ ico, icns: Option.none(), png: Option.none() }),
           resolveResourcePath: () => Effect.succeedNone,
         }),
-        Layer.mock(DesktopClientSettings.DesktopClientSettings)({ get: Effect.succeedNone }),
+        Layer.mock(DesktopClientSettings.DesktopClientSettings)({
+          get: Effect.succeedSome(closeToTray(enabled)),
+        }),
+        DesktopAppSettings.layerTest({
+          ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+          mainWindowHiddenToTray: true,
+        }),
         Layer.mock(DesktopWindow.DesktopWindow)({ activate: Effect.void }),
         Layer.mock(ElectronApp.ElectronApp)({ quit: Effect.void }),
       ),
@@ -70,6 +77,9 @@ describe("DesktopTray", () => {
       const tray = yield* DesktopTray.DesktopTray;
       const state = yield* DesktopState.DesktopState;
 
+      yield* tray.initialize;
+      assert.isTrue(yield* Ref.get(state.mainWindowHiddenToTray));
+
       yield* tray.configure(closeToTray(true));
       assert.isTrue(yield* Ref.get(state.closeToTray));
       assert.deepEqual(
@@ -80,7 +90,7 @@ describe("DesktopTray", () => {
       yield* tray.configure(closeToTray(false));
       assert.isFalse(yield* Ref.get(state.closeToTray));
       assert.equal(vi.mocked(trays[0]!.destroy).mock.calls.length, 1);
-    }).pipe(Effect.provide(layerTest(Option.some("C:\\T3\\resources\\icon.ico")))),
+    }).pipe(Effect.provide(layerTest(Option.some("C:\\T3\\resources\\icon.ico"), true))),
   );
 
   it.effect("keeps closing the window when no tray icon is available", () =>
@@ -89,9 +99,22 @@ describe("DesktopTray", () => {
       const tray = yield* DesktopTray.DesktopTray;
       const state = yield* DesktopState.DesktopState;
 
+      yield* tray.initialize;
+      assert.isFalse(yield* Ref.get(state.mainWindowHiddenToTray));
       yield* tray.configure(closeToTray(true));
       assert.isFalse(yield* Ref.get(state.closeToTray));
       assert.equal(trays.length, 0);
-    }).pipe(Effect.provide(layerTest(Option.none()))),
+    }).pipe(Effect.provide(layerTest(Option.none(), true))),
+  );
+
+  it.effect("ignores a saved tray state when close to tray is disabled", () =>
+    Effect.gen(function* () {
+      trays.length = 0;
+      const tray = yield* DesktopTray.DesktopTray;
+      const state = yield* DesktopState.DesktopState;
+      yield* tray.initialize;
+      assert.isFalse(yield* Ref.get(state.mainWindowHiddenToTray));
+      assert.equal(trays.length, 0);
+    }).pipe(Effect.provide(layerTest(Option.some("C:\\T3\\resources\\icon.ico")))),
   );
 });

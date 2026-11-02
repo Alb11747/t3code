@@ -530,6 +530,39 @@ describe("DesktopUpdates", () => {
     }),
   );
 
+  it.effect("waits for pending window state before handing an install to the updater", () =>
+    Effect.gen(function* () {
+      const flushing = yield* Deferred.make<void>();
+      const flushed = yield* Deferred.make<void>();
+      const installing = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        flushMainWindowBounds: Deferred.succeed(flushing, undefined).pipe(
+          Effect.andThen(Deferred.await(flushed)),
+        ),
+        quitAndInstall: Deferred.succeed(installing, undefined).pipe(Effect.asVoid),
+      });
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          yield* updates.configure;
+          harness.emit("update-downloaded", { version: "1.2.4" });
+          yield* flushCallbacks;
+          const install = yield* updates.install.pipe(Effect.forkScoped);
+          const first = yield* Effect.race(
+            Deferred.await(flushing).pipe(Effect.as("flush")),
+            Deferred.await(installing).pipe(Effect.as("install")),
+          );
+          assert.equal(first, "flush");
+          assert.equal(harness.quitAndInstalls(), 0);
+          yield* Deferred.succeed(flushed, undefined);
+          assert.isTrue((yield* Fiber.join(install)).accepted);
+          assert.equal(harness.quitAndInstalls(), 1);
+        }),
+      ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+    }),
+  );
+
   it.effect("keeps windows and restarts backends when quitAndInstall fails", () => {
     const harness = makeHarness({
       quitAndInstall: Effect.fail(

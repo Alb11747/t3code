@@ -13,6 +13,7 @@ import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopState from "../app/DesktopState.ts";
+import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
 import * as DesktopUpdates from "./DesktopUpdates.ts";
 
@@ -29,6 +30,7 @@ export interface UpdatesHarnessOptions {
   readonly downloadUpdate?: Effect.Effect<void>;
   readonly quitAndInstall?: Effect.Effect<void, ElectronUpdater.ElectronUpdaterQuitAndInstallError>;
   readonly stopBackend?: Effect.Effect<void>;
+  readonly flushMainWindowBounds?: Effect.Effect<void>;
   readonly startBackend?: Effect.Effect<void>;
   readonly backendDesiredRunning?: boolean;
   readonly backendInstances?: ReadonlyArray<DesktopBackendPool.DesktopBackendInstance>;
@@ -209,6 +211,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
           get: Effect.sync(() => testSettings),
           load: Effect.sync(() => testSettings),
           setMainWindowBounds: () => Effect.die("unexpected main window bounds update"),
+          setMainWindowHiddenToTray: () => Effect.die("unexpected tray window state update"),
           setServerExposureMode: () => Effect.die("unexpected server exposure update"),
           setTailscaleServe: () => Effect.die("unexpected Tailscale Serve update"),
           setUpdateChannel: (channel) =>
@@ -283,6 +286,11 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     Layer.provide(DesktopUpdatePolicy.layerTest(options.policy)),
     Layer.provideMerge(layerUpdater),
     Layer.provideMerge(layerWindow),
+    Layer.provide(
+      Layer.mock(DesktopWindow.DesktopWindow)({
+        flushMainWindowBounds: options.flushMainWindowBounds ?? Effect.void,
+      }),
+    ),
     Layer.provideMerge(layerBackend),
     Layer.provideMerge(DesktopState.layer),
     Layer.provideMerge(layerSettings),

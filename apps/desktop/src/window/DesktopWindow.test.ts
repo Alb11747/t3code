@@ -228,6 +228,7 @@ function layerTest(input: {
   readonly desktopSettings?: DesktopAppSettings.DesktopSettings;
   readonly mainWindowBoundsUpdates?: DesktopAppSettings.DesktopWindowBounds[];
   readonly mainWindowMaximizedUpdates?: boolean[];
+  readonly hiddenToTrayUpdates?: boolean[];
   readonly beforeMainWindowBoundsUpdate?: (
     bounds: DesktopAppSettings.DesktopWindowBounds,
   ) => Effect.Effect<void>;
@@ -245,6 +246,13 @@ function layerTest(input: {
   const layerDesktopAppSettings = Layer.succeed(DesktopAppSettings.DesktopAppSettings, {
     get: Effect.sync(() => desktopSettings),
     load: Effect.sync(() => desktopSettings),
+    setMainWindowHiddenToTray: (hidden) =>
+      Effect.sync(() => {
+        const changed = desktopSettings.mainWindowHiddenToTray !== hidden;
+        desktopSettings = { ...desktopSettings, mainWindowHiddenToTray: hidden };
+        input.hiddenToTrayUpdates?.push(hidden);
+        return { settings: desktopSettings, changed };
+      }),
     setMainWindowBounds: (bounds, isMaximized) =>
       Effect.gen(function* () {
         if (input.beforeMainWindowBoundsUpdate) {
@@ -908,10 +916,12 @@ describe("DesktopWindow", () => {
   it.effect("hides the main window on close to tray until quitting starts", () =>
     Effect.gen(function* () {
       const fakeWindow = makeFakeBrowserWindow();
+      const hiddenToTrayUpdates: boolean[] = [];
       const layer = layerTest({
         window: fakeWindow.window,
         createCount: yield* Ref.make(0),
         mainWindow: yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none()),
+        hiddenToTrayUpdates,
       });
 
       yield* Effect.gen(function* () {
@@ -928,14 +938,116 @@ describe("DesktopWindow", () => {
         close(userClose);
         assert.equal(userClose.preventDefault.mock.calls.length, 1);
         assert.equal(fakeWindow.hide.mock.calls.length, 1);
+        yield* desktopWindow.flushMainWindowBounds;
+        assert.deepEqual(hiddenToTrayUpdates, [true]);
+
+        fakeWindow.windowListeners.get("show")!();
+        yield* desktopWindow.flushMainWindowBounds;
+        assert.deepEqual(hiddenToTrayUpdates, [true, false]);
+
+        close(userClose);
+        yield* desktopWindow.flushMainWindowBounds;
+        assert.deepEqual(hiddenToTrayUpdates, [true, false, true]);
 
         yield* Ref.set(state.quitting, true);
         const quitClose = { preventDefault: vi.fn() };
         close(quitClose);
         assert.equal(quitClose.preventDefault.mock.calls.length, 0);
-        assert.equal(fakeWindow.hide.mock.calls.length, 1);
+        assert.equal(fakeWindow.hide.mock.calls.length, 2);
+        fakeWindow.windowListeners.get("show")!();
+        yield* desktopWindow.flushMainWindowBounds;
+        assert.deepEqual(hiddenToTrayUpdates, [true, false, true]);
       }).pipe(Effect.provide(layer));
     }),
+  );
+
+  it.effect.each([
+    { maximized: false, localEnvironmentEnabled: true, eagerStartup: false, reopen: "reveal" },
+    { maximized: true, localEnvironmentEnabled: true, eagerStartup: true, reopen: "activate" },
+    { maximized: true, localEnvironmentEnabled: true, eagerStartup: true, reopen: "show" },
+    { maximized: false, localEnvironmentEnabled: false, eagerStartup: false, reopen: "activate" },
+  ])(
+    "restores a tray-hidden window without revealing main or splash (%o)",
+    ({ maximized, localEnvironmentEnabled, eagerStartup, reopen }) =>
+      Effect.gen(function* () {
+        const fakeWindow = makeFakeBrowserWindow();
+        const createCount = yield* Ref.make(0);
+        const revealed: Electron.BrowserWindow[] = [];
+        const maximizedUpdates: boolean[] = [];
+        const layer = layerTest({
+          window: fakeWindow.window,
+          createCount,
+          mainWindow: yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none()),
+          desktopSettings: {
+            ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+            localEnvironmentEnabled,
+            mainWindowHiddenToTray: true,
+            mainWindowMaximized: maximized,
+          },
+          mainWindowMaximizedUpdates: maximizedUpdates,
+          onReveal: (window) => {
+            revealed.push(window);
+            fakeWindow.windowListeners.get("show")!();
+          },
+        });
+
+        yield* Effect.gen(function* () {
+          const windows = yield* DesktopWindow.DesktopWindow;
+          const state = yield* DesktopState.DesktopState;
+          yield* Ref.set(state.mainWindowHiddenToTray, true);
+          yield* windows.showConnectingSplash;
+          assert.equal(yield* Ref.get(createCount), 0);
+          if (eagerStartup) {
+            yield* windows.ensureMain;
+          } else if (localEnvironmentEnabled) {
+            yield* windows.handleBackendReady(new URL("http://127.0.0.1:3773"));
+          } else {
+            yield* windows.createMainIfBackendReady;
+          }
+          assert.equal(yield* Ref.get(createCount), 1);
+          fakeWindow.windowListeners.get("ready-to-show")!();
+          assert.deepEqual(revealed, []);
+          if (eagerStartup) {
+            yield* windows.handleBackendReady(new URL("http://127.0.0.1:3773"));
+            assert.equal(yield* Ref.get(createCount), 1);
+            assert.deepEqual(revealed, []);
+          }
+          assert.equal(fakeWindow.maximize.mock.calls.length, 0);
+          yield* windows.flushMainWindowBounds;
+          assert.deepEqual(maximizedUpdates, [maximized]);
+
+          if (reopen === "show") {
+            fakeWindow.windowListeners.get("show")!();
+          } else {
+            if (reopen === "reveal") yield* windows.revealOrCreateMain;
+            else yield* windows.activate;
+            assert.deepEqual(revealed, [fakeWindow.window]);
+          }
+          assert.isFalse(yield* Ref.get(state.mainWindowHiddenToTray));
+          assert.equal(fakeWindow.maximize.mock.calls.length, maximized ? 1 : 0);
+        }).pipe(Effect.provide(layer));
+      }),
+  );
+
+  it.effect(
+    "opens the connecting splash when activated from the tray before the backend is ready",
+    () =>
+      Effect.gen(function* () {
+        const splash = makeFakeBrowserWindow();
+        const main = makeFakeBrowserWindow();
+        const scenario = yield* makeSplashScenario([splash.window, main.window]);
+
+        yield* Effect.gen(function* () {
+          const windows = yield* DesktopWindow.DesktopWindow;
+          const state = yield* DesktopState.DesktopState;
+          yield* Ref.set(state.mainWindowHiddenToTray, true);
+          yield* windows.activate;
+          assert.isFalse(yield* Ref.get(state.mainWindowHiddenToTray));
+          assert.equal(yield* Ref.get(scenario.createCalls), 1);
+          yield* windows.handleBackendReady(new URL("http://127.0.0.1:3773"));
+          assert.equal(Option.getOrThrow(yield* Ref.get(scenario.mainWindow)), main.window);
+        }).pipe(Effect.provide(scenario.layer.pipe(Layer.merge(DesktopState.layer))));
+      }),
   );
 
   it.effect("persists normal bounds and state for a maximized window", () =>

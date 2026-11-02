@@ -13,6 +13,7 @@ import { makeComponentLogger } from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as DesktopClientSettings from "../settings/DesktopClientSettings.ts";
+import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
 /** Windows close-to-tray: the tray icon exists exactly while closing hides the main window. */
@@ -32,6 +33,7 @@ export const make = Effect.gen(function* () {
   const state = yield* DesktopState.DesktopState;
   const assets = yield* DesktopAssets.DesktopAssets;
   const clientSettings = yield* DesktopClientSettings.DesktopClientSettings;
+  const appSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   const electronApp = yield* ElectronApp.ElectronApp;
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
@@ -43,15 +45,12 @@ export const make = Effect.gen(function* () {
   };
   yield* Effect.addFinalizer(() => Effect.sync(destroyTray));
 
-  const showMainWindow = () => {
-    void runPromise(
-      desktopWindow.activate.pipe(
-        Effect.catch((error) =>
-          logTrayWarning("failed to show main window from tray", { message: error.message }),
-        ),
-      ),
-    );
-  };
+  const revealMainWindow = desktopWindow.activate.pipe(
+    Effect.catch((error) =>
+      logTrayWarning("failed to show main window from tray", { message: error.message }),
+    ),
+  );
+  const showMainWindow = () => void runPromise(revealMainWindow);
 
   const createTray = Effect.gen(function* () {
     const icon = (yield* assets.iconPaths).ico;
@@ -82,14 +81,24 @@ export const make = Effect.gen(function* () {
     if (enabled && tray === undefined) enabled = yield* createTray;
     if (!enabled) destroyTray();
     yield* Ref.set(state.closeToTray, enabled);
+    if (!enabled && (yield* Ref.get(state.mainWindowHiddenToTray))) {
+      yield* revealMainWindow;
+    }
   });
 
   return DesktopTray.of({
-    initialize: clientSettings.get.pipe(
-      Effect.flatMap((stored) =>
-        configure(Option.getOrElse(stored, () => DEFAULT_CLIENT_SETTINGS)),
+    initialize: Effect.gen(function* () {
+      const stored = yield* clientSettings.get;
+      yield* configure(Option.getOrElse(stored, () => DEFAULT_CLIENT_SETTINGS));
+      const settings = yield* appSettings.get;
+      yield* Ref.set(
+        state.mainWindowHiddenToTray,
+        (yield* Ref.get(state.closeToTray)) && settings.mainWindowHiddenToTray,
+      );
+    }).pipe(
+      Effect.catch((error) =>
+        logTrayWarning("failed to initialize tray", { message: error.message }),
       ),
-      Effect.ignore,
     ),
     configure,
   });

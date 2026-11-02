@@ -313,12 +313,29 @@ export const make = Effect.gen(function* () {
   const context = yield* Effect.context<DesktopWindowRuntimeServices>();
   const runFork = Effect.runForkWith(context);
   const runPromise = Effect.runPromiseWith(context);
+  const runSync = Effect.runSyncWith(context);
   const mainWindowMutex = yield* Semaphore.make(1);
   const pendingMainReveals = new WeakMap<Electron.BrowserWindow, Effect.Effect<void>>();
-  const revealMain = Effect.fn("desktop.window.revealMain")((window: Electron.BrowserWindow) =>
-    Effect.suspend(() => pendingMainReveals.get(window) ?? electronWindow.reveal(window)),
-  );
+  const revealMain = Effect.fn("desktop.window.revealMain")(function* (
+    window: Electron.BrowserWindow,
+  ) {
+    yield* Ref.set(desktopState.mainWindowHiddenToTray, false);
+    yield* pendingMainReveals.get(window) ?? electronWindow.reveal(window);
+  });
   let flushMainWindowBounds: Effect.Effect<void> = Effect.void;
+  let trayStatePersistFiber: Fiber.Fiber<void, never> | undefined;
+
+  const persistHiddenToTray = (hidden: boolean) => {
+    runSync(Ref.set(desktopState.mainWindowHiddenToTray, hidden));
+    trayStatePersistFiber = runFork(
+      desktopSettings.setMainWindowHiddenToTray(hidden).pipe(
+        Effect.catch((error) =>
+          logWindowWarning("failed to persist tray window state", { message: error.message }),
+        ),
+        Effect.asVoid,
+      ),
+    );
+  };
 
   const dismissConnectingSplash = Effect.gen(function* () {
     const splash = yield* Ref.getAndSet(splashWindowRef, Option.none());
@@ -423,6 +440,13 @@ export const make = Effect.gen(function* () {
     let boundsPersistFiber: Fiber.Fiber<void, never> | undefined;
     let pendingBoundsPersistFiber: Fiber.Fiber<void, never> | undefined;
     let boundsPersistenceEnabled = persistedBounds === null || restoredPersistedBounds;
+    // Maximizing reveals a hidden native window; defer it until the first reveal.
+    let pendingInitialMaximize = persistedSettings.mainWindowMaximized;
+    const restoreInitialMaximize = () => {
+      const maximize = pendingInitialMaximize;
+      pendingInitialMaximize = false;
+      if (maximize) window.maximize();
+    };
     const readPersistableBounds = (): DesktopAppSettings.DesktopWindowBounds | null => {
       if (window.isDestroyed()) {
         return null;
@@ -448,8 +472,9 @@ export const make = Effect.gen(function* () {
       if (bounds === null) {
         return pendingBoundsPersistFiber;
       }
+      const isMaximized = pendingInitialMaximize || window.isMaximized();
       pendingBoundsPersistFiber = runFork(
-        desktopSettings.setMainWindowBounds(bounds, window.isMaximized()).pipe(
+        desktopSettings.setMainWindowBounds(bounds, isMaximized).pipe(
           Effect.asVoid,
           Effect.catch((error) =>
             logWindowWarning("failed to persist main window bounds", {
@@ -689,11 +714,18 @@ export const make = Effect.gen(function* () {
     window.on("move", scheduleBoundsPersist);
     window.on("maximize", scheduleBoundsPersist);
     window.on("unmaximize", scheduleBoundsPersist);
+    window.on("show", () => {
+      if (!Ref.getUnsafe(desktopState.quitting)) {
+        restoreInitialMaximize();
+        persistHiddenToTray(false);
+      }
+    });
     window.on("close", (event) => {
       // Quitting destroys windows or sets `quitting` before they close, so only
       // a user close (X, Ctrl+W, taskbar) is turned into a hide.
       if (Ref.getUnsafe(desktopState.closeToTray) && !Ref.getUnsafe(desktopState.quitting)) {
         event.preventDefault();
+        persistHiddenToTray(true);
         window.hide();
       }
       runFork(flushBoundsPersist);
@@ -847,10 +879,11 @@ export const make = Effect.gen(function* () {
         (yield* Ref.get(desktopState.quitting))
       )
         return;
+      window.webContents.setBackgroundThrottling(true);
+      if (yield* Ref.get(desktopState.mainWindowHiddenToTray)) return;
       firstRevealComplete = true;
       pendingMainReveals.delete(window);
-      window.webContents.setBackgroundThrottling(true);
-      if (persistedSettings.mainWindowMaximized) window.maximize();
+      restoreInitialMaximize();
       yield* electronWindow.reveal(window);
       yield* dismissConnectingSplash;
     });
@@ -919,6 +952,7 @@ export const make = Effect.gen(function* () {
 
   const showConnectingSplash = Effect.gen(function* () {
     if (yield* Ref.get(desktopState.quitting)) return;
+    if (yield* Ref.get(desktopState.mainWindowHiddenToTray)) return;
     const existingSplash = yield* Ref.get(splashWindowRef);
     if (Option.isSome(existingSplash)) return;
     const existingWindow = yield* electronWindow.currentMainOrFirst;
@@ -1005,6 +1039,7 @@ export const make = Effect.gen(function* () {
     }),
     activate: Effect.gen(function* () {
       if (yield* Ref.get(desktopState.quitting)) return;
+      const wasHiddenToTray = yield* Ref.getAndSet(desktopState.mainWindowHiddenToTray, false);
       const existingWindow = yield* currentMainWindow;
       if (Option.isSome(existingWindow)) {
         yield* revealMain(existingWindow.value);
@@ -1021,6 +1056,7 @@ export const make = Effect.gen(function* () {
           yield* electronWindow.reveal(splash.value);
           return;
         }
+        if (wasHiddenToTray && (yield* waitingForBackend)) yield* showConnectingSplash;
       }
       yield* createMainIfBackendReady;
     }).pipe(Effect.withSpan("desktop.window.activate")),
@@ -1036,6 +1072,11 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("desktop.window.handleBackendNotReady"),
     ),
     flushMainWindowBounds: Effect.suspend(() => flushMainWindowBounds).pipe(
+      Effect.andThen(
+        Effect.suspend(() =>
+          trayStatePersistFiber === undefined ? Effect.void : Fiber.join(trayStatePersistFiber),
+        ),
+      ),
       Effect.withSpan("desktop.window.flushMainWindowBounds"),
     ),
     dispatchMenuAction: Effect.fn("desktop.window.dispatchMenuAction")(function* (action, options) {

@@ -34,6 +34,7 @@ import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
+import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
 import { normalizeDesktopUpdateReleaseNotes } from "./releaseNotes.ts";
 import { desktopUpdateChannelOf } from "@t3tools/shared/cliRelease";
@@ -374,6 +375,7 @@ export const make = Effect.gen(function* () {
   const desktopState = yield* DesktopState.DesktopState;
   const electronUpdater = yield* ElectronUpdater.ElectronUpdater;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
+  const desktopWindow = yield* DesktopWindow.DesktopWindow;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
@@ -829,6 +831,7 @@ export const make = Effect.gen(function* () {
             (instance) => instance.stop({ timeout: Duration.seconds(5) }),
             { concurrency: "unbounded" },
           );
+          yield* desktopWindow.flushMainWindowBounds;
           yield* electronUpdater.quitAndInstall({
             isSilent: true,
             isForceRunAfter: true,

@@ -97,6 +97,8 @@ through T3 Connect, leave the desktop app running with its local environment
 enabled, or keep `t3 serve` running in a terminal. To keep the desktop app running after closing its window, turn on
 **Settings → General → Behavior → Close to tray**. Click its notification-area
 icon to reopen the window, or right-click it and choose **Quit** to exit.
+If the window was hidden in the tray, the next launch stays in the tray too,
+including after an update or a PC restart.
 Linking T3 Connect does not configure automatic startup at Windows sign-in.
 
 `t3 up` installs the service when you set up T3 Connect, but the two are managed

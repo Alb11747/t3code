@@ -18,6 +18,7 @@ export class DesktopState extends Context.Service<
     readonly backendReady: Ref.Ref<boolean>;
     // Read synchronously by the main window's close handler; DesktopTray owns writes.
     readonly closeToTray: Ref.Ref<boolean>;
+    readonly mainWindowHiddenToTray: Ref.Ref<boolean>;
     readonly quitting: Ref.Ref<boolean>;
     readonly primaryBackendStartup: SubscriptionRef.SubscriptionRef<PrimaryBackendStartup>;
   }
@@ -26,6 +27,7 @@ export class DesktopState extends Context.Service<
 const make = Effect.all({
   backendReady: Ref.make(false),
   closeToTray: Ref.make(false),
+  mainWindowHiddenToTray: Ref.make(false),
   quitting: Ref.make(false),
   primaryBackendStartup: SubscriptionRef.make<PrimaryBackendStartup>({ _tag: "Starting" }),
 });

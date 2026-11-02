@@ -30,6 +30,7 @@ export interface DesktopSettings {
   readonly linuxPasswordStore: LinuxPasswordStorePreference;
   readonly mainWindowBounds: DesktopWindowBounds | null;
   readonly mainWindowMaximized: boolean;
+  readonly mainWindowHiddenToTray: boolean;
   readonly serverExposureMode: DesktopServerExposureMode;
   readonly tailscaleServeEnabled: boolean;
   readonly tailscaleServePort: number;
@@ -68,6 +69,7 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   linuxPasswordStore: DEFAULT_LINUX_PASSWORD_STORE,
   mainWindowBounds: null,
   mainWindowMaximized: false,
+  mainWindowHiddenToTray: false,
   serverExposureMode: "local-only",
   tailscaleServeEnabled: false,
   tailscaleServePort: DEFAULT_TAILSCALE_SERVE_PORT,
@@ -90,6 +92,7 @@ const DesktopSettingsDocument = Schema.Struct({
   linuxPasswordStore: Schema.optionalKey(Schema.Unknown),
   mainWindowBounds: Schema.optionalKey(Schema.NullOr(DesktopWindowBoundsDocument)),
   mainWindowMaximized: Schema.optionalKey(Schema.Boolean),
+  mainWindowHiddenToTray: Schema.optionalKey(Schema.Boolean),
   serverExposureMode: Schema.optionalKey(DesktopServerExposureModeSchema),
   tailscaleServeEnabled: Schema.optionalKey(Schema.Boolean),
   tailscaleServePort: Schema.optionalKey(Schema.Number),
@@ -149,6 +152,9 @@ export class DesktopAppSettings extends Context.Service<
     readonly setMainWindowBounds: (
       bounds: DesktopWindowBounds,
       isMaximized: boolean,
+    ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
+    readonly setMainWindowHiddenToTray: (
+      hidden: boolean,
     ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
     readonly setServerExposureMode: (
       mode: DesktopServerExposureMode,
@@ -219,6 +225,7 @@ function normalizeDesktopSettingsDocument(
     linuxPasswordStore: normalizeLinuxPasswordStorePreference(parsed.linuxPasswordStore),
     mainWindowBounds,
     mainWindowMaximized: mainWindowBounds !== null && parsed.mainWindowMaximized === true,
+    mainWindowHiddenToTray: parsed.mainWindowHiddenToTray === true,
     serverExposureMode:
       parsed.serverExposureMode === "network-accessible" ? "network-accessible" : "local-only",
     tailscaleServeEnabled: parsed.tailscaleServeEnabled === true,
@@ -251,6 +258,9 @@ function toDesktopSettingsDocument(
   }
   if (settings.mainWindowMaximized) {
     document.mainWindowMaximized = true;
+  }
+  if (settings.mainWindowHiddenToTray) {
+    document.mainWindowHiddenToTray = true;
   }
   if (settings.serverExposureMode !== defaults.serverExposureMode) {
     document.serverExposureMode = settings.serverExposureMode;
@@ -370,6 +380,12 @@ function setLocalEnvironmentEnabled(settings: DesktopSettings, enabled: boolean)
   return settings.localEnvironmentEnabled === enabled
     ? settings
     : { ...settings, localEnvironmentEnabled: enabled };
+}
+
+function setMainWindowHiddenToTray(settings: DesktopSettings, hidden: boolean): DesktopSettings {
+  return settings.mainWindowHiddenToTray === hidden
+    ? settings
+    : { ...settings, mainWindowHiddenToTray: hidden };
 }
 
 function applyWslWindowsFallback(settings: DesktopSettings): DesktopSettings {
@@ -534,6 +550,9 @@ export const make = Effect.gen(function* () {
         return yield* persist((settings) => setMainWindowBounds(settings, bounds, isMaximized));
       },
     ),
+    setMainWindowHiddenToTray: Effect.fn("desktop.settings.setMainWindowHiddenToTray")((hidden) =>
+      persist((settings) => setMainWindowHiddenToTray(settings, hidden)),
+    ),
     setServerExposureMode: Effect.fn("desktop.settings.setServerExposureMode")(function* (mode) {
       yield* Effect.annotateCurrentSpan({ mode });
 
@@ -606,6 +625,9 @@ export const layerTest = (initialSettings: DesktopSettings = DEFAULT_DESKTOP_SET
           function (bounds, isMaximized) {
             return update((settings) => setMainWindowBounds(settings, bounds, isMaximized));
           },
+        ),
+        setMainWindowHiddenToTray: Effect.fn("DesktopAppSettings.setMainWindowHiddenToTray")(
+          (hidden) => update((settings) => setMainWindowHiddenToTray(settings, hidden)),
         ),
         setServerExposureMode: Effect.fn("DesktopAppSettings.setServerExposureMode")(
           function (mode) {

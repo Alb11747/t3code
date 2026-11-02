@@ -25,6 +25,7 @@ const DesktopSettingsPatch = Schema.Struct({
     ),
   ),
   mainWindowMaximized: Schema.optionalKey(Schema.Boolean),
+  mainWindowHiddenToTray: Schema.optionalKey(Schema.Boolean),
   serverExposureMode: Schema.optionalKey(Schema.Literals(["local-only", "network-accessible"])),
   tailscaleServeEnabled: Schema.optionalKey(Schema.Boolean),
   tailscaleServePort: Schema.optionalKey(Schema.Number),
@@ -178,6 +179,7 @@ describe("DesktopSettings", () => {
           localEnvironmentEnabled: true,
           mainWindowBounds: { x: 120, y: 80, width: 1280, height: 900 },
           mainWindowMaximized: false,
+          mainWindowHiddenToTray: false,
           serverExposureMode: "network-accessible",
           tailscaleServeEnabled: true,
           tailscaleServePort: 8443,
@@ -217,6 +219,7 @@ describe("DesktopSettings", () => {
         const settings = yield* DesktopAppSettings.DesktopAppSettings;
 
         yield* settings.setMainWindowBounds({ x: -1200, y: 40, width: 1440, height: 960 }, true);
+        yield* settings.setMainWindowHiddenToTray(true);
         yield* settings.setServerExposureMode("network-accessible");
 
         const persisted = yield* decodeDesktopSettingsPatch(
@@ -225,8 +228,16 @@ describe("DesktopSettings", () => {
         assert.deepEqual(persisted, {
           mainWindowBounds: { x: -1200, y: 40, width: 1440, height: 960 },
           mainWindowMaximized: true,
+          mainWindowHiddenToTray: true,
           serverExposureMode: "network-accessible",
         } satisfies typeof DesktopSettingsPatch.Type);
+        assert.isTrue((yield* settings.load).mainWindowHiddenToTray);
+        yield* settings.setMainWindowHiddenToTray(false);
+        assert.isFalse((yield* settings.load).mainWindowHiddenToTray);
+        const visible = yield* decodeDesktopSettingsPatch(
+          yield* fileSystem.readFileString(environment.desktopSettingsPath),
+        );
+        assert.isUndefined(visible.mainWindowHiddenToTray);
       }),
     ),
   );
@@ -273,6 +284,7 @@ describe("DesktopSettings", () => {
           localEnvironmentEnabled: true,
           mainWindowBounds: null,
           mainWindowMaximized: false,
+          mainWindowHiddenToTray: false,
           serverExposureMode: "local-only",
           tailscaleServeEnabled: false,
           tailscaleServePort: 443,
@@ -302,6 +314,7 @@ describe("DesktopSettings", () => {
           localEnvironmentEnabled: true,
           mainWindowBounds: null,
           mainWindowMaximized: false,
+          mainWindowHiddenToTray: false,
           serverExposureMode: "local-only",
           tailscaleServeEnabled: false,
           tailscaleServePort: 443,
