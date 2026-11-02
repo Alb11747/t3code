@@ -110,6 +110,15 @@ runs in the project folder unless you pass `--worktree <base-branch>`. `send`
 never interrupts: a busy thread gets the message as its next turn. Pass `-` as
 the message to read it from stdin.
 
+When a Claude conversation has at least 200,000 tokens and its prompt cache is
+cold, sending requires a choice. Pass `--context-policy compact` to compact an
+idle conversation before the message, or `--context-policy keep` to retain the
+full history. Connected agents make the same choice with `contextPolicy` on
+`t3_thread_send` and `t3_thread_send_attachments`. Without it, the send is refused
+before starting a turn. Warm and smaller conversations need no choice.
+If compaction fails or is stopped, the message stays queued. Cancel that queued
+message before resending with `keep` if you want to continue with the full history.
+
 `--wait` prints the agent's reply. It exits 1 when the run fails or stops, and
 2 when the agent waits for an answer you give in the app. Add `--json` for a
 result that always includes the thread id.

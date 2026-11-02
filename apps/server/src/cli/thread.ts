@@ -673,6 +673,12 @@ const threadSendCommand = Command.make("send", {
   ...projectLocationFlags,
   thread: threadArgument,
   message: messageArgument,
+  contextPolicy: Flag.Literals("context-policy", ["compact", "keep"]).pipe(
+    Flag.withDescription(
+      "For a cold Claude conversation: compact before sending, or keep full history.",
+    ),
+    Flag.optional,
+  ),
   wait: waitFlag,
   json: jsonFlag,
 }).pipe(
@@ -688,7 +694,15 @@ const threadSendCommand = Command.make("send", {
         Effect.fn("cli.thread.send")(function* (tools) {
           const sent = yield* tools.call(
             "t3_thread_send",
-            { threadId, message, mode: "queue" },
+            {
+              threadId,
+              message,
+              mode: "queue",
+              ...Option.match(flags.contextPolicy, {
+                onNone: () => ({}),
+                onSome: (contextPolicy) => ({ contextPolicy }),
+              }),
+            },
             OrchestratorMcpThreadSendResult,
           );
           if (flags.wait) {

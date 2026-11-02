@@ -12,6 +12,7 @@ import {
   type ChatAttachment,
   CommandId,
   isListedThreadLineage,
+  isCompactionCommandMessage,
   MessageId,
   OrchestrationV2StopWorkflowError,
   type OrchestrationV2StopWorkflowInput,
@@ -149,6 +150,7 @@ export interface ThreadManagementSendInput {
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly modelSelection?: ModelSelection;
+  readonly contextPolicy?: "compact" | "keep";
   readonly mode: ThreadManagementSendMode;
   readonly createdBy: OrchestrationV2Actor;
   readonly creationSource: OrchestrationV2CreationSource;
@@ -346,6 +348,11 @@ export class ThreadManagementBackgroundWaitError extends Schema.TaggedError<Thre
   }
 }
 
+export class ThreadManagementContextPolicyError extends Schema.TaggedError<ThreadManagementContextPolicyError>()(
+  "ThreadManagementContextPolicyError",
+  { threadId: ThreadId, message: Schema.String },
+) {}
+
 export const ThreadManagementError = Schema.Union([
   ThreadManagementThreadNotFoundError,
   ThreadManagementRunNotFoundError,
@@ -356,6 +363,7 @@ export const ThreadManagementError = Schema.Union([
   ThreadManagementProjectThreadsListError,
   ThreadManagementDurableRunProjectionError,
   ThreadManagementProviderInstanceDisabledError,
+  ThreadManagementContextPolicyError,
 ]);
 export type ThreadManagementError = typeof ThreadManagementError.Type;
 
@@ -822,11 +830,61 @@ const make = Effect.gen(function* () {
       });
     }
     const steerableRun = latestSteerableRun(target);
+    const selection = input.modelSelection ?? target.thread.modelSelection;
+    const isCompactCommand = isCompactionCommandMessage({ ...input, role: "user" });
+    let afterCompactionMessageId: MessageId | undefined;
+    if (
+      input.createdBy === "agent" &&
+      input.creationSource === "mcp" &&
+      input.contextPolicy === "compact" &&
+      !isCompactCommand &&
+      !(yield* hasReceipt(input.commandId))
+    ) {
+      const providerThread = yield* orchestrator.resolveMessageProviderThread(
+        input.threadId,
+        selection,
+      );
+      if (providerThread?.driver !== "claudeAgent") {
+        return yield* new ThreadManagementContextPolicyError({
+          threadId: input.threadId,
+          message:
+            'contextPolicy:"compact" requires an existing Claude conversation. Use contextPolicy:"keep" to send normally.',
+        });
+      }
+      const compactCommandId = CommandId.make(`agent-compact:${input.commandId}`);
+      if (
+        !(yield* hasReceipt(compactCommandId)) &&
+        target.runs.some((run) => !isTerminalRunStatus(run.status))
+      ) {
+        return yield* new ThreadManagementContextPolicyError({
+          threadId: input.threadId,
+          message:
+            'The target is busy. Wait for it to become idle before using contextPolicy:"compact", or use contextPolicy:"keep" to send without compaction.',
+        });
+      }
+      afterCompactionMessageId = MessageId.make(`agent-compact:${input.messageId}`);
+      yield* dispatch({
+        type: "message.dispatch",
+        commandId: compactCommandId,
+        threadId: input.threadId,
+        messageId: afterCompactionMessageId,
+        text: "/compact",
+        attachments: [],
+        modelSelection: selection,
+        idleCompaction: "onReturn",
+        dispatchMode: { type: "start_immediately" },
+        createdBy: input.createdBy,
+        creationSource: input.creationSource,
+      });
+    }
+    const compactBeforeSend = afterCompactionMessageId !== undefined;
     let dispatchMode: Extract<
       OrchestrationV2Command,
       { readonly type: "message.dispatch" }
     >["dispatchMode"];
-    if (input.mode === "steer" || input.mode === "restart") {
+    if (compactBeforeSend) {
+      dispatchMode = { type: "queue_after_active" };
+    } else if (input.mode === "steer" || input.mode === "restart") {
       if (steerableRun === undefined) {
         return yield* new ThreadManagementNoSteerableRunError({
           threadId: input.threadId,
@@ -850,15 +908,30 @@ const make = Effect.gen(function* () {
       commandId: input.commandId,
       threadId: input.threadId,
       messageId: input.messageId,
+      ...(afterCompactionMessageId === undefined ? {} : { afterCompactionMessageId }),
+      ...(input.contextPolicy === "keep" ? { keepFullHistory: true } : {}),
       ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
       ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
       text: input.text,
       attachments: input.attachments,
-      ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+      ...(compactBeforeSend
+        ? { modelSelection: selection }
+        : input.modelSelection === undefined
+          ? {}
+          : { modelSelection: input.modelSelection }),
       dispatchMode,
       createdBy: input.createdBy,
       creationSource: input.creationSource,
-    });
+    }).pipe(
+      Effect.mapError((error) =>
+        error._tag === "OrchestratorContextPolicyRequiredError"
+          ? new ThreadManagementContextPolicyError({
+              threadId: error.threadId,
+              message: error.message,
+            })
+          : error,
+      ),
+    );
     const projection = yield* getProjectThreadRecords(input, ["runs", "messages", "turnItems"], {
       messageIds: [input.messageId],
       turnItemTypes: ["user_message"],

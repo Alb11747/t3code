@@ -101,15 +101,20 @@ export const layer = McpToolAccess.toLayer(
               messageId,
               ...(caller === undefined ? {} : { senderThreadId: caller.id }),
               text: input.message ?? "",
+              ...(input.contextPolicy === undefined ? {} : { contextPolicy: input.contextPolicy }),
               attachments,
               mode: "auto",
               createdBy: "agent",
               creationSource: "mcp",
             }).pipe(
               Effect.mapError((error) =>
-                error._tag === "AttachmentClaimError"
+                error._tag === "AttachmentClaimError" ||
+                error._tag === "ThreadManagementContextPolicyError"
                   ? new OrchestratorMcpFailure({
-                      code: "orchestration_error",
+                      code:
+                        error._tag === "ThreadManagementContextPolicyError"
+                          ? "thread_not_sendable"
+                          : "orchestration_error",
                       message: error.message,
                     })
                   : unavailable(),

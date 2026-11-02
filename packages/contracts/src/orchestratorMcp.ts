@@ -510,10 +510,16 @@ export const OrchestratorMcpThreadReadResult = Schema.Struct({
 });
 export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadResult.Type;
 
+export const AgentMessageContextPolicy = Schema.Literals(["compact", "keep"]).annotate({
+  description:
+    "Required when a large Claude conversation's prompt cache is cold. compact: compact the idle conversation before the message. keep: explicitly retain its full history. Omit for warm or small conversations.",
+});
+
 export const OrchestratorMcpThreadSendInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   message: OrchestratorMcpPrompt,
+  contextPolicy: Schema.optional(AgentMessageContextPolicy),
   mode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });

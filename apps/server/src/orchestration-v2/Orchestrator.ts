@@ -11,6 +11,7 @@ import {
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
+import { COMPACTION_SUGGESTION_MIN_TOKENS } from "@t3tools/shared/claudeCompaction";
 import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
 import {
   normalizeThreadPullRequestKey,
@@ -344,7 +345,13 @@ export class OrchestratorCommandIdConflictError extends Schema.TaggedError<Orche
   }
 }
 
+export class OrchestratorContextPolicyRequiredError extends Schema.TaggedError<OrchestratorContextPolicyRequiredError>()(
+  "OrchestratorContextPolicyRequiredError",
+  { threadId: ThreadId, message: Schema.String },
+) {}
+
 export const OrchestratorV2Error = Schema.Union([
+  OrchestratorContextPolicyRequiredError,
   OrchestratorDispatchError,
   OrchestratorThreadAlreadyExistsError,
   OrchestratorCommandRejectedError,
@@ -412,6 +419,10 @@ export interface OrchestratorV2Shape {
     fields: ReadonlyArray<K>,
     filter?: ProjectionRecordFilter,
   ) => Effect.Effect<ProjectionRecords<K>, OrchestratorV2Error>;
+  readonly resolveMessageProviderThread: (
+    threadId: ThreadId,
+    modelSelection: ModelSelection,
+  ) => Effect.Effect<OrchestrationV2ProviderThread | undefined, OrchestratorV2Error>;
   readonly getThreadProjection: (
     threadId: ThreadId,
   ) => Effect.Effect<OrchestrationV2ThreadProjection, OrchestratorV2Error>;
@@ -1131,6 +1142,97 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
+  const resolveMessageDestination = Effect.fn("Orchestrator.resolveMessageDestination")(function* (
+    projection: Pick<
+      OrchestrationV2ThreadProjection,
+      "thread" | "providerThreads" | "providerSessions"
+    >,
+    modelSelection: ModelSelection,
+  ) {
+    const activeProviderThread = projection.providerThreads.find(
+      (candidate) => candidate.id === projection.thread.activeProviderThreadId,
+    );
+    const isProviderSwitch =
+      activeProviderThread !== undefined &&
+      activeProviderThread.providerInstanceId !== modelSelection.instanceId;
+    // Account overlays can share native history even after the picker has moved to another instance.
+    const canResumeAcrossInstances =
+      isProviderSwitch &&
+      activeProviderThread.nativeThreadRef !== null &&
+      (yield* providerSwitchService.plan({
+        projection: {
+          ...projection,
+          thread: {
+            ...projection.thread,
+            modelSelection: {
+              ...projection.thread.modelSelection,
+              instanceId: activeProviderThread.providerInstanceId,
+            },
+          },
+        },
+        targetModelSelection: modelSelection,
+      })).transition.type === "restart_and_resume";
+    const targetProviderThread =
+      isProviderSwitch && !canResumeAcrossInstances
+        ? rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0]
+        : activeProviderThread;
+    return { isProviderSwitch, canResumeAcrossInstances, targetProviderThread };
+  });
+
+  const assertAgentContextChoice = Effect.fn("Orchestrator.assertAgentContextChoice")(function* (
+    command: Extract<OrchestrationV2Command, { type: "message.dispatch" }>,
+    projection: Pick<OrchestrationV2ThreadProjection, "providerTurns" | "runs">,
+    providerThread: OrchestrationV2ProviderThread | undefined,
+  ) {
+    if (
+      command.createdBy !== "agent" ||
+      command.creationSource !== "mcp" ||
+      command.scheduledTaskId !== undefined ||
+      command.keepFullHistory === true ||
+      isCompactionCommandMessage({ ...command, role: "user" })
+    )
+      return;
+    if (command.afterCompactionMessageId !== undefined) {
+      const prerequisite = projection.runs.find(
+        (run) => run.userMessageId === command.afterCompactionMessageId,
+      );
+      if (prerequisite?.providerThreadId === providerThread?.id && providerThread !== undefined)
+        return;
+      return yield* new OrchestratorContextPolicyRequiredError({
+        threadId: command.threadId,
+        message:
+          'The destination conversation changed after compaction was requested. Retry with a new clientRequestId and contextPolicy:"compact", or contextPolicy:"keep" to retain its full history. No message was sent.',
+      });
+    }
+    if (providerThread?.driver !== "claudeAgent") return;
+    const usage = projection.providerTurns
+      .filter(
+        (turn) => turn.providerThreadId === providerThread.id && turn.tokenUsage !== undefined,
+      )
+      .map((turn) => turn.tokenUsage!)
+      .toSorted((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
+    const updatedAt =
+      usage === undefined
+        ? DateTime.toEpochMillis(providerThread.updatedAt)
+        : Date.parse(usage.updatedAt);
+    // Keep the composer's 70-minute fallback when Claude reports no TTL.
+    const expiresAt =
+      usage?.promptCacheExpiresAt === undefined
+        ? updatedAt + (usage?.promptCacheTtlMs ?? 70 * 60_000)
+        : Date.parse(usage.promptCacheExpiresAt);
+    if (
+      (usage?.usedTokens ?? providerThread.contextUsage?.usedTokens ?? 0) >=
+        COMPACTION_SUGGESTION_MIN_TOKENS &&
+      DateTime.toEpochMillis(yield* DateTime.now) >= expiresAt
+    ) {
+      return yield* new OrchestratorContextPolicyRequiredError({
+        threadId: command.threadId,
+        message:
+          'The target Claude conversation has a cold prompt cache and a large history. No message was sent. Retry with contextPolicy:"compact" to compact before sending, or contextPolicy:"keep" to explicitly pay for retaining the full history.',
+      });
+    }
+  });
+
   const providerSessionIdFor = (input: {
     readonly adapter: ProviderAdapter.ProviderAdapterV2["Service"];
     readonly providerInstanceId: ProviderInstanceId;
@@ -1616,6 +1718,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ]);
   });
 
+  const compactionSucceeded = Effect.fn("Orchestrator.compactionSucceeded")(function* (
+    threadId: ThreadId,
+    messageId: MessageId,
+    runs: ReadonlyArray<OrchestrationV2Run>,
+  ) {
+    const run = runs.find((candidate) => candidate.userMessageId === messageId);
+    if (run?.status !== "completed") return false;
+    const { turnItems } = yield* projectionStore
+      .getThreadRecords(threadId, ["turnItems"], {
+        turnItemRunIds: [run.id],
+        turnItemTypes: ["compaction"],
+      })
+      .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+    // Claude can finish /compact's run successfully while reporting a failed compaction item.
+    return turnItems.some((item) => item.type === "compaction" && item.status === "completed");
+  });
+
   const startNextQueuedRun = Effect.fn("Orchestrator.startNextQueuedRun")(
     function* (
       threadId: ThreadId,
@@ -1642,6 +1761,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               (run) => run.id === options.queuedRunId && run.status === "queued",
             );
       if (storedQueuedRun === undefined) {
+        return;
+      }
+      if (
+        storedQueuedRun.afterCompactionMessageId !== undefined &&
+        !(yield* compactionSucceeded(
+          threadId,
+          storedQueuedRun.afterCompactionMessageId,
+          projection.runs,
+        ))
+      ) {
+        if (storedQueuedRun.queueHeld !== true) {
+          yield* writeSystemEvents([
+            {
+              type: "run.updated",
+              threadId,
+              runId: storedQueuedRun.id,
+              providerInstanceId: storedQueuedRun.providerInstanceId,
+              occurredAt: yield* DateTime.now,
+              payload: { ...storedQueuedRun, queueHeld: true },
+            },
+          ]);
+        }
         return;
       }
       const queuedMessage = projection.messages.find(
@@ -5032,6 +5173,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
     if (steeringPolicy === "active_steering") {
+      if (input.command.type === "message.dispatch") {
+        yield* assertAgentContextChoice(input.command, input.projection, providerThread);
+      }
       const instanceChanged =
         input.projection.thread.providerInstanceId !== input.modelSelection.instanceId;
       if (
@@ -5125,6 +5269,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       selectionTransition?.type === "create_with_handoff";
     const requiresProviderSessionRestart =
       canResumeAcrossInstances || selectionTransition?.type === "restart_session";
+    if (!requiresProviderThreadHandoff && input.command.type === "message.dispatch") {
+      yield* assertAgentContextChoice(input.command, input.projection, providerThread);
+    }
     if (requiresProviderThreadHandoff) {
       const targetAdapter = yield* providerAdapters.get(input.modelSelection.instanceId).pipe(
         Effect.mapError(
@@ -5159,6 +5306,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         input.projection,
         input.modelSelection.instanceId,
       ).find((candidate) => candidate.id !== providerThread.id);
+      if (input.command.type === "message.dispatch") {
+        yield* assertAgentContextChoice(
+          input.command,
+          input.projection,
+          existingTargetProviderThread,
+        );
+      }
       const targetProviderSessionId =
         existingTargetProviderThread?.providerSessionId ??
         (yield* mapDispatchError(input.command)(
@@ -6003,7 +6157,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projection.thread.worktreePath === null
         ? latestRun
         : undefined;
-    const queueBehindRun = activeRun ?? worktreeMissingRun;
+    const requiredCompactionRun =
+      command.afterCompactionMessageId === undefined
+        ? undefined
+        : projection.runs.find((run) => run.userMessageId === command.afterCompactionMessageId);
+    if (command.afterCompactionMessageId !== undefined && requiredCompactionRun === undefined) {
+      return yield* new OrchestratorCommandRejectedError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "The prerequisite compaction does not exist on this thread.",
+      });
+    }
+    const waitsForCompaction =
+      command.afterCompactionMessageId !== undefined &&
+      !(yield* compactionSucceeded(
+        command.threadId,
+        command.afterCompactionMessageId,
+        projection.runs,
+      ));
+    const queueBehindRun =
+      activeRun ?? worktreeMissingRun ?? (waitsForCompaction ? requiredCompactionRun : undefined);
     const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(projection);
     const startsOrQueuesRun =
       dispatchMode.type === "defer_start" ||
@@ -6062,6 +6235,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         modelSelection.instanceId === queueProviderThread.providerInstanceId
           ? queueProviderThread
           : rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0];
+      yield* assertAgentContextChoice(command, projection, targetProviderThread);
+      const deliverAtToolBoundary =
+        command.afterCompactionMessageId === undefined &&
+        (atToolBoundary || agentUpdateWantsPromptDelivery(command));
+      if (deliverAtToolBoundary) {
+        yield* assertAgentContextChoice(
+          command,
+          projection,
+          projection.providerThreads.find((thread) => thread.id === activeRun?.providerThreadId),
+        );
+      }
       const queuedAdapter = yield* providerAdapters
         .get(modelSelection.instanceId)
         .pipe(mapDispatchError(command));
@@ -6155,6 +6339,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         rootNodeId,
         activeAttemptId: attemptId,
         status: "queued",
+        ...(command.afterCompactionMessageId === undefined
+          ? {}
+          : { afterCompactionMessageId: command.afterCompactionMessageId }),
         ...(worktreeMissingRun !== undefined ||
         (heldRunsToRelease.length === 0 && queueIsHeld && !wakeSkipsHold)
           ? { queueHeld: true }
@@ -6230,9 +6417,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         updatedAt: now,
         ...(delegatedCompletion === undefined ? {} : { delegatedCompletion }),
         ...(command.notification === undefined ? {} : { notification: command.notification }),
-        ...(atToolBoundary || agentUpdateWantsPromptDelivery(command)
-          ? { atToolBoundary: true as const }
-          : {}),
+        ...(deliverAtToolBoundary ? { atToolBoundary: true as const } : {}),
       };
       const emitEvent = emit(events, command);
       if (targetProviderThread === undefined) {
@@ -6378,29 +6563,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projection.thread.historyOrigin === "v1_import"
         ? yield* readHandoffItems(command.threadId, [null])
         : [];
-    const isProviderSwitch =
-      activeProviderThread !== undefined &&
-      activeProviderThread.providerInstanceId !== modelSelection.instanceId;
-    // Account overlays share native history. Selection commands may already
-    // have updated the app thread, so classify against the native thread's owner.
-    const canResumeAcrossInstances =
-      isProviderSwitch &&
-      activeProviderThread.nativeThreadRef !== null &&
-      (yield* providerSwitchService
-        .plan({
-          projection: {
-            ...projection,
-            thread: {
-              ...projection.thread,
-              modelSelection: {
-                ...projection.thread.modelSelection,
-                instanceId: activeProviderThread.providerInstanceId,
-              },
-            },
-          },
-          targetModelSelection: modelSelection,
-        })
-        .pipe(mapDispatchError(command))).transition.type === "restart_and_resume";
+    const { isProviderSwitch, canResumeAcrossInstances, targetProviderThread } =
+      yield* resolveMessageDestination(projection, modelSelection).pipe(mapDispatchError(command));
+    yield* assertAgentContextChoice(command, projection, targetProviderThread);
 
     if (
       pendingForkTransfer === undefined &&
@@ -6806,10 +6971,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           }),
       ),
     );
-    const targetProviderThread =
-      isProviderSwitch && !canResumeAcrossInstances
-        ? rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0]
-        : activeProviderThread;
     const providerSessionId =
       (canResumeAcrossInstances ? undefined : targetProviderThread?.providerSessionId) ??
       (yield* mapDispatchError(command)(
@@ -7707,7 +7868,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
 
-    if (canResumeAcrossInstances && activeProviderThread.providerSessionId !== null) {
+    if (canResumeAcrossInstances && activeProviderThread?.providerSessionId != null) {
       const previousProviderSessionId = activeProviderThread.providerSessionId;
       yield* emitEvent({
         type: "provider-session.detached",
@@ -9568,6 +9729,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandId: command.commandId,
         commandType: command.type,
         cause: `Queued run ${command.queuedRunId} is not queued.`,
+      });
+    }
+    if (
+      queuedRun.afterCompactionMessageId !== undefined &&
+      !(yield* compactionSucceeded(
+        command.threadId,
+        queuedRun.afterCompactionMessageId,
+        projection.runs,
+      ))
+    ) {
+      return yield* new OrchestratorCommandRejectedError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause:
+          'This message requires successful compaction. Cancel it and resend with contextPolicy:"keep" to retain the full history.',
       });
     }
     const queuedRootNode =
@@ -13960,6 +14136,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           // Refusals depend on modes the user can change; a recorded rejection would block the retry.
           if (
             cause._tag === "OrchestratorThreadAboveModeLimitError" ||
+            cause._tag === "OrchestratorContextPolicyRequiredError" ||
             cause._tag === "OrchestratorRuntimeModeAboveCeilingError"
           ) {
             return yield* cause;
@@ -14572,6 +14749,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           .getThreadRecords(threadId, fields, filter)
           .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
       },
+    ),
+    resolveMessageProviderThread: Effect.fn("OrchestratorV2.resolveMessageProviderThread")(
+      function* (threadId, modelSelection) {
+        const projection = yield* projectionStore.getThreadRecords(threadId, [
+          "providerThreads",
+          "providerSessions",
+        ]);
+        return (yield* resolveMessageDestination(projection, modelSelection)).targetProviderThread;
+      },
+      (effect, threadId) =>
+        effect.pipe(
+          Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })),
+        ),
     ),
     getThreadProjection: Effect.fn("OrchestratorV2.getThreadProjection")(function (threadId) {
       return projectionStore

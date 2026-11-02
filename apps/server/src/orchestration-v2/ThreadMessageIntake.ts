@@ -17,6 +17,7 @@ function dispatchWasNotAccepted(
 ) {
   switch (error._tag) {
     case "OrchestratorCommandRejectedError":
+    case "OrchestratorContextPolicyRequiredError":
     case "OrchestratorThreadAlreadyExistsError":
     case "OrchestratorProjectionError":
     case "OrchestratorProviderAdapterError":
@@ -26,6 +27,7 @@ function dispatchWasNotAccepted(
     case "OrchestratorThreadAboveModeLimitError":
     case "OrchestratorRuntimeModeAboveCeilingError":
     case "ThreadManagementProviderInstanceDisabledError":
+    case "ThreadManagementContextPolicyError":
       return true;
     default:
       return false;

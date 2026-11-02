@@ -235,6 +235,7 @@ function threadManagementFailure(error: unknown): OrchestratorMcpFailure {
       return failure("run_not_found", error.message);
     case "ThreadManagementThreadArchivedError":
     case "ThreadManagementNoSteerableRunError":
+    case "ThreadManagementContextPolicyError":
       return failure("thread_not_sendable", error.message);
     case "ThreadManagementThreadNotInterruptibleError":
       return failure("thread_not_interruptible", error.message);
@@ -3110,6 +3111,7 @@ const make = Effect.gen(function* () {
           messageId,
           text: input.message,
           attachments: [],
+          ...(input.contextPolicy === undefined ? {} : { contextPolicy: input.contextPolicy }),
           mode,
           createdBy: "agent",
           creationSource: "mcp",
