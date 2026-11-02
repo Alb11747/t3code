@@ -384,6 +384,7 @@ const EMPTY_FEEDBACK_SUBMISSIONS: ReadonlyArray<CodexFeedbackSubmission> = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_TURN_ITEMS: ThreadStructure["turnItems"] = [];
 const EMPTY_AUTO_UPDATE_ENVIRONMENTS: ReadonlyArray<EnvironmentPresentation> = [];
+const EMPTY_COMPOSER_BANNER_ITEMS: ReadonlyArray<ComposerBannerStackItem> = [];
 
 const EMPTY_PENDING_FILE_SURFACE_IDS: ReadonlySet<string> = new Set();
 
@@ -868,20 +869,18 @@ export default function ChatView(props: ChatViewProps) {
   const sideChatParent = useQuietThreadShell(sideChatParentRef);
   const parentThreadLink = (() => {
     if (sideChatParentRef !== null) {
+      const title = sideChatParent?.title ?? "Parent thread";
+      // Embedded, the parent is the view around it.
+      if (embedded) return { title, sideChat: true };
       return {
-        title: sideChatParent?.title ?? "Parent thread",
+        title,
         sideChat: true,
-        // Embedded, the parent is the view around it.
-        ...(embedded
-          ? {}
-          : {
-              open: (): void => {
-                void navigate({
-                  to: "/$environmentId/$threadId",
-                  params: buildThreadRouteParams(sideChatParentRef),
-                });
-              },
-            }),
+        open: (): void => {
+          void navigate({
+            to: "/$environmentId/$threadId",
+            params: buildThreadRouteParams(sideChatParentRef),
+          });
+        },
       };
     }
     if (parentSubagentThreadRef !== null) {
@@ -3638,7 +3637,7 @@ export default function ChatView(props: ChatViewProps) {
                               activeThreadId={activeThreadId}
                               activeThread={activeThread}
                               activeThreadShell={activeThreadShell}
-                              promptHistoryMessages={timelineMessages}
+                              promptHistoryEntries={timelineEntries}
                               forceExpandedOnMobile={
                                 forceExpandedMobileComposer && isDraftHeroState
                               }
@@ -3673,7 +3672,11 @@ export default function ChatView(props: ChatViewProps) {
                                             : projectCloneSendBlockReason
                               }
                               isPreparingWorktree={isPreparingWorktree && !sendQueuesBehindSetup}
-                              bannerItems={isDraftHeroState ? [] : composerBannerItems}
+                              bannerItems={
+                                isDraftHeroState || composerBannerItems.length === 0
+                                  ? EMPTY_COMPOSER_BANNER_ITEMS
+                                  : composerBannerItems
+                              }
                               promptSuggestion={promptSuggestion}
                               onDismissPromptSuggestion={dismissPromptSuggestion}
                               resumeCompaction={resumeCompaction}
@@ -3715,7 +3718,9 @@ export default function ChatView(props: ChatViewProps) {
                               }
                               activeThreadModelSelection={activeThread?.modelSelection}
                               activeProjectId={activeProject?.id ?? null}
-                              activeContextWindow={activeContextWindow}
+                              contextWindowEntries={serverVisibleTurnItems}
+                              contextWindowLiveUsage={activeThreadLiveTokenUsage}
+                              contextWindowProviderThread={activeProviderThread}
                               compactThreadUnavailable={compactThreadUnavailable}
                               compactDisabled={compactDisabled}
                               compactDisabledReason={compactDisabledReason}
