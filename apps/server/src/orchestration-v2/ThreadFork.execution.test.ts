@@ -641,6 +641,8 @@ it.effect.each([
           ProviderAdapterRegistry.layerFromAdapters(
             target === claude ? [claude] : [claude, target],
           ),
+          // The explicit drain owns execution; a daemon could claim the effect first.
+          { runEffectWorker: false },
         ),
       ),
     );
