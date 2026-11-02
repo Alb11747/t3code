@@ -39,6 +39,7 @@ import { projectThreadAwarenessV2 } from "@t3tools/shared/agentAwareness";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { readThreadTitles } from "./ThreadTitles.ts";
 import {
   buildBoundedThreadProjection,
   decodeThreadHistoryCursor,
@@ -820,7 +821,17 @@ const threadWorktreePathsIncludeArchivedOnRequest = Effect.gen(function* () {
   yield* create("thread:active", { worktreePath: "/worktrees/active" });
   yield* create("thread:archived", { worktreePath: "/worktrees/archived", archived: true });
   yield* create("thread:local", { worktreePath: null });
-  const deleted = yield* create("thread:deleted", { worktreePath: "/worktrees/deleted" });
+  const deleted = {
+    ...(yield* create("thread:deleted", { worktreePath: "/worktrees/deleted" })),
+    title: "Renamed deleted thread",
+  };
+  yield* store.apply({
+    id: EventId.make("event:thread:deleted:renamed"),
+    type: "thread.metadata-updated",
+    threadId: deleted.id,
+    occurredAt: now,
+    payload: deleted,
+  });
   yield* store.apply({
     id: EventId.make("event:thread:deleted:deleted"),
     type: "thread.deleted",
@@ -828,6 +839,21 @@ const threadWorktreePathsIncludeArchivedOnRequest = Effect.gen(function* () {
     occurredAt: now,
     payload: { ...deleted, deletedAt: now },
   });
+
+  const sql = yield* SqlClient.SqlClient;
+  assert.deepEqual(
+    yield* readThreadTitles(sql, [
+      deleted.id,
+      ThreadId.make("missing"),
+      ThreadId.make("thread:active"),
+      ThreadId.make("thread:archived"),
+    ]),
+    {
+      "thread:active": "thread:active",
+      "thread:archived": "thread:archived",
+    },
+  );
+  assert.deepEqual(yield* readThreadTitles(sql, []), {});
 
   assert.deepEqual(yield* store.getThreadWorktreePaths(), [
     { threadId: ThreadId.make("thread:active"), worktreePath: "/worktrees/active" },
