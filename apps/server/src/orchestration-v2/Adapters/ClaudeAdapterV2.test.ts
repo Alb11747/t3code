@@ -7243,6 +7243,109 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect.each([true, false])(
+    "uses a gateway's assigned-account reset (known: %s) instead of a retained account reset",
+    (known) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+        const ownerReset = DateTime.formatIso(
+          DateTime.makeUnsafe(DateTime.toEpochMillis(now) + 3_600_000),
+        );
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-assigned-account-limit"),
+            text: "Continue.",
+            attachments: [],
+          }),
+        );
+        const explanation = known
+          ? `Usage limit reached (5h); resets at ${ownerReset}. Retry after this reset.`
+          : "Usage limit reached; the pinned account reset is unavailable.";
+        yield* Queue.offerAll(harness.sdkMessages, [
+          claudeSdkFrame({
+            type: "rate_limit_event",
+            rate_limit_info: {
+              status: "rejected",
+              rateLimitType: "five_hour",
+              resetsAt: DateTime.toEpochMillis(now) / 1_000 + 7_200,
+            },
+            uuid: "00000000-0000-4000-8000-000000000672",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+          makeAssistantErrorFrame({
+            uuid: "00000000-0000-4000-8000-000000000673",
+            error: "server_error",
+          }),
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000674",
+            result: `API Error: 503 ${JSON.stringify({ error: { type: "server_error", message: `quota_admission_limited: ${explanation}` } })}`,
+            terminalReason: "api_error",
+            isError: true,
+            apiErrorStatus: 503,
+          }),
+        ]);
+        yield* harness.until(
+          () =>
+            harness.terminalEvents().length > 0 ||
+            harness.events.some(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "error" &&
+                event.turnItem.retry !== undefined,
+            ),
+        );
+        assert.isAbove(harness.terminalEvents().length, 0);
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(terminal.status, "failed");
+        if (terminal.status !== "failed") return;
+        assert.equal(terminal.failure.class, "usage_limit");
+        assert.equal(terminal.failure.resetAt, known ? ownerReset : null);
+        assert.equal(terminal.failure.message, explanation);
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-compaction-after-gateway-limit"),
+            providerTurnOrdinal: 2,
+            text: "/compact",
+            attachments: [],
+          }),
+        );
+        yield* Queue.offerAll(harness.sdkMessages, [
+          claudeSdkFrame({
+            type: "system",
+            subtype: "status",
+            status: null,
+            compact_result: "failed",
+            compact_error: "Compaction stopped without quota metadata.",
+            uuid: "00000000-0000-4000-8000-000000000675",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+          claudeSdkFrame({
+            ...makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000000676",
+              result: "",
+              numTurns: 0,
+              terminalReason: null,
+            }),
+            local_command: "compact",
+          }),
+        ]);
+        const compaction = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(compaction.status, "completed");
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
   it.effect.each([
     { status: 503, cooldown: "4m 6s", seconds: 246 },
     { status: 503, cooldown: "1h 2m 3s", seconds: 3723 },

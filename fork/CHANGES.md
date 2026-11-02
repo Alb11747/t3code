@@ -9,6 +9,8 @@ the sync script deletes the line of a change whose upstream PR merged. Closing
 an issue alone does not revert a patch. See `fork/README.md` for how to add or drop
 an entry.
 
+- `fix(claude): show the assigned account's gateway quota reset`: quota-router usage-limit responses pause the thread until the reset reported by its assigned account, overriding retained reset times from earlier account observations; unknown resets remain unknown. Applies to web, desktop and mobile without model-name rules in the adapter. Issue: none linked. PR: none yet
+
 - `feat(claude): retry prefix-binding failures with dropped thinking`: web, desktop and mobile offer an explicit recovery action for preserved-thinking prefix mismatches. The shared `run.retry` API binds it to the failed attempt, resumes the same native conversation without replaying the original prompt, and sends `drop_block` plus its beta only for that retry. Saved history, thinking signatures and files stay intact; ordinary turns keep their existing policy. Uses native Claude Code request controls, with no proxy dependency. Fork-only. Issue: none linked. PR: none yet
 
 - `fix(chat): let subagent lists pass scrolling to the panel`: Lineage and side-chat lists keep their own scrolling, then let wheel and trackpad input continue through the enclosing details panel at a list boundary. The outer panel retains scroll containment. Issue: none linked. PR: none yet

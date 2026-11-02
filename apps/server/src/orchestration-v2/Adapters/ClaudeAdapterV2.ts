@@ -13,6 +13,7 @@ import {
   uncachedClaudeEnvironment,
 } from "./ClaudePromptCaching.ts";
 import { claudeThinkingRecoveryEnvironment } from "./ClaudeThinkingRecovery.ts";
+import { claudeGatewayQuotaFailure } from "./claudeGatewayQuota.ts";
 import {
   dynamicToolTitle,
   formatReadToolLabel,
@@ -3841,6 +3842,22 @@ function providerFailureFromResult(
 ): OrchestrationV2ProviderFailure | null {
   const permanentFailure =
     assistantError !== undefined && CLAUDE_PERMANENT_FAILURE_CODES.has(assistantError);
+  const gatewayQuota =
+    failureHint === undefined &&
+    message.subtype === "success" &&
+    message.is_error &&
+    message.terminal_reason === "api_error" &&
+    message.api_error_status === 503
+      ? claudeGatewayQuotaFailure(message.result, DateTime.toEpochMillis(completedAt))
+      : null;
+  if (gatewayQuota !== null) {
+    return makeProviderFailure({
+      class: "usage_limit",
+      code: "quota_admission_limited",
+      retryable: true,
+      ...gatewayQuota,
+    });
+  }
   const gatewayResetAt =
     failureHint === undefined &&
     message.subtype === "success" &&
@@ -9796,9 +9813,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     usageLimited,
                     context.latestAssistantError,
                   );
+            if (resultFailure?.code === "quota_admission_limited") {
+              // Earlier account observations must not outlive the router's assigned-account evidence.
+              context.rateLimitResetTimes.clear();
+            }
             const terminalFailure =
               resultFailure?.class === "usage_limit"
-                ? { ...resultFailure, resetAt: resetAt ?? resultFailure.resetAt ?? null }
+                ? {
+                    ...resultFailure,
+                    resetAt:
+                      resultFailure.code === "quota_admission_limited"
+                        ? (resultFailure.resetAt ?? null)
+                        : (resetAt ?? resultFailure.resetAt ?? null),
+                  }
                 : resultFailure;
             if (
               !interrupted &&
