@@ -4,6 +4,17 @@ import { expect } from "vite-plus/test";
 import { buildRuntimeInstructions } from "./runtimeInstructions.ts";
 
 describe("buildRuntimeInstructions", () => {
+  it("leaves PR linking to a session that already carries it, and keeps runtime identity", () => {
+    const instructions = buildRuntimeInstructions({
+      harness: "Antigravity",
+      model: "gemini-3.8-flash",
+      pullRequestLinking: false,
+    });
+
+    assert.include(instructions, "through the Antigravity harness, as gemini-3.8-flash.");
+    assert.notInclude(instructions, "<pull_request_linking>");
+  });
+
   it("links PRs the agent creates, takes over, or pushes to, and no others", () => {
     const instructions = buildRuntimeInstructions({ harness: "Codex" });
 

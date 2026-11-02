@@ -48,6 +48,7 @@ import {
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2RemoteTaskChild,
+  type OrchestrationV2ModelSwitch,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
   type OrchestrationV2ThreadShell,
@@ -75,6 +76,7 @@ import {
   managedRuntimeModeCeilingMessage,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
+import { modelSwitchSince } from "./modelSwitch.ts";
 import { recordThreadOpen } from "@t3tools/shared/paletteSearch";
 import {
   backgroundWorkHoldsCompletion,
@@ -547,6 +549,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.unpin":
     case "thread.pin.reorder":
     case "thread.active.reorder":
+    case "thread.tag.set":
     case "thread.visit":
     case "thread.mark-unread":
     case "thread.metadata.update":
@@ -2088,6 +2091,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         startedAt: now,
         completedAt: now,
         updatedAt: now,
+        ...(activeHandoff === null ? modelSwitchSince(projection, queuedRun.modelSelection) : {}),
       };
       const handoffTurnItem: OrchestrationV2TurnItem | null =
         activeHandoff === null
@@ -3111,6 +3115,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.pin"
           | "thread.unpin"
           | "thread.pin.reorder"
+          | "thread.tag.set"
           | "thread.active.reorder"
           | "thread.mark-unread"
           | "thread.metadata.update"
@@ -3648,6 +3653,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             updatedAt: thread.updatedAt,
           };
         }
+        case "thread.tag.set": {
+          const current = thread.tags ?? [];
+          return {
+            ...thread,
+            tags: command.tagged
+              ? current.includes(command.tag)
+                ? current
+                : [...current, command.tag]
+              : current.filter((tag) => tag !== command.tag),
+          };
+        }
         case "thread.mark-unread": {
           // Retire the wake before rewinding the visit, preserving its settlement timer.
           const snoozeExpired =
@@ -4027,6 +4043,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return "thread.pin-reordered" as const;
         case "thread.active.reorder":
           return "thread.active-reordered" as const;
+        case "thread.tag.set":
+          return "thread.tags-updated" as const;
         case "thread.mark-unread":
           return "thread.marked-unread" as const;
         case "thread.metadata.update":
@@ -4909,6 +4927,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         readonly providerTurnId: typeof providerTurn.id | null;
         readonly providerThreadId: OrchestrationV2ProviderThread["id"];
         readonly providerInstanceId: ProviderInstanceId;
+        readonly modelSwitch?: OrchestrationV2ModelSwitch | undefined;
       }) {
         const message: OrchestrationV2ConversationMessage = {
           createdBy: input.createdBy,
@@ -4965,6 +4984,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           text: input.text,
           attachments: input.attachments,
           ...(input.context ? { context: input.context } : {}),
+          ...(messageInput.modelSwitch === undefined
+            ? {}
+            : { modelSwitch: messageInput.modelSwitch }),
         };
         yield* emitEvent({
           type: "message.updated",
@@ -5427,6 +5449,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       providerTurnId: null,
       providerThreadId: restartProviderThread.id,
       providerInstanceId: input.modelSelection.instanceId,
+      // Measured on the pre-restart projection, so the rewritten run is not its own baseline.
+      ...(restartHandoff === null ? modelSwitchSince(input.projection, input.modelSelection) : {}),
     });
     const interruptedAttemptId = targetRun.activeAttemptId;
     if (interruptedAttemptId === null) {
@@ -6583,6 +6607,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         text: dispatchText,
         ...(command.context ? { context: command.context } : {}),
         attachments: command.attachments,
+        ...(run.contextHandoffId === null ? modelSwitchSince(projection, modelSelection) : {}),
       };
       const preparationTurnItem: OrchestrationV2TurnItem | null =
         dispatchMode.type === "defer_start"
@@ -7334,6 +7359,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       text: dispatchText,
       ...(command.context ? { context: command.context } : {}),
       attachments: command.attachments,
+      ...(run.contextHandoffId === null
+        ? modelSwitchSince(projection, modelSelection, sourceRun?.modelSelection)
+        : {}),
     };
     const activeHandoff = portableForkHandoff ?? mergeBackHandoff ?? providerSwitchHandoff;
     const handoffSourceRuns =
@@ -9522,7 +9550,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         "runtimeRequests",
         "subagents",
       ],
-      { turnItemTypes: [], messageRoles: ["user"] },
+      // User messages measure a restart's model switch.
+      { turnItemTypes: ["user_message"], messageRoles: ["user"] },
     );
     if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) {
       return yield* new OrchestratorDispatchError({
@@ -10712,7 +10741,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       rootNode === undefined ||
       run.activeAttemptId !== attempt.id ||
       run.status !== "running" ||
-      attempt.status !== "running"
+      attempt.status === "pending"
     )
       return;
     const emitEvent = emit(input.events, input.command);
@@ -10734,15 +10763,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         },
       });
     }
-    yield* emitEvent({
-      ...base,
-      type: "run-attempt.updated",
-      payload: {
-        ...attempt,
-        status: "interrupted",
-        completedAt: input.now,
-      },
-    });
+    // An attempt that already ended keeps its status; only its run was left running.
+    if (attempt.status === "running") {
+      yield* emitEvent({
+        ...base,
+        type: "run-attempt.updated",
+        payload: {
+          ...attempt,
+          status: "interrupted",
+          completedAt: input.now,
+        },
+      });
+    }
     const providerThread = input.projection.providerThreads.find(
       (candidate) => candidate.id === input.providerTurn.providerThreadId,
     );
@@ -13327,6 +13359,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.unpin":
       case "thread.pin.reorder":
       case "thread.active.reorder":
+      case "thread.tag.set":
       case "thread.mark-unread":
       case "thread.metadata.update":
       case "thread.pull-request.link":
