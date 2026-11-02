@@ -1348,7 +1348,6 @@ it.effect("queues a plain send behind the stopped queue and releases its hold", 
         yield* Deferred.await(entered);
 
         const projection = yield* orchestrator.getThreadProjection(threadId);
-        assert.deepEqual(steered, []);
         assert.equal(started.length, 1);
         const queued = projection.runs
           .filter((run) => run.status === "queued")
@@ -1364,6 +1363,7 @@ it.effect("queues a plain send behind the stopped queue and releases its hold", 
         yield* Deferred.succeed(release, undefined);
         yield* Fiber.join(stopping);
         yield* worker.drain();
+        assert.deepEqual(steered, []);
       }).pipe(Effect.provide(layer));
     }),
   ),
