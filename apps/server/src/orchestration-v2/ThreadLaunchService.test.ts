@@ -1172,6 +1172,7 @@ it.effect(
             harness.layer,
             NodeCrypto.layer,
             Scheduler.layer,
+            ManagedPolicy.layerTest(),
             Layer.mock(SecretRequests.SecretRequests)({}),
           ),
         ),

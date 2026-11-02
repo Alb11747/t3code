@@ -27,6 +27,7 @@ it.effect("recalculates zone edits, preserves omitted zones and clears explicit 
     const layerDependencies = Layer.mergeAll(
       NodeCrypto.layer,
       Scheduler.layer,
+      ManagedPolicy.layerTest(),
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
