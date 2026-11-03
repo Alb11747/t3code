@@ -22,16 +22,11 @@ export type AssetUrlState = RuntimeAssetUrlState & { readonly waiting?: boolean 
 
 type AssetUrlTarget = {
   readonly environmentId: EnvironmentId;
-  readonly input: { readonly resource: AssetResource; readonly cacheRevision?: string };
+  readonly input: { readonly resource: AssetResource };
 };
 
 const decodeRevisionedAssetUrlKey = Schema.decodeUnknownSync(
-  Schema.Tuple([
-    EnvironmentId,
-    AssetResource,
-    Schema.NullOr(Schema.String),
-    Schema.NullOr(Schema.String),
-  ]),
+  Schema.Tuple([EnvironmentId, AssetResource, Schema.NullOr(Schema.String)]),
 );
 
 const isSettled = (result: AsyncResult.AsyncResult<unknown, unknown>) =>
@@ -54,13 +49,11 @@ export function makeRevisionedAssetUrlFamily(
   // It holds one short entry per file shown, and goes with the registry.
   const mintedUnder = new WeakMap<AtomRegistry.AtomRegistry, Map<string, string | null>>();
   const family = Atom.family((key: string) => {
-    const [environmentId, resource, revision, cacheRevision] = decodeRevisionedAssetUrlKey(
-      JSON.parse(key),
-    );
-    const resourceKey = JSON.stringify([environmentId, resource, cacheRevision]);
+    const [environmentId, resource, revision] = decodeRevisionedAssetUrlKey(JSON.parse(key));
+    const resourceKey = JSON.stringify([environmentId, resource]);
     const query = createUrl({
       environmentId,
-      input: assetUrlInput(resource, cacheRevision ?? undefined),
+      input: { resource },
     });
     return Atom.transform(
       query,
@@ -98,7 +91,6 @@ export function makeRevisionedAssetUrlFamily(
         target.environmentId,
         target.input.resource,
         target.revision,
-        target.input.cacheRevision ?? null,
       ]),
     );
 }
@@ -113,7 +105,6 @@ export function useAssetUrlState(
   environmentId: EnvironmentId | null,
   resource: AssetResource | null,
   revision?: string | null,
-  cacheRevision?: string,
 ): AssetUrlState {
   const blocked = blockedAssetUrlState(resource, useFilesystemReadAccess(environmentId));
   const preparedConnection = usePreparedConnection(environmentId);
@@ -123,11 +114,11 @@ export function useAssetUrlState(
       : revision === undefined
         ? assetEnvironment.createUrl({
             environmentId,
-            input: assetUrlInput(resource, cacheRevision),
+            input: { resource },
           })
         : revisionedAssetUrl({
             environmentId,
-            input: assetUrlInput(resource, cacheRevision),
+            input: { resource },
             revision,
           }),
   );
@@ -144,7 +135,6 @@ export function useAssetUrlState(
 export function useAssetUrlRefresh(
   environmentId: EnvironmentId | null,
   resource: AssetResource | null,
-  cacheRevision?: string,
 ): () => Promise<string | null> {
   const connection = usePreparedConnection(environmentId);
   const httpBaseUrl = connection._tag === "Some" ? connection.value.httpBaseUrl : null;
@@ -154,7 +144,7 @@ export function useAssetUrlRefresh(
   });
   return async () => {
     if (environmentId === null || resource === null || httpBaseUrl === null) return null;
-    const result = await refresh({ environmentId, input: assetUrlInput(resource, cacheRevision) });
+    const result = await refresh({ environmentId, input: { resource } });
     if (result._tag === "Failure") throw squashAtomCommandFailure(result);
     return resolveAssetUrl(httpBaseUrl, result.value.relativeUrl);
   };
@@ -192,10 +182,6 @@ export function useAssetUrls(
     );
   }
   return urls;
-}
-
-function assetUrlInput(resource: AssetResource, cacheRevision: string | undefined) {
-  return cacheRevision === undefined ? { resource } : { resource, cacheRevision };
 }
 
 function isFileResource(resource: AssetResource): boolean {

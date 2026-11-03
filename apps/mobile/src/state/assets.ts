@@ -37,7 +37,6 @@ export const projectFaviconUrlAtom = createProjectFaviconUrlAtomFamily({
 export function useAssetUrlState(
   environmentId: EnvironmentId | null,
   resource: AssetResource | null,
-  cacheRevision?: string,
 ): AssetUrlState {
   const fileAccessSession = useEnvironmentQuery(
     environmentId === null ? null : environmentSession.sessionStateAtom(environmentId),
@@ -55,10 +54,7 @@ export function useAssetUrlState(
   const result = useAtomValue(
     blocked !== null || environmentId === null || resource === null
       ? EMPTY_ASSET_URL_ATOM
-      : assetEnvironment.createUrl({
-          environmentId,
-          input: cacheRevision === undefined ? { resource } : { resource, cacheRevision },
-        }),
+      : assetEnvironment.createUrl({ environmentId, input: { resource } }),
   );
   const shared =
     blocked ??

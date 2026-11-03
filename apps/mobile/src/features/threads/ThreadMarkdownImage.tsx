@@ -30,9 +30,6 @@ import {
 /** Use known feed width immediately; later image measurement would move already-positioned rows. */
 export const MarkdownImageAvailableWidthContext = createContext(0);
 
-/** The reply an image belongs to, so a file overwritten at the same path is fetched again. */
-export const MarkdownMediaRevisionContext = createContext<string | undefined>(undefined);
-
 type ImageSize = { readonly width: number; readonly height: number };
 
 class SvgLoadError extends Data.TaggedError("SvgLoadError")<{ readonly cause: unknown }> {}
@@ -280,12 +277,7 @@ export function ThreadMarkdownImage(props: {
   readonly onPressPreview: (source: FilePreviewSource) => void;
 }) {
   const withGallery = useFilePreviewGallery();
-  const revision = useContext(MarkdownMediaRevisionContext);
-  const assetUrl = useAssetUrlState(
-    props.environmentId,
-    props.resource,
-    props.resource._tag === "media-file" ? revision : undefined,
-  );
+  const assetUrl = useAssetUrlState(props.environmentId, props.resource);
   const resourceKey =
     props.resource._tag === "attachment"
       ? `attachment:${props.resource.attachmentId}`

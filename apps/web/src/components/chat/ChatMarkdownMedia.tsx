@@ -336,7 +336,6 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
   readonly fallbackSrc?: string | undefined;
   readonly workspaceRoot?: string | undefined;
   readonly workspaceMutationId?: string | null | undefined;
-  readonly mediaRevision?: string | undefined;
   readonly onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
 }) {
   const resource = props.resource;
@@ -348,9 +347,8 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
       (resource._tag === "media-file" || resource._tag === "workspace-file")
       ? props.workspaceMutationId
       : undefined,
-    props.mediaRevision,
   );
-  const refreshAssetUrl = useAssetUrlRefresh(props.environmentId, resource, props.mediaRevision);
+  const refreshAssetUrl = useAssetUrlRefresh(props.environmentId, resource);
   const path =
     resource._tag === "media-file"
       ? resource.path

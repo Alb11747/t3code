@@ -282,7 +282,6 @@ import { useFileChipShare } from "./useFileChipShare";
 import { useOpenLinkedThread } from "./useOpenLinkedThread";
 import {
   MarkdownImageAvailableWidthContext,
-  MarkdownMediaRevisionContext,
   ThreadMarkdownImage,
   ThreadMarkdownImageUnavailable,
   ThreadMarkdownImageView,
@@ -2283,17 +2282,15 @@ function renderFeedEntry(
       >
         {renderedText.trim().length > 0 ? (
           <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
-            <MarkdownMediaRevisionContext value={message.id}>
-              <AssistantMarkdownContent
-                markdown={renderedText}
-                environmentId={props.environmentId}
-                markdownStyles={styles}
-                linkHandlers={props.markdownLinkHandlers}
-                onUseArtifactTemplate={props.onUseArtifactTemplate}
-                renderImage={props.renderMarkdownImage}
-                skills={props.skills}
-              />
-            </MarkdownMediaRevisionContext>
+            <AssistantMarkdownContent
+              markdown={renderedText}
+              environmentId={props.environmentId}
+              markdownStyles={styles}
+              linkHandlers={props.markdownLinkHandlers}
+              onUseArtifactTemplate={props.onUseArtifactTemplate}
+              renderImage={props.renderMarkdownImage}
+              skills={props.skills}
+            />
           </MarkdownImageAvailableWidthContext>
         ) : null}
         <MessageAttachmentList

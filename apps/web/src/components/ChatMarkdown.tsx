@@ -241,8 +241,6 @@ interface ChatMarkdownProps {
   onRunShellCommand?: ((command: string) => void) | undefined;
   imageBaseDir?: string | undefined;
   workspaceMutationId?: string | null | undefined;
-  /** Mints file media URLs once per revision, such as a reply, instead of reusing a cached one. */
-  mediaRevision?: string | undefined;
   onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
   /** Keep one list per configuration (a module constant): it keys the shared parse cache. */
   extraRemarkPlugins?: NonNullable<ReactMarkdownOptions["remarkPlugins"]>;
@@ -503,7 +501,6 @@ function useChatMarkdownState({
   onRunShellCommand,
   imageBaseDir,
   workspaceMutationId,
-  mediaRevision,
   onImageExpand,
   renderContextReference,
   headingLevelOffset = 0,
@@ -915,7 +912,6 @@ function useChatMarkdownState({
     headingLevelOffset,
     imageBaseDir,
     workspaceMutationId,
-    mediaRevision,
     inlineCodeFileLinkMetaByText,
     inline,
     mathEnabled,
@@ -1389,7 +1385,6 @@ const CHAT_MARKDOWN_COMPONENTS = {
       imageBaseDir,
       threadRef,
       workspaceMutationId,
-      mediaRevision,
       renderContextReference,
       fileLinkChip,
       resolvedTheme,
@@ -1563,7 +1558,6 @@ const CHAT_MARKDOWN_COMPONENTS = {
           style={authoredSizeStyle}
           workspaceRoot={cwd}
           workspaceMutationId={workspaceMutationId}
-          mediaRevision={kind === "image" ? mediaRevision : undefined}
           onImageExpand={imageExpand}
         />
       );
