@@ -37,6 +37,7 @@ import {
   CircleCheckIcon,
   CircleDashedIcon,
   CircleDotDashedIcon,
+  CirclePauseIcon,
   ClockIcon,
   GitBranchIcon,
   MessageCircleQuestionIcon,
@@ -276,6 +277,11 @@ function SidebarThreadTooltip({
           ) : null
         }
       >
+        {thread.keepWarmStalled ? (
+          <div className="text-warning-foreground">
+            Stalled to keep cache warm until the usage reset.
+          </div>
+        ) : null}
         {projectDisplayName ? (
           <div className="flex min-w-0 items-center gap-2">
             {project ? <ProjectFavicon project={project} className="size-3 shrink-0" /> : null}
@@ -517,6 +523,7 @@ const dropVerbBadge: Record<SidebarDropVerb, ReactNode> = {
 };
 
 const TOP_STATUS_ICONS = {
+  stalling: CirclePauseIcon,
   working: CircleDashedIcon,
   waiting: CircleDotDashedIcon,
   input: MessageCircleQuestionIcon,
@@ -723,11 +730,17 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   });
   const topStatus =
     status === "working"
-      ? {
-          label: thread.goal?.status === "active" ? "Goal" : "Working",
-          icon: "working" as const,
-          className: "text-info-foreground",
-        }
+      ? thread.keepWarmStalled
+        ? {
+            label: "Stalling",
+            icon: "stalling" as const,
+            className: "text-warning-foreground",
+          }
+        : {
+            label: thread.goal?.status === "active" ? "Goal" : "Working",
+            icon: "working" as const,
+            className: "text-info-foreground",
+          }
       : status === "waiting"
         ? {
             label: "Waiting",

@@ -50,6 +50,7 @@ import {
   THREAD_HISTORY_TURN_SNAPSHOT_ROW_LIMIT,
 } from "./threadHistoryPaging.ts";
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
+import { verifyKeepWarmShell } from "./ProjectionStore.keepWarm.fork.testkit.ts";
 
 const layerTest = Layer.mergeAll(
   ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
@@ -217,6 +218,12 @@ const addRolledBackRecoveryCandidate = Effect.fn("addRolledBackRecoveryCandidate
 
   return threadId;
 });
+
+it.effect("shells show a keep-warm stall only while its active run is held", () =>
+  Effect.gen(function* () {
+    yield* verifyKeepWarmShell(yield* addRolledBackRecoveryCandidate("keep-warm"));
+  }).pipe(Effect.provide(layerTest)),
+);
 
 it.effect("record reads restrict provider histories to delivery identities", () =>
   Effect.gen(function* () {

@@ -23,6 +23,19 @@ import * as ClaudeKeepWarm from "./ClaudeKeepWarm.ts";
 const threadId = ThreadId.make("thread-keep-warm");
 const hold = { resetAt: "2026-11-03T15:00:00.000Z", releaseAt: "2026-11-03T13:59:00.000Z" };
 
+it("allows keep-warm holds without replacing an explicit stream idle timeout", () => {
+  const environment = { ANTHROPIC_CUSTOM_HEADERS: "X-Existing: 1" };
+  const defaults = ClaudeKeepWarm.keepWarmClaudeEnvironment(environment);
+  assert.equal(defaults.CLAUDE_STREAM_IDLE_TIMEOUT_MS, "3600000");
+  assert.equal(defaults.ANTHROPIC_CUSTOM_HEADERS, "X-Existing: 1\nX-T3-Keep-Warm: 1");
+  assert.deepEqual(environment, { ANTHROPIC_CUSTOM_HEADERS: "X-Existing: 1" });
+  assert.equal(
+    ClaudeKeepWarm.keepWarmClaudeEnvironment({ CLAUDE_STREAM_IDLE_TIMEOUT_MS: "1200000" })
+      .CLAUDE_STREAM_IDLE_TIMEOUT_MS,
+    "1200000",
+  );
+});
+
 function fixture(control: { status: number; body: unknown }) {
   const requests: Array<{ method: string; path: string; body: unknown }> = [];
   const http = HttpClient.make((request) =>

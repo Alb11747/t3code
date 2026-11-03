@@ -23,6 +23,8 @@ const READ_TTL_MS = 10_000;
 export function keepWarmClaudeEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const customHeaders = environment.ANTHROPIC_CUSTOM_HEADERS?.trim();
   return {
+    // Claude's event watchdog is separate from API_TIMEOUT_MS; proxy heartbeats cover byte idle.
+    CLAUDE_STREAM_IDLE_TIMEOUT_MS: "3600000",
     ...environment,
     ANTHROPIC_CUSTOM_HEADERS: customHeaders
       ? `${customHeaders}\n${KEEP_WARM_HEADER}`

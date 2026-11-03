@@ -741,9 +741,16 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const workingLabel = STATUS_LABEL_BY_STATUS[status];
   const showsWoke = status === "ready" && props.wokeAt !== null;
   const statusLabel =
-    (status === "working" && workingLabel !== undefined && thread.goal?.status === "active"
-      ? { ...workingLabel, label: "Goal" }
-      : workingLabel) ?? (isUnread ? DONE_STATUS_LABEL : undefined);
+    (status === "working" && thread.keepWarmStalled
+      ? {
+          label: "Stalling",
+          icon: "pause" as const,
+          className: "text-warning-foreground",
+          iconTintClassName: "accent-warning-foreground",
+        }
+      : status === "working" && workingLabel !== undefined && thread.goal?.status === "active"
+        ? { ...workingLabel, label: "Goal" }
+        : workingLabel) ?? (isUnread ? DONE_STATUS_LABEL : undefined);
   const recede = shouldRecedeThreadRow({ status, selected });
   const isRegeneratingTitle = thread.titleRegeneration != null;
   const rowAccessibilityLabel = `${thread.title}${props.hasQueuedMessages ? ", messages queued to send" : ""}${isRegeneratingTitle ? ", regenerating title" : ""}`;

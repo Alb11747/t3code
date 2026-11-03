@@ -664,6 +664,7 @@ export function buildBulkUnpinContextMenuItem(input: {
 
 export interface ThreadStatusPill {
   label:
+    | "Stalling"
     | "Working"
     | "Connecting"
     | "Completed"
@@ -688,6 +689,7 @@ type ThreadStatusInput = Pick<
   | "interactionMode"
   | "latestRun"
   | "runtime"
+  | "keepWarmStalled"
 > & {
   lastVisitedAt?: string | null | undefined;
   pendingBackgroundTasks?: SidebarThreadSummary["pendingBackgroundTasks"] | undefined;
@@ -1142,6 +1144,14 @@ export function resolveThreadStatusPill(input: {
     (thread.runtime?.status === "running" && thread.blockedOnThreadWait !== true) ||
     thread.runtime?.status === "waiting"
   ) {
+    if (thread.keepWarmStalled) {
+      return {
+        label: "Stalling",
+        colorClass: "text-warning-foreground",
+        dotClass: "bg-warning",
+        pulse: false,
+      };
+    }
     return {
       label: "Working",
       colorClass: "text-sky-600 dark:text-sky-300/80",
