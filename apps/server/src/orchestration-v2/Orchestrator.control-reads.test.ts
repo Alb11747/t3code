@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
   CommandId,
   MessageId,
@@ -265,7 +266,7 @@ it.effect.each(["active", "thread.settle", "thread.archive", "thread.stop", "rew
                   stderrTruncated: false,
                 }),
             }),
-          ).pipe(Layer.provideMerge(NodeServices.layer)),
+          ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
         ),
       );
       yield* watches.watch(threadId, issue);

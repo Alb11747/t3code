@@ -482,7 +482,7 @@ it.effect.each(
             ).length,
             1,
           );
-          if (!mailbox) {
+          if (!mailbox && !question) {
             assert.equal(
               final.visibleTurnItems.filter(
                 ({ item }) => item.type === "user_message" && item.messageId === messageId,
@@ -742,6 +742,42 @@ it.effect("steers a delegated task question notice into the running parent turn"
           outcome: "updated" as const,
           summary: "Delegated task has a question",
         };
+        const now = yield* DateTime.now;
+        const first = started[0]!;
+        yield* (yield* EventSink.EventSinkV2).write({
+          events: [
+            {
+              id: EventId.make("event:question-task"),
+              type: "subagent.updated",
+              threadId,
+              runId: first.runId,
+              nodeId: notification.source.taskIds[0]!,
+              occurredAt: now,
+              payload: {
+                id: notification.source.taskIds[0]!,
+                threadId,
+                runId: first.runId,
+                parentNodeId: first.rootNodeId,
+                origin: "app_owned",
+                createdBy: "agent",
+                driver,
+                providerInstanceId: instanceId,
+                providerThreadId: null,
+                childThreadId: notification.source.childThreadId,
+                nativeTaskRef: null,
+                prompt: "Do background work",
+                title: null,
+                model: null,
+                completionWake: "always",
+                status: "running",
+                result: null,
+                startedAt: now,
+                completedAt: null,
+                updatedAt: now,
+              },
+            },
+          ],
+        });
         yield* orchestrator.dispatch({
           type: "message.dispatch",
           commandId: CommandId.make("question-wake"),

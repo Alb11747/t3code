@@ -1,6 +1,4 @@
 import { flushSync } from "react-dom";
-import { AudioPreview } from "../files/AudioPreview";
-import { cdp, page } from "vite-plus/test/browser";
 import {
   ComposerContextId,
   EnvironmentId,
@@ -28,7 +26,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import { Atom } from "effect/reactivity";
 
-import { page, userEvent } from "vite-plus/test/browser";
+import { cdp, page, userEvent } from "vite-plus/test/browser";
 
 import { readTimelinePosition } from "./timelineScrollAnchoring";
 

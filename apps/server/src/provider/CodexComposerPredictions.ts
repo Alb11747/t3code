@@ -1,6 +1,6 @@
 import type { RunId, ThreadId } from "@t3tools/contracts";
 import type * as CodexClient from "effect-codex-app-server/client";
-import type * as Crypto from "effect/Crypto";
+import type * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -260,9 +260,9 @@ export const makeCodexComposerPredictions = Effect.gen(function* () {
 export const makeCodexPredictionClaims = Effect.fnUntraced(function* (input: {
   readonly composerPredictions: Effect.Success<typeof makeCodexComposerPredictions>;
   readonly promptSuggestions: Omit<typeof PromptSuggestions.Service, "stream">;
-  readonly crypto: Crypto.Crypto;
+  readonly random: SecureRandom.SecureRandom["Service"];
 }) {
-  const { composerPredictions, promptSuggestions, crypto } = input;
+  const { composerPredictions, promptSuggestions, random } = input;
   const scope = yield* Scope.Scope;
   const predictions = new Map<
     ThreadId,
@@ -295,17 +295,12 @@ export const makeCodexPredictionClaims = Effect.fnUntraced(function* (input: {
     const prediction = predictions.get(threadId);
     if (prediction?.owner !== owner) return;
     prediction.fiber = yield* Effect.gen(function* () {
-      const id = yield* crypto.randomUUIDv4();
+      const id = yield* random.uuidV4();
       const text = yield* composerPredictions.predict({ ...request, turnId: id });
       if (text && predictions.get(threadId) === prediction) {
         yield* promptSuggestions.publish(threadId, { id, runId: prediction.runId, text });
       }
-    }).pipe(
-      Effect.catch((cause) =>
-        Effect.logDebug("Codex composer prediction unavailable.", { reason: cause._tag }),
-      ),
-      Effect.forkIn(scope),
-    );
+    }).pipe(Effect.forkIn(scope));
   });
 
   return { claim, revoke, predictAfter };

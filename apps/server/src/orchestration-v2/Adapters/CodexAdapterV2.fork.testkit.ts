@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -14,7 +15,8 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as CodexClient from "effect-codex-app-server/client";
 import type * as CodexReplay from "effect-codex-app-server/replay";
-import type * as Crypto from "effect/Crypto";
+import type * as Digest from "effect/crypto/Digest";
+import type * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -63,7 +65,8 @@ export interface CodexAdapterForkSuiteInput {
       readonly until: (predicate: () => boolean) => Effect.Effect<void>;
     },
     ProviderAdapter.ProviderAdapterV2Error,
-    | Crypto.Crypto
+    | Digest.Digest
+    | SecureRandom.SecureRandom
     | FileSystem.FileSystem
     | IdAllocator.IdAllocatorV2
     | McpProviderSessions.McpProviderSessions
@@ -211,7 +214,12 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
       ),
     ),
   );
@@ -412,7 +420,12 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
       ),
     ),
   );
@@ -533,7 +546,12 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
       ),
     ),
   );
@@ -634,7 +652,12 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
       ),
     ),
   );
@@ -749,7 +772,12 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
       ),
     ),
   );
@@ -826,7 +854,12 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
       ),
     ),
   );
@@ -911,7 +944,12 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
       ),
     ),
   );
@@ -1081,6 +1119,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
               IdAllocator.layer,
               McpProviderSessions.layer,
               NodeServices.layer,
+              NodeCrypto.layer,
               Layer.succeed(Random.Random, {
                 nextDoubleUnsafe: () => draw,
                 nextIntUnsafe: () => 0,
@@ -1232,6 +1271,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
             IdAllocator.layer,
             McpProviderSessions.layer,
             NodeServices.layer,
+            NodeCrypto.layer,
             fullRetryDelays,
           ),
         ),
@@ -1333,6 +1373,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
             IdAllocator.layer,
             McpProviderSessions.layer,
             NodeServices.layer,
+            NodeCrypto.layer,
             fullRetryDelays,
           ),
         ),
@@ -1460,6 +1501,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
             IdAllocator.layer,
             McpProviderSessions.layer,
             NodeServices.layer,
+            NodeCrypto.layer,
             fullRetryDelays,
           ),
         ),
@@ -1540,6 +1582,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
               IdAllocator.layer,
               McpProviderSessions.layer,
               NodeServices.layer,
+              NodeCrypto.layer,
               fullRetryDelays,
             ),
           ),
@@ -1638,6 +1681,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
               IdAllocator.layer,
               McpProviderSessions.layer,
               NodeServices.layer,
+              NodeCrypto.layer,
               fullRetryDelays,
             ),
           ),
@@ -1709,6 +1753,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
             IdAllocator.layer,
             McpProviderSessions.layer,
             NodeServices.layer,
+            NodeCrypto.layer,
             fullRetryDelays,
           ),
         ),
@@ -1770,6 +1815,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
             IdAllocator.layer,
             McpProviderSessions.layer,
             NodeServices.layer,
+            NodeCrypto.layer,
             fullRetryDelays,
           ),
         ),
@@ -1823,6 +1869,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
             IdAllocator.layer,
             McpProviderSessions.layer,
             NodeServices.layer,
+            NodeCrypto.layer,
             fullRetryDelays,
           ),
         ),
@@ -1945,6 +1992,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
             IdAllocator.layer,
             McpProviderSessions.layer,
             NodeServices.layer,
+            NodeCrypto.layer,
             fullRetryDelays,
           ),
         ),
@@ -2025,6 +2073,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
             IdAllocator.layer,
             McpProviderSessions.layer,
             NodeServices.layer,
+            NodeCrypto.layer,
             fullRetryDelays,
           ),
         ),

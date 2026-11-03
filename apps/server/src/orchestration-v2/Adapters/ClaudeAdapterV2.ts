@@ -11209,9 +11209,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   context.nativeThreadId,
                 );
                 live.lastTurn = context;
-                const promptUuid = (yield* crypto.randomUUIDv4()) as NonNullable<
-                  SDKUserMessage["uuid"]
-                >;
+                const promptUuid = (yield* random.uuidV4()) as NonNullable<SDKUserMessage["uuid"]>;
                 context.promptUuid = promptUuid;
                 context.promptEcho = "pending";
                 context.promptStarted = false;

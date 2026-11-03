@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   type OrchestrationV2ServerCommand,
@@ -140,7 +141,7 @@ const setup = () => {
         ),
     }),
     ServerConfig.layerTest(process.cwd(), { prefix: "t3-issue-watch-" }),
-  ).pipe(Layer.provideMerge(NodeServices.layer));
+  ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
   // Holds the background sweep so each test runs sweeps itself.
   const service = IssueWatchService.make.pipe(
     Effect.provideService(ServerActivation, Effect.never),

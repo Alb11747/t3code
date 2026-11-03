@@ -6036,18 +6036,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     // Route mailbox deliveries and child questions using the live session's
     // capabilities. Never interrupt/restart a turn for a notification.
-    const mailboxTaskIds =
-      delegatedCompletion?.taskIds ??
-      (command.creationSource === "server" &&
-      command.messageId.startsWith("message:delegated-task-question:") &&
-      command.notification?.source.kind === "delegated_task"
-        ? command.notification.source.taskIds
-        : undefined);
     if (
-      mailboxTaskIds !== undefined &&
-      mailboxTaskIds.every(
-        (id) => projection.subagents.find((task) => task.id === id)?.completionWake === "always",
-      )
+      delegatedCompletion !== undefined
+        ? delegatedCompletion.taskIds.every(
+            (id) =>
+              projection.subagents.find((task) => task.id === id)?.completionWake === "always",
+          )
+        : command.notification?.source.kind === "delegated_task"
     ) {
       // If it queues (steering would cancel tools, or the turn is still
       // starting), the running turn may take it at its next tool boundary.

@@ -1846,7 +1846,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
       ),
     ),
   );
@@ -1897,7 +1902,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
       ),
     ),
   );
@@ -2000,7 +2010,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
       ),
     ),
   );
@@ -4032,7 +4047,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           );
         }).pipe(
           Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
           ),
         ),
       ),
@@ -4083,7 +4103,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.equal(items.at(-1)?.phase, "commentary");
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
         ),
         Effect.scoped,
       ),
@@ -4159,7 +4184,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       assert.equal(items[0]?.id, items[1]?.id);
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
       ),
       Effect.scoped,
     ),
@@ -6102,35 +6132,60 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  // regression: #17501 Codex 429 retry exhaustion classifies as a usage limit
+  // The fork retries exhausted 429s; completion HTTP status still controls whether retrying can help.
   it.effect.each([
     {
       notificationStatus: 500,
       completionStatus: 429,
       willRetry: false,
-      expectedClass: "usage_limit",
+      expectedClass: "provider_error",
+      expectedRetry: true,
     },
     {
       notificationStatus: 429,
       completionStatus: 500,
       willRetry: true,
       expectedClass: "provider_error",
+      expectedRetry: true,
     },
     {
       notificationStatus: 429,
       completionStatus: null,
       willRetry: false,
-      expectedClass: "usage_limit",
+      expectedClass: "provider_error",
+      expectedRetry: true,
     },
     {
       notificationStatus: 429,
       completionStatus: null,
       willRetry: true,
-      expectedClass: "usage_limit",
+      expectedClass: "provider_error",
+      expectedRetry: true,
+    },
+    {
+      notificationStatus: 429,
+      completionStatus: 400,
+      willRetry: false,
+      expectedClass: "provider_error",
+      expectedRetry: false,
+    },
+    {
+      notificationStatus: 400,
+      completionStatus: 500,
+      willRetry: false,
+      expectedClass: "provider_error",
+      expectedRetry: true,
+    },
+    {
+      notificationStatus: 400,
+      completionStatus: null,
+      willRetry: false,
+      expectedClass: "provider_error",
+      expectedRetry: false,
     },
   ] as const)(
     "honors completion HTTP status from $notificationStatus to $completionStatus (retry: $willRetry)",
-    ({ notificationStatus, completionStatus, expectedClass, willRetry }) =>
+    ({ notificationStatus, completionStatus, expectedClass, expectedRetry, willRetry }) =>
       Effect.scoped(
         Effect.gen(function* () {
           const name = `${notificationStatus}-${completionStatus}-${willRetry}`;
@@ -6192,19 +6247,35 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               attemptId: RunAttemptId.make(`attempt-exhaustion-status-${name}`),
             }),
           );
-          yield* harness.firstTerminal;
-          const terminal = harness.terminalEvents()[0];
-          assert.equal(terminal?.status, "failed");
-          if (terminal?.status !== "failed") return;
-          assert.equal(terminal.failure.class, expectedClass);
-          assert.equal(terminal.failure.code, "responseTooManyFailedAttempts");
-          assert.equal(terminal.threadDisposition, "reusable");
-          const notificationClass = notificationStatus === 429 ? "usage_limit" : "provider_error";
-          assert.equal(
-            terminal.failure.message,
-            expectedClass === notificationClass ? additionalDetails : message,
+          const retryItem = () =>
+            harness.events.findLast(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "error" &&
+                event.turnItem.retry?.retryDelayMs != null,
+            );
+          yield* harness.until(() =>
+            expectedRetry ? retryItem() !== undefined : harness.terminalEvents().length > 0,
           );
-          if (willRetry) assert.equal(terminal.retry?.attempt, 1);
+          if (expectedRetry) {
+            const row = retryItem();
+            assert.isDefined(row);
+            if (row?.type !== "turn_item.updated" || row.turnItem.type !== "error") return;
+            assert.equal(row.turnItem.status, "running");
+            assert.equal(row.turnItem.failure.class, expectedClass);
+            assert.equal(row.turnItem.failure.code, "responseTooManyFailedAttempts");
+            assert.equal(row.turnItem.failure.message, additionalDetails);
+            assert.equal(row.turnItem.retry?.attempt, 1);
+            assert.deepEqual(harness.terminalEvents(), []);
+          } else {
+            const terminal = harness.terminalEvents()[0];
+            assert.equal(terminal?.status, "failed");
+            if (terminal?.status !== "failed") return;
+            assert.equal(terminal.failure.class, expectedClass);
+            assert.equal(terminal.failure.code, "responseTooManyFailedAttempts");
+            assert.equal(terminal.threadDisposition, "reusable");
+            assert.equal(terminal.failure.message, additionalDetails);
+          }
         }).pipe(
           Effect.provide(
             Layer.mergeAll(

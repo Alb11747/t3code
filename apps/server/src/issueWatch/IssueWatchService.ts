@@ -11,7 +11,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -135,7 +135,7 @@ export const make = Effect.gen(function* () {
   const vcs = yield* VcsProcess.VcsProcess;
   const engine = yield* Orchestrator.OrchestratorV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const cwd = yield* HostProcess.WorkingDirectory;
   const filePath = path.join(config.stateDir, "issue-watches.json");
 
@@ -233,7 +233,7 @@ export const make = Effect.gen(function* () {
     wake?: IssueWatchWake,
   ) {
     const { threadId, ...record } = watch;
-    const id = yield* crypto.randomUUIDv4();
+    const id = yield* random.uuidV4();
     yield* engine.dispatch({
       type: "thread.issue-watch.sync",
       commandId: CommandId.make(`server:issue-watch:${threadId}:${id}`),

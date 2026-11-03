@@ -90,6 +90,7 @@ import * as CodexSchema from "effect-codex-app-server/schema";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -1616,6 +1617,7 @@ export const layerAppServerClientFactory: Layer.Layer<
 export type CodexAdapterV2DriverEnv =
   | CodexAppServerClientFactory
   | Digest.Digest
+  | SecureRandom.SecureRandom
   | FileSystem.FileSystem
   | IdAllocator.IdAllocatorV2
   | McpProviderSessions.McpProviderSessions
@@ -1697,6 +1699,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
   adapterOptions: CodexAdapterV2Options,
 ) {
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+  const random = yield* SecureRandom.SecureRandom;
   const readMcpSession = (threadId: ThreadId | null) =>
     threadId === null
       ? // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
@@ -1864,7 +1867,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const predictions = yield* makeCodexPredictionClaims({
           composerPredictions,
           promptSuggestions,
-          crypto,
+          random,
         });
         const turnTokenUsageByThread = new Map<string, CodexTurnTokenUsageState>();
         const usageStateForThread = (nativeThreadId: string) => {

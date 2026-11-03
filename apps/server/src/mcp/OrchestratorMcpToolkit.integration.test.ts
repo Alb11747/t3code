@@ -218,7 +218,7 @@ describe("orchestrator MCP toolkit", () => {
       Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(database))),
     );
     const testLayer = layerOrchestratorToolkit.pipe(
-      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
       Layer.provideMerge(orchestration),
       Layer.provide(threads),
       Layer.provide(registry),
@@ -231,7 +231,7 @@ describe("orchestrator MCP toolkit", () => {
       Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
       Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
-      Layer.provide(NodeServices.layer),
+      Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     );
     return Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
