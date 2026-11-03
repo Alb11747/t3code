@@ -2126,7 +2126,7 @@ describe("ClaudeAdapterV2 attachments", () => {
             yield* deliver;
             const retried = offeredMessages.at(-1)!.message.content;
             assert.notInclude(JSON.stringify(retried), '"type":"document"');
-            assert.include(JSON.stringify(retried), documentPath);
+            assert.include(JSON.stringify(retried), JSON.stringify(documentPath).slice(1, -1));
             assert.isBelow(Buffer.byteLength(JSON.stringify(offeredMessages)), 32_000_000);
             return;
           }
@@ -2175,7 +2175,7 @@ describe("ClaudeAdapterV2 attachments", () => {
                 typeof sent === "string" ? [] : sent.filter((block) => block.type === "image"),
                 budget === "partial-images" ? 1 : 0,
               );
-              assert.include(JSON.stringify(sent), imagePath);
+              assert.include(JSON.stringify(sent), JSON.stringify(imagePath).slice(1, -1));
               yield* runtime.steerTurn({
                 threadId,
                 runId: RunId.make("run-claude-attachments"),
@@ -2194,7 +2194,7 @@ describe("ClaudeAdapterV2 attachments", () => {
                   : steered.filter((block) => block.type === "image"),
                 0,
               );
-              assert.include(JSON.stringify(steered), imagePath);
+              assert.include(JSON.stringify(steered), JSON.stringify(imagePath).slice(1, -1));
               assert.isBelow(
                 Buffer.byteLength(
                   JSON.stringify(offeredMessages.map((message) => message.message)),
@@ -2256,7 +2256,7 @@ describe("ClaudeAdapterV2 attachments", () => {
               0,
               budget,
             );
-            assert.include(JSON.stringify(sent), documentPath);
+            assert.include(JSON.stringify(sent), JSON.stringify(documentPath).slice(1, -1));
             return;
           }
           if (!resumed) {
@@ -2329,7 +2329,20 @@ describe("ClaudeAdapterV2 attachments", () => {
           });
 
           assert.equal(offeredMessages[1]?.priority, "now");
-          assert.deepEqual(offeredMessages[1]?.message.content, expectedContent);
+          const steerText = `${ultrathink ? "Ultrathink:\n" : ""}${ClaudeAdapterV2.CLAUDE_STEER_CANCELLATION_NOTE}\n\n${expectedText.replace(/^Ultrathink:\n/u, "")}`;
+          const steerRequest = { type: "text" as const, text: steerText + attachmentNotes };
+          const steerCommand = command ?? (prompt.startsWith("$") ? expectedText : undefined);
+          assert.deepEqual(
+            offeredMessages[1]?.message.content,
+            steerCommand
+              ? [
+                  steerRequest,
+                  expectedImageBlock,
+                  ...(!resumed ? [expectedDocumentBlock] : []),
+                  { type: "text", text: steerCommand + attachmentNotes },
+                ]
+              : [expectedImageBlock, ...(!resumed ? [expectedDocumentBlock] : []), steerRequest],
+          );
           const documentPath = path.join(attachmentsDir, attachmentRelativePath(document)!);
           for (const scenario of [
             "pages",
@@ -2468,8 +2481,11 @@ describe("ClaudeAdapterV2 attachments", () => {
               scenario,
             );
             if (scenario === "text-only")
-              assert.equal(sent, ultrathink ? "Ultrathink:\nContinue." : "Continue.");
-            else assert.include(JSON.stringify(sent), documentPath);
+              assert.equal(
+                sent,
+                `${ultrathink ? "Ultrathink:\n" : ""}${ClaudeAdapterV2.CLAUDE_STEER_CANCELLATION_NOTE}\n\nContinue.`,
+              );
+            else assert.include(JSON.stringify(sent), JSON.stringify(documentPath).slice(1, -1));
           }
         }).pipe(
           Effect.provide(
@@ -4892,7 +4908,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const attachmentNote = `\n\n[Attached file "requirements.pdf" is saved at: ${path.join(harness.attachmentsDir, attachmentRelativePath(attachment)!)}]`;
         assert.equal(harness.offeredMessages[1]?.priority, "now");
         assert.deepEqual(harness.offeredMessages[1]?.message.content, [
-          { type: "text", text: `${leadingText}${attachmentNote}` },
+          {
+            type: "text",
+            text: `${leadingText.replace("Ultrathink:\n", `Ultrathink:\n${ClaudeAdapterV2.CLAUDE_STEER_CANCELLATION_NOTE}\n\n`)}${attachmentNote}`,
+          },
           { type: "text", text: `/implement the fixes${attachmentNote}` },
         ]);
       }).pipe(
@@ -5822,9 +5841,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
-  it.effect.each(["agent", "user"] as const)(
-    "notes that a native %s steer may have interrupted a command only for agents",
-    (createdBy) =>
+  it.effect.each([
+    { createdBy: "agent", text: "See the attached screenshot." },
+    { createdBy: "user", text: "See the attached screenshot." },
+    { createdBy: "user", text: "/review the diff" },
+    { createdBy: "user", text: "\n/review the diff" },
+  ] as const)(
+    "tells Claude what a native $createdBy steer's tool cancellations mean ($text)",
+    ({ createdBy, text }) =>
       Effect.scoped(
         Effect.gen(function* () {
           const harness = yield* makeWakeHarness;
@@ -5851,16 +5875,22 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               createdBy,
               creationSource: createdBy === "agent" ? "mcp" : "web",
               messageId: MessageId.make("message-agent-steer-note"),
-              text: "See the attached screenshot.",
+              text,
               attachments: [],
             },
           });
           const steer = JSON.stringify(harness.offeredMessages[1]?.message.content);
-          assert.include(steer, "See the attached screenshot.");
+          assert.include(steer, text.trim());
+          assert.equal(steer.includes("came from another agent"), createdBy === "agent");
+          // Claude Code reports cancelled calls as the user refusing them; every steer
+          // that can cause that says so, except a slash command the note would break.
           assert.equal(
-            steer.includes("may have interrupted a running command"),
-            createdBy === "agent",
+            steer.includes(ClaudeAdapterV2.CLAUDE_STEER_CANCELLATION_NOTE),
+            !text.trim().startsWith("/"),
           );
+          if (text.trim().startsWith("/")) {
+            assert.equal(harness.offeredMessages[1]?.message.content, text.trim());
+          }
         }).pipe(
           Effect.provide(
             Layer.mergeAll(

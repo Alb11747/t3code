@@ -5914,16 +5914,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             .pipe(mapDispatchError(command));
           if (
             Option.isSome(session) &&
-            session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools ===
-              true &&
-            // Boundary hooks carry text only. An update with attachments steers
-            // natively; the adapter tells the agent it may have interrupted a tool.
-            command.attachments.length === 0
+            session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools === true
           ) {
             // Claude steering cancels pending tools, which appear as user refusals.
-            // Agent updates wait in the durable queue instead, and the running turn
-            // takes them at its next tool batch or Stop (ProviderContinuationService
-            // claimAgentMessages). Whatever it does not take starts the next turn.
+            // Agent updates wait in the durable queue; the running turn takes text at
+            // its next tool batch or Stop (ProviderContinuationService claimAgentMessages).
+            // Attachments, which hooks cannot carry, and anything untaken start the next turn.
             dispatchMode = { type: "queue_after_active" };
           }
         }
@@ -9936,9 +9932,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const targetRun = projection.runs.find((run) => run.id === command.targetRunId);
     if (
       command.requestedBy === "agent" &&
-      (targetRun?.status === "running" || targetRun?.status === "waiting") &&
-      // Boundary hooks carry text only; attachments steer natively, as an agent's steer does.
-      queuedMessage.attachments.length === 0
+      (targetRun?.status === "running" || targetRun?.status === "waiting")
     ) {
       const targetProviderThread = projection.providerThreads.find(
         (candidate) => candidate.id === targetRun.providerThreadId,
@@ -9966,6 +9960,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             commandId: command.commandId,
             commandType: command.type,
             cause: `Queued run ${queuedRun.id} cannot wait for the running turn's next tool boundary.`,
+          });
+        }
+        // Boundary hooks carry text only, so attachments keep their next-turn place.
+        if (queuedMessage.attachments.length > 0) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Queued run ${queuedRun.id} has attachments, which cannot join the running turn without cancelling its tools; it stays queued for the next turn.`,
           });
         }
         if (queuedMessage.atToolBoundary !== true) {

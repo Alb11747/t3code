@@ -124,7 +124,11 @@ already says Running. The server needs a live provider turn before it can steer.
 This also affects short replies and background continuations. A server update
 cannot change the stock app's submission behavior. Native steering itself does
 not guarantee immediate model attention: Claude Code can wait for a foreground
-shell call to return, and can cancel MCP calls in flight.
+shell call to return, and can cancel MCP calls in flight. Claude Code can describe
+those cancellations as user refusals. Steers explain that delivery can interrupt
+calls, that a cancellation alone does not establish refusal, and that interrupted
+calls may already have taken effect. Genuine denials and stop requests still apply. A steer that starts
+with a slash command goes without this note so the command still runs.
 
 Agent text updates normally enter the durable queue and join Claude's current
 turn at its next root tool-batch or Stop boundary, rather than waiting for the
@@ -135,11 +139,12 @@ the fork does not inject a context change between calls in the same batch.
 There is no delivery deadline while a tool call is running. A native timeout
 fallback would cancel MCP calls and could discard reasoning, so it cannot also
 guarantee uninterrupted work.
-Updates with attachments currently use native steering with an explanation that
-another agent sent them; that explanation does not prevent cancellation.
+Hooks carry text only, so agent updates and agent promotions with attachments
+wait for the next turn instead of steering. Agents can still choose `restart`,
+which interrupts the turn by design.
 Boundary delivery also has a crash window: an update claimed just before the
-server crashes can be lost before Claude reads it. Preservation of all thinking
-tokens has not been verified.
+server crashes, or just before Stop aborts the hook, can be lost before Claude
+reads it. Preservation of all thinking tokens has not been verified.
 
 ## Browser access on macOS or other computers
 

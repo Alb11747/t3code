@@ -343,8 +343,17 @@ export const CLAUDE_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CLAUDE_PROV
 const CLAUDE_SCRIPT_EXTENSIONS = [".js", ".mjs", ".tsx", ".ts", ".jsx"];
 // The SDK has no control-request deadline; the CLI waits up to 30 s per MCP server.
 const CLAUDE_MCP_REGISTRATION_TIMEOUT = "90 seconds";
-const CLAUDE_AGENT_STEER_NOTE =
-  "This message came from another agent, not the user, and may have interrupted a running command; check that command's state before continuing.";
+// Native steering cancels in-flight tools; Claude Code words that as the user refusing
+// them ("The user doesn't want to take this action...") or as an interruption. The
+// CLI owns that text, so the steer itself tells Claude what the cancellation means.
+export const CLAUDE_STEER_CANCELLATION_NOTE =
+  "Delivering this message can interrupt tool calls. A cancellation notice alone does not mean the user refused an action or asked you to stop; follow the user's actual instructions and respect genuine permission denials and explicit stop requests. An interrupted call may already have taken effect, so check its effects before repeating it.";
+const CLAUDE_AGENT_STEER_NOTE = "This message came from another agent, not the user.";
+export const formatClaudeSteerText = (text: string) => {
+  const trimmed = text.trim();
+  // A leading note prevents Claude Code from reading a slash command.
+  return trimmed.startsWith("/") ? trimmed : `${CLAUDE_STEER_CANCELLATION_NOTE}\n\n${trimmed}`;
+};
 // Claude can consume a subagent result before the launching turn ends, leaving
 // its notification with no native wake turn to answer the continuation.
 const CLAUDE_WAKE_TURN_START_DEADLINE = "2 minutes";
@@ -11240,16 +11249,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               }),
             persistAttachmentBudget(context.nativeThreadId),
           );
+          const steerText = steers
+            .map((message) =>
+              message.createdBy === "agent"
+                ? `${CLAUDE_AGENT_STEER_NOTE}\n\n${message.text}`
+                : message.text,
+            )
+            .join("\n\n");
           const userMessage = yield* makeClaudeUserMessageWithAttachments({
             text: applyClaudePromptEffortPrefix(
-              // Native agent steering can cancel tools; make its origin clear to Claude.
-              steers
-                .map((message) =>
-                  message.createdBy === "agent"
-                    ? `${CLAUDE_AGENT_STEER_NOTE}\n\n${message.text}`
-                    : message.text,
-                )
-                .join("\n\n"),
+              formatClaudeSteerText(steerText),
               compileClaudeModelSelection(context.input.modelSelection).promptEffort,
             ),
             attachments: steers.flatMap((message) => message.attachments),

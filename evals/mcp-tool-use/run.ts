@@ -47,6 +47,7 @@ import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { buildCodexAdditionalContext } from "../../apps/server/src/provider/CodexDeveloperInstructions.ts";
 import { makeSideChatContext } from "../../apps/server/src/orchestration-v2/ContextHandoffService.ts";
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
+import { formatClaudeSteerText } from "../../apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
 import { EnvironmentToolkit } from "../../apps/server/src/mcp/toolkits/environment/tools.ts";
@@ -140,6 +141,8 @@ const PriorToolCall = Schema.Struct({
   input: Schema.Unknown,
   /** For a device tool, `"default"` runs the call on the world's devices for T3's result. */
   result: Schema.Unknown,
+  /** The harness reported the call failed, as Claude Code does for a cancelled tool. */
+  isError: Schema.optional(Schema.Boolean),
 });
 
 /**
@@ -276,6 +279,8 @@ export const McpToolUseCase = Schema.Struct({
     ),
   }),
   prompt: Schema.String,
+  /** `prompt` arrives mid-turn as a Claude native steer, after the last prior tool result. */
+  steer: Schema.optional(Schema.Literal("claude")),
   /** Records for the context chips `prompt` links, projected as T3 sends them. */
   promptContext: Schema.optional(Schema.Struct({ records: Schema.Array(ComposerContextRecord) })),
   expect: McpToolUseExpect,
@@ -918,7 +923,7 @@ export const buildMessages = (sample: Sample) => {
         normalizeToolName(tool.name) === "orchestrator_capabilities"
           ? capabilities(sample, result)
           : (sample.priorResults.get(prior) ?? result);
-      push("user", toolResult(id, replayed));
+      push("user", { ...toolResult(id, replayed), ...(prior.isError ? { is_error: true } : {}) });
     }
     if (turn.text) push(turn.role, text(turn.text));
   }
@@ -938,7 +943,8 @@ export const buildMessages = (sample: Sample) => {
           userText,
         );
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
-  push("user", text(role === "delegated-child" ? childPrompt() : prompt));
+  const steered = testCase.steer === "claude" ? formatClaudeSteerText(prompt) : prompt;
+  push("user", text(role === "delegated-child" ? childPrompt() : steered));
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
   if (native && base.subagentContext) {
     push("user", reminder(`SubagentStart hook additional context: ${base.subagentContext}`));

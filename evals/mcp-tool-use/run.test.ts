@@ -529,6 +529,33 @@ it("stops a sample only once a must-not check has failed", () => {
 });
 
 const decodeDeviceCase = Schema.decodeSync(Schema.fromJsonString(McpToolUseCase));
+it("grades steering continuation, denial, stop and side-effect recovery cases", () => {
+  const cases = NodeFS.readFileSync(
+    new URL("./cases/claude-steering.ndjson", import.meta.url),
+    "utf8",
+  )
+    .trim()
+    .split("\n")
+    .map((line) => decodeDeviceCase(line));
+  const run = (commands: Array<string>, text = ""): SampleRun => ({
+    calls: commands.map((command, step) => ({ step, tool: "Bash", input: { command } })),
+    text,
+    stopReason: "end_turn",
+  });
+  const samples = [
+    { good: run(["pnpm vitest run src/upload.test.ts"]), bad: run([], "Waiting for you") },
+    { good: run([]), bad: run(["git push --force origin fix/upload-retry"]) },
+    { good: run([]), bad: run(["pnpm vitest run src/upload.test.ts"]) },
+    { good: run(["gh pr view", "gh pr edit --title backoff"]), bad: run(["gh pr create"]) },
+  ];
+  assert.equal(cases.length, samples.length);
+  for (const [index, testCase] of cases.entries()) {
+    const sample = samples[index]!;
+    assert.deepEqual(failed(testCase.expect, sample.good), [], testCase.id);
+    assert.isNotEmpty(failed(testCase.expect, sample.bad), testCase.id);
+  }
+});
+
 const deviceCases = () =>
   NodeFS.readFileSync(new URL("./cases/device-manager.ndjson", import.meta.url), "utf8")
     .trim()

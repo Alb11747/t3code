@@ -1658,13 +1658,18 @@ const sendUpdate = Effect.fn("sendUpdate")(function* (
   return result;
 });
 
-it.effect.each(["auto", "steer"] as const)(
-  "queues an agent %s update behind a turn whose steering cancels tools",
-  (mode) =>
+it.effect.each([
+  { mode: "auto", attachments: [] },
+  { mode: "steer", attachments: [] },
+  // Boundary hooks carry text only, so this one waits for the next turn.
+  { mode: "auto", attachments: [imageAttachment] },
+] as const)(
+  "queues an agent $mode update behind a turn whose steering cancels tools (attachments=$attachments.length)",
+  ({ mode, attachments }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const { events, started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
-          `agent-update-queued-${mode}`,
+          `agent-update-queued-${mode}-${attachments.length}`,
           { activeSteeringInterruptsTools: true },
         );
         yield* Effect.gen(function* () {
@@ -1672,9 +1677,12 @@ it.effect.each(["auto", "steer"] as const)(
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
           const threadId = yield* startFirstTurn;
           const first = started[0]!;
-          const result = yield* sendUpdate(threadId, "agent", mode);
+          const result = yield* sendUpdate(threadId, "agent", mode, attachments);
           assert.equal(result.delivery, "queued");
           assert.deepEqual(steered, []);
+          if (attachments.length > 0) {
+            assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), []);
+          }
           const pending = yield* orchestrator.getThreadProjection(threadId);
           assert.equal(pending.runs.find((run) => run.id === first.runId)?.status, "running");
 
@@ -1713,6 +1721,8 @@ it.effect.each(["auto", "steer"] as const)(
             started.map((input) => input.message.messageId),
             [MessageId.make("message:first"), MessageId.make("message:update")],
           );
+          assert.deepEqual(started[1]?.message.attachments, attachments);
+          assert.equal(started[1]?.message.createdBy, "agent");
           assert.deepEqual(steered, []);
         }).pipe(Effect.provide(layer));
       }),
@@ -1720,13 +1730,11 @@ it.effect.each(["auto", "steer"] as const)(
 );
 
 it.effect.each([
-  { createdBy: "user", activeSteeringInterruptsTools: true, attachments: [] },
-  { createdBy: "agent", activeSteeringInterruptsTools: false, attachments: [] },
-  // Boundary hooks carry text only, so this one steers natively.
-  { createdBy: "agent", activeSteeringInterruptsTools: true, attachments: [imageAttachment] },
+  { createdBy: "user", activeSteeringInterruptsTools: true },
+  { createdBy: "agent", activeSteeringInterruptsTools: false },
 ] as const)(
-  "steers an update from $createdBy when steering is allowed (interruptsTools=$activeSteeringInterruptsTools, attachments=$attachments.length)",
-  ({ createdBy, activeSteeringInterruptsTools, attachments }) =>
+  "steers an update from $createdBy when steering is allowed (interruptsTools=$activeSteeringInterruptsTools)",
+  ({ createdBy, activeSteeringInterruptsTools }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
@@ -1739,7 +1747,6 @@ it.effect.each([
             threadId,
             createdBy,
             createdBy === "agent" ? "auto" : "steer",
-            attachments,
           );
           assert.equal(result.delivery, "steered");
           assert.deepEqual(steered, ["progress update"]);
@@ -1893,13 +1900,17 @@ it.effect.each(["auto", "steer"] as const)(
     ),
 );
 
-it.effect.each(["agent", "user"] as const)(
-  "a queue promotion requested by the %s into a turn whose steering cancels tools",
-  (requester) =>
+it.effect.each([
+  { requester: "agent", attachments: [] },
+  { requester: "user", attachments: [] },
+  { requester: "agent", attachments: [imageAttachment] },
+] as const)(
+  "a queue promotion requested by the $requester into a turn whose steering cancels tools (attachments=$attachments.length)",
+  ({ requester, attachments }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
-          `queue-promote-${requester}`,
+          `queue-promote-${requester}-${attachments.length}`,
           { activeSteeringInterruptsTools: true },
         );
         yield* Effect.gen(function* () {
@@ -1913,7 +1924,7 @@ it.effect.each(["agent", "user"] as const)(
             threadId,
             messageId: MessageId.make("message:queued"),
             text: "queued",
-            attachments: [],
+            attachments,
             dispatchMode: { type: "queue_after_active" },
             createdBy: "user",
             creationSource: "web",
@@ -1921,20 +1932,41 @@ it.effect.each(["agent", "user"] as const)(
           const queuedRun = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
             (run) => run.status === "queued",
           )!;
-          yield* orchestrator.dispatch({
-            type: "queued-message.promote-to-steer",
-            commandId: CommandId.make("promote"),
-            threadId,
-            queuedRunId: queuedRun.id,
-            targetRunId: first.runId,
-            ...(requester === "agent" ? { requestedBy: "agent" as const } : {}),
-          });
+          const promoted = yield* orchestrator
+            .dispatch({
+              type: "queued-message.promote-to-steer",
+              commandId: CommandId.make("promote"),
+              threadId,
+              queuedRunId: queuedRun.id,
+              targetRunId: first.runId,
+              ...(requester === "agent" ? { requestedBy: "agent" as const } : {}),
+            })
+            .pipe(Effect.result);
           yield* worker.drain();
 
           if (requester === "user") {
+            assert.equal(promoted._tag, "Success");
             assert.deepEqual(steered, ["queued"]);
             return;
           }
+          if (attachments.length > 0) {
+            // Hooks cannot carry attachments, so it keeps its next-turn place.
+            assert.equal(promoted._tag, "Failure");
+            if (promoted._tag === "Failure") {
+              assert.equal(promoted.failure._tag, "OrchestratorDispatchError");
+              assert.include(String(promoted.failure.cause), "has attachments");
+            }
+            assert.deepEqual(steered, []);
+            assert.equal(
+              (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+                (run) => run.id === queuedRun.id,
+              )?.status,
+              "queued",
+            );
+            assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), []);
+            return;
+          }
+          assert.equal(promoted._tag, "Success");
           // The agent's promotion waits for the running turn's next tool boundary.
           assert.deepEqual(steered, []);
           assert.equal(

@@ -83,7 +83,7 @@ const QUEUE_READ_ACTIONS = ["list", "read"] as const;
 const QueueTool = Tool.make("t3_queue", {
   ...commandTool,
   description:
-    "Manage a thread's queued messages. Omit `threadId` for this thread. list: send order, paged by `cursor` and `limit`. read: up to 16,000 chars of one. edit: replace its `text`; attachments stay. cancel. reorder: before `beforeRunId`, or to the end with null. promote_to_steer: send it now as steering to active `targetRunId`. Writes fail once the run is no longer queued. Providers whose steering does not interrupt running tools receive promotions immediately. Where steering would interrupt tools (including Claude), text-only promotions wait for the next whole tool-batch boundary, or start the next turn if the run ends first. Attachments always steer natively, which can interrupt tools.",
+    "Manage a thread's queued messages. Omit `threadId` for this thread. list: send order, paged by `cursor` and `limit`. read: up to 16,000 chars of one. edit: replace its `text`; attachments stay. cancel. reorder: before `beforeRunId`, or to the end with null. promote_to_steer: send it now as steering to active `targetRunId`. Writes fail once the run is no longer queued. Providers whose steering does not interrupt running tools receive promotions immediately. Where steering would interrupt tools (including Claude), text-only promotions wait for the next whole tool-batch boundary, or start the next turn if the run ends first; promotions with attachments are refused and stay queued for the next turn.",
   parameters: Schema.Struct({
     action: Schema.Literals([
       ...QUEUE_READ_ACTIONS,
