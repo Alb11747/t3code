@@ -2072,6 +2072,7 @@ export const OrchestrationV2ThreadTranscript = Schema.Struct({
   threadId: ThreadId,
   title: Schema.String,
   updatedAt: Schema.DateTimeUtc,
+  contextNote: Schema.optional(Schema.NullOr(ThreadContextNote)),
   items: Schema.Array(OrchestrationV2ProjectedTurnItem),
 });
 export type OrchestrationV2ThreadTranscript = typeof OrchestrationV2ThreadTranscript.Type;

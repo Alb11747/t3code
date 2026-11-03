@@ -690,7 +690,10 @@ const make = Effect.gen(function* () {
         threadId: projection.thread.id,
         title: projection.thread.title,
         updatedAt: projection.updatedAt,
-        items: projection.visibleTurnItems,
+        ...(projection.thread.contextNote == null
+          ? {}
+          : { contextNote: projection.thread.contextNote }),
+        items: projection.thread.contextNote?.mode === "replace" ? [] : projection.visibleTurnItems,
       };
       let sizeBytes = Buffer.byteLength(
         threadTranscriptHeader(yield* environment.getEnvironmentId, transcript),

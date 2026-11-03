@@ -196,6 +196,45 @@ it.effect("exports full history with size, scope, and missing-thread checks", ()
     expect(transcript.items[0]?.visibility).toBe("local");
     expect(transcript.items[199]?.position).toBe(199);
 
+    for (const mode of ["prepend", "replace"] as const) {
+      const contextNote = {
+        text: "Current reference context",
+        mode,
+        author: { kind: "user" as const },
+        updatedAt: DateTime.formatIso(now),
+      };
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make(`note-${mode}`),
+            type: "thread.metadata-updated",
+            threadId: thread.id,
+            occurredAt: now,
+            payload: { ...thread, contextNote },
+          },
+        ],
+      });
+      const notedResponse = yield* read(thread.id);
+      expect(notedResponse.status).toBe(200);
+      const noted = yield* decodeTranscript(yield* Effect.promise(() => notedResponse.json()));
+      expect(noted.contextNote).toEqual(contextNote);
+      expect(JSON.parse(threadTranscriptHeader(environmentId, noted))).toMatchObject({
+        contextNote: { label: "Thread note", ...contextNote },
+      });
+      expect(noted.items).toHaveLength(mode === "replace" ? 0 : 200);
+    }
+    yield* eventSink.write({
+      events: [
+        {
+          id: EventId.make("clear-note"),
+          type: "thread.metadata-updated",
+          threadId: thread.id,
+          occurredAt: now,
+          payload: { ...thread, contextNote: null },
+        },
+      ],
+    });
+
     const emptyOutputRows = transcript.items.map((row, position) =>
       position === 0 ? { ...row, item: { ...row.item, output: "" } } : row,
     );
@@ -243,6 +282,32 @@ it.effect("exports full history with size, scope, and missing-thread checks", ()
         });
       }
     }
+
+    yield* eventSink.write({
+      events: [
+        {
+          id: EventId.make("replace-large-history"),
+          type: "thread.metadata-updated",
+          threadId: thread.id,
+          occurredAt: now,
+          payload: {
+            ...thread,
+            contextNote: {
+              text: "Use this note instead of the oversized opening history",
+              mode: "replace",
+              author: { kind: "user" },
+              updatedAt: DateTime.formatIso(now),
+            },
+          },
+        },
+      ],
+    });
+    expect((yield* read(thread.id)).status).toBe(200);
+    const snapshot = yield* Context.get(
+      services,
+      ThreadManagementService.ThreadManagementService,
+    ).getThreadSnapshot(thread.id);
+    expect(snapshot.projection.visibleTurnItems).toHaveLength(200);
 
     expect((yield* read(ThreadId.make("missing"))).status).toBe(404);
     allowed = false;
