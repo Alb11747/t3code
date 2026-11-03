@@ -699,6 +699,6 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
       const replacementPid = yield* readManagedPid;
       assert.notEqual(replacementPid, zombie);
       assert.isTrue(isAlive(replacementPid));
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 });

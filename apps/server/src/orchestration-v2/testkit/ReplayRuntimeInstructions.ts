@@ -56,11 +56,23 @@ export function materializeReplayTranscriptRuntimeInstructions(
           lastPart.type === "text" &&
           "text" in lastPart &&
           typeof lastPart.text === "string" &&
-          // A recording that switched models mid-thread already carries the
-          // instructions for the model each prompt ran on.
-          (lastPart.text === instructions || lastPart.text.startsWith("<runtime_info>"))
+          lastPart.text.startsWith("<runtime_info>")
         ) {
-          return entry;
+          // Preserve the recorded model identity while refreshing shared runtime guidance.
+          const guidanceStart = ". No need to mention this otherwise.";
+          const text =
+            lastPart.text.slice(0, lastPart.text.indexOf(guidanceStart)) +
+            instructions.slice(instructions.indexOf(guidanceStart));
+          return {
+            ...entry,
+            frame: {
+              ...frame,
+              params: {
+                ...frame.params,
+                prompt: [...prompt.slice(0, -1), { ...lastPart, text }],
+              },
+            },
+          };
         }
         return {
           ...entry,
