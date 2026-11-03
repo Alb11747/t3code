@@ -502,6 +502,20 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["claude context compaction idle cache tokens usage summary resume"],
   },
   {
+    id: "smart-idle-compaction",
+    title: "Only compact waiting threads",
+    to: "/settings/providers",
+    scope: "environment-defaults",
+    searchTerms: ["smart adaptive claude compaction cache expires watch subagent scheduled wake"],
+  },
+  {
+    id: "compact-snoozed-threads",
+    title: "Compact snoozed threads",
+    to: "/settings/providers",
+    scope: "environment-defaults",
+    searchTerms: ["claude compaction snooze cache expires"],
+  },
+  {
     id: "auto-settle-merged-threads",
     title: "Auto-settle merged threads",
     to: "/settings/threads",

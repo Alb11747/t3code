@@ -856,10 +856,10 @@ const make = Effect.gen(function* () {
         });
       }
       const compactCommandId = CommandId.make(`agent-compact:${input.commandId}`);
-      if (
-        !(yield* hasReceipt(compactCommandId)) &&
-        target.runs.some((run) => !isTerminalRunStatus(run.status))
-      ) {
+      const busy = target.runs.some((run) => !isTerminalRunStatus(run.status));
+      // An agent compacting its own thread is busy with the calling turn; compact after it.
+      const afterOwnTurn = busy && input.senderThreadId === input.threadId;
+      if (!(yield* hasReceipt(compactCommandId)) && busy && !afterOwnTurn) {
         return yield* new ThreadManagementContextPolicyError({
           threadId: input.threadId,
           message:
@@ -876,7 +876,7 @@ const make = Effect.gen(function* () {
         attachments: [],
         modelSelection: selection,
         idleCompaction: "onReturn",
-        dispatchMode: { type: "start_immediately" },
+        dispatchMode: { type: afterOwnTurn ? "queue_after_active" : "start_immediately" },
         createdBy: input.createdBy,
         creationSource: input.creationSource,
       });

@@ -1,6 +1,13 @@
-import { isListedThreadLineage, type OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import {
+  isListedThreadLineage,
+  type IdleCompactionMode,
+  type OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts";
 import { COMPACTION_SUGGESTION_MIN_TOKENS } from "@t3tools/shared/claudeCompaction";
-import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  backgroundWorkHoldsCompletion,
+  derivePendingBackgroundWork,
+} from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as DateTime from "effect/DateTime";
 
 // Claude Code's idleCompaction defaults to 200K and won't go below 100K. Below
@@ -24,6 +31,34 @@ export type IdleCompactionRecords = Pick<
 >;
 
 /**
+ * Which idle threads compact before their cache expires. "waiting" (Smart) takes only
+ * threads something will wake after the cache expires; a thread's own setting wins.
+ */
+export function idleCompactionScope(
+  mode: IdleCompactionMode,
+  smart: boolean,
+  threadOverride: boolean | null | undefined,
+): "all" | "waiting" | null {
+  if (mode === "off" || threadOverride === false) return null;
+  if (threadOverride === true) return "all";
+  if (mode !== "beforeCacheExpires") return null;
+  return smart ? "waiting" : "all";
+}
+
+export interface IdleCompactionPolicy {
+  readonly scope: "all" | "waiting";
+  readonly compactSnoozed: boolean;
+  /** When scheduled tasks will next send to this thread. */
+  readonly scheduledWakesMs: ReadonlyArray<number>;
+}
+
+const ALL_THREADS: IdleCompactionPolicy = {
+  scope: "all",
+  compactSnoozed: false,
+  scheduledWakesMs: [],
+};
+
+/**
  * When an idle Claude thread should compact, or null when it should not. The
  * window ends when the prompt cache of Claude's last request expires (1h on
  * subscriptions, 5m on API keys); compacting after that pays a full uncached
@@ -41,6 +76,7 @@ export function idleCompactionWindow(
     contextTransfers,
   }: IdleCompactionRecords,
   nowMs: number,
+  policy: IdleCompactionPolicy = ALL_THREADS,
 ): {
   readonly runId: (typeof runs)[number]["id"];
   readonly startMs: number;
@@ -48,8 +84,10 @@ export function idleCompactionWindow(
 } | null {
   if (thread.deletedAt !== null || thread.archivedAt !== null) return null;
   if (thread.settledAt !== null || thread.settledOverride === "settled") return null;
-  if (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > nowMs)
-    return null;
+  const snoozeEndMs =
+    thread.snoozedUntil == null ? null : DateTime.toEpochMillis(thread.snoozedUntil);
+  const snoozed = snoozeEndMs !== null && snoozeEndMs > nowMs;
+  if (snoozed && !policy.compactSnoozed) return null;
   if (!isListedThreadLineage(thread.lineage)) return null;
   const latestRun = runs.reduce<(typeof runs)[number] | null>(
     (latest, run) => (latest === null || run.ordinal > latest.ordinal ? run : latest),
@@ -67,17 +105,21 @@ export function idleCompactionWindow(
         transfer.type === "merge_back" &&
         transfer.targetThreadId === thread.id &&
         transfer.status === "pending",
-    ) ||
-    // Background work reports into the next turn; compaction would swallow it.
-    derivePendingBackgroundWork({
-      latestRun,
-      runs,
-      providerThreads,
-      turnItems,
-      activeProviderThreadId: thread.activeProviderThreadId,
-    }).length > 0
+    )
   )
     return null;
+  // Watches and awaited work wake the thread later; their reports queue behind the compaction
+  // turn. Smart compacts only threads with such a wake.
+  const backgroundWork = derivePendingBackgroundWork({
+    latestRun,
+    runs,
+    providerThreads,
+    turnItems,
+    activeProviderThreadId: thread.activeProviderThreadId,
+    pullRequests: thread.pullRequests,
+    issueWatches: thread.issueWatches,
+  });
+  const awaitedWork = backgroundWorkHoldsCompletion(backgroundWork);
   const providerThread = providerThreads.find(
     (candidate) => candidate.id === thread.activeProviderThreadId,
   );
@@ -99,5 +141,9 @@ export function idleCompactionWindow(
   const expiresAt = usages[0]?.promptCacheExpiresAt;
   const endMs = expiresAt === undefined ? Number.NaN : Date.parse(expiresAt);
   if (!Number.isFinite(endMs) || nowMs >= endMs) return null;
+  const wakesMs = [...policy.scheduledWakesMs, ...(snoozed ? [snoozeEndMs] : [])];
+  // A wake before the cache expires reuses it, and its own run schedules the next check.
+  if (wakesMs.some((wakeMs) => wakeMs < endMs)) return null;
+  if (policy.scope === "waiting" && !awaitedWork && wakesMs.length === 0) return null;
   return { runId: latestRun.id, startMs: endMs - LEAD_MS, endMs };
 }

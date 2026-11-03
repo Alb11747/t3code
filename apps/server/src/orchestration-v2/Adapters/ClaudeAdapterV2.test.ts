@@ -5664,7 +5664,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
   );
 
-  it.effect("delivers claimed agent updates at root tool-batch and stop hooks", () =>
+  it.effect.each(["work", "/compact"])("claims agent messages: %s", (text) =>
     Effect.scoped(
       Effect.gen(function* () {
         const claims: Array<{ readonly threadId: string; readonly runId: string }> = [];
@@ -5680,7 +5680,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           providerThread: harness.providerThread,
           now: yield* DateTime.now,
           attemptId: RunAttemptId.make("attempt-agent-boundary"),
-          text: "Run the slow build.",
+          text,
           attachments: [],
         });
         const sessions = yield* McpProviderSessions.McpProviderSessions;
@@ -5743,23 +5743,38 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             { signal },
           ),
         );
-        assert.deepEqual(batch, {
-          hookSpecificOutput: {
-            hookEventName: "PostToolBatch",
-            additionalContext: "New messages:\nFrom another agent:\nChild finished.",
-          },
-        });
-        assert.deepEqual(stop, {
-          hookSpecificOutput: {
-            hookEventName: "Stop",
-            additionalContext: "New messages:\nFrom another agent:\nChild finished.",
-          },
-        });
+        assert.deepEqual(
+          batch,
+          text === "/compact"
+            ? {}
+            : {
+                hookSpecificOutput: {
+                  hookEventName: "PostToolBatch",
+                  additionalContext: "New messages:\nFrom another agent:\nChild finished.",
+                },
+              },
+        );
+        assert.deepEqual(
+          stop,
+          text === "/compact"
+            ? {}
+            : {
+                hookSpecificOutput: {
+                  hookEventName: "Stop",
+                  additionalContext: "New messages:\nFrom another agent:\nChild finished.",
+                },
+              },
+        );
         assert.deepEqual(subagent, {});
-        assert.deepEqual(claims, [
-          { threadId: harness.threadId, runId: input.runId },
-          { threadId: harness.threadId, runId: input.runId },
-        ]);
+        assert.deepEqual(
+          claims,
+          text === "/compact"
+            ? []
+            : [
+                { threadId: harness.threadId, runId: input.runId },
+                { threadId: harness.threadId, runId: input.runId },
+              ],
+        );
       }).pipe(
         Effect.provide(
           Layer.mergeAll(

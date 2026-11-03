@@ -2638,6 +2638,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               isPinned,
               isSettled,
               autoSettleEnabled: thread.autoSettleDisabledAt == null,
+              compactBeforeCacheExpires: thread.compactBeforeCacheExpires,
               isSnoozed,
               canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
               isRegeneratingTitle,
@@ -2758,6 +2759,31 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 stackedThreadToast({
                   type: "error",
                   title: "Failed to update auto-settle",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
+            return;
+          }
+          case "compact-before-expiry:default":
+          case "compact-before-expiry:on":
+          case "compact-before-expiry:off": {
+            const result = await updateThreadMetadata({
+              environmentId: threadRef.environmentId,
+              input: {
+                threadId: threadRef.threadId,
+                compactBeforeCacheExpires:
+                  clicked.value === "compact-before-expiry:default"
+                    ? null
+                    : clicked.value === "compact-before-expiry:on",
+              },
+            });
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Failed to update compaction",
                   description: error instanceof Error ? error.message : "An error occurred.",
                 }),
               );

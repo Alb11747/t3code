@@ -579,6 +579,37 @@ it.effect("mark unread retires an expired snooze so a dismissed wake stays dismi
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("idle compaction keeps a snooze that a sent message ends", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const { threadId, snoozedUntil } = yield* completeAndSnoozeThread("idle-compact-snooze", 120);
+    const compact = {
+      type: "message.dispatch",
+      threadId,
+      text: "/compact",
+      attachments: [],
+      dispatchMode: { type: "defer_start" },
+      createdBy: "agent",
+    } as const;
+    yield* orchestrator.dispatch({
+      ...compact,
+      commandId: CommandId.make("idle-compact"),
+      messageId: MessageId.make("idle-compact"),
+      creationSource: "server",
+      idleCompaction: "beforeCacheExpires",
+    });
+    assert.deepEqual((yield* projections.getThread(threadId)).snoozedUntil, snoozedUntil);
+    yield* orchestrator.dispatch({
+      ...compact,
+      commandId: CommandId.make("agent-compact"),
+      messageId: MessageId.make("agent-compact"),
+      creationSource: "mcp",
+    });
+    assert.isNull((yield* projections.getThread(threadId)).snoozedUntil);
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("mark unread leaves a future snooze untouched", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;

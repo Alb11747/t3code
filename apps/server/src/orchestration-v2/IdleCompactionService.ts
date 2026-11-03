@@ -1,5 +1,7 @@
 import {
   CommandId,
+  compactSnoozedThreadsOf,
+  smartIdleCompactionOf,
   IDLE_COMPACTION_TEXT,
   MessageId,
   resolveIdleCompaction,
@@ -14,24 +16,27 @@ import * as FiberMap from "effect/FiberMap";
 import * as Stream from "effect/Stream";
 
 import { forkParked } from "../serverActivation.ts";
+import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { idleCompactionWindow } from "./IdleCompaction.ts";
+import { idleCompactionScope, idleCompactionWindow } from "./IdleCompaction.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
 /**
  * Beta: when a run completes on a Claude instance set to compact before the
- * cache expires, waits until shortly before its prompt cache expires and sends
- * `/compact` as a visible T3 Code turn. Timers live in
+ * cache expires (or a thread set to), waits until shortly before its prompt cache
+ * expires and sends `/compact` as a visible T3 Code turn. Timers live in
  * memory, so a server restart skips compactions that were still waiting.
  */
 export const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const settings = yield* ServerSettings.ServerSettingsService;
+  const scheduledTasks = yield* ScheduledTaskService;
 
   const compactWhenDue = Effect.fn("IdleCompactionService.compactWhenDue")(
-    function* (threadId: ThreadId, completedRunId: RunId) {
+    // Without a run, takes the latest completed run.
+    function* (threadId: ThreadId, completedRunId: RunId | undefined) {
       let runId = completedRunId;
       // Loops after the wait or a retarget: the thread may have moved on.
       while (true) {
@@ -40,9 +45,15 @@ export const make = Effect.gen(function* () {
         const claudeInstance = Object.hasOwn(current.providerInstances, thread.providerInstanceId)
           ? current.providerInstances[thread.providerInstanceId]?.driver === "claudeAgent"
           : thread.providerInstanceId === "claudeAgent";
+        const scopeOf = (selected: typeof thread) =>
+          idleCompactionScope(
+            resolveIdleCompaction(current, selected.providerInstanceId),
+            smartIdleCompactionOf(current),
+            selected.compactBeforeCacheExpires,
+          );
         if (
           !claudeInstance ||
-          resolveIdleCompaction(current, thread.providerInstanceId) !== "beforeCacheExpires" ||
+          scopeOf(thread) === null ||
           !resolveProjectProviderInstanceEnabled(
             current,
             thread.projectId,
@@ -64,7 +75,7 @@ export const make = Effect.gen(function* () {
             "contextTransfers",
           ],
           {
-            messageRunIds: [runId],
+            messageRunIds: runId === undefined ? [] : [runId],
             turnItemStatuses: ["pending", "running", "waiting"],
             // The latest run, active runs that hold background work, and rolled-back runs whose
             // items it ignores.
@@ -78,9 +89,9 @@ export const make = Effect.gen(function* () {
             contextTransferStatuses: ["pending"],
           },
         );
+        const scope = scopeOf(records.thread);
         if (
-          resolveIdleCompaction(current, records.thread.providerInstanceId) !==
-            "beforeCacheExpires" ||
+          scope === null ||
           !resolveProjectProviderInstanceEnabled(
             current,
             records.thread.projectId,
@@ -98,8 +109,20 @@ export const make = Effect.gen(function* () {
           continue;
         }
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-        const window = idleCompactionWindow(records, nowMs);
-        if (window?.runId !== runId) return;
+        const { tasks } = yield* scheduledTasks.list();
+        const window = idleCompactionWindow(records, nowMs, {
+          scope,
+          compactSnoozed: compactSnoozedThreadsOf(current),
+          scheduledWakesMs: tasks.flatMap((task) =>
+            task.threadId === threadId &&
+            task.enabled &&
+            task.blockedByPolicy === undefined &&
+            task.nextRunAt !== null
+              ? [Date.parse(task.nextRunAt)]
+              : [],
+          ),
+        });
+        if (window === null || window.runId !== runId) return;
         if (nowMs < window.startMs) {
           yield* Effect.sleep(Duration.millis(window.startMs - nowMs));
           continue;
@@ -129,11 +152,46 @@ export const make = Effect.gen(function* () {
   const start = Effect.fn("IdleCompactionService.start")(function* () {
     // Keyed by thread: a newer completed run replaces the waiting timer.
     const timers = yield* FiberMap.make<ThreadId>();
+    // A wake may appear after the run completed. Rechecks replace the thread's timer rather
+    // than defer to it, so a change seen mid-check is never dropped; checks are idempotent.
+    const recheck = (threadId: ThreadId) =>
+      FiberMap.run(timers, threadId, compactWhenDue(threadId, undefined));
     yield* forkParked(
-      Stream.runForEach(orchestrator.streamDomainEvents, (event) =>
-        event.type === "run.updated" && event.payload.status === "completed"
-          ? FiberMap.run(timers, event.threadId, compactWhenDue(event.threadId, event.payload.id))
-          : Effect.void,
+      Stream.runForEach(orchestrator.streamDomainEvents, (event) => {
+        if (event.type === "run.updated" && event.payload.status === "completed")
+          return FiberMap.run(
+            timers,
+            event.threadId,
+            compactWhenDue(event.threadId, event.payload.id),
+          );
+        if (
+          event.type === "thread.metadata-updated" ||
+          event.type === "thread.snoozed" ||
+          event.type === "thread.pull-request-link-updated"
+        )
+          return recheck(event.threadId);
+        return Effect.void;
+      }),
+    );
+    // Removing or retargeting a task can make its former thread eligible, so recheck both lists.
+    let boundThreadIds = new Set<ThreadId>();
+    yield* forkParked(
+      Stream.runForEach(scheduledTasks.subscribeList(), ({ tasks }) => {
+        const previous = boundThreadIds;
+        boundThreadIds = new Set(
+          tasks.flatMap((task) => (task.threadId === null ? [] : [task.threadId])),
+        );
+        return Effect.forEach(new Set([...previous, ...boundThreadIds]), recheck, {
+          discard: true,
+        });
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("idle compaction lost scheduled task updates; resubscribing", {
+            cause,
+          }),
+        ),
+        Effect.andThen(Effect.sleep(Duration.minutes(1))),
+        Effect.forever,
       ),
     );
   });

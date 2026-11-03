@@ -74,6 +74,20 @@ over 200,000 tokens. Each Claude provider's settings can override it:
 - **Never** skips idle compaction and Claude's resume prompt. **Auto-compact after**
   still applies, and you can still compact by hand.
 
+With **Only compact waiting threads** on (the default), **Before the cache expires**
+compacts only threads that something will wake later: a watched pull request or
+issue, running subagents or background work, or a scheduled task aimed at the
+thread. A thread you simply stopped using keeps its full history. **Compact
+snoozed threads** also counts a snooze as a wake. A thread whose scheduled task
+or snooze ends before the cache expires isn't compacted, because the cache is
+still warm when it wakes.
+
+To choose for one thread, use **Compact before cache expires** in the thread's
+menu: **Always** compacts it before the cache expires while idle, even when the
+setting is **When you return**, and **Never** skips it. Agents can set the same
+option. An agent can also compact its own thread once its current turn ends and
+then continue it with a message.
+
 Compacting a thread after its prompt cache expired normally writes the whole old
 history back to the cache, even though the summary replaces it. Turn on **Skip
 cache writes on cold compaction** in the Claude provider settings to compact

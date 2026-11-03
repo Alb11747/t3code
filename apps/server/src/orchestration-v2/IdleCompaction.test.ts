@@ -3,6 +3,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EventId,
   MessageId,
+  type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadProjection,
   NodeId,
   ProjectId,
@@ -11,9 +12,14 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   RunId,
+  type ScheduledTask,
+  ScheduledTaskError,
+  ScheduledTaskId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -21,12 +27,18 @@ import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 import * as TestClock from "effect/testing/TestClock";
 
+import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as IdleCompactionService from "./IdleCompactionService.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
-import { idleCompactionWindow, type IdleCompactionRecords } from "./IdleCompaction.ts";
+import {
+  idleCompactionScope,
+  idleCompactionWindow,
+  type IdleCompactionPolicy,
+  type IdleCompactionRecords,
+} from "./IdleCompaction.ts";
 
 const NOW_MS = Date.parse("2026-10-19T12:00:00.000Z");
 const MINUTE_MS = 60_000;
@@ -174,6 +186,76 @@ describe("idleCompactionWindow", () => {
     };
     expect(idleCompactionWindow(sideChat, NOW_MS)).toBeNull();
   });
+
+  it("resolves the scope from the mode, Smart, and the thread's own setting", () => {
+    expect(idleCompactionScope("beforeCacheExpires", true, null)).toBe("waiting");
+    expect(idleCompactionScope("beforeCacheExpires", false, undefined)).toBe("all");
+    expect(idleCompactionScope("onReturn", true, null)).toBeNull();
+    expect(idleCompactionScope("onReturn", true, true)).toBe("all");
+    expect(idleCompactionScope("beforeCacheExpires", true, false)).toBeNull();
+    expect(idleCompactionScope("off", true, true)).toBeNull();
+  });
+
+  it.each([
+    { name: "nothing will wake it", waits: {}, compacts: false },
+    { name: "an issue watch", waits: { issueWatch: true }, compacts: true },
+    { name: "an awaited subagent", waits: { task: "subagent" }, compacts: true },
+    { name: "only an unawaited command", waits: { task: "command" }, compacts: false },
+    { name: "a scheduled wake after expiry", waits: { scheduledInMs: 90 }, compacts: true },
+    { name: "a scheduled wake before expiry", waits: { scheduledInMs: 30 }, compacts: false },
+    { name: "a snooze when snoozed threads are off", waits: { snoozeInMs: 90 }, compacts: false },
+    {
+      name: "a snooze past expiry",
+      waits: { snoozeInMs: 90, compactSnoozed: true },
+      compacts: true,
+    },
+    {
+      name: "a snooze ending before expiry",
+      waits: { snoozeInMs: 30, compactSnoozed: true },
+      compacts: false,
+    },
+  ] as const)("Smart compacts a thread with $name: $compacts", ({ waits, compacts }) => {
+    const data = records({ cacheExpiresInMs: 60 * MINUTE_MS });
+    if ("issueWatch" in waits) {
+      data.thread = {
+        ...data.thread,
+        issueWatches: [
+          {
+            host: "github.com",
+            repository: "owner/repo",
+            number: 1,
+            url: "https://github.com/owner/repo/issues/1",
+            startedAt: DateTime.formatIso(at()),
+            commentsThrough: DateTime.formatIso(at()),
+            commentIds: [],
+            wakes: 0,
+          },
+        ],
+      };
+    }
+    if ("task" in waits) {
+      data.providerThreads = [
+        {
+          ...data.providerThreads[0]!,
+          pendingBackgroundTasks: [{ taskId: "task-1", kind: waits.task }],
+        },
+      ];
+    }
+    if ("snoozeInMs" in waits) {
+      data.thread = { ...data.thread, snoozedUntil: at(waits.snoozeInMs * MINUTE_MS) };
+    }
+    const policy: IdleCompactionPolicy = {
+      scope: "waiting",
+      compactSnoozed: "compactSnoozed" in waits,
+      scheduledWakesMs: "scheduledInMs" in waits ? [NOW_MS + waits.scheduledInMs * MINUTE_MS] : [],
+    };
+    expect(idleCompactionWindow(data, NOW_MS, policy) !== null).toBe(compacts);
+  });
+});
+
+const noScheduledTasks = Layer.mock(ScheduledTaskService)({
+  list: () => Effect.succeed({ tasks: [] }),
+  subscribeList: () => Stream.empty,
 });
 
 describe("IdleCompactionService", () => {
@@ -189,6 +271,11 @@ describe("IdleCompactionService", () => {
     { mode: "beforeCacheExpires", driver: "codex", instance: "custom-codex", reads: 0 },
     { mode: "beforeCacheExpires", driver: "claudeAgent", instance: "custom-claude", reads: 1 },
     { mode: "beforeCacheExpires", unconfigured: true, reads: 1 },
+    { mode: "beforeCacheExpires", smart: true, reads: 1, dispatches: 0 },
+    { mode: "beforeCacheExpires", smart: true, threadOverride: true, reads: 1 },
+    { mode: "onReturn", threadOverride: true, reads: 1 },
+    { mode: "beforeCacheExpires", threadOverride: false, reads: 0 },
+    { mode: "off", threadOverride: true, reads: 0 },
   ] as const)(
     "loads history only for eligible idle compaction: $mode/$override/$enabled/$projectDisabled/$instance/$unconfigured",
     (scenario) => {
@@ -196,6 +283,8 @@ describe("IdleCompactionService", () => {
         override: "default",
         enabled: true,
         projectDisabled: false,
+        smart: false,
+        threadOverride: null,
         ...scenario,
       } as const;
       return Effect.scoped(
@@ -212,6 +301,7 @@ describe("IdleCompactionService", () => {
               ...base.thread,
               providerInstanceId: selectedInstance,
               modelSelection: { ...base.thread.modelSelection, instanceId: selectedInstance },
+              compactBeforeCacheExpires: test.threadOverride,
             },
             runs: base.runs.map((run) => ({
               ...run,
@@ -250,6 +340,7 @@ describe("IdleCompactionService", () => {
             },
           });
           const dependencies = Layer.mergeAll(
+            noScheduledTasks,
             Layer.mock(Orchestrator.OrchestratorV2)({
               streamDomainEvents: Stream.make({
                 id: EventId.make("idle-completed"),
@@ -277,6 +368,7 @@ describe("IdleCompactionService", () => {
               getSettings: Effect.succeed({
                 ...DEFAULT_SERVER_SETTINGS,
                 idleCompaction: test.mode,
+                smartIdleCompaction: test.smart,
                 providerInstances:
                   "unconfigured" in test
                     ? {}
@@ -303,10 +395,184 @@ describe("IdleCompactionService", () => {
             yield* Deferred.await(done);
           }).pipe(Effect.provide(dependencies), Effect.withTracer(tracer));
           expect(historyReads).toBe(test.reads);
-          expect(dispatches).toBe(test.reads);
+          expect(dispatches).toBe("dispatches" in test ? test.dispatches : test.reads);
         }),
       );
     },
+  );
+
+  // Runs the service over `events` for a thread snoozed past its 10-minute cache expiry and
+  // returns what it dispatched once the compaction window opens.
+  const snoozedThreadDispatches = (
+    events: Stream.Stream<OrchestrationV2DomainEvent>,
+    scheduledTasks: Layer.Layer<ScheduledTaskService> = noScheduledTasks,
+    beforeRead: () => Effect.Effect<void> = () => Effect.void,
+  ) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW_MS);
+      const base = records({ cacheExpiresInMs: 10 * MINUTE_MS });
+      const data: OrchestrationV2ThreadProjection = {
+        ...base,
+        thread: { ...base.thread, snoozedUntil: at(90 * MINUTE_MS) },
+        attempts: [],
+        nodes: [],
+        subagents: [],
+        providerSessions: [],
+        plans: [],
+        checkpointScopes: [],
+        checkpoints: [],
+        contextHandoffs: [],
+        visibleTurnItems: [],
+        updatedAt: at(),
+      };
+      const dispatched: Array<string> = [];
+      const dependencies = Layer.mergeAll(
+        scheduledTasks,
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          streamDomainEvents: events,
+          dispatch: (command) =>
+            Effect.sync(() => {
+              dispatched.push(command.commandId);
+              return { sequence: 1, storedEvents: [] };
+            }),
+        }),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getThread: () => Effect.succeed(data.thread),
+          getThreadRecords: (_threadId, _keys, options) =>
+            beforeRead().pipe(
+              Effect.as({
+                ...data,
+                messages: data.messages.filter(
+                  (message) =>
+                    message.runId !== null &&
+                    (options?.messageRunIds ?? []).includes(message.runId),
+                ),
+              }),
+            ),
+        }),
+        Layer.mock(ServerSettings.ServerSettingsService)({
+          getSettings: Effect.succeed({
+            ...DEFAULT_SERVER_SETTINGS,
+            idleCompaction: "beforeCacheExpires",
+          }),
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* IdleCompactionService.make;
+        yield* service.start();
+        yield* TestClock.adjust(9 * MINUTE_MS);
+      }).pipe(Effect.provide(dependencies));
+      return dispatched;
+    });
+
+  it.effect("arms Smart compaction when a thread is snoozed after its run completed", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const base = records();
+        const dispatched = yield* snoozedThreadDispatches(
+          Stream.make({
+            id: EventId.make("snoozed"),
+            type: "thread.snoozed" as const,
+            threadId,
+            occurredAt: at(),
+            payload: { ...base.thread, snoozedUntil: at(90 * MINUTE_MS) },
+          }),
+        );
+        expect(dispatched).toEqual(["server:idle-compact:idle-thread:run-1"]);
+      }),
+    ),
+  );
+
+  it.effect("replaces an in-flight check when another wake arrives", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstRead = yield* Deferred.make<void>();
+        const base = records();
+        const event = {
+          id: EventId.make("snoozed"),
+          type: "thread.snoozed" as const,
+          threadId,
+          occurredAt: at(),
+          payload: { ...base.thread, snoozedUntil: at(90 * MINUTE_MS) },
+        };
+        let reads = 0;
+        const dispatched = yield* snoozedThreadDispatches(
+          Stream.concat(
+            Stream.make(event),
+            Stream.fromEffect(Deferred.await(firstRead).pipe(Effect.as(event))),
+          ),
+          noScheduledTasks,
+          () =>
+            ++reads === 1
+              ? Deferred.succeed(firstRead, undefined).pipe(Effect.andThen(Effect.never))
+              : Effect.void,
+        );
+        expect(dispatched).toEqual(["server:idle-compact:idle-thread:run-1"]);
+      }),
+    ),
+  );
+
+  it.effect.each(["deleted", "retargeted", "subscription failed"] as const)(
+    "rechecks a task's former thread when %s",
+    (change) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          // An earlier scheduled wake suppresses compaction until the task moves or disappears.
+          const task: ScheduledTask = {
+            id: ScheduledTaskId.make("task-1"),
+            title: "Check CI",
+            prompt: "Check CI",
+            enabled: true,
+            schedule: { type: "webhook", signature: null },
+            projectId: ProjectId.make("project"),
+            threadId,
+            workspaceStrategy: { type: "root" },
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdBy: "agent",
+            creationSource: "mcp",
+            createdAt: DateTime.formatIso(at()),
+            updatedAt: DateTime.formatIso(at()),
+            nextRunAt: DateTime.formatIso(at(5 * MINUTE_MS)),
+            lastRunAt: null,
+            lastRunStatus: "never",
+            lastRunError: null,
+            runCount: 0,
+          };
+          const deletedAtMs = NOW_MS + MINUTE_MS;
+          const tasksNow = Clock.currentTimeMillis.pipe(
+            Effect.map((nowMs) => ({
+              tasks:
+                nowMs < deletedAtMs
+                  ? [task]
+                  : change === "retargeted"
+                    ? [{ ...task, threadId: ThreadId.make("other-thread") }]
+                    : [],
+            })),
+          );
+          const dispatched = yield* snoozedThreadDispatches(
+            Stream.empty,
+            Layer.mock(ScheduledTaskService)({
+              list: () => tasksNow,
+              subscribeList: () =>
+                Stream.concat(
+                  Stream.fromEffect(tasksNow),
+                  Stream.fromEffect(
+                    Effect.sleep(Duration.minutes(1)).pipe(
+                      Effect.andThen(
+                        change === "subscription failed"
+                          ? Effect.fail(new ScheduledTaskError({ message: "database locked" }))
+                          : tasksNow,
+                      ),
+                    ),
+                  ),
+                ).pipe(Stream.concat(Stream.never)),
+            }),
+          );
+          expect(dispatched).toEqual(["server:idle-compact:idle-thread:run-1"]);
+        }),
+      ),
   );
 
   it.effect("keeps the latest run's compaction when an earlier run reports completed again", () =>
@@ -353,6 +619,7 @@ describe("IdleCompactionService", () => {
         const dispatched: Array<string> = [];
         const streamDone = yield* Deferred.make<void>();
         const dependencies = Layer.mergeAll(
+          noScheduledTasks,
           Layer.mock(Orchestrator.OrchestratorV2)({
             // A delegated completion on the earlier run lands after the later run completed.
             streamDomainEvents: Stream.make(completed(laterRun), completed(earlierRun)).pipe(
@@ -380,6 +647,7 @@ describe("IdleCompactionService", () => {
             getSettings: Effect.succeed({
               ...DEFAULT_SERVER_SETTINGS,
               idleCompaction: "beforeCacheExpires",
+              smartIdleCompaction: false,
             }),
           }),
         );

@@ -197,7 +197,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     ),
   ),
   t3_thread_configure: McpToolAccess.either(
-    (input) => input.modelSelection === undefined,
+    (input) => input.modelSelection === undefined && input.compactBeforeCacheExpires === undefined,
     McpToolAccess.reads((input) =>
       Effect.gen(function* () {
         const {
@@ -208,21 +208,44 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           modelSelection: thread.modelSelection,
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
+          compactBeforeCacheExpires: thread.compactBeforeCacheExpires ?? null,
         };
       }),
     ),
     writesThread((input) =>
       Effect.gen(function* () {
-        const modelSelection = yield* required(input.modelSelection, "modelSelection");
         const {
           threads,
           projection: { thread },
         } = yield* readThread(input.threadId);
-        const type = modelSelectionCommandType(thread.providerInstanceId, modelSelection);
-        const result = yield* threads
-          .dispatch({ type, threadId: thread.id, commandId: yield* newCommandId(), modelSelection })
-          .pipe(Effect.mapError(dispatchFailure));
-        return { sequence: result.sequence };
+        let sequence: number | undefined;
+        if (input.compactBeforeCacheExpires !== undefined) {
+          const result = yield* threads
+            .dispatch({
+              type: "thread.metadata.update",
+              threadId: thread.id,
+              commandId: yield* newCommandId(),
+              compactBeforeCacheExpires: input.compactBeforeCacheExpires,
+            })
+            .pipe(Effect.mapError(dispatchFailure));
+          sequence = result.sequence;
+        }
+        const modelSelection = input.modelSelection;
+        if (modelSelection !== undefined) {
+          const type = modelSelectionCommandType(thread.providerInstanceId, modelSelection);
+          const result = yield* threads
+            .dispatch({
+              type,
+              threadId: thread.id,
+              commandId: yield* newCommandId(),
+              modelSelection,
+            })
+            .pipe(Effect.mapError(dispatchFailure));
+          sequence = result.sequence;
+        }
+        return {
+          sequence: yield* required(sequence, "modelSelection` or `compactBeforeCacheExpires"),
+        };
       }),
     ),
   ),

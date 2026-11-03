@@ -14,6 +14,10 @@ export type ThreadActionMenuId =
   | "auto-settle"
   | "auto-settle:enabled"
   | "auto-settle:disabled"
+  | "compact-before-expiry"
+  | "compact-before-expiry:default"
+  | "compact-before-expiry:on"
+  | "compact-before-expiry:off"
   | "snooze"
   | `snooze:${string}`
   | "unsnooze"
@@ -79,6 +83,8 @@ export interface ThreadActionMenuState {
   readonly isPinned: boolean;
   readonly isSettled: boolean;
   readonly autoSettleEnabled: boolean;
+  /** Undefined when the server has no per-thread idle compaction. */
+  readonly compactBeforeCacheExpires?: boolean | null | undefined;
   readonly isSnoozed: boolean;
   readonly canSnoozeNow: boolean;
   readonly isRegeneratingTitle: boolean;
@@ -220,6 +226,32 @@ export function buildThreadActionMenuItems(
                 id: "auto-settle:disabled" as const,
                 label: "Disabled",
                 checked: !state.autoSettleEnabled,
+              },
+            ],
+          },
+        ]
+      : []),
+    ...(state.compactBeforeCacheExpires !== undefined
+      ? [
+          {
+            id: "compact-before-expiry" as const,
+            label: "Compact before cache expires",
+            icon: "timer",
+            children: [
+              {
+                id: "compact-before-expiry:default" as const,
+                label: "Follow settings",
+                checked: state.compactBeforeCacheExpires === null,
+              },
+              {
+                id: "compact-before-expiry:on" as const,
+                label: "Always",
+                checked: state.compactBeforeCacheExpires === true,
+              },
+              {
+                id: "compact-before-expiry:off" as const,
+                label: "Never",
+                checked: state.compactBeforeCacheExpires === false,
               },
             ],
           },

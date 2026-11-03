@@ -11066,6 +11066,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     hookInput.hook_event_name !== "Stop") ||
                   hookInput.agent_id !== undefined ||
                   context === null ||
+                  // Text claimed into a compaction would be summarized away; it starts the next turn.
+                  isCompactionCommandMessage({ role: "user", ...context.input.message }) ||
                   context.nativeThreadId !== hookInput.session_id ||
                   (yield* Ref.get(interruptedTurns)).has(context.providerTurnId) ||
                   continuationRequests.claimAgentMessages === undefined

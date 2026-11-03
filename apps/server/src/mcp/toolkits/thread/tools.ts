@@ -149,15 +149,21 @@ const threadConfiguration = Schema.Struct({
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  compactBeforeCacheExpires: Schema.NullOr(Schema.Boolean),
+});
+const CompactBeforeCacheExpires = Schema.NullOr(Schema.Boolean).annotate({
+  description:
+    "Claude: true compacts this thread before its cache expires while idle, for waits over an hour; false never; null follows settings.",
 });
 const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   ...commandTool,
   description:
-    "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`.",
+    "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`, or `compactBeforeCacheExpires`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
     modelSelection: Schema.optional(ModelSelection),
+    compactBeforeCacheExpires: Schema.optional(CompactBeforeCacheExpires),
   }),
   success: Schema.Union([threadConfiguration, OrchestrationV2DispatchCommandResult]),
 }).annotate(Tool.Destructive, true);

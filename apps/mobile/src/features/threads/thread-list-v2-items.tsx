@@ -757,6 +757,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const timeLabel = props.timeLabel;
 
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
+  const updateMetadata = useAtomCommand(threadEnvironment.updateMetadata);
   const handleAcknowledgeWoke = useCallback(() => {
     if (props.wokeAt === null) return;
     void visitThread({
@@ -876,8 +877,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     ],
   );
   const autoSettleMenuItems = useMemo<MenuAction[]>(
-    () =>
-      props.autoSettleOptOutSupported
+    () => [
+      ...(props.autoSettleOptOutSupported
         ? [
             {
               id: "auto-settle",
@@ -897,8 +898,40 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               ],
             } satisfies MenuAction,
           ]
-        : [],
-    [props.autoSettleOptOutSupported, thread.autoSettleDisabledAt],
+        : []),
+      // Servers without per-thread idle compaction omit the field.
+      ...(thread.compactBeforeCacheExpires === undefined
+        ? []
+        : [
+            {
+              id: "compact-before-expiry",
+              title: "Compact before cache expires",
+              image: "timer",
+              subactions: [
+                {
+                  id: "compact-before-expiry:default",
+                  title: "Follow settings",
+                  state: thread.compactBeforeCacheExpires === null ? "on" : "off",
+                },
+                {
+                  id: "compact-before-expiry:on",
+                  title: "Always",
+                  state: thread.compactBeforeCacheExpires === true ? "on" : "off",
+                },
+                {
+                  id: "compact-before-expiry:off",
+                  title: "Never",
+                  state: thread.compactBeforeCacheExpires === false ? "on" : "off",
+                },
+              ],
+            } satisfies MenuAction,
+          ]),
+    ],
+    [
+      props.autoSettleOptOutSupported,
+      thread.autoSettleDisabledAt,
+      thread.compactBeforeCacheExpires,
+    ],
   );
   const canTurnIntoProject = canTurnThreadIntoProject(thread);
   const titleMenuItems = useMemo<MenuAction[]>(
@@ -992,6 +1025,17 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       if (nativeEvent.event === "unpin") handleUnpin();
       if (nativeEvent.event === "auto-settle:enabled") handleSetAutoSettle(true);
       if (nativeEvent.event === "auto-settle:disabled") handleSetAutoSettle(false);
+      if (nativeEvent.event.startsWith("compact-before-expiry:"))
+        void updateMetadata({
+          environmentId: thread.environmentId,
+          input: {
+            threadId: thread.id,
+            compactBeforeCacheExpires:
+              nativeEvent.event === "compact-before-expiry:default"
+                ? null
+                : nativeEvent.event === "compact-before-expiry:on",
+          },
+        });
       if (nativeEvent.event === "arrange") appAtomRegistry.set(threadArrangementOpenAtom, true);
       if (nativeEvent.event === "move-up") handleMoveUp();
       if (nativeEvent.event === "move-down") handleMoveDown();
@@ -1045,6 +1089,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       handleSettle,
       handleSnooze,
       handleSetAutoSettle,
+      updateMetadata,
       handleUnpin,
       handleUnsettle,
       handleUnsnooze,

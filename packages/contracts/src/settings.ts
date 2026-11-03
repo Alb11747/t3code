@@ -1287,6 +1287,13 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
   idleCompaction: Schema.optionalKey(IdleCompactionMode),
+  /**
+   * Before the cache expires, compact only threads that will resume. Absent on servers without
+   * it, so clients can hide the switch; read through `smartIdleCompactionOf`.
+   */
+  smartIdleCompaction: Schema.optionalKey(Schema.Boolean),
+  /** Lets idle compaction include snoozed threads; read through `compactSnoozedThreadsOf`. */
+  compactSnoozedThreads: Schema.optionalKey(Schema.Boolean),
   snoozeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   autoResumeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   snoozePresets: SnoozePresetSettings.pipe(
@@ -1484,6 +1491,18 @@ export const globalIdleCompaction = (settings: IdleCompactionSettings): IdleComp
     : settings.compactIdleThreads
       ? "beforeCacheExpires"
       : "onReturn");
+
+export const smartIdleCompactionOf = (settings: Pick<ServerSettings, "smartIdleCompaction">) =>
+  settings.smartIdleCompaction ?? true;
+export const compactSnoozedThreadsOf = (settings: Pick<ServerSettings, "compactSnoozedThreads">) =>
+  settings.compactSnoozedThreads ?? true;
+
+/** Fills the Smart idle compaction switches in, which tells clients this server has them. */
+export const withSmartIdleCompaction = <S extends ServerSettings>(settings: S): S => ({
+  ...settings,
+  smartIdleCompaction: smartIdleCompactionOf(settings),
+  compactSnoozedThreads: compactSnoozedThreadsOf(settings),
+});
 
 /** Sets the mode, and the legacy switch shipped clients still read alongside it. */
 export const withIdleCompaction = <S extends IdleCompactionSettings>(
@@ -1683,6 +1702,8 @@ export const ServerSettingsPatch = Schema.Struct({
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   compactIdleThreads: Schema.optionalKey(LegacyCompactIdleThreads),
   idleCompaction: Schema.optionalKey(IdleCompactionMode),
+  smartIdleCompaction: Schema.optionalKey(Schema.Boolean),
+  compactSnoozedThreads: Schema.optionalKey(Schema.Boolean),
   sidebarAutoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
   autoResumeLimitedThreads: Schema.optionalKey(Schema.Boolean),

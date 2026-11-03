@@ -121,6 +121,7 @@ it.effect.each([
   "same-instance-active",
   "missing-active",
   "busy-queue",
+  "busy-self-compact",
   "warm",
   "small",
   "human",
@@ -133,6 +134,7 @@ it.effect.each([
   "compact-partial",
 ] as const)("checks the %s conversation that the next message actually resumes", (scenario) =>
   Effect.gen(function* () {
+    const busyQueue = scenario === "busy-queue" || scenario === "busy-self-compact";
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const messages = yield* ThreadManagement.ThreadManagementService;
     const sink = yield* EventSink.EventSinkV2;
@@ -141,7 +143,7 @@ it.effect.each([
     const first = providerThread(
       "native:first",
       firstInstanceId,
-      scenario === "busy-queue" ? 1_000 : 500_000,
+      busyQueue ? 1_000 : 500_000,
       20,
       epoch,
     );
@@ -196,7 +198,7 @@ it.effect.each([
         },
       ],
     });
-    if (scenario === "busy-queue" || scenario === "busy-boundary") {
+    if (busyQueue || scenario === "busy-boundary") {
       yield* orchestrator.dispatch({
         type: "message.dispatch",
         commandId: CommandId.make("send:busy-work"),
@@ -278,7 +280,7 @@ it.effect.each([
               },
             ]
           : [],
-      mode: scenario === "busy-queue" ? "queue" : "auto",
+      mode: busyQueue ? "queue" : "auto",
       createdBy: scenario === "human" ? "user" : "agent",
       creationSource: "mcp",
       ...(scenario === "scheduled"
@@ -310,6 +312,20 @@ it.effect.each([
       const stored = yield* orchestrator.getThreadRecords(threadId, ["messages"]);
       expect(stored.messages.filter((message) => message.text === "/compact")).toHaveLength(1);
       expect(stored.messages.filter((message) => message.id === input.messageId)).toHaveLength(1);
+      return;
+    }
+    if (scenario === "busy-self-compact") {
+      // The calling agent's own turn is the busy run: compact after it, then deliver.
+      const sent = yield* messages.sendToThread({
+        ...input,
+        senderThreadId: threadId,
+        contextPolicy: "compact",
+      });
+      expect(sent.delivery).toBe("queued");
+      const compactId = MessageId.make(`agent-compact:${input.messageId}`);
+      expect(sent.run.afterCompactionMessageId).toBe(compactId);
+      const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+      expect(runs.find((run) => run.userMessageId === compactId)?.status).toBe("queued");
       return;
     }
     if (scenario === "missing-active") {
@@ -382,6 +398,7 @@ it.effect.each([
       layerTest(
         scenario === "compatible-account" ||
           scenario === "busy-queue" ||
+          scenario === "busy-self-compact" ||
           scenario === "busy-boundary",
       ),
     ),

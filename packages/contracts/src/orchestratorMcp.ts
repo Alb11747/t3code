@@ -512,7 +512,7 @@ export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadRe
 
 export const AgentMessageContextPolicy = Schema.Literals(["compact", "keep"]).annotate({
   description:
-    "Required when a large Claude conversation's prompt cache is cold. compact: compact the idle conversation before the message. keep: explicitly retain its full history. Omit for warm or small conversations.",
+    "Required when a large Claude conversation's prompt cache is cold. compact: compact the idle conversation before the message (your own thread: after your turn). keep: explicitly retain its full history. Omit for warm or small conversations.",
 });
 
 export const OrchestratorMcpThreadSendInput = Schema.Struct({

@@ -141,6 +141,7 @@ export function useThreadActionMenu(input: {
         isPinned: thread.pinnedAt != null,
         isSettled: supports.settlement && thread.settledOverride === "settled",
         autoSettleEnabled: thread.autoSettleDisabledAt == null,
+        compactBeforeCacheExpires: thread.compactBeforeCacheExpires,
         isSnoozed: supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() }),
         canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
         isRegeneratingTitle,
@@ -242,6 +243,22 @@ export function useThreadActionMenu(input: {
         case "auto-settle:disabled":
           await reportFailure("Failed to update auto-settle", () =>
             setThreadAutoSettle(threadRef, action === "auto-settle:enabled"),
+          );
+          return;
+        case "compact-before-expiry:default":
+        case "compact-before-expiry:on":
+        case "compact-before-expiry:off":
+          await reportFailure("Failed to update compaction", () =>
+            updateThreadMetadata({
+              environmentId: threadRef.environmentId,
+              input: {
+                threadId: threadRef.threadId,
+                compactBeforeCacheExpires:
+                  action === "compact-before-expiry:default"
+                    ? null
+                    : action === "compact-before-expiry:on",
+              },
+            }),
           );
           return;
         case "rename":

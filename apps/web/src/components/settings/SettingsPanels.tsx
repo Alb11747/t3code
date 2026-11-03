@@ -1466,6 +1466,58 @@ function ScopedCompactIdleThreadsRow() {
   const idleCompaction = scopedIdleCompaction(targets.length > 0 ? targets : [{ settings }]);
 
   return (
+    <>
+      <IdleCompactionModeRow idleCompaction={idleCompaction} />
+      {/* Older servers omit these and compact every idle thread; a default here would lie. */}
+      {settings.smartIdleCompaction === undefined ? null : (
+        <SettingsRow
+          serverScoped
+          {...searchableSetting("smart-idle-compaction")}
+          description="Before the cache expires, compact only threads something will wake later: a watched pull request or issue, running subagents or background work, or a scheduled task. Agents and the thread menu can still choose per thread."
+          settingKeys={["smartIdleCompaction"]}
+          control={
+            <ScopedSwitch
+              settingKeys={["smartIdleCompaction"]}
+              checked={settings.smartIdleCompaction}
+              onCheckedChange={(checked) =>
+                updateSettings({ smartIdleCompaction: Boolean(checked) })
+              }
+              aria-label="Only compact waiting threads"
+            />
+          }
+        />
+      )}
+      {settings.compactSnoozedThreads === undefined ? null : (
+        <SettingsRow
+          serverScoped
+          {...searchableSetting("compact-snoozed-threads")}
+          description="Include snoozed threads. A snooze that ends after the cache expires counts as a wake."
+          settingKeys={["compactSnoozedThreads"]}
+          control={
+            <ScopedSwitch
+              settingKeys={["compactSnoozedThreads"]}
+              checked={settings.compactSnoozedThreads}
+              onCheckedChange={(checked) =>
+                updateSettings({ compactSnoozedThreads: Boolean(checked) })
+              }
+              aria-label="Compact snoozed threads"
+            />
+          }
+        />
+      )}
+    </>
+  );
+}
+
+function IdleCompactionModeRow({
+  idleCompaction,
+}: {
+  readonly idleCompaction: ReturnType<typeof scopedIdleCompaction>;
+}) {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+
+  return (
     <SettingsRow
       serverScoped
       settingKeys={["idleCompaction", "compactIdleThreads"]}
