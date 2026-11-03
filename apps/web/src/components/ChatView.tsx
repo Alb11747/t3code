@@ -32,6 +32,8 @@ import { ThreadFind, ThreadFindCanvas } from "./chat/ThreadFindProvider";
 import { closeThreadFind, openThreadFind, useThreadFindOpen } from "./chat/threadFindStore";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
+import { keepWarmStallBannerItem } from "./chat/KeepWarmStallBanner";
+import { activeKeepWarmHold } from "@t3tools/client-runtime/state/claudeKeepWarm";
 import { resolveDraftHeroState } from "./ChatView.logic";
 import { useQueuedRunEdit } from "./chat/useQueuedRunEdit";
 import { recallCheckoutIsRepo, rememberCheckoutIsRepo } from "./ChatView.logic";
@@ -2608,6 +2610,20 @@ export default function ChatView(props: ChatViewProps) {
           },
         })
       : null;
+  const keepWarmHold = activeKeepWarmHold(
+    serverProjection?.turnItems ?? EMPTY_TURN_ITEMS,
+    serverRuntime?.activeRunId ?? null,
+  );
+  const keepWarmBanner =
+    keepWarmHold !== null && activeThreadShell
+      ? keepWarmStallBannerItem({
+          environmentId,
+          threadId: activeThreadShell.id,
+          hold: keepWarmHold,
+          snoozedUntil: activeThreadShell.snoozedUntil,
+          timestampFormat,
+        })
+      : null;
   const composerBannerItems = (() => {
     const fallbackSelection = draftFallback?.selection;
     const defaultSelection =
@@ -2654,7 +2670,9 @@ export default function ChatView(props: ChatViewProps) {
             }),
           ]
         : [];
-    const limitRecoveryItems = limitRecoveryBanner === null ? [] : [limitRecoveryBanner];
+    const limitRecoveryItems = [limitRecoveryBanner, keepWarmBanner].filter(
+      (item) => item !== null,
+    );
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
     const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {

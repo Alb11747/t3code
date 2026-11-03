@@ -10,6 +10,7 @@ import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
 
@@ -94,7 +95,23 @@ const CreditList = Schema.Struct({
   ),
 });
 
+const Control = Schema.Struct({
+  held: Schema.optional(
+    Schema.NullOr(
+      Schema.Array(
+        Schema.Struct({
+          session: Schema.String,
+          release_at: Schema.String,
+          reset_at: Schema.optional(Schema.NullOr(Schema.String)),
+          kind: Schema.optional(Schema.String),
+        }),
+      ),
+    ),
+  ),
+});
+
 const decodeAuthFiles = Schema.decodeUnknownEffect(AuthFiles);
+const decodeControl = Schema.decodeUnknownEffect(Control);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeApiResponse = Schema.decodeUnknownEffect(ApiResponse);
 const decodeCreditList = Schema.decodeUnknownEffect(Schema.fromJsonString(CreditList));
@@ -437,5 +454,31 @@ export const makeCliproxyApi = Effect.gen(function* () {
       ),
     );
   });
-  return { readAccounts, consume };
+  // Quota-router control: `held` also lists stall pins (kind "pin", or no kind from older routers).
+  const keepWarmHolds = Effect.fn("CliproxyApi.keepWarmHolds")(function* (
+    config: UsageLimitSourceConfig,
+  ) {
+    const control = yield* management(config, "control").pipe(Effect.flatMap(decodeControl));
+    // Go writes RFC3339 with nanoseconds or offsets; clients compare ISO strings.
+    const iso = (value: string | null | undefined) =>
+      value ? Option.getOrNull(Option.map(DateTime.make(value), DateTime.formatIso)) : null;
+    return (control.held ?? []).flatMap((held) => {
+      const releaseAt = iso(held.release_at);
+      const resetAt = iso(held.reset_at);
+      return held.kind === "keep_warm" && releaseAt !== null && resetAt !== null
+        ? [{ session: held.session, releaseAt, resetAt }]
+        : [];
+    });
+  });
+
+  // Forwards the sessions' held requests now and stops holding them until `expiresAt`.
+  const releaseKeepWarm = Effect.fn("CliproxyApi.releaseKeepWarm")(function* (
+    config: UsageLimitSourceConfig,
+    sessions: ReadonlyArray<string>,
+    expiresAt: string,
+  ) {
+    yield* management(config, "control/keep-warm", { sessions, expires_at: expiresAt });
+  });
+
+  return { readAccounts, consume, keepWarmHolds, releaseKeepWarm };
 });

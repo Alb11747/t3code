@@ -103,6 +103,7 @@ import type * as ProviderContinuationRequests from "@t3tools/provider-core/serve
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as PromptSuggestions from "../../provider/PromptSuggestions.ts";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
+import * as ClaudeKeepWarm from "../../provider/ClaudeKeepWarm.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ClaudeOrchestratorReplayHarness } from "./ClaudeAdapterV2.testkit.ts";
 import { runClaudeThinkingRecoverySuite } from "./ClaudeThinkingRecovery.fork.testkit.ts";
@@ -6068,6 +6069,65 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
     ),
   );
+
+  it.effect("shows a keep-warm stall and pauses it as a usage limit with the hold's reset", () => {
+    const sessions: Array<ClaudeKeepWarm.ClaudeKeepWarmSession> = [];
+    return Effect.gen(function* () {
+      const harness = yield* makeWakeHarnessWithOptions({ close: Queue.shutdown });
+      const now = yield* DateTime.now;
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now,
+          attemptId: RunAttemptId.make("attempt-claude-keep-warm"),
+          providerTurnOrdinal: 1,
+          text: "Continue.",
+          attachments: [],
+        }),
+      );
+      const session = sessions[0]!;
+      const turn = (yield* session.turn)!;
+      assert.equal(turn.session, WAKE_NATIVE_SESSION);
+      const hold = {
+        resetAt: DateTime.formatIso(DateTime.add(now, { hours: 2 })),
+        releaseAt: DateTime.formatIso(DateTime.add(now, { minutes: 59 })),
+      };
+      yield* session.show(turn, hold);
+      const running = (yield* Queue.take(harness.systemNoticeReceipts)).turnItem;
+      assert.deepInclude(running, { status: "running", keepWarm: hold });
+
+      yield* session.pause({ ...turn, hold }, hold);
+      const terminal = yield* Queue.take(harness.terminalReceipts);
+      assert.equal(terminal.status, "failed");
+      assert.deepInclude(terminal.failure, { class: "usage_limit", resetAt: hold.resetAt });
+      const completed = (yield* Queue.take(harness.systemNoticeReceipts)).turnItem;
+      assert.deepInclude(completed, { id: running.id, status: "completed", keepWarm: hold });
+      // A poll that read the hold before the turn ended cannot reopen its notice.
+      yield* session.show(turn, hold);
+      assert.isNull(yield* session.turn);
+      assert.lengthOf(
+        harness.events.filter(
+          (event) => event.type === "turn_item.updated" && event.turnItem.type === "system_notice",
+        ),
+        2,
+      );
+    }).pipe(
+      Effect.provideService(ClaudeKeepWarm.ClaudeKeepWarm, {
+        register: (session) => Effect.sync(() => void sessions.push(session)),
+        find: () => Effect.succeed(null),
+        release: () => Effect.void,
+      }),
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    );
+  });
 
   it.effect.each([
     "generic retry",

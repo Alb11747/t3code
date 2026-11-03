@@ -151,6 +151,10 @@
       "types": "./src/state/assets.ts",
       "default": "./src/state/assets.ts"
     },
+    "./state/claudeKeepWarm": {
+      "types": "./src/state/claudeKeepWarm.ts",
+      "default": "./src/state/claudeKeepWarm.ts"
+    },
     "./state/attachments": {
       "types": "./src/state/attachments.ts",
       "default": "./src/state/attachments.ts"

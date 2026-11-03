@@ -133,6 +133,10 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:force-stop-thread",
       tag: ORCHESTRATION_V2_WS_METHODS.forceStopThread,
     }),
+    claudeKeepWarmAction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:orchestration:claude-keep-warm-action",
+      tag: WS_METHODS.claudeKeepWarmAction,
+    }),
     turnItem: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:orchestration:turn-item",
       tag: ORCHESTRATION_V2_WS_METHODS.getTurnItem,

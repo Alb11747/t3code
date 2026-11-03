@@ -90,6 +90,7 @@ import {
 } from "@t3tools/shared/claudeCompaction";
 import {
   type ChatAttachment,
+  type ClaudeKeepWarmHold,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   ClaudeSettings,
   TrimmedNonEmptyString,
@@ -170,6 +171,7 @@ import {
 import * as ServerConfig from "../../config.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import * as ClaudeKeepWarm from "../../provider/ClaudeKeepWarm.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
@@ -4225,6 +4227,16 @@ interface ActiveClaudeTurnContext {
   nativeWakeStarted: boolean;
   gatedFramesBeforeEcho: number;
   readonly heldRootFrames: Array<SDKMessage>;
+  // Fork: the quota router's keep-warm stall, if any; see ClaudeKeepWarm.ts.
+  keepWarm?: {
+    notice: {
+      readonly nativeItemId: string;
+      readonly startedAt: DateTime.Utc;
+      readonly hold: ClaudeKeepWarmHold;
+    } | null;
+    pause: ClaudeKeepWarmHold | null;
+    ended: boolean;
+  };
 }
 
 interface ActiveClaudeProviderRetry {
@@ -4693,6 +4705,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+  const keepWarm = yield* ClaudeKeepWarm.ClaudeKeepWarm;
   const { attachmentsDir, fileSystem, path, random, idAllocator, queryRunner } = adapterOptions;
   const subagentModelCatalog = scopeClaudeModelCatalog(
     BUNDLED_CLAUDE_MODEL_CATALOG,
@@ -7636,7 +7649,104 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           subagentToolCalls.clear();
         });
 
-        const finalizeActiveTurn = Effect.fnUntraced(function* (input: {
+        // Fork: quota-router keep-warm stall notices and the pause outcome; see ClaudeKeepWarm.ts.
+        const emitKeepWarmNotice = Effect.fnUntraced(function* (
+          context: ActiveClaudeTurnContext,
+          notice: NonNullable<NonNullable<ActiveClaudeTurnContext["keepWarm"]>["notice"]>,
+          status: "running" | "completed",
+        ) {
+          const now = yield* DateTime.now;
+          const nowMs = DateTime.toEpochMillis(now);
+          const message =
+            status === "running"
+              ? ClaudeKeepWarm.describeKeepWarmHold()
+              : ClaudeKeepWarm.describeKeepWarmHoldEnd(
+                  DateTime.toEpochMillis(notice.startedAt),
+                  nowMs,
+                );
+          yield* emitProviderEvent({
+            type: "turn_item.updated",
+            driver: CLAUDE_PROVIDER,
+            turnItem: {
+              id: idAllocator.derive.turnItemFromProviderItem({
+                driver: CLAUDE_PROVIDER,
+                nativeItemId: notice.nativeItemId,
+              }),
+              threadId: context.input.threadId,
+              runId: context.input.runId,
+              nodeId: context.input.rootNodeId,
+              providerThreadId: context.input.providerThread.id,
+              providerTurnId: context.providerTurnId,
+              nativeItemRef: {
+                driver: CLAUDE_PROVIDER,
+                nativeId: notice.nativeItemId,
+                strength: "weak",
+              },
+              parentItemId: null,
+              ordinal: yield* resolveItemOrdinal(context, notice.nativeItemId),
+              type: "system_notice",
+              status,
+              title: message,
+              message,
+              keepWarm: notice.hold,
+              startedAt: notice.startedAt,
+              completedAt: status === "completed" ? now : null,
+              updatedAt: now,
+            },
+          });
+        });
+
+        const showKeepWarmHold = Effect.fnUntraced(function* (
+          context: ActiveClaudeTurnContext,
+          hold: ClaudeKeepWarmHold | null,
+        ) {
+          const state = (context.keepWarm ??= { notice: null, pause: null, ended: false });
+          const notice = state.notice;
+          if (state.ended) return;
+          if (hold === null) {
+            if (notice === null) return;
+            state.notice = null;
+            yield* emitKeepWarmNotice(context, notice, "completed");
+            return;
+          }
+          if (notice?.hold.releaseAt === hold.releaseAt && notice.hold.resetAt === hold.resetAt) {
+            return;
+          }
+          state.notice = {
+            nativeItemId:
+              notice?.nativeItemId ?? `keep-warm:${context.providerTurnId}:${hold.releaseAt}`,
+            startedAt: notice?.startedAt ?? (yield* DateTime.now),
+            hold,
+          };
+          yield* emitKeepWarmNotice(context, state.notice, "running");
+        });
+
+        // Completes the notice; a paused turn ends as a usage limit that resets with its hold.
+        const settleKeepWarm = Effect.fnUntraced(function* (
+          context: ActiveClaudeTurnContext,
+          status: OrchestrationV2ProviderTurn["status"],
+        ) {
+          const state = (context.keepWarm ??= { notice: null, pause: null, ended: false });
+          if (state.ended) return null;
+          yield* showKeepWarmHold(context, null);
+          // A poll that read the hold before this turn ended must not reopen its notice.
+          state.ended = true;
+          const hold = state.pause;
+          if (hold === null || status !== "interrupted") return null;
+          context.rateLimitResetTimes.set("five_hour", hold.resetAt);
+          return {
+            status: "failed" as const,
+            failure: makeProviderFailure({
+              class: "usage_limit",
+              code: "keep_warm_paused",
+              message: "Paused to keep Claude's prompt cache warm until its 5-hour limit resets.",
+              retryable: true,
+              resetAt: hold.resetAt,
+            }),
+          };
+        });
+
+        const finalizeActiveTurn = Effect.fnUntraced(function* (requested: {
           readonly context: ActiveClaudeTurnContext;
           readonly status: Extract<
             OrchestrationV2ProviderTurn["status"],
@@ -7647,6 +7757,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           readonly threadDisposition?: "reusable" | "broken";
           readonly result?: SDKResultMessage;
         }) {
+          const paused = yield* settleKeepWarm(requested.context, requested.status);
+          const input = paused === null ? requested : { ...requested, ...paused };
           yield* cancelOverloadRetry(input.context);
           input.context.pendingRetrySteers.length = 0;
           const nativeThreadId = input.context.nativeThreadId;
@@ -9216,6 +9328,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               message.message.model !== "<synthetic>"
             ) {
               yield* completeProviderRetry(context, now);
+              if (context.keepWarm?.notice) yield* showKeepWarmHold(context, null);
             }
             // CLI-generated <synthetic> frames report zero usage, not context usage.
             if (
@@ -11731,6 +11844,51 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ),
         );
 
+        // Fork: lets the quota-router poll show and act on this session's keep-warm stalls.
+        const keepWarmContext = (turn: ClaudeKeepWarm.ClaudeKeepWarmTurn) =>
+          Ref.get(activeTurn).pipe(
+            Effect.map((context) =>
+              context?.providerTurnId === turn.providerTurnId && context.keepWarm?.ended !== true
+                ? context
+                : null,
+            ),
+          );
+        yield* keepWarm.register({
+          turn: Ref.get(activeTurn).pipe(
+            Effect.map((context) =>
+              context === null || context.keepWarm?.ended === true
+                ? null
+                : {
+                    threadId: context.input.threadId,
+                    runId: context.input.runId,
+                    providerTurnId: context.providerTurnId,
+                    session: context.nativeThreadId,
+                    hold: context.keepWarm?.notice?.hold ?? null,
+                  },
+            ),
+          ),
+          show: (turn, hold) =>
+            keepWarmContext(turn).pipe(
+              Effect.flatMap((context) =>
+                context === null ? Effect.void : showKeepWarmHold(context, hold),
+              ),
+            ),
+          pause: Effect.fn("ClaudeAdapterV2.pauseKeepWarm")(function* (turn, hold) {
+            const context = yield* keepWarmContext(turn);
+            if (context?.keepWarm === undefined) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CLAUDE_PROVIDER,
+                detail: "The stalled Claude turn already ended.",
+              });
+            }
+            context.keepWarm.pause = hold;
+            yield* interruptTurn({
+              providerThread: context.input.providerThread,
+              providerTurnId: context.providerTurnId,
+            });
+          }),
+        });
+
         // Move subagents to the background before priority "now" steers cancel foreground tools.
         const backgroundForegroundSubagents = Effect.fnUntraced(function* (
           live: ClaudeLiveQueryContext,
@@ -12492,10 +12650,10 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     );
     // Allow proxy holds up to 59 minutes. The proxy also caps holds by the client's
     // X-Stainless-Timeout (~9.5 minutes by default), so the default merely shortens holds.
-    const claudeEnvironment = {
+    const claudeEnvironment = ClaudeKeepWarm.keepWarmClaudeEnvironment({
       API_TIMEOUT_MS: "3600000",
       ...(yield* makeClaudeEnvironment(config, baseEnvironment)),
-    };
+    });
     const path = yield* Path.Path;
     const random = yield* SecureRandom.SecureRandom;
     const binaryPath = yield* resolveClaudeSdkExecutablePath(

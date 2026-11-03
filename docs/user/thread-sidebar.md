@@ -278,6 +278,16 @@ the snooze. Enable **Snooze until limits reset** in thread behavior settings to
 snooze limit stops by default. Providers without a reset time offer manual
 retry and the normal snooze choices.
 
+If your Claude traffic goes through a CLIProxyAPI usage limit source whose quota
+router holds requests for nearly exhausted accounts, a held turn shows **Stalled
+to keep cache warm**: the proxy sends one request about every hour so the
+conversation's prompt cache survives until the 5-hour limit resets. **Back to
+normal** sends the held request now and stops holding this conversation until
+the reset. **Compact** stops the turn, compacts, and continues, so the smaller
+conversation can move to an account with quota. **Snooze until reset** hides the
+thread while the stall continues. **Pause until reset** stops the turn as a
+usage limit, so the reset choices above apply.
+
 On web and desktop, use **Agents** to follow work delegated to subagents.
 On mobile, open a subagent from its conversation card or **Agents**. On iOS
 layouts with an inspector, its thread opens beside the parent. Maximize it to

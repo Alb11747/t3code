@@ -43,6 +43,7 @@ import {
 } from "./baseSchemas.ts";
 import { AuthMcpClientAccess } from "./auth.ts";
 import { ChatAttachment } from "./chatAttachment.ts";
+import { ClaudeKeepWarmHold } from "./claudeKeepWarm.ts";
 import { ThreadGuestShare } from "./guestShare.ts";
 import { ThreadContextNote, ThreadContextNoteUpdate } from "./threadContextNote.ts";
 import { StoredThreadTags, ThreadTag } from "./threadTags.ts";
@@ -1748,6 +1749,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     ...OrchestrationV2TurnItemBaseFields,
     type: Schema.Literal("system_notice"),
     message: Schema.String,
+    keepWarm: Schema.optionalKey(ClaudeKeepWarmHold),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2589,6 +2591,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     ...OrchestrationV2TurnItemJsonBaseFields,
     type: Schema.Literal("system_notice"),
     message: Schema.String,
+    keepWarm: Schema.optionalKey(ClaudeKeepWarmHold),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
