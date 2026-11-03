@@ -211,7 +211,11 @@ import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { buildPullRequestReferenceContext } from "../pullRequest/pullRequestDetail.logic";
-import { getComposerPromptInjectionState, getComposerReasoningStep } from "./composerProviderState";
+import {
+  getComposerFastModeToggle,
+  getComposerPromptInjectionState,
+  getComposerReasoningStep,
+} from "./composerProviderState";
 import { readPromptUltrathink } from "./TraitsPicker";
 import {
   type ResumeCompaction,
@@ -311,6 +315,7 @@ export interface ChatComposerHandle {
   ) => boolean;
   openModelPicker: () => void;
   stepReasoningEffort: (direction: 1 | -1) => void;
+  toggleFastMode: () => void;
   toggleModelPicker: () => void;
   openControl: (command: KeybindingCommand) => void;
   isModelPickerOpen: () => boolean;
@@ -2925,6 +2930,28 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             expandedCursorAfterReplace: change.cursor,
           });
         }
+      },
+      toggleFastMode: () => {
+        if (noProviderAvailable || pendingUserInputs.length > 0 || isEditingQueuedMessage) {
+          return;
+        }
+        const modelOptions = getComposerFastModeToggle({
+          provider: selectedProvider,
+          instanceId: selectedInstanceId,
+          model: selectedModel,
+          models: selectedProviderModels,
+          modelOptions: composerModelOptions?.[selectedInstanceId],
+          reportedModelSelection,
+          planModeEnabled: settings.planModeEnabled,
+        });
+        if (!modelOptions) return;
+        useComposerDraftStore
+          .getState()
+          .setProviderModelOptions(composerDraftTarget, selectedProvider, modelOptions, {
+            instanceId: selectedInstanceId,
+            model: selectedModel,
+            persistSticky: true,
+          });
       },
       toggleModelPicker: () => {
         if (isComposerModelPickerOpen) {

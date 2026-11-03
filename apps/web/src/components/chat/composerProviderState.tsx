@@ -18,6 +18,7 @@ import {
 import type { DraftId } from "../../composerDraftStore";
 import { getProviderModelCapabilities } from "../../providerModels";
 import {
+  getFastModeTraitToggle,
   getReasoningTraitStep,
   type PromptUltrathink,
   type TraitsSelectionInput,
@@ -194,6 +195,25 @@ export function getComposerReasoningStep(input: {
     cursor: Math.max(0, cursor + step.prompt.length - prompt.length),
     modelOptions: step.modelOptions,
   };
+}
+
+export function getComposerFastModeToggle(input: {
+  provider: ProviderDriverKind;
+  instanceId: ProviderInstanceId;
+  model: string;
+  models: ReadonlyArray<ServerProviderModel>;
+  modelOptions: ReadonlyArray<ProviderOptionSelection> | null | undefined;
+  reportedModelSelection?: ModelSelection | null | undefined;
+  planModeEnabled: boolean;
+}): ReadonlyArray<ProviderOptionSelection> | null {
+  const { selections } = resolveComposerOptionSelections(
+    input.models,
+    input.model,
+    input.provider,
+    input.modelOptions,
+    input.planModeEnabled,
+  );
+  return getFastModeTraitToggle({ ...input, modelOptions: selections });
 }
 
 /**

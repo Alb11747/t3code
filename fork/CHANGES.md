@@ -9,6 +9,8 @@ the sync script deletes the line of a change whose upstream PR merged. Closing
 an issue alone does not revert a patch. See `fork/README.md` for how to add or drop
 an entry.
 
+- `feat(web): shortcuts for effort steps and fast mode`: binds Increase/Decrease Effort to `mod+alt+e`/`mod+alt+shift+e` and adds a Toggle Fast Mode command on `mod+alt+f`, which flips a model's fast mode or moves Codex between the Normal and Fast service tiers without opening the picker. Existing configs get the new defaults unless they already bind those commands. Web and desktop; mobile keeps its own hardware-key commands. Fork-only. Issue: none linked. PR: none yet
+
 - `fix(claude): show the assigned account's gateway quota reset`: quota-router usage-limit responses pause the thread until the reset reported by its assigned account, overriding retained reset times from earlier account observations; unknown resets remain unknown. Applies to web, desktop and mobile without model-name rules in the adapter. Issue: none linked. PR: none yet
 
 - `feat(claude): retry prefix-binding failures with dropped thinking`: web, desktop and mobile offer an explicit recovery action for preserved-thinking prefix mismatches. The shared `run.retry` API binds it to the failed attempt, resumes the same native conversation without replaying the original prompt, and sends `drop_block` plus its beta only for that retry. Saved history, thinking signatures and files stay intact; ordinary turns keep their existing policy. Uses native Claude Code request controls, with no proxy dependency. Fork-only. Issue: none linked. PR: none yet

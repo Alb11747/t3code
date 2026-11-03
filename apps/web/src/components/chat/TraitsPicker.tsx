@@ -279,6 +279,53 @@ export function getReasoningTraitStep(input: {
   return change?.modelOptions ? { prompt: change.prompt, modelOptions: change.modelOptions } : null;
 }
 
+/** Claude-style `fastMode` flips; Codex's service tier moves between Normal and Fast. */
+export function getFastModeTraitToggle(input: {
+  provider: ProviderDriverKind;
+  instanceId: ProviderInstanceId;
+  model: string;
+  models: ReadonlyArray<ServerProviderModel>;
+  modelOptions: ProviderOptions | undefined;
+  reportedModelSelection?: ModelSelection | null | undefined;
+  planModeEnabled: boolean;
+}): ProviderOptions | null {
+  const selected = getSelectedTraits(
+    input.provider,
+    input.models,
+    input.model,
+    "none",
+    input.modelOptions,
+    true,
+    input.planModeEnabled,
+  );
+  if (selected.modelIsUnavailable) return null;
+  const fastMode = selected.fastModeDescriptor;
+  if (fastMode) {
+    return (
+      buildProviderOptionSelectionsFromDescriptors(
+        replaceDescriptorCurrentValue(
+          selected.descriptors,
+          fastMode.id,
+          fastMode.currentValue !== true,
+        ),
+      ) ?? null
+    );
+  }
+  const tier =
+    input.provider === "codex"
+      ? selected.selectDescriptors.find((descriptor) => descriptor.id === "serviceTier")
+      : undefined;
+  const fastTier = tier?.options.find(({ label }) => label === "Fast");
+  if (!tier || !fastTier) return null;
+  const current = getDescriptorStringValue(
+    tier,
+    { instanceId: input.instanceId, model: input.model, options: input.modelOptions ?? [] },
+    input.reportedModelSelection,
+  );
+  const next = current === "default" ? fastTier.id : "default";
+  return getTraitSelectChange(selected, tier, "", next)?.modelOptions ?? null;
+}
+
 export interface TraitsMenuContentProps {
   provider: ProviderDriverKind;
   instanceId?: ProviderInstanceId;

@@ -24,6 +24,9 @@ export function composerShortcutCommands(
     "composer.decreaseEffort": ({ event }) => {
       if (!event.repeat) composerRef.current?.stepReasoningEffort(-1);
     },
+    "composer.toggleFastMode": ({ event }) => {
+      if (!event.repeat) composerRef.current?.toggleFastMode();
+    },
     "composer.host": openControl(composerRef, "composer.host"),
     "composer.effort": openControl(composerRef, "composer.effort"),
     "composer.mode": openControl(composerRef, "composer.mode"),

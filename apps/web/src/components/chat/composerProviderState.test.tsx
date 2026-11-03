@@ -7,6 +7,7 @@ import {
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import {
+  getComposerFastModeToggle,
   getComposerProviderState,
   getComposerReasoningStep,
   withImplicitFastModeDefault,
@@ -245,6 +246,61 @@ describe("readPromptUltrathink", () => {
     expect(readPromptUltrathink("Ultrathink: Fix the bug")).toBe("prefix");
     expect(readPromptUltrathink("ultrathink about the bug")).toBe("body");
     expect(readPromptUltrathink("Ultrathink: ultrathink harder")).toBe("body");
+  });
+});
+
+describe("getComposerFastModeToggle", () => {
+  function toggle(
+    provider: string,
+    descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+    modelOptions?: ReadonlyArray<ProviderOptionSelection>,
+  ) {
+    return getComposerFastModeToggle({
+      provider: ProviderDriverKind.make(provider),
+      instanceId: ProviderInstanceId.make(provider),
+      model: MODEL,
+      models: modelWith(descriptors),
+      modelOptions,
+      planModeEnabled: true,
+    });
+  }
+
+  it("flips fastMode, treating a provider-default true as off", () => {
+    const descriptors = [
+      selectDescriptor("effort", [{ id: "high", label: "High", isDefault: true }]),
+      booleanDescriptor("fastMode", true),
+    ];
+    expect(toggle("claudeAgent", descriptors)).toStrictEqual(
+      selections(["effort", "high"], ["fastMode", true]),
+    );
+    expect(toggle("claudeAgent", descriptors, selections(["fastMode", true]))).toStrictEqual(
+      selections(["effort", "high"], ["fastMode", false]),
+    );
+  });
+
+  it("moves the Codex service tier between Normal and Fast", () => {
+    const tiers = [
+      selectDescriptor("serviceTier", [
+        { id: "default", label: "Normal", isDefault: true },
+        { id: "priority", label: "Fast" },
+        { id: "ultra", label: "Ultrafast" },
+      ]),
+    ];
+    for (const [from, to] of [
+      ["default", "priority"],
+      ["priority", "default"],
+      ["ultra", "default"],
+    ]) {
+      expect(toggle("codex", tiers, selections(["serviceTier", from!]))).toStrictEqual(
+        selections(["serviceTier", to!]),
+      );
+    }
+  });
+
+  it("does nothing for a model without a speed option", () => {
+    expect(
+      toggle("codex", [selectDescriptor("reasoningEffort", [{ id: "high", label: "High" }])]),
+    ).toBeNull();
   });
 });
 

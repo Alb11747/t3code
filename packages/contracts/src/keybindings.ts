@@ -95,6 +95,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "composer.effort",
   "composer.increaseEffort",
   "composer.decreaseEffort",
+  "composer.toggleFastMode",
   "composer.mode",
   "composer.workspace",
   "composer.previousWorktree",

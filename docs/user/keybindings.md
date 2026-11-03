@@ -30,10 +30,11 @@ workspace, and `mod+shift+g` for the Git branch. The workspace menu includes the
 current checkout, a new worktree, and the previous worktree when available.
 Use `mod+shift+l` to reuse the previous worktree directly.
 
-To change effort one step without opening the picker, bind
-**Composer: Increase Effort** and **Composer: Decrease Effort** in Keybindings.
-Both are unbound by default. Increase wraps from the highest level to the
-lowest, and decrease wraps from the lowest level to the highest.
+To change effort one step without opening the picker, use `mod+alt+e` to
+increase it and `mod+alt+shift+e` to decrease it. Increase wraps from the
+highest level to the lowest, and decrease wraps from the lowest level to the
+highest. `mod+alt+f` turns fast mode on or off for models that have it; for
+Codex it switches between the Normal and Fast service tiers.
 
 In the model picker, press Left in an empty search field or Shift+Tab to reach
 the provider list. Use Up/Down to move and Enter to choose. Right returns to
