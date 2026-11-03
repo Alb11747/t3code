@@ -178,7 +178,6 @@ import { GuestPendingMessages } from "./chat/GuestShareControls";
 import { useDeviceState } from "~/state/device";
 import { BranchToolbar, type BranchToolbarHandle } from "./BranchToolbar";
 import { ComposerContextPermissions } from "./ComposerContextPermissions";
-import { resolveCompatibleRuntimeMode } from "./chat/runtimeModeConfig";
 import { makeWorkspaceFileDropHandlers } from "./chat/workspaceFileDrop";
 import { isEditableFocused } from "../lib/editableFocus";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
@@ -1879,9 +1878,6 @@ export default function ChatView(props: ChatViewProps) {
     });
   };
   const scheduleComposerFocusStable = useStableCallback(scheduleComposerFocus);
-  const openComposerPermissionsStable = useStableCallback(() =>
-    composerRef.current?.openControl("composer.mode"),
-  );
   const insertArtifactTemplate = (template: CodexArtifactTemplate) => {
     const composer = composerRef.current;
     if (!composer) return;
@@ -3437,6 +3433,7 @@ export default function ChatView(props: ChatViewProps) {
             <ThreadFind onClose={focusComposerStable} />
             {isWorkspaceFileDragActive ? <WorkspaceFileDropOverlay /> : null}
             <ChatBannerLane
+              environmentId={activeThread.environmentId}
               providerStatus={visibleProviderStatus}
               providerStatusBannerKey={providerStatusBannerKey}
               setDismissedProviderStatusBannerKey={setDismissedProviderStatusBannerKey}
@@ -3863,13 +3860,12 @@ export default function ChatView(props: ChatViewProps) {
                                   : {
                                       trailing: (
                                         <ComposerContextPermissions
-                                          runtimeMode={
-                                            resolveCompatibleRuntimeMode(
-                                              runtimeMode,
-                                              activeProviderStatus?.supportedRuntimeModes,
-                                            ).mode
+                                          environmentId={environmentId}
+                                          runtimeMode={runtimeMode}
+                                          supportedRuntimeModes={
+                                            activeProviderStatus?.supportedRuntimeModes
                                           }
-                                          onOpen={openComposerPermissionsStable}
+                                          onRuntimeModeChange={handleRuntimeModeChangeStable}
                                         />
                                       ),
                                     })}
