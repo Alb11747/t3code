@@ -31,6 +31,7 @@ import type { Query as ClaudeQuery, SDKMessage } from "@anthropic-ai/claude-agen
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { toolOutputImages } from "@t3tools/shared/toolOutput";
 import {
   ChatAttachmentId,
   type ChatAttachment,
@@ -5003,11 +5004,19 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               {
                 type: "tool_result",
                 tool_use_id: id,
-                content: "Weather result",
+                content: [
+                  { type: "text", text: "Weather result" },
+                  {
+                    type: "image",
+                    source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" },
+                  },
+                ],
                 is_error: isError,
               },
             ],
           },
+          tool_use_result:
+            title === undefined ? { screenshot: { mimeType: "image/png" } } : undefined,
         }),
       );
       yield* Queue.offer(
@@ -5040,6 +5049,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.deepEqual(item.input, { city: "Berlin" });
       }
       assert.equal(new Set(items.map((item) => item.id)).size, 1);
+      assert.deepEqual(toolOutputImages(items.at(-1)?.output), [
+        { mimeType: "image/png", data: "iVBORw0KGgo=" },
+      ]);
     }).pipe(
       Effect.scoped,
       Effect.provide(
