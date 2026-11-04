@@ -2562,7 +2562,7 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
     }),
   );
 
-  it.effect("settles a restart-cancelled child whose continuation declines to start", () =>
+  it.effect("settles declined child restarts and preserves maintenance continuations", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const now = yield* DateTime.now;
@@ -2662,6 +2662,84 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
           (run) => run.id,
         ),
         [stoppedChild.childRunId],
+      );
+
+      const maintenanceChild = yield* seedRestartCancelledChild({
+        parentThreadId: threadId,
+        projectId,
+        parentRunId: runId,
+        rootNodeId,
+        name: "restart-maintenance-child",
+        completionWake: "always",
+        continuationPending: true,
+        now,
+      });
+      const interruptRequest = afterStop.turnItems.find(
+        (item) => item.type === "run_interrupt_request",
+      )!;
+      yield* (yield* EventSink.EventSinkV2).write({
+        events: [
+          {
+            id: EventId.make("event:restart-maintenance-parent:interrupt-request"),
+            type: "turn-item.updated",
+            threadId,
+            runId,
+            occurredAt: now,
+            payload: { ...interruptRequest, preserveDelegatedTasks: true },
+          },
+        ],
+      });
+      yield* continueRestartedRun({
+        threadId: maintenanceChild.childThreadId,
+        sourceRunId: maintenanceChild.childRunId,
+      }).pipe(Effect.provide(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true })));
+      const continued = yield* orchestrator.getThreadProjection(maintenanceChild.childThreadId);
+      assert.isTrue(
+        continued.runs.some(
+          (run) => run.restartContinuationOfRunId === maintenanceChild.childRunId,
+        ),
+      );
+
+      const stoppedCohortChild = yield* seedRestartCancelledChild({
+        parentThreadId: threadId,
+        projectId,
+        parentRunId: runId,
+        rootNodeId,
+        name: "restart-stopped-maintenance-child",
+        completionWake: "always",
+        continuationPending: true,
+        now,
+      });
+      const parent = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+        (run) => run.id === runId,
+      )!;
+      yield* (yield* EventSink.EventSinkV2).write({
+        events: [
+          {
+            id: EventId.make("event:restart-maintenance-parent:later-stop"),
+            type: "run.updated",
+            threadId,
+            runId,
+            occurredAt: now,
+            payload: {
+              ...parent,
+              delegatedCompletion: {
+                ...parent.delegatedCompletion!,
+                disposition: "stopped",
+              },
+            },
+          },
+        ],
+      });
+      yield* continueRestartedRun({
+        threadId: stoppedCohortChild.childThreadId,
+        sourceRunId: stoppedCohortChild.childRunId,
+      }).pipe(Effect.provide(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true })));
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(stoppedCohortChild.childThreadId)).runs.map(
+          (run) => run.id,
+        ),
+        [stoppedCohortChild.childRunId],
       );
     }),
   );

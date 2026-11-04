@@ -10802,6 +10802,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     >;
     readonly stoppedProviderThreadId: OrchestrationV2ProviderThread["id"] | null;
     readonly throughRunOrdinal: number;
+    readonly preserveDelegatedTasks: boolean;
     readonly now: DateTime.Utc;
   }) {
     const emitEvent = emit(input.events, input.command);
@@ -10851,6 +10852,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     })) {
       const itemRunOrdinal = item.runId === null ? undefined : runOrdinals.get(item.runId);
       if (itemRunOrdinal !== undefined && itemRunOrdinal > input.throughRunOrdinal) continue;
+      if (input.preserveDelegatedTasks && item.type === "subagent" && item.origin === "app_owned")
+        continue;
       const providerThreadId = item.providerThreadId ?? null;
       if (
         providerThreadId !== null &&
@@ -10976,7 +10979,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
   });
 
-  const runInterruptReason = Effect.fnUntraced(function* (
+  const runInterruptRequest = Effect.fnUntraced(function* (
     command: Extract<
       OrchestrationV2ServerCommand,
       { readonly type: "run.interrupt" | "thread.background-work.settle" }
@@ -10991,14 +10994,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const pending = (yield* Ref.get(events))
       .flatMap((event) => (event.type === "turn-item.updated" ? [event.payload] : []))
       .findLast(isRequest);
-    if (pending !== undefined) return pending.message;
+    if (pending !== undefined) return pending;
     const { turnItems } = yield* projectionStore
       .getThreadRecords(command.threadId, ["turnItems"], {
         turnItemTypes: ["run_interrupt_request"],
         turnItemRunIds: [runId],
       })
       .pipe(mapDispatchError(command));
-    return turnItems.find(isRequest)?.message;
+    return turnItems.findLast(isRequest);
   });
 
   // A successful Stop may have no terminal event to ingest: the session or
@@ -11157,7 +11160,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           reason:
             (input.command.type === "thread.background-work.settle"
               ? input.command.reason
-              : undefined) ?? (yield* runInterruptReason(input.command, input.events, run.id)),
+              : undefined) ??
+            (yield* runInterruptRequest(input.command, input.events, run.id))?.message,
           completedAt: input.now,
         }),
       });
@@ -11602,6 +11606,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection,
         stoppedProviderThreadId: command.providerThreadId,
         throughRunOrdinal: stoppedRun.ordinal,
+        preserveDelegatedTasks:
+          stoppedRun.delegatedCompletion?.disposition !== "stopped" &&
+          stoppedRun.delegatedCompletion?.disposition !== "disposed" &&
+          (yield* runInterruptRequest(command, events, stoppedRun.id))?.preserveDelegatedTasks ===
+            true,
         now,
       });
     },
@@ -11843,10 +11852,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       updatedAt: now,
       type: "run_interrupt_request",
       message: command.reason ?? RunExecutionService.USER_STOP_REASON,
+      ...(command.preserveDelegatedTasks === true ? { preserveDelegatedTasks: true } : {}),
     };
 
     const otherProviderInterrupts: Array<PendingOrchestrationEffectV2> = [];
-    if (hasBackgroundWork || command.holdQueue === true) {
+    if (
+      command.preserveDelegatedTasks !== true &&
+      (hasBackgroundWork || command.holdQueue === true)
+    ) {
       const runOrdinals = new Map(
         projection.runs.map((candidate) => [candidate.id, candidate.ordinal]),
       );
@@ -12040,7 +12053,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           });
         }
       }
-      yield* stopRemainingWork();
+      if (command.preserveDelegatedTasks !== true) yield* stopRemainingWork();
       yield* Ref.update(effects, (existing) => [...existing, ...otherProviderInterrupts]);
       return {
         effectTypes: ["provider-turn.start", "provider-turn.restart"],
@@ -12081,7 +12094,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         occurredAt: now,
         payload: interruptRequestItem,
       });
-      yield* stopRemainingWork();
+      if (command.preserveDelegatedTasks !== true) yield* stopRemainingWork();
       yield* settleInterruptedRun({ command, projection, providerTurn, events, effects, now });
       yield* settleBackgroundWork({
         command,
@@ -12089,6 +12102,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection,
         stoppedProviderThreadId: providerThread.id,
         throughRunOrdinal: run.ordinal,
+        preserveDelegatedTasks: command.preserveDelegatedTasks === true,
         now,
       });
       yield* Ref.update(effects, (existing) => [...existing, ...otherProviderInterrupts]);
@@ -12120,7 +12134,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       occurredAt: now,
       payload: interruptRequestItem,
     });
-    yield* stopRemainingWork();
+    if (command.preserveDelegatedTasks !== true) yield* stopRemainingWork();
     yield* Ref.update(effects, (existing) => [
       ...existing,
       {
@@ -13839,7 +13853,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "run.interrupt":
         cancelUnsettledEffects = yield* dispatchRunInterrupt(command, events, effects);
-        if (command.holdQueue === true) {
+        if (command.holdQueue === true && command.preserveDelegatedTasks !== true) {
           // Stop must still commit when a child can't be read, so a failed repair's
           // partial events are dropped.
           const repairEvents = yield* Ref.make(yield* Ref.get(events));

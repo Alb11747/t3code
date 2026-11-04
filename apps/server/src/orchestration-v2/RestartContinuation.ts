@@ -278,14 +278,27 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         task !== undefined && task.result === null && isOrchestrationV2WorkActive(task.status)
           ? task.runId
           : null;
-      if (
-        parentRunId !== null &&
-        (yield* threads.getThreadRecords(lineage.parentThreadId, ["turnItems"], {
-          turnItemTypes: ["run_interrupt_request"],
-          turnItemRunIds: [parentRunId],
-        })).turnItems.length > 0
-      )
-        return;
+      if (parentRunId !== null) {
+        const parent = yield* threads.getThreadRecords(
+          lineage.parentThreadId,
+          ["runs", "turnItems"],
+          {
+            runIds: [parentRunId],
+            turnItemTypes: ["run_interrupt_request"],
+            turnItemRunIds: [parentRunId],
+          },
+        );
+        const disposition = parent.runs[0]?.delegatedCompletion?.disposition;
+        if (
+          task?.completionDelivery?.state === "disposed" ||
+          disposition === "stopped" ||
+          disposition === "disposed" ||
+          parent.turnItems.some(
+            (item) => item.type === "run_interrupt_request" && item.preserveDelegatedTasks !== true,
+          )
+        )
+          return;
+      }
     }
     const sourceMessage = sourceRecords.messages.find(
       (message) => message.id === source.userMessageId,

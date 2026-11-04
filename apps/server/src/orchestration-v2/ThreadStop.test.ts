@@ -40,6 +40,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import { verifyKeepWarmCompaction } from "./ThreadStop.keepWarm.fork.testkit.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const instanceId = ProviderInstanceId.make("codex");
@@ -160,6 +161,16 @@ const threadState = (threadId: ThreadId) =>
         .map((link) => link.number),
     };
   });
+
+it.effect("keep-warm compaction preserves a running child and its completion delivery", () =>
+  Effect.gen(function* () {
+    const parentThreadId = ThreadId.make("thread:keep-warm-parent");
+    yield* createWatchingThread(parentThreadId, 1);
+    yield* send(parentThreadId, "work", "start_immediately");
+    const childThreadId = yield* delegate(parentThreadId, "keep working during compaction");
+    yield* verifyKeepWarmCompaction(parentThreadId, childThreadId);
+  }).pipe(Effect.provide(layerTest)),
+);
 
 it.effect.each([
   ["idle", "thread.stop"],

@@ -208,9 +208,9 @@ it.effect("runs keep-warm actions against the stalled turn", () => {
     yield* actions.run({ threadId: stalledThread, action: "compact" });
     assert.deepEqual(
       dispatched.map((command) => command.type),
-      ["run.interrupt", "message.dispatch", "message.dispatch"],
+      ["message.dispatch", "message.dispatch", "run.interrupt"],
     );
-    const [, compact, resume] = dispatched;
+    const [compact, resume] = dispatched;
     assert.deepInclude(compact, { text: "/compact" });
     assert.deepInclude(resume, {
       afterCompactionMessageId: MessageId.make("keep-warm-compact:run-1"),

@@ -1741,6 +1741,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     message: Schema.String,
     /** Set when the provider did not confirm the stop in time; clients then offer Force stop. */
     unresponsiveAt: Schema.optionalKey(Schema.DateTimeUtc),
+    preserveDelegatedTasks: Schema.optionalKey(Schema.Boolean),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2585,6 +2586,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     type: Schema.Literal("run_interrupt_request"),
     message: Schema.String,
     unresponsiveAt: Schema.optionalKey(Schema.DateTimeUtcFromString),
+    preserveDelegatedTasks: Schema.optionalKey(Schema.Boolean),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
@@ -3277,6 +3279,8 @@ export const OrchestrationV2Command = Schema.Union([
     runId: RunId,
     reason: Schema.optional(Schema.String),
     holdQueue: Schema.optional(Schema.Boolean),
+    /** Maintenance interruptions keep app-owned children and their completion deliveries alive. */
+    preserveDelegatedTasks: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     type: Schema.Literal("run.retry"),

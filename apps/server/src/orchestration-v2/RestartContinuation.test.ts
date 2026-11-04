@@ -1040,6 +1040,7 @@ it.effect.each([
       } as unknown as OrchestrationV2ThreadProjection;
       const parent = {
         thread: { id: parentThreadId },
+        runs: [{ ...cut.runs[0]!, id: parentRunId, threadId: parentThreadId }],
         subagents: [{ id: taskId, runId: parentRunId, origin: "app_owned", status, result }],
         turnItems: [{ id: "turn-item:stop", runId: parentRunId, type: "run_interrupt_request" }],
       };

@@ -40,15 +40,9 @@ export const make = Effect.gen(function* () {
         // reads the cache, and ends the stopped turn's hold. The held request never reached
         // Anthropic, so stopping loses no work. The small compacted context can move accounts.
         const compactId = `keep-warm-compact:${turn.runId}`;
+        // Queue maintenance before releasing the turn, so a child wake cannot win the gap.
         yield* Effect.forEach(
           [
-            {
-              type: "run.interrupt",
-              commandId: CommandId.make(`${compactId}:stop`),
-              threadId,
-              runId: turn.runId,
-              reason: "Stopped to compact and continue on an account with quota.",
-            },
             {
               type: "message.dispatch",
               commandId: CommandId.make(compactId),
@@ -71,6 +65,14 @@ export const make = Effect.gen(function* () {
               dispatchMode: { type: "queue_after_active" },
               createdBy: "user",
               creationSource: "server",
+            },
+            {
+              type: "run.interrupt",
+              commandId: CommandId.make(`${compactId}:stop`),
+              threadId,
+              runId: turn.runId,
+              preserveDelegatedTasks: true,
+              reason: "Stopped to compact and continue on an account with quota.",
             },
           ] as const,
           (command) => orchestrator.dispatch(command).pipe(Effect.mapError(failWith)),
