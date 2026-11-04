@@ -143,6 +143,8 @@ const PriorToolCall = Schema.Struct({
   result: Schema.Unknown,
   /** The harness reported the call failed, as Claude Code does for a cancelled tool. */
   isError: Schema.optional(Schema.Boolean),
+  /** Repository-relative file whose current contents supply this tool result. */
+  resultFile: Schema.optional(Schema.String),
 });
 
 /**
@@ -278,6 +280,7 @@ export const McpToolUseCase = Schema.Struct({
       Schema.Struct({ parentThreadId: Schema.String, digest: Schema.Array(Schema.String) }),
     ),
   }),
+  /** Empty to resume a top-level thread without side-chat context after its last tool result. */
   prompt: Schema.String,
   /** `prompt` arrives mid-turn as a Claude native steer, after the last prior tool result. */
   steer: Schema.optional(Schema.Literal("claude")),
@@ -885,6 +888,19 @@ export const buildMessages = (sample: Sample) => {
     else messages[messages.length - 1] = { role, content: [...last.content, ...blocks] };
   };
   const { role, context, delegateRole, priorTurns = [] } = testCase.setup;
+  const sideChat = testCase.setup.sideChat;
+  if (testCase.prompt === "" && (role !== "top" || sideChat !== undefined)) {
+    throw new Error(
+      `${testCase.id}: Empty-prompt replay requires a top-level thread without side-chat context.`,
+    );
+  }
+  const sideChatContext =
+    sideChat === undefined
+      ? undefined
+      : makeSideChatContext({
+          parentThreadId: ThreadId.make(sideChat.parentThreadId),
+          digest: sideChat.digest,
+        });
   const native = role === "native-subagent";
   const notes = [
     native
@@ -931,20 +947,12 @@ export const buildMessages = (sample: Sample) => {
     testCase.promptContext === undefined
       ? testCase.prompt
       : projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext });
-  const sideChat = testCase.setup.sideChat;
   const prompt =
-    sideChat === undefined
-      ? userText
-      : withInlineContext(
-          makeSideChatContext({
-            parentThreadId: ThreadId.make(sideChat.parentThreadId),
-            digest: sideChat.digest,
-          }),
-          userText,
-        );
+    sideChatContext === undefined ? userText : withInlineContext(sideChatContext, userText);
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
   const steered = testCase.steer === "claude" ? formatClaudeSteerText(prompt) : prompt;
-  push("user", text(role === "delegated-child" ? childPrompt() : steered));
+  if (testCase.prompt !== "")
+    push("user", text(role === "delegated-child" ? childPrompt() : steered));
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
   if (native && base.subagentContext) {
     push("user", reminder(`SubagentStart hook additional context: ${base.subagentContext}`));
@@ -2131,12 +2139,35 @@ const main = Effect.gen(function* () {
   const wanted = flags.case?.flatMap((ids) => ids.split(","));
   const codex = isCodex(flags.model);
   const harness = codex ? "codex" : "claude";
-  const selected = cases.filter(
+  const selectedCases = cases.filter(
     ({ id, setup }) =>
       (wanted === undefined || wanted.includes(id)) &&
       (setup.harness === undefined || setup.harness === harness),
   );
-  if (selected.length === 0) return yield* Effect.die(new Error("No case matches --case."));
+  if (selectedCases.length === 0) return yield* Effect.die(new Error("No case matches --case."));
+  const selected = yield* Effect.forEach(selectedCases, (testCase) =>
+    Effect.gen(function* () {
+      const priorTurns = yield* Effect.forEach(testCase.setup.priorTurns ?? [], (turn) =>
+        Effect.gen(function* () {
+          const toolCalls = yield* Effect.forEach(turn.toolCalls ?? [], (call) =>
+            call.resultFile === undefined
+              ? Effect.succeed(call)
+              : fs
+                  .readFileString(path.resolve(import.meta.dirname, "../..", call.resultFile))
+                  .pipe(Effect.map((result) => ({ ...call, result }))),
+          );
+          return { ...turn, toolCalls };
+        }),
+      );
+      return {
+        ...testCase,
+        setup: {
+          ...testCase.setup,
+          priorTurns,
+        },
+      };
+    }),
+  );
   // Trimmed captures without user data ship beside the cases. `--template` also takes a raw
   // CLIProxyAPI capture.
   const templatePath =
