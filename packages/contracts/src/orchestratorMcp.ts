@@ -183,6 +183,12 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
         "Default 'async'. 'wait' only if this turn needs the result. A question or approval ends the wait.",
     }),
   ),
+  notifyParent: Schema.optional(
+    Schema.Literals(["every_turn", "settled"]).annotate({
+      description:
+        "'settled': its finished turns wake you only once it has no live child tasks or background work; failures, questions and its messages still do. Default 'every_turn'. Omitted: inherits your own task's.",
+    }),
+  ),
   timeoutMs: Schema.optional(Schema.Finite).annotate({
     description:
       "Wait budget for mode=wait only. Defaults to 30 seconds and is capped at 45 seconds to return task handles before common MCP client timeouts. Elapsing it returns waitTimedOut=true on that call and does not cancel the child.",

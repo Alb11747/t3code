@@ -914,6 +914,14 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
 });
 export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChild.Type;
 
+/**
+ * When a delegated child's turn endings wake its parent. `settled` holds a completed
+ * turn while the child still has live work, as the first result always is.
+ */
+export const OrchestrationV2DelegatedTaskNotifyParent = Schema.Literals(["every_turn", "settled"]);
+export type OrchestrationV2DelegatedTaskNotifyParent =
+  typeof OrchestrationV2DelegatedTaskNotifyParent.Type;
+
 export const OrchestrationV2Subagent = Schema.Struct({
   id: NodeId,
   threadId: ThreadId,
@@ -932,6 +940,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
   model: Schema.NullOr(Schema.String),
   modelSelection: Schema.optional(ModelSelection),
   completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+  notifyParent: Schema.optional(OrchestrationV2DelegatedTaskNotifyParent),
   completionDelivery: Schema.optional(OrchestrationV2DelegatedCompletionTaskDelivery),
   status: Schema.Literals([
     "idle",
@@ -3418,6 +3427,8 @@ export const OrchestrationV2Command = Schema.Union([
     workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
     // Defaults to settled_only; fire-and-forget wakes require always.
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+    // Absent inherits the parent thread's own delegation policy.
+    notifyParent: Schema.optional(OrchestrationV2DelegatedTaskNotifyParent),
     createdAt: Schema.optional(Schema.DateTimeUtc),
   }),
   Schema.Struct({

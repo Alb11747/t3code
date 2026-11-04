@@ -1260,6 +1260,7 @@ const seedRestartCancelledChild = (input: {
   readonly rootNodeId: NodeId;
   readonly name: string;
   readonly completionWake: "always" | "settled_only";
+  readonly notifyParent?: "every_turn" | "settled";
   readonly continuationPending: boolean;
   readonly runStatus?: "cancelled" | "completed";
   readonly lostWork?: OrchestrationV2Run["restartCancelledBackgroundWork"];
@@ -1331,6 +1332,7 @@ const seedRestartCancelledChild = (input: {
             title: null,
             model: null,
             completionWake: input.completionWake,
+            ...(input.notifyParent === undefined ? {} : { notifyParent: input.notifyParent }),
             status: "running",
             result: null,
             startedAt: input.now,
@@ -1838,6 +1840,202 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
         }
         assert.equal(wake.delegatedCompletion?.parentRunId, parentRunId);
       }),
+    );
+
+    it.effect.each(["completed", "restart-interrupted"] as const)(
+      "releases a %s settled follow-up only as its outcome allows",
+      (variant) =>
+        Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const eventSink = yield* EventSink.EventSinkV2;
+          const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+          const now = yield* DateTime.now;
+          const parentThreadId = ThreadId.make(`thread:settled-parent-${variant}`);
+          const projectId = ProjectId.make(`project:settled-${variant}`);
+          const parentRunId = RunId.make(`run:settled-parent-${variant}`);
+          const rootNodeId = NodeId.make(`node:settled-parent-${variant}`);
+          yield* seedParentWithTerminalTask({
+            threadId: parentThreadId,
+            projectId,
+            runId: parentRunId,
+            rootNodeId,
+            taskId: NodeId.make(`node:settled-seed-${variant}`),
+            deliveryState: "acknowledged",
+            now,
+          });
+          const child = yield* seedRestartCancelledChild({
+            parentThreadId,
+            projectId,
+            parentRunId,
+            rootNodeId,
+            name: `settled-child-${variant}`,
+            completionWake: "always",
+            notifyParent: "settled",
+            continuationPending: false,
+            runStatus: "completed",
+            now,
+          });
+          yield* orchestrator.recoverDelegatedTasks;
+          let firstWake = yield* requests.take;
+          while (firstWake.threadId !== parentThreadId) firstWake = yield* requests.take;
+          yield* orchestrator.dispatch({
+            type: "delegated_task.completion-delivery.acknowledge",
+            commandId: CommandId.make(`command:settled-ack-${variant}`),
+            parentThreadId,
+            taskId: child.taskId,
+            observedByRunId: parentRunId,
+          });
+          const parentRun = (yield* orchestrator.getThreadProjection(parentThreadId)).runs.find(
+            (run) => run.id === parentRunId,
+          )!;
+          yield* eventSink.write({
+            commandId: reconcileCommandId(`settled-parent-finished-${variant}`),
+            events: [
+              {
+                id: EventId.make(`event:settled-parent-finished-${variant}`),
+                type: "run.updated",
+                threadId: parentThreadId,
+                runId: parentRunId,
+                occurredAt: now,
+                payload: { ...parentRun, status: "completed", completedAt: now },
+              },
+            ],
+          });
+
+          const wakeMessageId = MessageId.make(`message:settled-wake-${variant}`);
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            createdBy: "user",
+            creationSource: "web",
+            commandId: CommandId.make(`command:settled-wake-${variant}`),
+            threadId: child.childThreadId,
+            messageId: wakeMessageId,
+            text: "Start the player.",
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+          });
+          yield* orchestrator.resumeQueuedRuns;
+          const run = (yield* orchestrator.getThreadProjection(child.childThreadId)).runs.find(
+            (row) => row.userMessageId === wakeMessageId,
+          )!;
+          // The child's own delegation inherits the policy its parent chose for it.
+          yield* orchestrator.dispatch({
+            type: "delegated_task.request",
+            createdBy: "agent",
+            creationSource: "mcp",
+            commandId: CommandId.make(`command:settled-grandchild-${variant}`),
+            parentThreadId: child.childThreadId,
+            parentRunId: run.id,
+            parentNodeId: run.rootNodeId!,
+            task: "Play the event",
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+          });
+          const grandchild = (yield* orchestrator.getThreadProjection(child.childThreadId))
+            .subagents[0]!;
+          assert.equal(grandchild.notifyParent, "settled");
+
+          const started = (yield* orchestrator.getThreadProjection(child.childThreadId)).runs.find(
+            (row) => row.id === run.id,
+          )!;
+          yield* eventSink.write({
+            commandId: reconcileCommandId(`settled-turn-finished-${variant}`),
+            events: [
+              {
+                id: EventId.make(`event:settled-turn-result-${variant}`),
+                type: "message.updated",
+                threadId: child.childThreadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: {
+                  id: MessageId.make(`message:settled-turn-result-${variant}`),
+                  threadId: child.childThreadId,
+                  runId: run.id,
+                  nodeId: null,
+                  role: "assistant",
+                  text: "The player is running.",
+                  attachments: [],
+                  streaming: false,
+                  createdBy: "agent",
+                  creationSource: "server",
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              },
+              {
+                id: EventId.make(`event:settled-turn-finished-${variant}`),
+                type: "run.updated",
+                threadId: child.childThreadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: {
+                  ...started,
+                  status: "completed",
+                  completedAt: now,
+                  ...(variant === "restart-interrupted"
+                    ? {
+                        restartCancelledBackgroundWork: [
+                          { kind: "monitor" as const, label: "Player", awaited: true },
+                        ],
+                      }
+                    : {}),
+                },
+              },
+            ],
+          });
+          yield* orchestrator.recoverDelegatedTasks;
+          const held = (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+            (task) => task.id === run.delegatedTaskId,
+          )!;
+          assert.equal(held.notifyParent, "settled");
+          if (variant === "restart-interrupted") {
+            // Lost awaited work makes the turn interrupted, which must not wait for the grandchild.
+            assert.equal(held.status, "interrupted");
+            assert.equal(held.completionDelivery?.state, "claimed");
+            return;
+          }
+          assert.isNull(held.result);
+          assert.notEqual(held.completionDelivery?.state, "claimed");
+
+          yield* eventSink.write({
+            commandId: reconcileCommandId(`settled-grandchild-finished-${variant}`),
+            events: [
+              {
+                id: EventId.make(`event:settled-grandchild-finished-${variant}`),
+                type: "subagent.updated",
+                threadId: child.childThreadId,
+                nodeId: grandchild.id,
+                driver,
+                providerInstanceId: modelSelection.instanceId,
+                occurredAt: now,
+                payload: {
+                  ...grandchild,
+                  status: "completed",
+                  result: "Event cleared.",
+                  completionDelivery: { state: "delivered", observedByRunId: null },
+                  completedAt: now,
+                  updatedAt: now,
+                },
+              },
+            ],
+          });
+          yield* orchestrator.recoverDelegatedTasks;
+          const released = (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+            (task) => task.id === run.delegatedTaskId,
+          )!;
+          assert.equal(released.status, "completed");
+          assert.equal(released.result, "The player is running.");
+          assert.equal(released.completionDelivery?.state, "claimed");
+          let wake = yield* requests.take;
+          while (
+            wake.threadId !== parentThreadId ||
+            wake.delegatedCompletion?.messageId === firstWake.delegatedCompletion?.messageId
+          ) {
+            wake = yield* requests.take;
+          }
+          assert.equal(wake.delegatedCompletion?.parentRunId, parentRunId);
+        }),
     );
 
     const outcomes = [

@@ -8049,6 +8049,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     yield* Ref.update(effects, (existing) => [...existing, pendingEffect]);
   });
 
+  // A child's own delegations default to the policy its parent chose for it.
+  const inheritedNotifyParent = Effect.fnUntraced(function* (thread: OrchestrationV2AppThread) {
+    const parentThreadId = thread.lineage.parentThreadId;
+    if (
+      thread.lineage.relationshipToParent !== "subagent" ||
+      parentThreadId === null ||
+      thread.forkedFrom?.type !== "node"
+    )
+      return undefined;
+    const taskId = thread.forkedFrom.nodeId;
+    const { subagents } = yield* projectionStore
+      .getThreadRecords(parentThreadId, ["subagents"], { subagentIds: [taskId] })
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: parentThreadId, cause }),
+        ),
+      );
+    return subagents.find((task) => task.id === taskId)?.notifyParent;
+  });
+
   const dispatchDelegatedTaskRequest = Effect.fn("orchestrationV2.dispatch.delegatedTaskRequest")(
     function* (
       command: Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>,
@@ -8118,6 +8138,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const taskNodeId = idAllocator.derive.delegatedTaskNode({
         commandId: command.commandId,
       });
+      const notifyParent =
+        command.notifyParent ?? (yield* inheritedNotifyParent(parentProjection.thread));
       const childThreadId = idAllocator.derive.delegatedTaskThread({
         commandId: command.commandId,
       });
@@ -8166,6 +8188,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         title: command.title ?? null,
         model: command.modelSelection.model,
         ...(command.completionWake === undefined ? {} : { completionWake: command.completionWake }),
+        ...(notifyParent === undefined ? {} : { notifyParent }),
         status: "running",
         result: null,
         startedAt: now,
@@ -13368,12 +13391,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       "subagents",
       "contextTransfers",
     ]);
+    // A completed turn with live work left in the child is held until that work
+    // settles; the first result always is, and `settled` holds follow-ups too.
+    const originalTaskId = childControls.thread.forkedFrom.nodeId;
+    const heldUntilSettled = (task: OrchestrationV2Subagent) => {
+      const taskRun = childControls.runs
+        .filter((run) => run.delegatedTaskId === task.id)
+        .toSorted((a, b) => b.ordinal - a.ordinal)[0];
+      return (
+        progress.state !== "result_available" &&
+        (task.id === originalTaskId ||
+          (task.notifyParent === "settled" &&
+            taskRun !== undefined &&
+            runOutcome(taskRun) === "completed"))
+      );
+    };
     for (const task of parent.subagents) {
       if (
         task.origin !== "app_owned" ||
         task.childThreadId !== childThreadId ||
-        (task.id === childControls.thread.forkedFrom.nodeId &&
-          progress.state !== "result_available") ||
+        heldUntilSettled(task) ||
         (task.result !== null &&
           parent.contextTransfers.some(
             (transfer) =>

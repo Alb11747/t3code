@@ -271,6 +271,15 @@ on its `childThreadId`. After the original task completes, that follow-up runs a
 fresh task in the child thread; it does not reopen the completed task or change its
 published result.
 
+The original task's result always waits until the child has no live work (its own
+delegations, native subagents, background work). `notifyParent: "settled"` holds
+those follow-up tasks the same way when their turn completes; a failed or interrupted
+turn still wakes the parent at once, and the held tasks are delivered together once the
+child's work settles. Questions and the child's own `t3_thread_send` messages take
+separate paths and are never held. A task stores the policy, its follow-ups copy it, and a
+`delegate_task` that omits it inherits the calling child's own policy, so one setting at
+the root covers the tree. Linked-environment children ignore it.
+
 Delegation requires an active parent run owned by the MCP credential's
 provider session. The request becomes the V2 command
 `delegated_task.request`.

@@ -1527,7 +1527,13 @@ const make = Effect.gen(function* () {
     const taskWorkState =
       childRun?.delegatedTaskId === task.id
         ? isTerminalTaskStatus(taskStatusForRun(taskResultRun))
-          ? "result_available"
+          ? // A settled task's completed turn waits, like the first result, for the child's work.
+            task.notifyParent === "settled" &&
+            taskResultRun !== undefined &&
+            runOutcome(taskResultRun) === "completed" &&
+            progress.state !== "result_available"
+            ? "waiting_for_children"
+            : "result_available"
           : "working"
         : progress.state;
     const resultRunIds = [
@@ -1595,7 +1601,11 @@ const make = Effect.gen(function* () {
     const terminalStatus = terminalRun === undefined ? null : taskStatusForRun(terminalRun);
     const latestTerminalSummary = canExposeTaskRunResult(terminalRun)
       ? terminalRun.id === childRun?.id
-        ? derivedResult
+        ? // A turn held for live child work stays readable before the task has a result.
+          (derivedResult ??
+          (workState === "waiting_for_children"
+            ? subagentResultForRun(childProjection, terminalRun).text
+            : null))
         : subagentResultForRun(childProjection, terminalRun).text
       : null;
     const resultContextTransferId = resultTransfer?.id ?? null;
@@ -2455,6 +2465,7 @@ const make = Effect.gen(function* () {
           runtimeMode,
           interactionMode,
           ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+          ...(input.notifyParent === undefined ? {} : { notifyParent: input.notifyParent }),
           // Async delegations wake the parent on every child terminal; wait
           // delegations deliver through the blocking tool call, so a wake is
           // only needed if the parent settled first (timeout, disconnect).
