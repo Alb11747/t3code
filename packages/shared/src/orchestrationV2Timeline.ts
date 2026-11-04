@@ -79,7 +79,7 @@ export function createOrchestrationV2TurnItemVisibility(input: {
 }): (item: TimelineTurnItem) => boolean {
   const statuses = new Map<TimelineRun["id"], TimelineRun["status"]>();
   for (const run of input.runs) {
-    if (run.status === "rolled_back" || run.status === "cancelled")
+    if (run.status === "rolled_back" || run.status === "cancelled" || run.status === "queued")
       statuses.set(run.id, run.status);
     else statuses.delete(run.id);
   }

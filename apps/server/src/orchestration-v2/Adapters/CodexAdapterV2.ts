@@ -721,7 +721,6 @@ const decodeCodexTurnStartParamsWithCollaborationMode = Schema.decodeUnknownEffe
 const isProviderAdapterRuntimeRequestResponseError = Schema.is(
   ProviderAdapter.ProviderAdapterRuntimeRequestResponseError,
 );
-const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
 function codexRuntimeModeTurnDefaults(runtimeMode: RuntimeMode): {
   readonly approvalPolicy: CodexSchema.V2TurnStartParams__AskForApproval;

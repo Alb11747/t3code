@@ -5,11 +5,14 @@ import {
   MessageId,
   ProviderTurnId,
   RunId,
+  SecretProviderId,
   ThreadId,
   UsageLimitSourceId,
   type ClaudeKeepWarmHold,
   type OrchestrationV2ServerCommand,
+  type SettingsSecretValue,
 } from "@t3tools/contracts";
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
@@ -36,10 +39,14 @@ it("allows keep-warm holds without replacing an explicit stream idle timeout", (
   );
 });
 
-function fixture(control: { status: number; body: unknown }) {
+function fixture(
+  control: { status: number; body: unknown },
+  managementKey: SettingsSecretValue = "key",
+) {
   const requests: Array<{ method: string; path: string; body: unknown }> = [];
   const http = HttpClient.make((request) =>
     Effect.sync(() => {
+      assert.equal(request.headers.authorization, "Bearer key");
       const body =
         request.body._tag === "Uint8Array"
           ? JSON.parse(new TextDecoder().decode(request.body.body))
@@ -53,19 +60,23 @@ function fixture(control: { status: number; body: unknown }) {
       );
     }),
   );
-  const layer = ClaudeKeepWarm.layer.pipe(
+  const layer = Layer.effect(ClaudeKeepWarm.ClaudeKeepWarm, ClaudeKeepWarm.make).pipe(
     Layer.provide([
       ServerSettings.layerTest({
         usageLimitSources: {
           [UsageLimitSourceId.make("hub")]: {
             kind: "cliproxy",
             url: "https://hub.test",
-            managementKey: "key",
+            managementKey,
             enabled: true,
           },
         },
       }),
       Layer.succeed(HttpClient.HttpClient, http),
+      Layer.succeed(SecretResolver.SecretResolver, {
+        read: (references) => Effect.succeed(references.map(() => "key")),
+        invalidate: () => Effect.void,
+      }),
       NodeCrypto.layer,
     ]),
   );
@@ -99,35 +110,38 @@ function fakeSession(session: string, index: number) {
 }
 
 it.effect("shows only keep-warm holds of the session, with one control read per interval", () => {
-  const { requests, layer } = fixture({
-    status: 200,
-    body: {
-      pins: [],
-      held: [
-        { session: "root", kind: "pin", release_at: "2026-11-03T13:00:00Z", window: "5h" },
-        { session: "root", release_at: "2026-11-03T13:00:00Z", window: "5h" },
-        {
-          session: "root",
-          kind: "keep_warm",
-          since: "2026-11-03T13:00:00Z",
-          release_at: "2026-11-03T14:30:00.123456789Z",
-          reset_at: "2026-11-03T15:00:00Z",
-        },
-        {
-          session: "root",
-          kind: "keep_warm",
-          release_at: "2026-11-03T13:59:00+00:00",
-          reset_at: "2026-11-03T15:00:00Z",
-        },
-        {
-          session: "other",
-          kind: "keep_warm",
-          release_at: "2026-11-03T13:10:00Z",
-          reset_at: "2026-11-03T15:00:00Z",
-        },
-      ],
+  const { requests, layer } = fixture(
+    {
+      status: 200,
+      body: {
+        pins: [],
+        held: [
+          { session: "root", kind: "pin", release_at: "2026-11-03T13:00:00Z", window: "5h" },
+          { session: "root", release_at: "2026-11-03T13:00:00Z", window: "5h" },
+          {
+            session: "root",
+            kind: "keep_warm",
+            since: "2026-11-03T13:00:00Z",
+            release_at: "2026-11-03T14:30:00.123456789Z",
+            reset_at: "2026-11-03T15:00:00Z",
+          },
+          {
+            session: "root",
+            kind: "keep_warm",
+            release_at: "2026-11-03T13:59:00+00:00",
+            reset_at: "2026-11-03T15:00:00Z",
+          },
+          {
+            session: "other",
+            kind: "keep_warm",
+            release_at: "2026-11-03T13:10:00Z",
+            reset_at: "2026-11-03T15:00:00Z",
+          },
+        ],
+      },
     },
-  });
+    { provider: SecretProviderId.make("vault"), reference: "cliproxy#key" },
+  );
   return Effect.gen(function* () {
     const keepWarm = yield* ClaudeKeepWarm.ClaudeKeepWarm;
     const first = fakeSession("root", 1);
@@ -143,6 +157,11 @@ it.effect("shows only keep-warm holds of the session, with one control read per 
     );
     const found = yield* keepWarm.find(ThreadId.make(`${threadId}-1`));
     assert.deepEqual(found?.turn.hold, hold);
+    yield* keepWarm.release("root", hold.resetAt);
+    assert.deepInclude(requests.at(-1), {
+      method: "POST",
+      path: "/v0/management/control/keep-warm",
+    });
   }).pipe(Effect.provide(layer), Effect.scoped);
 });
 

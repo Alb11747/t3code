@@ -1,10 +1,13 @@
 import {
   UsageLimitSourceError,
+  UsageLimitSourceConfig,
+  settingsSecretLiteral,
   type ClaudeKeepWarmHold,
   type ProviderTurnId,
   type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -12,6 +15,8 @@ import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 
 import * as Settings from "../serverSettings.ts";
+import * as SecretResolverLayer from "../secrets/SecretResolver.ts";
+import { resolveSettingsSecrets } from "../secrets/settingsSecretValue.ts";
 import { makeCliproxyApi } from "../usage/cliproxyApi.ts";
 
 // A CLIProxyAPI quota router holds requests marked with this header when their Claude account is
@@ -70,9 +75,11 @@ export class ClaudeKeepWarm extends Context.Reference<{
   }),
 }) {}
 
-const make = Effect.gen(function* () {
+/** @public */
+export const make = Effect.gen(function* () {
   const api = yield* makeCliproxyApi;
   const settingsService = yield* Settings.ServerSettingsService;
+  const secrets = yield* SecretResolver.SecretResolver;
   const sessions = new Set<ClaudeKeepWarmSession>();
   let cached: {
     readonly at: number;
@@ -81,11 +88,20 @@ const make = Effect.gen(function* () {
 
   const sources = settingsService.getSettings.pipe(
     Effect.map((settings) =>
-      Object.values(settings.usageLimitSources).filter(
-        (config) => config.enabled && config.managementKey.length > 0,
-      ),
+      Object.values(settings.usageLimitSources).filter((config) => config.enabled),
     ),
     Effect.orElseSucceed(() => []),
+    Effect.flatMap((configs) =>
+      Effect.forEach(configs, (config) =>
+        resolveSettingsSecrets(secrets, UsageLimitSourceConfig, config).pipe(
+          Effect.map((resolved) => ({
+            url: resolved.url,
+            managementKey: settingsSecretLiteral(resolved.managementKey),
+          })),
+        ),
+      ),
+    ),
+    Effect.map((configs) => configs.filter((config) => config.managementKey.length > 0)),
   );
 
   // Shared by every running Claude turn: at most one control read per source per interval.
@@ -175,7 +191,9 @@ const make = Effect.gen(function* () {
   return { register, find, release } satisfies (typeof ClaudeKeepWarm)["Service"];
 });
 
-export const layer = Layer.effect(ClaudeKeepWarm, make);
+export const layer = Layer.effect(ClaudeKeepWarm, make).pipe(
+  Layer.provide(SecretResolverLayer.layer),
+);
 
 function formatWait(ms: number): string {
   const totalMinutes = Math.max(1, Math.ceil(ms / 60_000));

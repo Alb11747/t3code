@@ -115,7 +115,10 @@ describe.each([
   });
 
   it.each([
-    ...ordinaryStatuses.map((status) => ({ status, hidden: [] })),
+    ...ordinaryStatuses.map((status) => ({
+      status,
+      hidden: status === "queued" ? ["queued"] : [],
+    })),
     { status: "cancelled", hidden: ["queued"] },
     {
       status: "rolled_back",
@@ -242,8 +245,12 @@ describe("indexed timeline visibility", () => {
     ...ordinaryStatuses.flatMap(
       (status) =>
         [
-          { statuses: ["rolled_back", status], visible: true, ordinaryVisible: true },
-          { statuses: ["cancelled", status], visible: true, ordinaryVisible: true },
+          {
+            statuses: ["rolled_back", status],
+            visible: status !== "queued",
+            ordinaryVisible: true,
+          },
+          { statuses: ["cancelled", status], visible: status !== "queued", ordinaryVisible: true },
           { statuses: [status, "rolled_back"], visible: false, ordinaryVisible: false },
           { statuses: [status, "cancelled"], visible: false, ordinaryVisible: true },
         ] as const,

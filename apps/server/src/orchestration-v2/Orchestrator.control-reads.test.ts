@@ -43,7 +43,7 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
+import * as ProjectionReplay from "./testkit/ProjectionReplay.ts";
 import * as EventStore from "./EventStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
@@ -76,7 +76,7 @@ it.effect(
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const projections = yield* ProjectionStore.ProjectionStoreV2;
-      const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+      const maintenance = yield* ProjectionReplay.ProjectionReplay;
       const outbox = yield* EffectOutbox.EffectOutboxV2;
       const threadId = ThreadId.make("thread:context-note");
       yield* orchestrator.dispatch({
@@ -163,7 +163,7 @@ it.effect(
       Effect.provide(
         Layer.merge(
           layerTest,
-          ProjectionMaintenance.layer.pipe(
+          ProjectionReplay.layer.pipe(
             Layer.provide(
               Layer.mergeAll(EventStore.layer, ProjectionStore.layer).pipe(
                 Layer.provideMerge(layerDatabase),

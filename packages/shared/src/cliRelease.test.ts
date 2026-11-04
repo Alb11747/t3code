@@ -1,5 +1,6 @@
 import {
   cliReleaseDownloadBaseUrl,
+  cliReleaseAssetUrl,
   cliReleaseChannelOf,
   cliReleaseIndexPageUrl,
 } from "./cliRelease.ts";
@@ -20,6 +21,12 @@ describe("cliRelease", () => {
       );
       expect(cliReleaseDownloadBaseUrl(version, "https://mirror.example/t3/")).toBe(
         `https://mirror.example/t3/v${version}`,
+      );
+      expect(cliReleaseAssetUrl(version, "SHA256SUMS")).toBe(
+        `https://github.com/Alb11747/t3code/releases/download/v${version}/SHA256SUMS`,
+      );
+      expect(cliReleaseAssetUrl(version, "SHA256SUMS", "https://mirror.example/t3?token=abc")).toBe(
+        `https://mirror.example/t3/v${version}/SHA256SUMS?token=abc`,
       );
     },
   );

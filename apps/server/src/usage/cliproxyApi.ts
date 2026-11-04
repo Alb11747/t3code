@@ -461,9 +461,7 @@ export const makeCliproxyApi = Effect.gen(function* () {
     );
   });
   // Quota-router control: `held` also lists stall pins (kind "pin", or no kind from older routers).
-  const keepWarmHolds = Effect.fn("CliproxyApi.keepWarmHolds")(function* (
-    config: UsageLimitSourceConfig,
-  ) {
+  const keepWarmHolds = Effect.fn("CliproxyApi.keepWarmHolds")(function* (config: CliproxyHub) {
     const control = yield* management(config, "control").pipe(Effect.flatMap(decodeControl));
     // Go writes RFC3339 with nanoseconds or offsets; clients compare ISO strings.
     const iso = (value: string | null | undefined) =>
@@ -479,7 +477,7 @@ export const makeCliproxyApi = Effect.gen(function* () {
 
   // Forwards the sessions' held requests now and stops holding them until `expiresAt`.
   const releaseKeepWarm = Effect.fn("CliproxyApi.releaseKeepWarm")(function* (
-    config: UsageLimitSourceConfig,
+    config: CliproxyHub,
     sessions: ReadonlyArray<string>,
     expiresAt: string,
   ) {

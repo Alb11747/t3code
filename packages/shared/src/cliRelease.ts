@@ -71,12 +71,9 @@ export function releaseAssetUrl(baseUrl: string, ...segments: ReadonlyArray<stri
 }
 
 /** A file of release `version`, from `baseUrl` laid out as GitHub's release downloads. */
-export function cliReleaseAssetUrl(
-  version: string,
-  fileName: string,
-  baseUrl: string | undefined = CLI_RELEASE_DEFAULT_BASE_URL,
-): string {
-  return releaseAssetUrl(baseUrl?.trim() || CLI_RELEASE_DEFAULT_BASE_URL, `v${version}`, fileName);
+export function cliReleaseAssetUrl(version: string, fileName: string, baseUrl?: string): string {
+  const defaultBaseUrl = `https://github.com/${cliReleaseRepository(version)}/releases/download`;
+  return releaseAssetUrl(baseUrl?.trim() || defaultBaseUrl, `v${version}`, fileName);
 }
 
 export function parseChecksums(text: string): ReadonlyMap<string, string> {
