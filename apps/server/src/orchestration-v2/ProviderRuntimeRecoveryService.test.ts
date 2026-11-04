@@ -502,6 +502,11 @@ it.effect("recovery closes a secret card's form but leaves a link card open", ()
 });
 
 it.effect.each(["queued", "preparing"] as const)("recovers $0 work after restart", (status) => {
+  const boundaryOffer = {
+    id: "offer-before-restart",
+    targetRunId: RunId.make("run_before_restart"),
+    providerTurnId: ProviderTurnId.make("turn_before_restart"),
+  };
   const threadId = ThreadId.make("thread_queued_restart");
   const runId = RunId.make("run_queued_restart");
   const attemptId = RunAttemptId.make("attempt_queued_restart");
@@ -520,6 +525,7 @@ it.effect.each(["queued", "preparing"] as const)("recovers $0 work after restart
         status,
         queuePosition: 1,
         providerInstanceId: ProviderInstanceId.make("codex"),
+        ...(status === "queued" ? { boundaryOffer } : {}),
         ...(status === "preparing"
           ? {
               workspacePreparation: {
@@ -603,6 +609,10 @@ it.effect.each(["queued", "preparing"] as const)("recovers $0 work after restart
     } else {
       assert.equal(runEvent?.type === "run.updated" ? runEvent.payload.queuePosition : null, 1);
       assert.equal(runEvent?.type === "run.updated" ? runEvent.payload.queueHeld : false, true);
+      assert.deepEqual(
+        runEvent?.type === "run.updated" ? runEvent.payload.boundaryOffer : undefined,
+        boundaryOffer,
+      );
       assert.isUndefined(attemptEvent);
       assert.isUndefined(nodeEvent);
     }

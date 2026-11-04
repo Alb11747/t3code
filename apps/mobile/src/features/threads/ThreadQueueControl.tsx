@@ -5,6 +5,10 @@ import {
   queuedRunEditBlockedReason,
 } from "@t3tools/client-runtime/queued-run-edit";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import {
+  QUEUED_DELIVERY_LABELS,
+  UNCONFIRMED_DELIVERY_HINT,
+} from "@t3tools/client-runtime/state/thread-workflows";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import type { ChatAttachment, EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
@@ -141,6 +145,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   const queuedRuns = workflow?.queuedRuns ?? [];
   const hasPending = queuedRuns.some((entry) => entry.delivery === "pending");
   const hasQueued = queuedRuns.some((entry) => entry.delivery !== "pending");
+  const hasUnconfirmed = queuedRuns.some((entry) => entry.delivery === "unconfirmed");
   const heading = hasPending
     ? hasQueued
       ? "Pending and queued messages"
@@ -161,9 +166,9 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
     if (busyRef.current) return;
     const index = queuedRuns.findIndex(({ run }) => run.id === runId);
     if (index < 0) return;
+    const entry = queuedRuns[index]!;
     if (action === "edit") {
-      if (editBlockedReason !== null) return;
-      const entry = queuedRuns[index]!;
+      if (editBlockedReason !== null || entry.editBlockedReason !== null) return;
       void Haptics.selectionAsync();
       beginQueuedRunEdit(
         threadKey,
@@ -194,7 +199,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
       await cancel(buildCancelQueuedRunCommand({ ...target, runId }));
     } else if (workflow?.canSendNow) {
       await resume({ ...target, input: { threadId: target.threadId, runId } });
-    } else if (workflow?.activeRun && workflow.canPromoteToSteer) {
+    } else if (workflow?.activeRun && workflow.canPromoteToSteer && !entry.automatic) {
       await promote({
         ...target,
         input: {
@@ -227,6 +232,9 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           Queued messages wait for a later turn.
         </Text>
       ) : null}
+      {hasUnconfirmed ? (
+        <Text className="py-3 text-sm text-foreground-muted">{UNCONFIRMED_DELIVERY_HINT}</Text>
+      ) : null}
       {workflow?.isHeld && queuedRuns.length > 0 ? (
         <View className="gap-2 py-3">
           <Text className="text-sm text-foreground-muted">Queue paused</Text>
@@ -250,13 +258,15 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
       {queuedRuns.length === 0 ? (
         <Text className="pt-6 text-center text-sm text-foreground-muted">No messages waiting.</Text>
       ) : null}
-      {queuedRuns.map(({ run, text, attachments, context, message, delivery }, index) => {
-        const deliveryLabel = delivery === "pending" ? "Pending" : "Queued";
+      {queuedRuns.map((entry, index) => {
+        const { run, text, attachments, context, message, delivery } = entry;
+        const deliveryLabel = QUEUED_DELIVERY_LABELS[delivery];
         const controls = resolveThreadQueueRowControls({
           busy: busyRunId !== null,
-          canPromoteToSteer: workflow?.canPromoteToSteer ?? false,
+          // An automatic delivery cannot steer; it can only start a turn of its own.
+          canPromoteToSteer: (workflow?.canPromoteToSteer ?? false) && !entry.automatic,
           canSendNow: workflow?.canSendNow ?? false,
-          editBlocked: editBlockedReason !== null,
+          editBlocked: editBlockedReason !== null || entry.editBlockedReason !== null,
           isEditing: editing?.runId === run.id,
           isGuestMessage: context?.guest !== undefined,
           text,
@@ -319,7 +329,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                       attachments={attachments}
                     />
                     <View className="min-w-0 flex-1 gap-0.5">
-                      {hasPending && hasQueued ? (
+                      {(hasPending && hasQueued) || delivery === "unconfirmed" ? (
                         <Text className="text-xs text-foreground-muted">{deliveryLabel}</Text>
                       ) : null}
                       {message ? (

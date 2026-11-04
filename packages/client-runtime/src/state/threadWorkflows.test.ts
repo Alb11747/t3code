@@ -127,6 +127,30 @@ describe("thread workflows", () => {
         },
         { id: "later", status: "queued", userMessageId: "message-later", ordinal: 3 },
         {
+          id: "offered",
+          status: "queued",
+          userMessageId: "message-offered",
+          ordinal: 4,
+          boundaryOffer: {
+            id: "offer",
+            targetRunId: "active",
+            providerTurnId: "provider-turn-active",
+          },
+        },
+        // An automatic notification stays hidden until offered; then only the user can settle it.
+        { id: "notice", status: "queued", userMessageId: "message-notice", ordinal: 5 },
+        {
+          id: "offered-notice",
+          status: "queued",
+          userMessageId: "message-offered-notice",
+          ordinal: 6,
+          boundaryOffer: {
+            id: "offer-notice",
+            targetRunId: "active",
+            providerTurnId: "provider-turn-active",
+          },
+        },
+        {
           id: "first",
           status: "queued",
           userMessageId: "message-first",
@@ -149,6 +173,9 @@ describe("thread workflows", () => {
           ],
         },
         { id: "message-later", text: "Later", atToolBoundary: true },
+        { id: "message-offered", text: "Offered", atToolBoundary: true },
+        { id: "message-notice", text: "Notice", notification: {} },
+        { id: "message-offered-notice", text: "Offered notice", notification: {} },
       ],
       providerTurns: [
         {
@@ -173,12 +200,24 @@ describe("thread workflows", () => {
       ],
     } as never);
 
-    expect(state.queuedRuns.map(({ run, text, delivery }) => [run.id, text, delivery])).toEqual([
-      ["first", "First", "queued"],
-      ["later", "Later", "pending"],
+    expect(
+      state.queuedRuns.map(({ run, text, delivery, automatic, editBlockedReason }) => [
+        run.id,
+        text,
+        delivery,
+        automatic,
+        editBlockedReason !== null,
+      ]),
+    ).toEqual([
+      ["first", "First", "queued", false, false],
+      ["later", "Later", "pending", false, false],
+      ["offered", "Offered", "unconfirmed", false, true],
+      ["offered-notice", "Offered notice", "unconfirmed", true, true],
     ]);
     expect(state.queuedRuns.map(({ attachments }) => attachments.map(({ id }) => id))).toEqual([
       ["attachment-first"],
+      [],
+      [],
       [],
     ]);
     expect(state.activeRun?.id).toBe("active");

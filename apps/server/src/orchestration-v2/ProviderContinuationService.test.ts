@@ -7,6 +7,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
+  ProviderTurnId,
   RunId,
   ThreadId,
   type OrchestrationV2ThreadProjection,
@@ -24,6 +25,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderContinuationService from "./ProviderContinuationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 
@@ -635,11 +637,53 @@ describe("ProviderContinuationService", () => {
       const claim = yield* requests.claimAgentMessages!({
         threadId,
         runId: RunId.make("run-boundary-active"),
+        providerTurnId: ProviderTurnId.make("provider-turn-boundary-active"),
       }).pipe(Effect.forkScoped);
       yield* Deferred.await(blocked);
       yield* Fiber.interrupt(claim);
       assert.isTrue(Exit.hasInterrupts(yield* Fiber.await(claim)));
       assert.deepEqual(committed, [runs[0]!.id]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a receipt that fails to commit fails the transcript mirror so Claude retries it", () =>
+    Effect.gen(function* () {
+      const commandIds: Array<string> = [];
+      const layerThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
+        dispatch: (command) =>
+          Effect.gen(function* () {
+            commandIds.push(command.commandId);
+            if (commandIds.length === 1) {
+              return yield* new Orchestrator.OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+                cause: "database is locked",
+              });
+            }
+            return { sequence: 1, storedEvents: [] };
+          }),
+      });
+      const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests.pipe(
+        Effect.provide(
+          ProviderContinuationService.layer.pipe(
+            Layer.provideMerge(
+              Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, layerThreads),
+            ),
+          ),
+        ),
+      );
+      const receipt = requests.acknowledgeAgentMessages!({
+        threadId,
+        runId: RunId.make("run-boundary-active"),
+        offers: [{ id: "offer-1", queuedRunId: RunId.make("run-boundary-1"), text: "update" }],
+      });
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(receipt)));
+      yield* receipt;
+      // The retry reuses the receipt's command id, so a commit that did land replays.
+      assert.deepEqual(commandIds, [
+        "tool-boundary-receipt:offer-1",
+        "tool-boundary-receipt:offer-1",
+      ]);
     }).pipe(Effect.scoped),
   );
 });

@@ -704,6 +704,18 @@ export const OrchestrationV2Run = Schema.Struct({
   status: OrchestrationV2RunStatus,
   queuePosition: Schema.optional(Schema.NullOr(PositiveInt)),
   queueHeld: Schema.optional(Schema.Boolean),
+  /**
+   * The provider was handed this queued message at a tool boundary of `providerTurnId` and has not
+   * confirmed saving it. Only that receipt joins it to the turn; nothing starts it automatically,
+   * since the agent may already have acted on it.
+   */
+  boundaryOffer: Schema.optional(
+    Schema.Struct({
+      id: TrimmedNonEmptyString,
+      targetRunId: RunId,
+      providerTurnId: ProviderTurnId,
+    }),
+  ),
   /** This message cannot run until the referenced compaction succeeds. */
   afterCompactionMessageId: Schema.optional(MessageId),
   requestedAt: Schema.DateTimeUtc,
@@ -3296,8 +3308,19 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     queuedRunId: RunId,
     targetRunId: RunId,
-    // The provider is delivering the message itself at a tool boundary: no steer effect.
-    atToolBoundary: Schema.optional(Schema.Literal(true)),
+    // The provider delivers the message itself at a tool boundary, with no steer effect: "offer"
+    // records the hand-off to exactly `providerTurnId`, and "receipt" joins the run once the
+    // provider has saved that offer.
+    boundaryOffer: Schema.optional(
+      Schema.Union([
+        Schema.Struct({
+          id: TrimmedNonEmptyString,
+          step: Schema.Literal("offer"),
+          providerTurnId: ProviderTurnId,
+        }),
+        Schema.Struct({ id: TrimmedNonEmptyString, step: Schema.Literal("receipt") }),
+      ]),
+    ),
     // An agent's promotion waits for the running turn's next tool boundary when
     // steering would cancel its tools.
     requestedBy: Schema.optional(Schema.Literal("agent")),

@@ -22,9 +22,27 @@ const MERGE_BACK_BLOCKING_RUN_STATUSES = new Set<Run["status"]>([
   "running",
 ]);
 
+export type QueuedThreadRunDelivery = "pending" | "queued" | "unconfirmed";
+
+export const QUEUED_DELIVERY_LABELS: Record<QueuedThreadRunDelivery, string> = {
+  pending: "Pending",
+  queued: "Queued",
+  unconfirmed: "Unconfirmed",
+};
+
+/** Shown while an offered message awaits the provider's receipt; it is never resent on its own. */
+export const UNCONFIRMED_DELIVERY_HINT =
+  "Unconfirmed messages may already have reached the agent, so they are never resent on their own. Send one again or remove it; automatic updates can be sent again once the turn ends.";
+
+const UNCONFIRMED_EDIT_BLOCKED_REASON = "This message may already have reached the agent";
+
 export interface QueuedThreadRun {
   readonly run: Run;
-  readonly delivery: "pending" | "queued";
+  readonly delivery: QueuedThreadRunDelivery;
+  /** A notification or delegated completion: it starts a turn of its own, never steers one. */
+  readonly automatic: boolean;
+  /** Why this row cannot be edited, or null. */
+  readonly editBlockedReason: string | null;
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly messageId: Message["id"];
@@ -125,8 +143,11 @@ export function getUserQueuedThreadRuns(
       )
       .map((message) => message.id),
   );
+  // An offered automatic delivery stays visible: only the user can send it again or remove it.
   return projection.runs.filter(
-    (run) => run.status === "queued" && !automaticCompletionMessageIds.has(run.userMessageId),
+    (run) =>
+      run.status === "queued" &&
+      (run.boundaryOffer !== undefined || !automaticCompletionMessageIds.has(run.userMessageId)),
   );
 }
 
@@ -154,7 +175,14 @@ export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQu
     const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
     return {
       run,
-      delivery: message?.atToolBoundary === true ? "pending" : "queued",
+      delivery:
+        run.boundaryOffer !== undefined
+          ? "unconfirmed"
+          : message?.atToolBoundary === true
+            ? "pending"
+            : "queued",
+      automatic: message?.notification !== undefined || message?.delegatedCompletion !== undefined,
+      editBlockedReason: run.boundaryOffer === undefined ? null : UNCONFIRMED_EDIT_BLOCKED_REASON,
       // A queued guest message shows the guest's words; the agent still gets the attributed text.
       text: message?.context?.guest?.text ?? message?.text ?? "Queued message",
       attachments: message?.attachments ?? [],

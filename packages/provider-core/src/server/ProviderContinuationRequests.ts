@@ -3,6 +3,7 @@ import {
   MessageId,
   ProviderDriverKind,
   ProviderThreadId,
+  ProviderTurnId,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -33,14 +34,35 @@ export interface ProviderContinuationRequest {
   readonly clearIfCurrent?: () => Effect.Effect<void>;
 }
 
+/** A queued update handed to the provider; its text carries `id` so the saved copy is unique. */
+export interface AgentMessageOffer {
+  readonly id: string;
+  readonly queuedRunId: RunId;
+  readonly text: string;
+}
+
 /**
- * Moves the thread's queued agent updates into `runId`, the provider's running turn, and returns
- * their text for the provider to deliver at a tool boundary. Updates it does not return stay queued.
+ * Offers the thread's queued agent updates to `runId`, the provider's running turn, for delivery at
+ * a tool boundary. Offered updates stay queued, and nothing starts them, until a receipt joins them.
  */
 export type ClaimAgentMessages = (input: {
   readonly threadId: ThreadId;
   readonly runId: RunId;
-}) => Effect.Effect<ReadonlyArray<string>>;
+  /** The hook's own provider turn; an offer to any other turn of the run is refused. */
+  readonly providerTurnId: ProviderTurnId;
+}) => Effect.Effect<ReadonlyArray<AgentMessageOffer>>;
+
+/** Joins offers to their turn once the provider has saved them in its own session history. */
+export type AcknowledgeAgentMessages = (input: {
+  readonly threadId: ThreadId;
+  readonly runId: RunId;
+  readonly offers: ReadonlyArray<AgentMessageOffer>;
+}) => Effect.Effect<void>;
+
+interface AgentMessageDelivery {
+  readonly claim: ClaimAgentMessages;
+  readonly acknowledge: AcknowledgeAgentMessages;
+}
 
 /**
  * The default reference drops requests, keeping adapter construction dependency-free in tests; the
@@ -50,8 +72,9 @@ export class ProviderContinuationRequests extends Context.Reference<{
   readonly offer: (request: ProviderContinuationRequest) => Effect.Effect<void>;
   readonly take: Effect.Effect<ProviderContinuationRequest>;
   readonly claimAgentMessages?: ClaimAgentMessages;
-  /** Installs the worker's claim; until then nothing is claimed and updates start the next turn. */
-  readonly serveAgentMessages?: (claim: ClaimAgentMessages) => Effect.Effect<void>;
+  readonly acknowledgeAgentMessages?: AcknowledgeAgentMessages;
+  /** Installs the worker's delivery; until then nothing is claimed and updates start the next turn. */
+  readonly serveAgentMessages?: (delivery: AgentMessageDelivery) => Effect.Effect<void>;
 }>("@t3tools/provider-core/server/ProviderContinuationRequests", {
   defaultValue: () => ({ offer: () => Effect.void, take: Effect.never }),
 }) {}
@@ -60,7 +83,10 @@ export const layer = Layer.effect(
   ProviderContinuationRequests,
   Effect.gen(function* () {
     const queue = yield* Queue.unbounded<ProviderContinuationRequest>();
-    const claim = yield* Ref.make<ClaimAgentMessages>(() => Effect.succeed([]));
+    const delivery = yield* Ref.make<AgentMessageDelivery>({
+      claim: () => Effect.succeed([]),
+      acknowledge: () => Effect.void,
+    });
     return {
       offer: Effect.fn("ProviderContinuationRequests.offer")(function (
         request: ProviderContinuationRequest,
@@ -69,10 +95,13 @@ export const layer = Layer.effect(
       }),
       take: Queue.take(queue),
       claimAgentMessages: Effect.fn("ProviderContinuationRequests.claimAgentMessages")((input) =>
-        Ref.get(claim).pipe(Effect.flatMap((serve) => serve(input))),
+        Ref.get(delivery).pipe(Effect.flatMap((served) => served.claim(input))),
       ),
-      serveAgentMessages: Effect.fn("ProviderContinuationRequests.serveAgentMessages")((serve) =>
-        Ref.set(claim, serve),
+      acknowledgeAgentMessages: Effect.fn("ProviderContinuationRequests.acknowledgeAgentMessages")(
+        (input) => Ref.get(delivery).pipe(Effect.flatMap((served) => served.acknowledge(input))),
+      ),
+      serveAgentMessages: Effect.fn("ProviderContinuationRequests.serveAgentMessages")((served) =>
+        Ref.set(delivery, served),
       ),
     };
   }),

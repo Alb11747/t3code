@@ -65,6 +65,7 @@ import {
   type Settings as ClaudeSdkSettings,
   type SpawnOptions as ClaudeSpawnOptions,
   type SpawnedProcess as ClaudeSpawnedProcess,
+  type SessionStore as ClaudeSessionStore,
   type SDKAssistantMessage,
   type SDKAPIRetryMessage,
   type SDKMessage,
@@ -2007,6 +2008,22 @@ function makeProviderThread(input: {
     updatedAt: input.now,
   };
 }
+
+/** Claude's saved record of hook context: `content` holds each hook's additionalContext. */
+const decodeHookContextReceipt = (entry: unknown): ReadonlyArray<string> | undefined =>
+  Option.getOrUndefined(
+    Option.map(decodeHookContextEntry(entry), (decoded) => decoded.attachment.content),
+  );
+
+const decodeHookContextEntry = Schema.decodeUnknownOption(
+  Schema.Struct({
+    type: Schema.Literal("attachment"),
+    attachment: Schema.Struct({
+      type: Schema.Literal("hook_additional_context"),
+      content: Schema.Array(Schema.String),
+    }),
+  }),
+);
 
 const decodeClaudeTranscriptLine = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ type: Schema.String })),
@@ -4701,6 +4718,7 @@ export interface ClaudeAdapterV2Options {
       request: ProviderContinuationRequests.ProviderContinuationRequest,
     ) => Effect.Effect<void>;
     readonly claimAgentMessages?: ProviderContinuationRequests.ClaimAgentMessages;
+    readonly acknowledgeAgentMessages?: ProviderContinuationRequests.AcknowledgeAgentMessages;
   };
 }
 
@@ -11046,9 +11064,28 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               promptSuggestions: false,
             };
           }
-          // Native steering cancels tools; root tool-batch and Stop hooks take queued
-          // agent text as context instead. Claims commit before SDK delivery, so a crash
-          // can lose claimed text. Cancellation stops the claim before its next promotion.
+          // Native steering cancels tools, so root tool-batch and Stop hooks offer queued agent
+          // text as context. Claude mirrors a transcript entry only after saving it locally, so
+          // this query's echo of the exact context is the receipt: saved history, not proof the
+          // model followed it. Without one the update stays queued and visibly unconfirmed.
+          const offersByContext = new Map<
+            string,
+            {
+              readonly runId: RunId;
+              readonly offers: ReadonlyArray<ProviderContinuationRequests.AgentMessageOffer>;
+            }
+          >();
+          let liveQuery: ClaudeAgentSdkQuerySession | undefined;
+          const ownsTurn = Effect.fn("ClaudeAdapterV2.hookOwnsTurn")(function* (
+            providerTurnId: OrchestrationV2ProviderTurn["id"],
+          ) {
+            return (
+              liveQuery !== undefined &&
+              (yield* Ref.get(queryContext))?.query === liveQuery &&
+              (yield* Ref.get(activeTurn))?.providerTurnId === providerTurnId &&
+              !(yield* Ref.get(interruptedTurns)).has(providerTurnId)
+            );
+          });
           const takeAgentMessages: HookCallback = (hookInput, _toolUseId, { signal }) =>
             runPromise(
               Effect.gen(function* () {
@@ -11061,26 +11098,64 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   // Text claimed into a compaction would be summarized away; it starts the next turn.
                   isCompactionCommandMessage({ role: "user", ...context.input.message }) ||
                   context.nativeThreadId !== hookInput.session_id ||
-                  (yield* Ref.get(interruptedTurns)).has(context.providerTurnId) ||
+                  !(yield* ownsTurn(context.providerTurnId)) ||
                   continuationRequests.claimAgentMessages === undefined
                 ) {
                   return {};
                 }
-                const texts = yield* continuationRequests.claimAgentMessages({
+                const offers = yield* continuationRequests.claimAgentMessages({
                   threadId: context.input.threadId,
                   runId: context.input.runId,
+                  providerTurnId: context.providerTurnId,
                 });
-                return texts.length === 0
-                  ? {}
-                  : {
-                      hookSpecificOutput: {
-                        hookEventName: hookInput.hook_event_name,
-                        additionalContext: `New messages:\n${texts.join("\n\n")}`,
-                      },
-                    };
+                // A turn replaced during the claim never receives these; they stay unconfirmed.
+                if (offers.length === 0 || !(yield* ownsTurn(context.providerTurnId))) return {};
+                const additionalContext = `New messages:\n${offers.map((offer) => offer.text).join("\n\n")}`;
+                offersByContext.set(additionalContext, { runId: context.input.runId, offers });
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: hookInput.hook_event_name,
+                    additionalContext,
+                  },
+                };
               }),
               { signal },
             );
+          const receiptStore: ClaudeSessionStore = {
+            append: (key, entries) =>
+              runPromise(
+                Effect.forEach(
+                  // Subagent transcripts and other sessions never hold this query's offers.
+                  key.subpath === undefined && key.sessionId === nativeThreadId ? entries : [],
+                  (entry) =>
+                    Effect.forEach(
+                      decodeHookContextReceipt(entry) ?? [],
+                      (text) => {
+                        const pending = offersByContext.get(text);
+                        if (
+                          pending === undefined ||
+                          continuationRequests.acknowledgeAgentMessages === undefined
+                        ) {
+                          return Effect.void;
+                        }
+                        // Forget the offer only once acknowledged, so Claude's retry of a failed
+                        // append can still settle it.
+                        return continuationRequests
+                          .acknowledgeAgentMessages({
+                            threadId: turnInput.threadId,
+                            runId: pending.runId,
+                            offers: pending.offers,
+                          })
+                          .pipe(Effect.andThen(Effect.sync(() => offersByContext.delete(text))));
+                      },
+                      { discard: true },
+                    ),
+                  { discard: true },
+                ),
+              ),
+            // Resume reads Claude's own transcript; this store only observes new entries.
+            load: () => Promise.resolve(null),
+          };
           const resolvedTurnCwd = yield* fileSystem
             .realPath(turnInput.runtimePolicy.cwd ?? ".")
             .pipe(Effect.orElseSucceed(() => turnInput.runtimePolicy.cwd));
@@ -11090,6 +11165,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               providerSessionId: input.providerSessionId,
               options: {
                 ...queryOptions,
+                // Eager mirroring acknowledges a delivered update while its turn still runs.
+                sessionStore: receiptStore,
+                sessionStoreFlush: "eager",
                 hooks: {
                   ...queryOptions.hooks,
                   PostToolBatch: [{ hooks: [takeAgentMessages] }],
@@ -11109,6 +11187,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   : Effect.void,
               ),
             );
+          liveQuery = querySession;
           // Mark only successful opens; retries must not resume sessions that failed to create.
           yield* Ref.update(openedNativeThreads, (current) => {
             if (current.has(nativeThreadId)) {

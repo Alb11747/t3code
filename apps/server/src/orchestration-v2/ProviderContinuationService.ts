@@ -236,10 +236,10 @@ export const layer = Layer.effectDiscard(
       },
     );
 
-    // The provider waits on this from a tool-batch or stop hook, so each update
-    // joins its running turn before the hook returns the text. An update that
-    // cannot join (edited away, held by Stop, turn no longer running) stays
-    // queued for the next turn.
+    // The provider waits on this from a tool-batch or stop hook. Each offer is recorded on its
+    // queued run before the hook returns its text, and the run joins the turn only when the
+    // provider's saved history echoes that offer back. An update that cannot be offered (edited
+    // away, held by Stop, already offered, turn no longer running) stays queued for the next turn.
     const claimAgentMessages: ProviderContinuationRequests.ClaimAgentMessages = Effect.fn(
       "ProviderContinuationService.claimAgentMessages",
     )(
@@ -252,44 +252,45 @@ export const layer = Layer.effectDiscard(
         const { messages } = yield* threads.getThreadRecords(input.threadId, ["messages"], {
           messageIds: runs.map((run) => run.userMessageId),
         });
-        const queued = { runs, messages };
-        const texts: Array<string> = [];
-        for (const run of queuedRunsInDeliveryOrder(queued)) {
-          const message = queued.messages.find((row) => row.id === run.userMessageId);
-          if (message?.atToolBoundary !== true) continue;
-          const result = yield* threads
+        const offers: Array<ProviderContinuationRequests.AgentMessageOffer> = [];
+        for (const run of queuedRunsInDeliveryOrder({ runs, messages })) {
+          const message = messages.find((row) => row.id === run.userMessageId);
+          if (message?.atToolBoundary !== true || run.boundaryOffer !== undefined) continue;
+          // Fresh per try: a refusal now must not be replayed at a later boundary.
+          const offerId = yield* ids.allocate.command({
+            fixtureName: "tool-boundary",
+            commandName: "offer",
+          });
+          const offered = yield* threads
             .dispatch({
               type: "queued-message.promote-to-steer",
-              // Fresh per try: a refusal now must not be replayed at a later boundary.
-              commandId: yield* ids.allocate.command({
-                fixtureName: "tool-boundary",
-                commandName: "promote",
-              }),
+              commandId: offerId,
               threadId: input.threadId,
               queuedRunId: run.id,
               targetRunId: input.runId,
-              atToolBoundary: true,
+              boundaryOffer: { id: offerId, step: "offer", providerTurnId: input.providerTurnId },
             })
             // A refusal leaves the update queued. An aborted hook interrupts this
-            // fiber instead, which must stop the loop before the next promotion.
+            // fiber instead, which must stop the loop before the next offer.
             .pipe(Effect.orElseSucceed(() => undefined));
-          // Deliver what the promotion committed, which may postdate the snapshot.
-          const joined = result?.storedEvents.find(
-            ({ event }) => event.type === "message.updated" && event.payload.id === message.id,
-          )?.event;
-          if (joined?.type === "message.updated") {
-            const promoted = joined.payload;
-            // An agent may promote a message the user queued, so each text names its own author.
-            const author = promoted.createdBy === "user" ? "the user" : "another agent";
-            texts.push(
-              `From ${author}:\n${projectComposerContextForProvider({
-                text: promoted.text,
-                records: promoted.context?.records ?? [],
-              })}`,
-            );
-          }
+          if (offered === undefined) continue;
+          // Offered text is immutable, so this read returns exactly what the offer committed.
+          const current = yield* threads.getThreadRecords(input.threadId, ["messages"], {
+            messageIds: [message.id],
+          });
+          const committed = current.messages.find((row) => row.id === message.id) ?? message;
+          // An agent may promote a message the user queued, so each text names its own author.
+          const author = committed.createdBy === "user" ? "the user" : "another agent";
+          offers.push({
+            id: offerId,
+            queuedRunId: run.id,
+            text: `From ${author} (delivery ${offerId}):\n${projectComposerContextForProvider({
+              text: committed.text,
+              records: committed.context?.records ?? [],
+            })}`,
+          });
         }
-        return texts;
+        return offers;
       },
       (effect, input) =>
         effect.pipe(
@@ -301,8 +302,38 @@ export const layer = Layer.effectDiscard(
           ),
         ),
     );
+
+    // Stable command ids make a retried receipt replay its first result. A stale receipt (offer
+    // cancelled, retried or already joined) commits nothing; any failure fails the transcript
+    // mirror call, which Claude retries.
+    const acknowledgeAgentMessages: ProviderContinuationRequests.AcknowledgeAgentMessages =
+      Effect.fn("ProviderContinuationService.acknowledgeAgentMessages")(function* (input) {
+        for (const offer of input.offers) {
+          yield* threads
+            .dispatch({
+              type: "queued-message.promote-to-steer",
+              commandId: CommandId.make(`tool-boundary-receipt:${offer.id}`),
+              threadId: input.threadId,
+              queuedRunId: offer.queuedRunId,
+              targetRunId: input.runId,
+              boundaryOffer: { id: offer.id, step: "receipt" },
+            })
+            .pipe(
+              Effect.tapError((cause) =>
+                Effect.logWarning(
+                  "orchestration-v2.provider-continuation.agent-message-receipt-failed",
+                  { threadId: input.threadId, offerId: offer.id, cause },
+                ),
+              ),
+              Effect.orDie,
+            );
+        }
+      });
     if (requests.serveAgentMessages !== undefined) {
-      yield* requests.serveAgentMessages(claimAgentMessages);
+      yield* requests.serveAgentMessages({
+        claim: claimAgentMessages,
+        acknowledge: acknowledgeAgentMessages,
+      });
     }
 
     yield* requests.take.pipe(

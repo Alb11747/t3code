@@ -1619,12 +1619,36 @@ it.effect("queues a plain send behind the stopped queue and releases its hold", 
   ),
 );
 
-const claimAtToolBoundary = Effect.fn("claimAtToolBoundary")(function* (
+const offerAtToolBoundary = Effect.fn("offerAtToolBoundary")(function* (
   threadId: ThreadId,
   runId: RunId,
 ) {
   const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
-  return yield* requests.claimAgentMessages!({ threadId, runId });
+  const projection = yield* (yield* Orchestrator.OrchestratorV2).getThreadProjection(threadId);
+  const attemptId = projection.runs.find((run) => run.id === runId)?.activeAttemptId;
+  // The hook's own turn: the run's latest provider turn.
+  const providerTurnId = projection.providerTurns.findLast(
+    (turn) => turn.runAttemptId === attemptId,
+  )!.id;
+  return yield* requests.claimAgentMessages!({ threadId, runId, providerTurnId });
+});
+
+/** Offered texts without their delivery ids. */
+const claimAtToolBoundary = (threadId: ThreadId, runId: RunId) =>
+  offerAtToolBoundary(threadId, runId).pipe(
+    Effect.map((offers) =>
+      offers.map((offer) => offer.text.replace(` (delivery ${offer.id})`, "")),
+    ),
+  );
+
+/** Claude saved the offers in its session history. */
+const receiveAtToolBoundary = Effect.fn("receiveAtToolBoundary")(function* (
+  threadId: ThreadId,
+  runId: RunId,
+  offers: ReadonlyArray<ProviderContinuationRequests.AgentMessageOffer>,
+) {
+  const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+  yield* requests.acknowledgeAgentMessages!({ threadId, runId, offers });
 });
 
 const imageAttachment: ChatAttachment = {
@@ -1640,6 +1664,7 @@ const sendUpdate = Effect.fn("sendUpdate")(function* (
   createdBy: "agent" | "user",
   mode: "auto" | "steer",
   attachments: ReadonlyArray<ChatAttachment> = [],
+  text = "progress update",
 ) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -1648,7 +1673,7 @@ const sendUpdate = Effect.fn("sendUpdate")(function* (
     commandId: CommandId.make("update"),
     threadId,
     messageId: MessageId.make("message:update"),
-    text: "progress update",
+    text,
     attachments,
     mode,
     createdBy,
@@ -1756,6 +1781,28 @@ it.effect.each([
     ),
 );
 
+it.effect("keeps goal control commands queued instead of offering them as hook context", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { started, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+        "agent-goal-boundary",
+        { activeSteeringInterruptsTools: true },
+      );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const threadId = yield* startFirstTurn;
+        const sent = yield* sendUpdate(threadId, "agent", "auto", [], "/goal clear");
+        assert.deepEqual(yield* offerAtToolBoundary(threadId, started[0]!.runId), []);
+        const queued = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+          (run) => run.id === sent.run.id,
+        );
+        assert.equal(queued?.status, "queued");
+        assert.isUndefined(queued?.boundaryOffer);
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
 it.effect("an agent update joins the running turn at its next tool boundary, once", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1773,10 +1820,28 @@ it.effect("an agent update joins the running turn at its next tool boundary, onc
         assert.equal(sent.delivery, "queued");
         assert.deepEqual(steered, []);
 
-        assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), [
-          "From another agent:\nprogress update",
-        ]);
+        // A hook of a replaced turn cannot offer into the run's current turn.
+        const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+        assert.deepEqual(
+          yield* requests.claimAgentMessages!({
+            threadId,
+            runId: first.runId,
+            providerTurnId: ProviderTurnId.make("provider-turn:replaced"),
+          }),
+          [],
+        );
+        const offers = yield* offerAtToolBoundary(threadId, first.runId);
+        assert.deepEqual(
+          offers.map((offer) => offer.text),
+          [`From another agent (delivery ${offers[0]?.id}):\nprogress update`],
+        );
         assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), []);
+        // Until Claude saves the offer, the update stays queued and nothing else starts it.
+        const offered = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(offered.runs.find((run) => run.id === sent.run.id)?.status, "queued");
+        // A repeated receipt replays the first one.
+        yield* receiveAtToolBoundary(threadId, first.runId, offers);
+        yield* receiveAtToolBoundary(threadId, first.runId, offers);
         const joined = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(
           joined.messages.find((message) => message.id === MessageId.make("message:update"))?.runId,
@@ -1836,30 +1901,209 @@ it.effect("an agent update joins the running turn at its next tool boundary, onc
   ),
 );
 
-it.effect("Stop keeps a queued agent update out of the stopped turn's boundaries", () =>
+it.effect.each([
+  { offered: false, after: "nothing" },
+  { offered: true, after: "nothing" },
+  { offered: true, after: "a new user message" },
+  { offered: true, after: "cancel" },
+  { offered: true, after: "send again" },
+] as const)(
+  "Stop keeps an agent update recoverable (offered=$offered, then $after)",
+  ({ offered, after }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { started, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+          `agent-update-boundary-after-stop-${offered}-${after.replaceAll(" ", "-")}`,
+          { activeSteeringInterruptsTools: true },
+        );
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threadId = yield* startFirstTurn;
+          const first = started[0]!;
+          const sent = yield* sendUpdate(threadId, "agent", "auto");
+          assert.equal(sent.delivery, "queued");
+          const offers = offered ? yield* offerAtToolBoundary(threadId, first.runId) : [];
+          assert.lengthOf(offers, offered ? 1 : 0);
+          yield* orchestrator.dispatch({
+            type: "run.interrupt",
+            commandId: CommandId.make("stop"),
+            threadId,
+            runId: first.runId,
+            holdQueue: true,
+          });
+          assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), []);
+
+          // The stopped turn ends, so no live run keeps the queue behind it any more.
+          const ended = yield* orchestrator.streamDomainEvents.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "run.updated" &&
+                event.payload.id === first.runId &&
+                event.payload.status === "interrupted",
+            ),
+            Stream.take(1),
+            Stream.runDrain,
+            Effect.forkScoped,
+          );
+          yield* worker.drain();
+          const turn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
+          yield* Fiber.join(ended);
+          yield* worker.drain();
+
+          const stopped = yield* orchestrator.getThreadProjection(threadId);
+          const queued = stopped.runs.find((run) => run.id === sent.run.id);
+          assert.equal(queued?.status, "queued");
+          assert.equal(queued?.queueHeld, true);
+          assert.equal(queued?.boundaryOffer?.id, offers[0]?.id);
+          assert.equal(
+            stopped.messages.find((message) => message.id === MessageId.make("message:update"))
+              ?.text,
+            "progress update",
+          );
+          if (after === "a new user message") {
+            // A user message clears the hold and starts; the offered update still never resends.
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make("next"),
+              threadId,
+              messageId: MessageId.make("message:next"),
+              text: "next",
+              attachments: [],
+              modelSelection: runSelection,
+              dispatchMode: { type: "start_immediately" },
+              deliveryIntent: "auto",
+              createdBy: "user",
+              creationSource: "web",
+            });
+            yield* worker.drain();
+            yield* orchestrator.resumeQueuedRuns;
+            yield* worker.drain();
+            const after = yield* orchestrator.getThreadProjection(threadId);
+            const next = after.runs.find(
+              (run) => run.userMessageId === MessageId.make("message:next"),
+            );
+            assert.notEqual(next?.status, "queued");
+            assert.isFalse(after.runs.find((run) => run.id === sent.run.id)?.queueHeld === true);
+            assert.equal(after.runs.find((run) => run.id === sent.run.id)?.status, "queued");
+          } else if (after === "cancel") {
+            yield* orchestrator.dispatch({
+              type: "queued-run.cancel",
+              commandId: CommandId.make("cancel-offered"),
+              threadId,
+              runId: sent.run.id,
+            });
+          } else if (after === "send again") {
+            yield* orchestrator.dispatch({
+              type: "queued-run.start",
+              commandId: CommandId.make("send-offered"),
+              threadId,
+              runId: sent.run.id,
+            });
+            yield* worker.drain();
+            // The user's explicit send starts the update as its own run.
+            assert.notEqual(
+              (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+                (run) => run.id === sent.run.id,
+              )?.status,
+              "queued",
+            );
+          }
+          if (!offered) return;
+
+          // Claude saved the offer before stopping, so its late receipt joins the stopped turn,
+          // unless the user already cancelled or resent it.
+          yield* receiveAtToolBoundary(threadId, first.runId, offers);
+          const settled = yield* orchestrator.getThreadProjection(threadId);
+          const message = settled.messages.find(
+            (candidate) => candidate.id === MessageId.make("message:update"),
+          );
+          const item = settled.turnItems.find(
+            (candidate) =>
+              candidate.type === "user_message" &&
+              candidate.messageId === MessageId.make("message:update"),
+          );
+          if (after === "cancel" || after === "send again") {
+            assert.notInclude(
+              ["queued", ...(after === "cancel" ? [] : ["cancelled"])],
+              settled.runs.find((run) => run.id === sent.run.id)?.status,
+            );
+            assert.equal(message?.runId, sent.run.id);
+            assert.notEqual(item?.providerTurnId, turn.id);
+            return;
+          }
+          assert.equal(settled.runs.find((run) => run.id === sent.run.id)?.status, "cancelled");
+          assert.equal(message?.runId, first.runId);
+          assert.equal(message?.createdBy, "agent");
+          assert.equal(message?.creationSource, "mcp");
+          assert.equal(item?.providerTurnId, turn.id);
+          assert.equal(item?.nodeId, turn.nodeId);
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
+);
+
+it.effect("a late boundary receipt joins the turn that saved it, not the run's restarted one", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const { started, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
-        "agent-update-boundary-after-stop",
-        { activeSteeringInterruptsTools: true },
+        "agent-update-receipt-after-restart",
+        { canRestart: true, canSteer: false, activeSteeringInterruptsTools: true },
       );
       yield* Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
         const threadId = yield* startFirstTurn;
         const first = started[0]!;
-        assert.equal((yield* sendUpdate(threadId, "agent", "auto")).delivery, "queued");
+        const sent = yield* sendUpdate(threadId, "agent", "auto");
+        const offers = yield* offerAtToolBoundary(threadId, first.runId);
+        const offeredTurn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
+        // A person's promotion restarts the same run in a new attempt before the receipt lands.
         yield* orchestrator.dispatch({
-          type: "run.interrupt",
-          commandId: CommandId.make("stop"),
+          type: "message.dispatch",
+          commandId: CommandId.make("queued"),
           threadId,
-          runId: first.runId,
-          holdQueue: true,
+          messageId: MessageId.make("message:queued"),
+          text: "queued",
+          attachments: [],
+          modelSelection: runSelection,
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
         });
+        const queuedRun = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+          (run) => run.userMessageId === MessageId.make("message:queued"),
+        )!;
+        yield* orchestrator.dispatch({
+          type: "queued-message.promote-to-steer",
+          commandId: CommandId.make("promote"),
+          threadId,
+          queuedRunId: queuedRun.id,
+          targetRunId: first.runId,
+        });
+        yield* worker.drain();
+        const restarted = yield* orchestrator.getThreadProjection(threadId);
+        assert.notEqual(
+          restarted.runs.find((run) => run.id === first.runId)?.activeAttemptId,
+          first.attemptId,
+        );
+        assert.notEqual(
+          restarted.runs.find((run) => run.id === first.runId)?.rootNodeId,
+          offeredTurn.nodeId,
+        );
 
-        assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), []);
-        const projection = yield* orchestrator.getThreadProjection(threadId);
-        const queued = projection.runs.find((run) => run.status === "queued");
-        assert.equal(queued?.queueHeld, true);
+        yield* receiveAtToolBoundary(threadId, first.runId, offers);
+        const settled = yield* orchestrator.getThreadProjection(threadId);
+        const item = settled.turnItems.find(
+          (candidate) =>
+            candidate.type === "user_message" &&
+            candidate.messageId === MessageId.make("message:update"),
+        );
+        assert.equal(settled.runs.find((run) => run.id === sent.run.id)?.status, "cancelled");
+        assert.equal(item?.runId, first.runId);
+        assert.equal(item?.providerTurnId, offeredTurn.id);
+        assert.equal(item?.nodeId, offeredTurn.nodeId);
+        assert.equal(item?.providerThreadId, offeredTurn.providerThreadId);
       }).pipe(Effect.provide(layer));
     }),
   ),

@@ -3208,6 +3208,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly freshQueueOnReopen?: boolean;
     readonly promptSuggestions?: ClaudeAdapterV2.ClaudeAdapterV2Options["promptSuggestions"];
     readonly claimAgentMessages?: ProviderContinuationRequests.ClaimAgentMessages;
+    readonly acknowledgeAgentMessages?: ProviderContinuationRequests.AcknowledgeAgentMessages;
     readonly allocateSessionId?: Effect.Effect<string>;
     readonly queryFailure?: Effect.Effect<never, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
     readonly reopenFailure?: Effect.Effect<void, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
@@ -3285,6 +3286,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ...(options?.claimAgentMessages === undefined
             ? {}
             : { claimAgentMessages: options.claimAgentMessages }),
+          ...(options?.acknowledgeAgentMessages === undefined
+            ? {}
+            : { acknowledgeAgentMessages: options.acknowledgeAgentMessages }),
         },
         ...(options?.promptSuggestions === undefined
           ? {}
@@ -5665,128 +5669,181 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
   );
 
-  it.effect.each(["work", "/compact"])("claims agent messages: %s", (text) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const claims: Array<{ readonly threadId: string; readonly runId: string }> = [];
-        const harness = yield* makeWakeHarnessWithOptions({
-          claimAgentMessages: (input) =>
-            Effect.sync(() => {
-              claims.push(input);
-              return ["From another agent:\nChild finished."];
-            }),
-        });
-        const input = makeClaudeTestTurnInput({
-          threadId: harness.threadId,
-          providerThread: harness.providerThread,
-          now: yield* DateTime.now,
-          attemptId: RunAttemptId.make("attempt-agent-boundary"),
-          text,
-          attachments: [],
-        });
-        const sessions = yield* McpProviderSessions.McpProviderSessions;
-        yield* sessions.set({
-          environmentId: EnvironmentId.make("environment-agent-boundary"),
-          threadId: harness.threadId,
-          providerSessionId: "provider-session-claude-wake",
-          providerInstanceId: CLAUDE_TEST_MODEL_SELECTION.instanceId,
-          endpoint: "http://127.0.0.1:1234/mcp",
-          authorizationHeader: "Bearer test-token",
-          browserToolsAvailable: false,
-          capabilities: new Set(["device"]),
-        });
-        yield* harness.runtime.startTurn(input);
-        const hooks = harness.getOpenedOptions()?.hooks;
-        const signal = yield* Effect.abortSignal;
-        const base = {
-          session_id: WAKE_NATIVE_SESSION,
-          transcript_path: "",
-          cwd: "",
-        };
-        assert.lengthOf(hooks?.SubagentStart ?? [], 1);
-        const deviceInstructions = yield* Effect.promise(() =>
-          hooks!.SubagentStart![0]!.hooks[0]!(
-            {
-              ...base,
-              hook_event_name: "SubagentStart",
-              agent_id: "agent-1",
-              agent_type: "general-purpose",
+  it.effect.each(["work", "/compact"])(
+    "offers agent updates and acknowledges saved receipts: %s",
+    (text) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const claims: Array<{ readonly threadId: string; readonly runId: string }> = [];
+          const receipts: Array<ReadonlyArray<string>> = [];
+          let failNextReceipt = true;
+          const harness = yield* makeWakeHarnessWithOptions({
+            claimAgentMessages: (input) =>
+              Effect.sync(() => {
+                claims.push({ threadId: input.threadId, runId: input.runId });
+                const id = `offer-${claims.length}`;
+                return [
+                  {
+                    id,
+                    queuedRunId: RunId.make("run-queued-update"),
+                    text: `From another agent (delivery ${id}):\nChild finished.`,
+                  },
+                ];
+              }),
+            acknowledgeAgentMessages: (input) =>
+              Effect.suspend(() => {
+                if (failNextReceipt) {
+                  failNextReceipt = false;
+                  return Effect.die("receipt commit failed");
+                }
+                receipts.push(input.offers.map((offer) => offer.id));
+                return Effect.void;
+              }),
+          });
+          const input = makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-agent-boundary"),
+            text,
+            attachments: [],
+          });
+          const sessions = yield* McpProviderSessions.McpProviderSessions;
+          yield* sessions.set({
+            environmentId: EnvironmentId.make("environment-agent-boundary"),
+            threadId: harness.threadId,
+            providerSessionId: "provider-session-claude-wake",
+            providerInstanceId: CLAUDE_TEST_MODEL_SELECTION.instanceId,
+            endpoint: "http://127.0.0.1:1234/mcp",
+            authorizationHeader: "Bearer test-token",
+            browserToolsAvailable: false,
+            capabilities: new Set(["device"]),
+          });
+          yield* harness.runtime.startTurn(input);
+          const hooks = harness.getOpenedOptions()?.hooks;
+          const signal = yield* Effect.abortSignal;
+          const base = {
+            session_id: WAKE_NATIVE_SESSION,
+            transcript_path: "",
+            cwd: "",
+          };
+          assert.lengthOf(hooks?.SubagentStart ?? [], 1);
+          const deviceInstructions = yield* Effect.promise(() =>
+            hooks!.SubagentStart![0]!.hooks[0]!(
+              {
+                ...base,
+                hook_event_name: "SubagentStart",
+                agent_id: "agent-1",
+                agent_type: "general-purpose",
+              },
+              undefined,
+              { signal },
+            ),
+          );
+          assert.deepEqual(deviceInstructions, {
+            hookSpecificOutput: {
+              hookEventName: "SubagentStart",
+              additionalContext: T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
             },
-            undefined,
-            { signal },
-          ),
-        );
-        assert.deepEqual(deviceInstructions, {
-          hookSpecificOutput: {
-            hookEventName: "SubagentStart",
-            additionalContext: T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
-          },
-        });
-        const batch = yield* Effect.promise(() =>
-          hooks!.PostToolBatch![0]!.hooks[0]!(
-            { ...base, hook_event_name: "PostToolBatch", tool_calls: [] },
-            undefined,
-            { signal },
-          ),
-        );
-        const stop = yield* Effect.promise(() =>
-          hooks!.Stop![0]!.hooks[0]!(
-            { ...base, hook_event_name: "Stop", stop_hook_active: false },
-            undefined,
-            { signal },
-          ),
-        );
-        // A subagent's boundary is not the root turn's.
-        const subagent = yield* Effect.promise(() =>
-          hooks!.PostToolBatch![0]!.hooks[0]!(
-            { ...base, hook_event_name: "PostToolBatch", tool_calls: [], agent_id: "agent-1" },
-            undefined,
-            { signal },
-          ),
-        );
-        assert.deepEqual(
-          batch,
-          text === "/compact"
-            ? {}
-            : {
-                hookSpecificOutput: {
-                  hookEventName: "PostToolBatch",
-                  additionalContext: "New messages:\nFrom another agent:\nChild finished.",
-                },
-              },
-        );
-        assert.deepEqual(
-          stop,
-          text === "/compact"
-            ? {}
-            : {
-                hookSpecificOutput: {
-                  hookEventName: "Stop",
-                  additionalContext: "New messages:\nFrom another agent:\nChild finished.",
-                },
-              },
-        );
-        assert.deepEqual(subagent, {});
-        assert.deepEqual(
-          claims,
-          text === "/compact"
-            ? []
-            : [
-                { threadId: harness.threadId, runId: input.runId },
-                { threadId: harness.threadId, runId: input.runId },
-              ],
-        );
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
+          });
+          const batch = yield* Effect.promise(() =>
+            hooks!.PostToolBatch![0]!.hooks[0]!(
+              { ...base, hook_event_name: "PostToolBatch", tool_calls: [] },
+              undefined,
+              { signal },
+            ),
+          );
+          const stop = yield* Effect.promise(() =>
+            hooks!.Stop![0]!.hooks[0]!(
+              { ...base, hook_event_name: "Stop", stop_hook_active: false },
+              undefined,
+              { signal },
+            ),
+          );
+          // A subagent's boundary is not the root turn's.
+          const subagent = yield* Effect.promise(() =>
+            hooks!.PostToolBatch![0]!.hooks[0]!(
+              { ...base, hook_event_name: "PostToolBatch", tool_calls: [], agent_id: "agent-1" },
+              undefined,
+              { signal },
+            ),
+          );
+          if (text === "/compact") {
+            assert.deepEqual(batch, {});
+            assert.deepEqual(stop, {});
+            assert.deepEqual(subagent, {});
+            assert.deepEqual(claims, []);
+            assert.deepEqual(receipts, []);
+            return;
+          }
+          const batchContext =
+            "New messages:\nFrom another agent (delivery offer-1):\nChild finished.";
+          assert.deepEqual(batch, {
+            hookSpecificOutput: { hookEventName: "PostToolBatch", additionalContext: batchContext },
+          });
+          assert.deepEqual(stop, {
+            hookSpecificOutput: {
+              hookEventName: "Stop",
+              additionalContext:
+                "New messages:\nFrom another agent (delivery offer-2):\nChild finished.",
+            },
+          });
+          assert.deepEqual(subagent, {});
+          assert.deepEqual(claims, [
+            { threadId: harness.threadId, runId: input.runId },
+            { threadId: harness.threadId, runId: input.runId },
+          ]);
+          // Claude's saved hook-context entry, as it mirrors it after writing the local transcript.
+          const receipt = {
+            type: "attachment",
+            uuid: "entry-1",
+            attachment: {
+              type: "hook_additional_context",
+              content: [batchContext],
+              hookName: "PostToolBatch",
+              hookEvent: "PostToolBatch",
+              toolUseID: "hook-1",
+            },
+          };
+          const store = harness.getOpenedOptions()!.sessionStore!;
+          const projectKey = "project";
+          yield* Effect.promise(() =>
+            store.append({ projectKey, sessionId: "another-session" }, [receipt]),
+          );
+          yield* Effect.promise(() =>
+            store.append(
+              { projectKey, sessionId: WAKE_NATIVE_SESSION, subpath: "subagents/agent-1" },
+              [receipt],
+            ),
+          );
+          assert.deepEqual(receipts, []);
+          const append = () =>
+            store.append({ projectKey, sessionId: WAKE_NATIVE_SESSION }, [
+              { type: "user", uuid: "entry-0" },
+              receipt,
+              receipt,
+            ]);
+          // A failed acknowledgement rejects the append; Claude's retry of the batch settles it.
+          const failed = yield* Effect.exit(Effect.tryPromise(append));
+          assert.isTrue(Exit.isFailure(failed));
+          assert.deepEqual(receipts, []);
+          yield* Effect.promise(append);
+          // Only the exact saved offer settles, once; the Stop offer still awaits its own receipt.
+          assert.deepEqual(receipts, [["offer-1"]]);
+          assert.isNull(
+            yield* Effect.promise(() => store.load({ projectKey, sessionId: WAKE_NATIVE_SESSION })),
+          );
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
           ),
         ),
       ),
-    ),
   );
 
   it.effect("completes a turn after the resume dialog without a failed tool row", () =>

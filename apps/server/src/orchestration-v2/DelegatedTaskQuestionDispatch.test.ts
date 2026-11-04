@@ -304,14 +304,22 @@ it.effect.each([
 
         if (atToolBoundary) {
           const queued = projection.runs.find((run) => run.userMessageId === messageId)!;
-          yield* orchestrator.dispatch({
-            type: "queued-message.promote-to-steer",
-            commandId: CommandId.make("claim-question-at-tool-boundary"),
-            threadId: parentThreadId,
-            queuedRunId: queued.id,
-            targetRunId: first.runId,
-            atToolBoundary: true,
-          });
+          const providerTurnId = projection.providerTurns.find(
+            (turn) => turn.status === "running",
+          )!.id;
+          for (const boundaryOffer of [
+            { id: "offer-question", step: "offer", providerTurnId },
+            { id: "offer-question", step: "receipt" },
+          ] as const) {
+            yield* orchestrator.dispatch({
+              type: "queued-message.promote-to-steer",
+              commandId: CommandId.make(`claim-question-at-tool-boundary-${boundaryOffer.step}`),
+              threadId: parentThreadId,
+              queuedRunId: queued.id,
+              targetRunId: first.runId,
+              boundaryOffer,
+            });
+          }
           yield* worker.drain();
           assert.lengthOf(steered, 0);
         }

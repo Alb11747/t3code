@@ -15,6 +15,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
+  ProviderTurnId,
   RunId,
   RuntimeRequestId,
   ThreadId,
@@ -2311,7 +2312,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
 );
 
 it.layer(layerTest)("delegated tasks across a server restart", (it) => {
-  it.effect("queues a child result without creating a provider history handoff", () =>
+  it.effect("queues a child result and freezes its offered text", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
@@ -2399,6 +2400,87 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
       assert.include(
         queued.messages.find((message) => message.id === messageId)?.text ?? "",
         task.result!,
+      );
+      const offeredRun = queued.runs.find((run) => run.userMessageId === messageId)!;
+      const offeredMessage = queued.messages.find((message) => message.id === messageId)!;
+      const offeredTurnId = ProviderTurnId.make("provider-turn:offered-completion");
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make("event:offer-completion"),
+            type: "run.updated",
+            threadId,
+            runId: offeredRun.id,
+            occurredAt: now,
+            payload: {
+              ...offeredRun,
+              boundaryOffer: {
+                id: "offered-completion",
+                targetRunId: runId,
+                providerTurnId: offeredTurnId,
+              },
+            },
+          },
+          {
+            id: EventId.make("event:offered-completion-turn"),
+            type: "provider-turn.updated",
+            threadId,
+            occurredAt: now,
+            payload: {
+              id: offeredTurnId,
+              providerThreadId: parent.providerThreads[0]!.id,
+              nodeId: rootNodeId,
+              runAttemptId: null,
+              nativeTurnRef: null,
+              ordinal: 1,
+              status: "running",
+              startedAt: now,
+              completedAt: null,
+            },
+          },
+        ],
+      });
+      const later = yield* seedRestartCancelledChild({
+        parentThreadId: threadId,
+        projectId,
+        parentRunId: runId,
+        rootNodeId,
+        name: "result-message-later-child",
+        completionWake: "always",
+        continuationPending: false,
+        runStatus: "completed",
+        now,
+      });
+      yield* orchestrator.recoverDelegatedTasks;
+      const afterLater = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        afterLater.messages.find((message) => message.id === messageId),
+        offeredMessage,
+      );
+      assert.equal(
+        afterLater.subagents.find((row) => row.id === later.taskId)?.completionDelivery?.state,
+        "pending",
+      );
+      yield* orchestrator.dispatch({
+        type: "queued-message.promote-to-steer",
+        commandId: CommandId.make("receipt-first-completion"),
+        threadId,
+        queuedRunId: offeredRun.id,
+        targetRunId: runId,
+        boundaryOffer: { id: "offered-completion", step: "receipt" },
+      });
+      const received = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(
+        received.subagents.find((row) => row.id === child.taskId)?.completionDelivery?.state,
+        "delivered",
+      );
+      assert.equal(
+        received.subagents.find((row) => row.id === later.taskId)?.completionDelivery?.state,
+        "claimed",
+      );
+      assert.deepEqual(
+        received.runs.find((run) => run.id === runId)?.delegatedCompletion?.delivery?.taskIds,
+        [later.taskId],
       );
     }),
   );

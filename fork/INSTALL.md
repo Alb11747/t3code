@@ -142,9 +142,14 @@ guarantee uninterrupted work.
 Hooks carry text only, so agent updates and agent promotions with attachments
 wait for the next turn instead of steering. Agents can still choose `restart`,
 which interrupts the turn by design.
-Boundary delivery also has a crash window: an update claimed just before the
-server crashes, or just before Stop aborts the hook, can be lost before Claude
-reads it. Preservation of all thinking tokens has not been verified.
+An update handed to Claude at a boundary stays in the queue until Claude saves
+it in the session history it resumes from; only then does it join the turn.
+Saved does not mean the model followed it. If the server crashes, Stop cuts the
+hand-off short, or Claude never saves it, the update stays queued as
+**Unconfirmed** and is never resent automatically, since the agent may already
+have acted on it: send it again or remove it. Unconfirmed updates cannot be
+edited, and an unconfirmed automatic notification can be sent again only once
+the turn has ended. Preservation of all thinking tokens has not been verified.
 
 ## Browser access on macOS or other computers
 

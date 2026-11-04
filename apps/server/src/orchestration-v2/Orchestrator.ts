@@ -840,7 +840,9 @@ function worktreeSetupPending(
 function nextQueuedRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
 ): OrchestrationV2Run | undefined {
-  return queuedRunsInDeliveryOrder(projection).find((run) => run.queueHeld !== true);
+  return queuedRunsInDeliveryOrder(projection).find(
+    (run) => run.queueHeld !== true && run.boundaryOffer === undefined,
+  );
 }
 
 function followsCurrentConversation(
@@ -5012,8 +5014,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly delegatedCompletion?: OrchestrationV2ConversationMessage["delegatedCompletion"];
     readonly notification?: OrchestrationV2ConversationMessage["notification"];
     readonly forceRestart: boolean;
-    /** The provider delivers the message at a tool boundary; record it without a steer effect. */
-    readonly atToolBoundary?: boolean;
+    /** The provider already saved the message in this turn's history; record it without a steer. */
+    readonly deliveredInProviderTurnId?: OrchestrationV2ProviderTurn["id"];
   }) {
     const targetRun = input.projection.runs.find((candidate) => candidate.id === input.targetRunId);
     if (targetRun === undefined) {
@@ -5062,100 +5064,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Target run ${targetRun.id} has no root node.`,
       });
     }
-    if (targetRun.status !== "running") {
-      return yield* new OrchestratorDispatchError({
-        commandId: input.command.commandId,
-        commandType: input.command.type,
-        cause: `Target run ${targetRun.id} is ${targetRun.status} and cannot be steered.`,
-      });
-    }
-    // The run reads as running until its provider stops, but a steer accepted
-    // after Stop never reaches the agent.
-    if (yield* stopReachedRun(input.command, input.command.threadId, targetRun.id)) {
-      return yield* new OrchestratorDispatchError({
-        commandId: input.command.commandId,
-        commandType: input.command.type,
-        cause: `Target run ${targetRun.id} is stopping and cannot be steered.`,
-      });
-    }
-    const providerThread = input.projection.providerThreads.find(
-      (candidate) => candidate.id === targetRun.providerThreadId,
-    );
-    if (providerThread === undefined || providerThread.providerSessionId === null) {
-      return yield* new OrchestratorDispatchError({
-        commandId: input.command.commandId,
-        commandType: input.command.type,
-        cause: `Provider thread ${targetRun.providerThreadId} has no active provider session for steering.`,
-      });
-    }
-    const providerSessionId = providerThread.providerSessionId;
-    const providerTurn = input.projection.providerTurns.find(
-      (candidate) =>
-        candidate.runAttemptId === targetRun.activeAttemptId && candidate.status === "running",
-    );
-    if (providerTurn === undefined) {
-      return yield* new OrchestratorDispatchError({
-        commandId: input.command.commandId,
-        commandType: input.command.type,
-        cause: `No running provider turn found for active run ${targetRun.id}.`,
-      });
-    }
-    const sessionOption = yield* providerSessions.get(providerSessionId).pipe(
-      Effect.mapError(
-        (cause) =>
-          new OrchestratorDispatchError({
-            commandId: input.command.commandId,
-            commandType: input.command.type,
-            cause,
-          }),
-      ),
-    );
-    if (Option.isNone(sessionOption)) {
-      return yield* new OrchestratorDispatchError({
-        commandId: input.command.commandId,
-        commandType: input.command.type,
-        cause: `Provider session ${providerThread.providerSessionId} is not active.`,
-      });
-    }
-
-    const session = sessionOption.value;
     const now = yield* DateTime.now;
     const emitEvent = emit(input.events, input.command);
-    const selectionChanged = !modelSelectionsEqual(targetRun.modelSelection, input.modelSelection);
-    const providerInstanceChanged =
-      targetRun.providerInstanceId !== input.modelSelection.instanceId;
-    const selectionTransition =
-      selectionChanged && !providerInstanceChanged
-        ? yield* providerAdapters.get(targetRun.providerInstanceId).pipe(
-            Effect.flatMap((adapter) =>
-              adapter.planSelectionTransition({
-                current: targetRun.modelSelection,
-                target: input.modelSelection,
-                sessionCapabilities: session.providerSession.capabilities,
-              }),
-            ),
-            Effect.mapError(
-              (cause) =>
-                new OrchestratorProviderAdapterError({
-                  commandId: input.command.commandId,
-                  providerInstanceId: targetRun.providerInstanceId,
-                  cause,
-                }),
-            ),
-          )
-        : null;
-    if (selectionTransition?.type === "reject") {
-      return yield* new OrchestratorDispatchError({
-        commandId: input.command.commandId,
-        commandType: input.command.type,
-        cause: selectionTransition.reason,
-      });
-    }
     const appendSteeringMessage = Effect.fn("Orchestrator.appendSteeringMessage")(
       function* (messageInput: {
         readonly runId: OrchestrationV2Run["id"];
         readonly nodeId: OrchestrationV2ExecutionNode["id"];
-        readonly providerTurnId: typeof providerTurn.id | null;
+        readonly providerTurnId: OrchestrationV2ProviderTurn["id"] | null;
         readonly providerThreadId: OrchestrationV2ProviderThread["id"];
         readonly providerInstanceId: ProviderInstanceId;
         readonly modelSwitch?: OrchestrationV2ModelSwitch | undefined;
@@ -5244,6 +5159,118 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       },
     );
 
+    if (input.deliveredInProviderTurnId !== undefined) {
+      // Saved provider history stays delivered even if the turn stopped or ended since.
+      const deliveredTurn = input.projection.providerTurns.find(
+        (candidate) => candidate.id === input.deliveredInProviderTurnId,
+      );
+      const deliveredThread = input.projection.providerThreads.find(
+        (candidate) => candidate.id === deliveredTurn?.providerThreadId,
+      );
+      if (deliveredTurn === undefined || deliveredThread === undefined) {
+        return yield* new OrchestratorDispatchError({
+          commandId: input.command.commandId,
+          commandType: input.command.type,
+          cause: `Provider turn ${input.deliveredInProviderTurnId} was not found.`,
+        });
+      }
+      // A restart since the offer gave the run another attempt; the message stays with the turn
+      // whose history holds it.
+      return yield* appendSteeringMessage({
+        runId: targetRun.id,
+        nodeId: deliveredTurn.nodeId,
+        providerTurnId: deliveredTurn.id,
+        providerThreadId: deliveredTurn.providerThreadId,
+        providerInstanceId: deliveredThread.providerInstanceId,
+      });
+    }
+    if (targetRun.status !== "running") {
+      return yield* new OrchestratorDispatchError({
+        commandId: input.command.commandId,
+        commandType: input.command.type,
+        cause: `Target run ${targetRun.id} is ${targetRun.status} and cannot be steered.`,
+      });
+    }
+    // The run reads as running until its provider stops, but a steer accepted
+    // after Stop never reaches the agent.
+    if (yield* stopReachedRun(input.command, input.command.threadId, targetRun.id)) {
+      return yield* new OrchestratorDispatchError({
+        commandId: input.command.commandId,
+        commandType: input.command.type,
+        cause: `Target run ${targetRun.id} is stopping and cannot be steered.`,
+      });
+    }
+    const providerThread = input.projection.providerThreads.find(
+      (candidate) => candidate.id === targetRun.providerThreadId,
+    );
+    if (providerThread === undefined || providerThread.providerSessionId === null) {
+      return yield* new OrchestratorDispatchError({
+        commandId: input.command.commandId,
+        commandType: input.command.type,
+        cause: `Provider thread ${targetRun.providerThreadId} has no active provider session for steering.`,
+      });
+    }
+    const providerSessionId = providerThread.providerSessionId;
+    const providerTurn = input.projection.providerTurns.find(
+      (candidate) =>
+        candidate.runAttemptId === targetRun.activeAttemptId && candidate.status === "running",
+    );
+    if (providerTurn === undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: input.command.commandId,
+        commandType: input.command.type,
+        cause: `No running provider turn found for active run ${targetRun.id}.`,
+      });
+    }
+    const sessionOption = yield* providerSessions.get(providerSessionId).pipe(
+      Effect.mapError(
+        (cause) =>
+          new OrchestratorDispatchError({
+            commandId: input.command.commandId,
+            commandType: input.command.type,
+            cause,
+          }),
+      ),
+    );
+    if (Option.isNone(sessionOption)) {
+      return yield* new OrchestratorDispatchError({
+        commandId: input.command.commandId,
+        commandType: input.command.type,
+        cause: `Provider session ${providerThread.providerSessionId} is not active.`,
+      });
+    }
+
+    const session = sessionOption.value;
+    const selectionChanged = !modelSelectionsEqual(targetRun.modelSelection, input.modelSelection);
+    const providerInstanceChanged =
+      targetRun.providerInstanceId !== input.modelSelection.instanceId;
+    const selectionTransition =
+      selectionChanged && !providerInstanceChanged
+        ? yield* providerAdapters.get(targetRun.providerInstanceId).pipe(
+            Effect.flatMap((adapter) =>
+              adapter.planSelectionTransition({
+                current: targetRun.modelSelection,
+                target: input.modelSelection,
+                sessionCapabilities: session.providerSession.capabilities,
+              }),
+            ),
+            Effect.mapError(
+              (cause) =>
+                new OrchestratorProviderAdapterError({
+                  commandId: input.command.commandId,
+                  providerInstanceId: targetRun.providerInstanceId,
+                  cause,
+                }),
+            ),
+          )
+        : null;
+    if (selectionTransition?.type === "reject") {
+      return yield* new OrchestratorDispatchError({
+        commandId: input.command.commandId,
+        commandType: input.command.type,
+        cause: selectionTransition.reason,
+      });
+    }
     // A selection the provider applies on its next turn joins the running
     // turn as a steer and waits for the next turn. Restarting the turn for it
     // would end the turn's native subagents, which a steer must never do.
@@ -5271,7 +5298,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         input.projection.thread.providerInstanceId !== input.modelSelection.instanceId;
       if (
         input.delegatedCompletion === undefined &&
-        input.atToolBoundary !== true &&
         input.notification === undefined &&
         (instanceChanged ||
           !modelSelectionsEqual(input.projection.thread.modelSelection, input.modelSelection))
@@ -5296,7 +5322,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerThreadId: providerThread.id,
         providerInstanceId: targetRun.providerInstanceId,
       });
-      if (input.atToolBoundary === true) return;
       yield* Ref.update(input.effects, (existing) => [
         ...existing,
         {
@@ -9826,6 +9851,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // User messages measure a restart's model switch.
       { turnItemTypes: ["user_message"], messageRoles: ["user"] },
     );
+    const queuedRun = projection.runs.find((candidate) => candidate.id === command.queuedRunId);
+    // Offer ids are never reused, so a receipt for an offer that was cancelled or sent again is
+    // stale: it changes nothing and cannot resurrect the message.
+    if (
+      command.boundaryOffer?.step === "receipt" &&
+      (queuedRun?.status !== "queued" || queuedRun.boundaryOffer?.id !== command.boundaryOffer.id)
+    ) {
+      // A command must commit an event; this one restates the thread.
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.metadata-updated",
+        threadId: command.threadId,
+        occurredAt: yield* DateTime.now,
+        payload: projection.thread,
+      });
+      return;
+    }
     if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -9833,7 +9877,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Thread ${command.threadId} is not active.`,
       });
     }
-    const queuedRun = projection.runs.find((candidate) => candidate.id === command.queuedRunId);
     if (queuedRun === undefined || queuedRun.status !== "queued") {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -9878,12 +9921,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Queued run ${queuedRun.id} is missing message or execution state.`,
       });
     }
-    if (command.atToolBoundary === true) {
+    // The provider saved the offer in its history, so Stop no longer refuses its receipt.
+    const receipt = command.boundaryOffer?.step === "receipt" ? queuedRun.boundaryOffer : undefined;
+    if (command.boundaryOffer?.step === "offer") {
       // Stop wins: a held queue or a stopped turn keeps the update queued.
       // A run that owns a delegated task keeps its turn: the task settles
       // with its own run, which joining would cancel.
       if (
+        queuedRun.boundaryOffer !== undefined ||
         queuedMessage.atToolBoundary !== true ||
+        isNativeMaintenanceCommand(queuedMessage) ||
+        parseGoalCommand(queuedMessage) !== null ||
         queuedMessage.attachments.length > 0 ||
         queuedRun.delegatedTaskId !== undefined ||
         queuedRun.queueHeld === true ||
@@ -9896,8 +9944,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
     } else if (
-      queuedMessage.delegatedCompletion !== undefined ||
-      queuedMessage.notification !== undefined
+      receipt === undefined &&
+      (queuedMessage.delegatedCompletion !== undefined || queuedMessage.notification !== undefined)
     ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -9905,9 +9953,68 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: "Automatic completion deliveries cannot be promoted to Steer.",
       });
     }
+    // The agent may already have read an offered update; only a person may send it again.
+    if (command.requestedBy === "agent" && queuedRun.boundaryOffer !== undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Queued run ${queuedRun.id} may already have reached the agent; it is not sent again automatically.`,
+      });
+    }
 
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
+    if (receipt !== undefined) {
+      yield* joinQueuedRunToTurn({
+        command,
+        events,
+        effects,
+        projection,
+        queuedRun,
+        queuedRootNode,
+        queuedAttempt,
+        queuedMessage,
+        receipt,
+        now,
+      });
+      return;
+    }
+    const targetRun = projection.runs.find((run) => run.id === command.targetRunId);
+    if (command.boundaryOffer?.step === "offer") {
+      // The run stays queued with its message until the provider confirms saving the offer. A
+      // hook from a replaced or restarted turn cannot offer into the run's newer turn.
+      const offeredTurnId = command.boundaryOffer.providerTurnId;
+      const providerTurn = projection.providerTurns.find(
+        (candidate) =>
+          candidate.id === offeredTurnId &&
+          candidate.runAttemptId === targetRun?.activeAttemptId &&
+          candidate.status === "running",
+      );
+      if (targetRun?.status !== "running" || providerTurn === undefined) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Provider turn ${offeredTurnId} is not the running turn of run ${command.targetRunId}.`,
+        });
+      }
+      yield* emitEvent({
+        type: "run.updated",
+        threadId: command.threadId,
+        runId: queuedRun.id,
+        nodeId: queuedRootNode.id,
+        providerInstanceId: queuedRun.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...queuedRun,
+          boundaryOffer: {
+            id: command.boundaryOffer.id,
+            targetRunId: targetRun.id,
+            providerTurnId: providerTurn.id,
+          },
+        },
+      });
+      return;
+    }
     const parsedGoalCommand = parseGoalCommand(queuedMessage);
     const goalCommand =
       parsedGoalCommand === null ||
@@ -9980,7 +10087,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         now,
       });
     }
-    const targetRun = projection.runs.find((run) => run.id === command.targetRunId);
     if (
       command.requestedBy === "agent" &&
       (targetRun?.status === "running" || targetRun?.status === "waiting")
@@ -10035,6 +10141,41 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
     }
+    yield* joinQueuedRunToTurn({
+      command,
+      events,
+      effects,
+      projection,
+      queuedRun,
+      queuedRootNode,
+      queuedAttempt,
+      queuedMessage,
+      receipt: undefined,
+      now,
+    });
+  });
+
+  const joinQueuedRunToTurn = Effect.fn("Orchestrator.joinQueuedRunToTurn")(function* (input: {
+    readonly command: Extract<
+      OrchestrationV2Command,
+      { readonly type: "queued-message.promote-to-steer" }
+    >;
+    readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
+    readonly effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>;
+    readonly projection: Parameters<typeof dispatchSteerIntoRun>[0]["projection"];
+    readonly queuedRun: OrchestrationV2Run;
+    readonly queuedRootNode: OrchestrationV2ExecutionNode;
+    readonly queuedAttempt: OrchestrationV2RunAttempt;
+    readonly queuedMessage: OrchestrationV2ConversationMessage;
+    readonly receipt: NonNullable<OrchestrationV2Run["boundaryOffer"]> | undefined;
+    readonly now: DateTime.Utc;
+  }) {
+    const { command, events, effects, projection, queuedRun, queuedRootNode, queuedAttempt } =
+      input;
+    const { queuedMessage, receipt, now } = input;
+    const emitEvent = emit(events, command);
+    const targetRunId = receipt?.targetRunId ?? command.targetRunId;
+    const targetRun = projection.runs.find((run) => run.id === targetRunId);
     yield* emitEvent({
       type: "run.updated",
       threadId: command.threadId,
@@ -10076,7 +10217,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       },
     });
 
-    const atToolBoundary = command.atToolBoundary === true;
     yield* dispatchSteerIntoRun({
       command,
       events,
@@ -10084,17 +10224,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projection,
       // An update joining at a tool boundary keeps the running turn's model; a
       // selection change could otherwise restart the turn from inside its hook.
-      modelSelection: atToolBoundary
-        ? (targetRun?.modelSelection ?? projection.thread.modelSelection)
-        : queuedRun.modelSelection,
+      modelSelection:
+        receipt === undefined
+          ? queuedRun.modelSelection
+          : (targetRun?.modelSelection ?? projection.thread.modelSelection),
       ...(queuedMessage.delegatedCompletion === undefined
         ? {}
         : { delegatedCompletion: queuedMessage.delegatedCompletion }),
       ...(queuedMessage.notification === undefined
         ? {}
         : { notification: queuedMessage.notification }),
-      atToolBoundary,
-      targetRunId: command.targetRunId,
+      ...(receipt === undefined ? {} : { deliveredInProviderTurnId: receipt.providerTurnId }),
+      targetRunId,
       messageId: queuedMessage.id,
       text: queuedMessage.text,
       attachments: queuedMessage.attachments,
@@ -10112,7 +10253,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : { idleCompaction: queuedMessage.idleCompaction }),
       forceRestart: false,
     });
-    if (atToolBoundary && queuedMessage.delegatedCompletion !== undefined) {
+    if (receipt !== undefined && queuedMessage.delegatedCompletion !== undefined) {
       // Accept in the same commit: the cancelled queued run would otherwise
       // read as a failed delivery and reserve a duplicate notification.
       yield* dispatchNotificationAccepted(
@@ -10336,6 +10477,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandId: command.commandId,
         commandType: command.type,
         cause: `Run ${command.runId} is not queued.`,
+      });
+    }
+    if (queuedRun.boundaryOffer !== undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Queued run ${command.runId} may already have reached the agent; cancel or send it instead.`,
       });
     }
     const queuedMessage = projection.messages.find(
@@ -12760,7 +12908,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const delivery = cohort?.delivery ?? null;
     const deliveryRun = completionDeliveryRun(input.parentProjection, delivery);
     if (delivery !== null) {
-      if (deliveryRun?.status === "queued" && deliveryRun.userMessageId === delivery.messageId) {
+      if (
+        deliveryRun?.status === "queued" &&
+        deliveryRun.boundaryOffer === undefined &&
+        deliveryRun.userMessageId === delivery.messageId
+      ) {
         const taskIds = Array.from(new Set([...delivery.taskIds, input.task.id]));
         const message = completionDeliveryMessage(input.parentProjection, delivery);
         const nextCohort = {
@@ -14038,11 +14190,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           const selectedMessage = projection.messages.find(
             (message) => message.id === selectedRun?.userMessageId,
           );
+          // An automatic delivery the agent may already have seen is sent again only by a person.
           if (
             selectedRun === undefined ||
             selectedMessage === undefined ||
-            selectedMessage.delegatedCompletion !== undefined ||
-            selectedMessage.notification !== undefined ||
+            ((selectedMessage.delegatedCompletion !== undefined ||
+              selectedMessage.notification !== undefined) &&
+              selectedRun.boundaryOffer === undefined) ||
             projection.runs.some(isActiveRun)
           ) {
             return yield* new OrchestratorDispatchError({
