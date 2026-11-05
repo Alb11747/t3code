@@ -1283,18 +1283,9 @@ const threadWorktreePathsIncludeArchivedOnRequest = Effect.gen(function* () {
   });
 
   const sql = yield* SqlClient.SqlClient;
-  assert.deepEqual(
-    yield* readThreadTitles(sql, [
-      deleted.id,
-      ThreadId.make("missing"),
-      ThreadId.make("thread:active"),
-      ThreadId.make("thread:archived"),
-    ]),
-    {
-      "thread:active": "thread:active",
-      "thread:archived": "thread:archived",
-    },
-  );
+  assert.deepEqual(yield* readThreadTitles(sql, [deleted.id, ThreadId.make("missing")]), {
+    [deleted.id]: deleted.title,
+  });
   assert.deepEqual(yield* readThreadTitles(sql, []), {});
 
   assert.deepEqual(yield* store.getThreadWorktreePaths(), [

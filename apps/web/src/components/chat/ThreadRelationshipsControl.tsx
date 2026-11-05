@@ -500,29 +500,19 @@ export function ThreadRelationshipsPanel(props: {
         : { ...row, edge: { ...row.edge, status: workflowGroup.workflow.status } };
     });
   const canMerge = mergeTargetThreadId !== null && latestMergeBackRun !== null;
-  const unlistedThreadIds = relationshipRows
+  const missingTitleIds = relationshipRows
     .filter(
-      ({ threadId, edge }) =>
-        !relationshipShells.some((thread) => thread.id === threadId) &&
-        (edge.kind !== "subagent" || !subagentsByThreadId.get(threadId)?.title),
+      ({ threadId }) =>
+        !graph.nodes.get(threadId)?.thread && !subagentsByThreadId.get(threadId)?.title,
     )
     .map(({ threadId }) => threadId);
   const threadTitles = useEnvironmentQuery(
-    unlistedThreadIds.length === 0
+    missingTitleIds.length === 0
       ? null
       : orchestrationEnvironment.threadTitles({
           environmentId: props.environmentId,
-          input: { threadIds: unlistedThreadIds },
+          input: { threadIds: missingTitleIds },
         }),
-  );
-  // Omitted and archived threads remain reachable; only a settled lookup proves one is gone.
-  const visibleRelationships = relationshipRows.filter(
-    ({ threadId, edge }) =>
-      edge.kind === "subagent" ||
-      !unlistedThreadIds.includes(threadId) ||
-      !threadTitles.isSuccess ||
-      threadTitles.isPending ||
-      threadTitles.data?.[threadId] !== undefined,
   );
   const canDetach = projection ? canDetachThreadProviderSession(projection) : false;
 
@@ -531,7 +521,7 @@ export function ThreadRelationshipsPanel(props: {
     active = [],
     previous = [],
     sideChats = [],
-  } = groupBy(visibleRelationships, ({ threadId, edge }) => {
+  } = groupBy(relationshipRows, ({ threadId, edge }) => {
     const isParent = isParentThreadRelationship(edge, props.threadId);
     if (!isParent && graph.nodes.get(threadId)?.thread?.lineage.sideChat === true)
       return "sideChats";
