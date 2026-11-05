@@ -494,9 +494,10 @@ const runScript = (
 ) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const environment = yield* HostProcess.Environment;
     const child = yield* spawner.spawn(
       ChildProcess.make("sh", args, {
-        env: { PATH: options?.path ?? process.env.PATH ?? "", HOME: home },
+        env: { PATH: options?.path ?? environment.PATH ?? "", HOME: home },
         extendEnv: false,
         ...(options?.stdin ? { stdin: { stream: options.stdin } } : {}),
       }),
