@@ -9,7 +9,17 @@ import { page, userEvent } from "vite-plus/test/browser";
 const state = vi.hoisted(() => ({
   projection: null as unknown,
   commandSucceeds: false,
-  relationshipShells: [] as unknown[],
+  relatedShells: [] as unknown[],
+  threadTitles: {} as Record<string, string>,
+  archivedThreads: [] as unknown[],
+}));
+
+vi.mock(import("../../state/query"), async (original) => ({
+  ...(await original()),
+  useEnvironmentQuery: ((atom: unknown) =>
+    atom === null
+      ? { data: null, isSuccess: false, isPending: false }
+      : { data: state.threadTitles, isSuccess: true, isPending: false }) as never,
 }));
 
 
@@ -25,7 +35,7 @@ vi.mock(import("../../state/entities"), () => ({
   useThreadRelationshipShells: (() =>
     state.projection === null
       ? []
-      : [(state.projection as { thread: unknown }).thread, ...state.relationshipShells]) as never,
+      : [(state.projection as { thread: unknown }).thread, ...state.relatedShells]) as never,
   useProjects: (() => []) as never,
   useHiddenThreadKeys: (() => new Set()) as never,
   useAnyEnvironmentHiding: (() => false) as never,
@@ -35,7 +45,9 @@ vi.mock(import("../../state/environments"), () => ({
   useEnvironmentProviders: (() => new Map()) as never,
 }));
 vi.mock(import("../../lib/archivedThreadsState"), () => ({
-  useArchivedThreadSnapshots: (() => ({ snapshots: [] })) as never,
+  useArchivedThreadSnapshots: (() => ({
+    snapshots: [{ environmentId: "environment", snapshot: { threads: state.archivedThreads } }],
+  })) as never,
 }));
 vi.mock(import("../../state/use-atom-command"), () => ({
   useAtomCommand: (() => async () =>
@@ -55,7 +67,9 @@ const threadId = ThreadId.make("fork");
 
 function setup() {
   state.commandSucceeds = false;
-  state.relationshipShells = [];
+  state.relatedShells = [];
+  state.threadTitles = { source: "Source" };
+  state.archivedThreads = [];
   state.projection = {
     thread: {
       id: threadId,
@@ -154,7 +168,7 @@ it.each([1, 18])("continues scrolling the panel past a list of %i subagents", as
   setup();
   const projection = makeThreadProjectionFixture();
   state.projection = projection;
-  state.relationshipShells = Array.from({ length: count }, (_, index) => ({
+  state.relatedShells = Array.from({ length: count }, (_, index) => ({
     id: ThreadId.make(`subagent-${index}`),
     title: `Subagent ${index}`,
     forkedFrom: null,
@@ -248,7 +262,7 @@ it("shows a lineage thread's full title in its tooltip", async () => {
     title: longTitle,
     lineage: { parentThreadId: null, relationshipToParent: null },
   };
-  state.relationshipShells = [sourceThread];
+  state.relatedShells = [sourceThread];
   await using _screen = await render(
     <ThreadRelationshipsPanel
       environmentId={environmentId}
@@ -267,7 +281,7 @@ it("shows a lineage thread's full title in its tooltip", async () => {
 it("shows a side chat's full title in its tooltip", async () => {
   setup();
   const longTitle = "Side chat question with a title that the side chat row truncates";
-  state.relationshipShells = [
+  state.relatedShells = [
     {
       id: "side",
       title: longTitle,
@@ -389,4 +403,38 @@ it("shows a delegated-from thread's full title in its tooltip even when its envi
 
   await row.click({ force: true });
   expect(screen.router?.state.location.pathname).toBe("/environment/fork");
+});
+
+it("hides a deleted fork and keeps unloaded and archived forks with their current titles", async () => {
+  setup();
+  const projection = makeThreadProjectionFixture();
+  state.threadTitles = { "unloaded-fork": "Unloaded fork", "archived-fork": "Archived fork" };
+  state.archivedThreads = [
+    {
+      ...projection.thread,
+      id: ThreadId.make("archived-fork"),
+      title: "Old archived title",
+      archivedAt: projection.thread.updatedAt,
+      lineage: { parentThreadId: projection.thread.id, relationshipToParent: "fork" },
+    },
+  ];
+  state.projection = {
+    ...projection,
+    contextTransfers: ["deleted-fork", "unloaded-fork", "archived-fork"].map((id) => ({
+      sourceThreadId: projection.thread.id,
+      targetThreadId: ThreadId.make(id),
+      status: "pending",
+    })),
+  };
+  await using screen = await render(
+    <ThreadRelationshipsPanel
+      environmentId={environmentId}
+      threadId={projection.thread.id}
+      showLineage
+      showSideChats
+    />,
+  );
+  await expect.element(screen.getByText("Unloaded fork", { exact: true })).toBeVisible();
+  await expect.element(screen.getByText("Archived fork", { exact: true })).toBeVisible();
+  await expect.element(screen.getByText("deleted-fork", { exact: true })).not.toBeInTheDocument();
 });

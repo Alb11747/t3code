@@ -318,15 +318,15 @@ import { ComposerSurface } from "./chat/ComposerSurface";
 import { resolveThreadSyncPhase } from "../threadSync";
 import {
   hasAvailableCompactionProvider,
-  hasDismissedResumeCompaction,
   resolveResumeCompactionProviderThread,
   resolveResumeCompactionContext,
-  shouldOfferResumeCompaction,
 } from "./chat/ContextWindowMeter.logic";
 import {
   deriveLatestContextWindowSnapshot,
+  hasDismissedResumeCompaction,
   latestProviderTurnTokenUsage,
-} from "../lib/contextWindow";
+  shouldOfferResumeCompaction,
+} from "@t3tools/client-runtime/state/context-window";
 import {
   MOBILE_COMPOSER_VIEW_TRANSITION_NAME,
   MOBILE_DRAFT_HEADLINE_VIEW_TRANSITION_NAME,
@@ -2594,6 +2594,7 @@ export default function ChatView(props: ChatViewProps) {
     activeThreadShell?.latestRun
       ? usageLimitRecoveryBannerItem({
           runId: activeThreadShell.latestRun.runId,
+          errorCode: serverRuntime.lastErrorCode ?? null,
           resetAt: serverRuntime.usageLimitResetAt ?? null,
           stoppedAt: activeThreadShell.latestRun.completedAt ?? activeThreadShell.updatedAt,
           recovery: activeThreadShell.limitRecovery ?? null,

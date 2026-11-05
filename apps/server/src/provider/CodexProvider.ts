@@ -576,8 +576,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       input.skipNativeUsage ||
       !accountResponse.requiresOpenaiAuth ||
       accountResponse.account?.type === "apiKey"
-        ? // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
-          Effect.succeed(undefined)
+        ? Effect.undefined
         : withCodexDiscoveryDeadline(
             client.request("account/rateLimits/read", null),
             deadlineMs,

@@ -15,7 +15,6 @@ import { createThreadVisitTracker } from "@t3tools/client-runtime/state/thread-v
 import { useChildThreadInputs, useThreadReportedModelSelection } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
 import { KeepWarmStallCard } from "./KeepWarmStallCard";
-import { ChatGptUsageLimitNotice } from "./ChatGptUsageLimitNotice";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import {
   effectiveSnoozed,
@@ -1623,10 +1622,6 @@ function ThreadDetailBody(
                       thread={props.selectedThread}
                       threadRef={props.selectedThreadDetailRef}
                       environmentId={props.environmentId}
-                    />
-                    <ChatGptUsageLimitNotice
-                      key={`chatgpt-limit:${props.selectedThread.latestRun?.runId}`}
-                      thread={props.selectedThread}
                     />
                     <ChildThreadApprovals
                       threadRef={props.selectedThreadDetailRef}
