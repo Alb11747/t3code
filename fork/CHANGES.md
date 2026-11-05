@@ -21,7 +21,6 @@ an entry.
 
 - `fix(chat): let subagent lists pass scrolling to the panel`: Lineage and side-chat lists keep their own scrolling, then let wheel and trackpad input continue through the enclosing details panel at a list boundary. The outer panel retains scroll containment. Issue: none linked. PR: none yet
 
-- `fix(chat): show stored titles for missing lineage summaries`: superseded by upstream PR #29000.
 
 - `feat(threads): keep reference context current with thread notes`: stores a Markdown note as thread metadata, editable by agents and web, desktop, and mobile users; notes prepend opening reads by default or explicitly replace them without changing conversation history or provider input. Upstream can ignore or discard notes while retaining existing chats. Fork-only. Issue: none linked. PR: none yet
 
