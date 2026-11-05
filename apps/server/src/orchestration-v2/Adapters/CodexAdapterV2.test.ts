@@ -6056,6 +6056,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     {
       name: "replacement",
       code: "usageLimitExceeded",
+      completionMessage: "A different failure.",
       notification: true,
       expectedClass: "provider_error",
     },
@@ -6112,6 +6113,28 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       expectedClass: "usage_limit",
       expectedCode: "subscription_sharing_usage_limit_exceeded",
       expectedMessage: "Usage settings",
+    },
+    {
+      name: "sharing-details",
+      code: "responseStreamDisconnected",
+      errorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
+      message: "Provider stopped this request.",
+      details: "subscription_sharing_usage_limit_exceeded",
+      notification: true,
+      expectedClass: "usage_limit",
+      expectedCode: "subscription_sharing_usage_limit_exceeded",
+      expectedMessage: "Usage settings",
+    },
+    {
+      name: "sharing-details-replacement",
+      forkRetry: true,
+      code: "responseStreamDisconnected",
+      errorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
+      message: "Provider stopped this request.",
+      completionMessage: "A different failure.",
+      details: "subscription_sharing_usage_limit_exceeded",
+      notification: true,
+      expectedClass: "provider_error",
     },
     {
       name: "sharing-code-mention",
@@ -6253,7 +6276,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   turn: {
                     ...makeCodexReplayTurn({ id: nativeTurnId, status: "failed" }),
                     error: {
-                      message: scenario.name === "replacement" ? "A different failure." : message,
+                      message:
+                        "completionMessage" in scenario ? scenario.completionMessage : message,
                       ...(scenario.notification &&
                       scenario.name !== "matching-details" &&
                       !("details" in scenario)

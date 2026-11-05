@@ -6095,6 +6095,35 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }).pipe(Effect.orDie),
         );
 
+        const resolveRootFailure = (input: {
+          readonly context: ActiveCodexTurnContext;
+          readonly failureMessage?: string;
+          readonly failureErrorInfo?: CodexErrorInfo;
+          readonly providerRetry?: ActiveCodexProviderRetry;
+        }) => {
+          const previousFailure = input.context.latestProviderFailure ?? input.providerRetry;
+          const failureCode =
+            input.failureErrorInfo === undefined
+              ? undefined
+              : codexErrorInfoCode(input.failureErrorInfo);
+          // The notification carries the richer message, so it wins when the completion repeats it.
+          return previousFailure !== undefined &&
+            (input.failureMessage === undefined ||
+              input.failureMessage === previousFailure.nativeMessage) &&
+            (failureCode === undefined || failureCode === previousFailure.nativeCode)
+            ? previousFailure.failure
+            : withCodexManagedFailure(
+                makeProviderFailure({
+                  message: input.failureMessage,
+                  code: failureCode,
+                  class: codexUsageLimitError(failureCode ?? null)
+                    ? "usage_limit"
+                    : "provider_error",
+                }),
+                input.failureMessage,
+              );
+        };
+
         const makeRootTerminalEvent = Effect.fn("CodexAdapterV2.makeRootTerminalEvent")(
           function* (input: {
             readonly context: ActiveCodexTurnContext;
@@ -6105,29 +6134,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }): Effect.fn.Return<CodexRootTerminalEvent> {
             const terminalStatus = providerTurnStatusToTerminal(input.status);
             if (terminalStatus === "failed") {
-              const previousFailure = input.context.latestProviderFailure ?? input.providerRetry;
-              const failureCode =
-                input.failureErrorInfo === undefined
-                  ? undefined
-                  : codexErrorInfoCode(input.failureErrorInfo);
-              // The notification carries the richer message, so it wins when the
-              // completion repeats it.
-              const failure =
-                previousFailure !== undefined &&
-                (input.failureMessage === undefined ||
-                  input.failureMessage === previousFailure.nativeMessage) &&
-                (failureCode === undefined || failureCode === previousFailure.nativeCode)
-                  ? previousFailure.failure
-                  : withCodexManagedFailure(
-                      makeProviderFailure({
-                        message: input.failureMessage,
-                        code: failureCode,
-                        class: codexUsageLimitError(failureCode ?? null)
-                          ? "usage_limit"
-                          : "provider_error",
-                      }),
-                      input.failureMessage,
-                    );
+              const failure = resolveRootFailure(input);
               return {
                 type: "turn.terminal",
                 driver: CODEX_PROVIDER,
@@ -6233,15 +6240,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly status: OrchestrationV2ProviderTurn["status"];
           readonly failureMessage?: string;
           readonly failureErrorInfo?: CodexErrorInfo;
+          readonly providerRetry?: ActiveCodexProviderRetry;
         }) {
           const nativeThreadId = input.context.providerThread.nativeThreadRef?.nativeId;
           if (
             nativeThreadId == null ||
             input.context.subagent !== null ||
             input.status !== "failed" ||
-            classifyCodexManagedError(
-              input.failureMessage ?? input.context.latestProviderFailure?.failure.code,
-            )?.usageLimit === true
+            classifyCodexManagedError(resolveRootFailure(input).code)?.usageLimit === true
           )
             return undefined;
           const notified = input.context.latestProviderFailure?.nativeErrorInfo;
@@ -6750,7 +6756,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ),
               };
               // Like a goal hold, a retried turn reads as running so Stop reaches it.
-              const overloadAttempt = yield* overloadRetryAttempt(input);
+              const overloadAttempt = yield* overloadRetryAttempt({
+                ...input,
+                ...(providerRetry === undefined ? {} : { providerRetry }),
+              });
               if (!holdsForGoal && overloadAttempt === undefined) {
                 yield* emitProviderEvent({
                   type: "provider_turn.updated",
