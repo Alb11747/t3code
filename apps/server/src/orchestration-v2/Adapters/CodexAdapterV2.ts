@@ -1737,8 +1737,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const random = yield* SecureRandom.SecureRandom;
   const readMcpSession = (threadId: ThreadId | null) =>
-    threadId === null ? Effect.undefined
-      : mcpSessions.read(threadId, adapterOptions.instanceId);
+    threadId === null ? Effect.undefined : mcpSessions.read(threadId, adapterOptions.instanceId);
   const { clientFactory, digest, fileSystem, idAllocator, serverConfig } = adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests;
   const promptSuggestions =
@@ -6232,13 +6231,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly context: ActiveCodexTurnContext;
           readonly nativeTurnId: string;
           readonly status: OrchestrationV2ProviderTurn["status"];
+          readonly failureMessage?: string;
           readonly failureErrorInfo?: CodexErrorInfo;
         }) {
           const nativeThreadId = input.context.providerThread.nativeThreadRef?.nativeId;
           if (
             nativeThreadId == null ||
             input.context.subagent !== null ||
-            input.status !== "failed"
+            input.status !== "failed" ||
+            classifyCodexManagedError(
+              input.failureMessage ?? input.context.latestProviderFailure?.failure.code,
+            )?.usageLimit === true
           )
             return undefined;
           const notified = input.context.latestProviderFailure?.nativeErrorInfo;

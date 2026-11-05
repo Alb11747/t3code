@@ -6115,6 +6115,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     },
     {
       name: "sharing-code-mention",
+      forkRetry: true,
       code: "responseStreamDisconnected",
       errorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
       message: "Transport unavailable; this is not subscription_sharing_usage_limit_exceeded.",
@@ -6175,7 +6176,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   },
                 ]
               : []),
-            ...(scenario.name === "deferred-reset" ? [snapshot] : []),
+            ...(["usage", "replacement", "matching-details", "retry", "deferred-reset"].includes(
+              scenario.name,
+            )
+              ? [snapshot]
+              : []),
             ...(scenario.name === "deferred-reset"
               ? [
                   {
@@ -6259,7 +6264,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 },
               },
             },
-            ...(scenario.name === "late-reset" || "resetAfter" in scenario ? [snapshot] : []),
+            ...("resetAfter" in scenario ? [snapshot] : []),
             ...(scenario.name === "deferred-reset"
               ? [
                   {
@@ -6296,16 +6301,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               : []),
           ],
         });
-        const resetReceipt = yield* Deferred.make<void>();
         const snapshotReceipt = yield* Deferred.make<void>();
         const harness = yield* makeCodexReplayHarness(
           transcript,
-          (event) =>
-            event.type === "turn_item.updated" &&
-            event.turnItem.type === "error" &&
-            event.turnItem.failure.resetAt === resetAt
-              ? Deferred.succeed(resetReceipt, undefined)
-              : Effect.void,
+          undefined,
           undefined,
           undefined,
           undefined,
@@ -6322,6 +6321,30 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             attemptId: RunAttemptId.make(`attempt-limit-${scenario.name}`),
           }),
         );
+        if ("forkRetry" in scenario) {
+          yield* harness.until(() =>
+            harness.events.some(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "error" &&
+                event.turnItem.retry?.retryDelayMs != null,
+            ),
+          );
+          const retry = harness.events.findLast(
+            (event) => event.type === "turn_item.updated" && event.turnItem.type === "error",
+          );
+          assert.equal(retry?.type, "turn_item.updated");
+          if (retry?.type !== "turn_item.updated" || retry.turnItem.type !== "error") return;
+          assert.equal(retry.turnItem.failure.class, scenario.expectedClass);
+          assert.equal(retry.turnItem.failure.code, scenario.code);
+          yield* harness.runtime.interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId: retry.turnItem.providerTurnId!,
+          });
+          yield* harness.firstTerminal;
+          assert.equal(harness.terminalEvents()[0]?.status, "interrupted");
+          return;
+        }
         yield* harness.firstTerminal;
         const terminal = harness.terminalEvents()[0];
         assert.equal(terminal?.status, "failed");
@@ -6341,16 +6364,6 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 event.turnItem.failure.resetAt != null,
             ),
           );
-        }
-        if (scenario.name === "late-reset") {
-          yield* Deferred.await(resetReceipt);
-          const item = harness.events.find(
-            (event) =>
-              event.type === "turn_item.updated" &&
-              event.turnItem.type === "error" &&
-              event.turnItem.failure.resetAt === resetAt,
-          );
-          assert.isDefined(item);
         }
         if (scenario.name === "retry" || "willRetry" in scenario)
           assert.equal(terminal.retry?.attempt, 1);

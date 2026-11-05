@@ -7,6 +7,7 @@ import { mergeOlderHistoryIntoProjection } from "./threadHistoryMerge.ts";
 import { applyOrchestrationV2ProjectionEvent } from "./orchestrationV2Projection.ts";
 import { canForkProjectedCompactionItem } from "./threadWorkflows.ts";
 import { resolveV2ItemSupport } from "./itemSupport.ts";
+import { derivePendingThreadRequests } from "./threadRequests.ts";
 
 const NOW = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");
 

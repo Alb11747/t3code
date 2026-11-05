@@ -21,7 +21,6 @@ an entry.
 
 - `fix(chat): let subagent lists pass scrolling to the panel`: Lineage and side-chat lists keep their own scrolling, then let wheel and trackpad input continue through the enclosing details panel at a list boundary. The outer panel retains scroll containment. Issue: none linked. PR: none yet
 
-
 - `feat(threads): keep reference context current with thread notes`: stores a Markdown note as thread metadata, editable by agents and web, desktop, and mobile users; notes prepend opening reads by default or explicitly replace them without changing conversation history or provider input. Upstream can ignore or discard notes while retaining existing chats. Fork-only. Issue: none linked. PR: none yet
 
 - `fix(fork): accept local validation and skip CI-only releases`: records an exact-commit local validation report as the normal agent release gate, keeps hosted checks for unattended fallback, and excludes workflows, actions and fork tooling from app releases while preserving stale-source and rename checks. Fork-only. Issue: none linked. PR: none yet

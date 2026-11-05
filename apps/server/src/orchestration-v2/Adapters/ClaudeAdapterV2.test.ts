@@ -6456,7 +6456,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               receipt,
             ]);
           // A failed acknowledgement rejects the append; Claude's retry of the batch settles it.
-          const failed = yield* Effect.exit(Effect.tryPromise(append));
+          const failed = yield* Effect.exit(
+            Effect.tryPromise({ try: append, catch: (cause) => ({ _tag: "AppendFailed", cause }) }),
+          );
           assert.isTrue(Exit.isFailure(failed));
           assert.deepEqual(receipts, []);
           yield* Effect.promise(append);

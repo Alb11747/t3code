@@ -22,7 +22,6 @@ vi.mock(import("../../state/query"), async (original) => ({
       : { data: state.threadTitles, isSuccess: true, isPending: false }) as never,
 }));
 
-
 vi.mock(import("@effect/atom-react"), async (original) => ({
   ...(await original()),
   useAtomValue: (() => false) as never,
@@ -162,7 +161,6 @@ it.each([
     await expect.element(screen.getByRole("button", { name: "More thread actions" })).toBeEnabled();
   }
 });
-
 
 it.each([1, 18])("continues scrolling the panel past a list of %i subagents", async (count) => {
   setup();

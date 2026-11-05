@@ -737,7 +737,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             className: "text-warning-foreground",
           }
         : {
-            label: status === "preparing" ? "Setting up" : thread.goal?.status === "active" ? "Goal" : "Working",
+            label:
+              status === "preparing"
+                ? "Setting up"
+                : thread.goal?.status === "active"
+                  ? "Goal"
+                  : "Working",
             icon: "working" as const,
             className: "text-info-foreground",
           }

@@ -11376,16 +11376,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     ),
                   )
                 : undefined;
-            const resolved = yield* Effect.tryPromise(() =>
-              resolveClaudeSettings({
-                ...(turnInput.runtimePolicy.cwd === null
-                  ? {}
-                  : { cwd: turnInput.runtimePolicy.cwd }),
-                settingSources: customHome
-                  ? settingSources.filter((source) => source !== "user")
-                  : [...settingSources],
-              }),
-            );
+            const resolved = yield* Effect.tryPromise({
+              try: () =>
+                resolveClaudeSettings({
+                  ...(turnInput.runtimePolicy.cwd === null
+                    ? {}
+                    : { cwd: turnInput.runtimePolicy.cwd }),
+                  settingSources: customHome
+                    ? settingSources.filter((source) => source !== "user")
+                    : [...settingSources],
+                }),
+              catch: (cause) => queryRunnerError(cause, "resolveSettings"),
+            });
             const settingsEnv = {
               ...homeSettings?.env,
               ...resolved.effective.env,
