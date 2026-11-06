@@ -1477,7 +1477,7 @@ function ScopedCompactIdleThreadsRow() {
         <SettingsRow
           serverScoped
           {...searchableSetting("smart-idle-compaction")}
-          description="Before the cache expires, compact only threads something will wake later: a watched pull request or issue, running subagents or background work, or a scheduled task. Agents and the thread menu can still choose per thread."
+          description="Before cache expiry, compact only threads a watched PR or issue, subagents, background work, or a scheduled task will wake later. Agents and the thread menu can override this per thread."
           settingKeys={["smartIdleCompaction"]}
           control={
             <ScopedSwitch
