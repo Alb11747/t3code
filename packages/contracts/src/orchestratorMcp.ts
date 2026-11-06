@@ -480,6 +480,7 @@ export const OrchestratorMcpThreadTimelineItem = Schema.Struct({
   creationSource: Schema.NullOr(OrchestrationV2CreationSource),
   senderThreadId: Schema.optional(ThreadId),
   type: Schema.String,
+  phase: Schema.optional(Schema.Literals(["final_answer", "commentary"])),
   status: OrchestrationV2TurnItemStatus,
   title: Schema.NullOr(Schema.String),
   text: Schema.NullOr(Schema.String),

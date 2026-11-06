@@ -977,6 +977,9 @@ function timelineItem(input: {
     creationSource: message?.creationSource ?? null,
     ...(message?.senderThreadId === undefined ? {} : { senderThreadId: message.senderThreadId }),
     type: input.row.item.type,
+    ...(input.row.item.type === "assistant_message" && input.row.item.phase !== undefined
+      ? { phase: input.row.item.phase }
+      : {}),
     status: input.row.item.status,
     title: input.row.item.title,
     text: text === null ? null : text.slice(offset, end),

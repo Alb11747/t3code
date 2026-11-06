@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   NodeId,
+  OrchestratorMcpThreadTimelineItem,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
   ProjectId,
@@ -13,6 +14,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "vite-plus/test";
 
@@ -45,6 +47,7 @@ const cancelledRunId = RunId.make("run-mcp-cancelled");
 const childRunId = RunId.make("run-mcp-child");
 const taskId = NodeId.make("node-mcp-task-1");
 const now = DateTime.makeUnsafe("2026-08-04T12:00:00.000Z");
+const decodeTimelineItem = Schema.decodeUnknownEffect(OrchestratorMcpThreadTimelineItem);
 const codexDriver = ProviderDriverKind.make("codex");
 
 const customCodexInstanceId = ProviderInstanceId.make("codex-custom-workspace");
@@ -359,24 +362,26 @@ it("readThread and sendToThread reach threads in other projects", async () => {
         projectId: foreignProjectId,
       },
       runs: [],
-      visibleTurnItems: [
-        {
-          position: 0,
+      visibleTurnItems: (["final_answer", "commentary", undefined, "final_answer"] as const).map(
+        (phase, position) => ({
+          position,
           visibility: "inherited",
           sourceThreadId: threadId,
-          sourceItemId: "item-1",
+          sourceItemId: `item-${position}`,
           item: {
-            id: "item-1",
-            type: "assistant_message",
-            messageId: "assistant-1",
+            id: `item-${position}`,
+            type: position === 3 ? "user_message" : "assistant_message",
+            messageId: `message-${position}`,
+            runId: activeRunId,
+            ...(phase === undefined ? {} : { phase }),
             status: "completed",
             title: null,
             text: "Foreign thread said hello",
             createdAt: now,
             updatedAt: now,
           },
-        },
-      ],
+        }),
+      ),
       runtimeRequests: [],
       messages: [],
       contextTransfers: [],
@@ -401,12 +406,18 @@ it("readThread and sendToThread reach threads in other projects", async () => {
                   ? parentShell
                   : null,
             ),
-          getTimelinePage: (threadId) =>
-            Effect.succeed({
-              items: foreignProjection(threadId).visibleTurnItems,
-              totalItems: 1,
-              hasMore: false,
-            }),
+          getTimelinePage: (threadId, options) => {
+            const rows = foreignProjection(threadId).visibleTurnItems.filter((row) =>
+              options.itemId === undefined
+                ? row.position > (options.afterPosition ?? -1)
+                : row.sourceItemId === options.itemId,
+            );
+            return Effect.succeed({
+              items: rows.slice(0, options.limit),
+              totalItems: 4,
+              hasMore: rows.length > options.limit,
+            });
+          },
           getProjectThreadRecords: (input) =>
             input.threadId === foreignThreadId && input.projectId === foreignProjectId
               ? Effect.succeed(foreignProjection(input.threadId))
@@ -455,7 +466,51 @@ it("readThread and sendToThread reach threads in other projects", async () => {
     const foreign = yield* service.readThread(makeScope(), { threadId: foreignThreadId });
     expect(foreign.thread.threadId).toBe(foreignThreadId);
     expect(foreign.thread.projectId).toBe(foreignProjectId);
-    expect(foreign.items.map((item) => item.text)).toEqual(["Foreign thread said hello"]);
+    expect(foreign.items.map((item) => item.text)).toEqual(
+      Array.from({ length: 4 }, () => "Foreign thread said hello"),
+    );
+    for (const view of ["messages", "activity"] as const) {
+      for (let position = 0; position < 4; position += 1) {
+        const page = yield* service.readThread(makeScope(), {
+          threadId: foreignThreadId,
+          view,
+          ...(position === 0 ? {} : { afterPosition: position - 1 }),
+          limit: 1,
+          maxCharsPerItem: 7,
+        });
+        expect(page.items).toHaveLength(1);
+        const item = yield* decodeTimelineItem(page.items[0]);
+        expect(item).toMatchObject({
+          itemId: `item-${position}`,
+          messageId: `message-${position}`,
+          sourceThreadId: foreignThreadId,
+          runId: activeRunId,
+          text: "Foreign",
+          textTruncated: true,
+          nextTextOffset: 7,
+        });
+        if (position < 2) expect(item.phase).toBe(position === 0 ? "final_answer" : "commentary");
+        else expect(item).not.toHaveProperty("phase");
+        if (position === 0) {
+          const continuation = yield* service.readThread(makeScope(), {
+            threadId: foreignThreadId,
+            view,
+            itemId: item.itemId,
+            textOffset: 7,
+            maxCharsPerItem: 50,
+          });
+          expect(continuation.items[0]).toMatchObject({
+            itemId: item.itemId,
+            phase: "final_answer",
+            text: " thread said hello",
+            textTruncated: false,
+            nextTextOffset: null,
+          });
+        }
+        expect(page.nextPosition).toBe(position);
+        expect(page.hasMore).toBe(position < 3);
+      }
+    }
 
     const sent = yield* service.sendToThread(makeScope(), {
       threadId: foreignThreadId,
