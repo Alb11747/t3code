@@ -4,6 +4,7 @@ import {
   ProviderThreadId,
   ThreadId,
   NodeId,
+  RunId,
   type OrchestrationV2ProviderThread,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -73,7 +74,10 @@ describe("resume compaction", () => {
       {
         ...source,
         id: ProviderThreadId.make("codex"),
+        driver: ProviderDriverKind.make("codex"),
         providerInstanceId: ProviderInstanceId.make("codex"),
+        firstRunOrdinal: 2,
+        lastRunOrdinal: 2,
         updatedAt: newest,
       },
       {
@@ -90,7 +94,7 @@ describe("resume compaction", () => {
       },
     ];
     expect(
-      resolveResumeCompactionProviderThread({ providerThreads, threadId, instanceId }),
+      resolveResumeCompactionProviderThread({ providerThreads, runs: [], threadId, instanceId }),
     ).toEqual(replacement);
     const mostRecentlyRun = { ...source, lastRunOrdinal: 2 };
     expect(
@@ -98,6 +102,7 @@ describe("resume compaction", () => {
         providerThreads: providerThreads.map((thread) =>
           thread === source ? mostRecentlyRun : thread,
         ),
+        runs: [],
         threadId,
         instanceId,
       }),
@@ -105,10 +110,67 @@ describe("resume compaction", () => {
     expect(
       resolveResumeCompactionProviderThread({
         providerThreads,
+        runs: [],
         threadId,
         instanceId: ProviderInstanceId.make("claude-new"),
       }),
     ).toBeNull();
+    expect(
+      resolveResumeCompactionProviderThread({
+        providerThreads,
+        runs: [
+          {
+            ordinal: 2,
+            freshContext: true,
+            status: "completed",
+            startedAt: newest,
+          },
+        ],
+        threadId,
+        instanceId,
+      }),
+    ).toBeNull();
+    for (const { expected, ...run } of [
+      { status: "queued", startedAt: null, expected: replacement },
+      { status: "cancelled", startedAt: null, expected: replacement },
+      { status: "cancelled", startedAt: newest, expected: null },
+      {
+        status: "cancelled",
+        startedAt: null,
+        restartContinuationOfRunId: RunId.make("continued-run"),
+        expected: null,
+      },
+    ] as const) {
+      expect(
+        resolveResumeCompactionProviderThread({
+          providerThreads,
+          runs: [{ ordinal: 2, freshContext: true, ...run }],
+          threadId,
+          instanceId,
+        }),
+      ).toEqual(expected);
+    }
+    const freshClaude = {
+      ...replacement,
+      id: ProviderThreadId.make("claude-after-clear"),
+      firstRunOrdinal: 2,
+      lastRunOrdinal: 2,
+    };
+    expect(
+      resolveResumeCompactionProviderThread({
+        providerThreads: [
+          ...providerThreads,
+          { ...replacement, firstRunOrdinal: null },
+          freshClaude,
+        ],
+        runs: [
+          { ordinal: 2, freshContext: true, status: "completed", startedAt: newest },
+          { ordinal: 3, freshContext: true, status: "queued", startedAt: null },
+        ],
+        threadId,
+        instanceId,
+      }),
+    ).toEqual(freshClaude);
   });
 
   it("shows the suggestion only for the matching Claude destination", () => {

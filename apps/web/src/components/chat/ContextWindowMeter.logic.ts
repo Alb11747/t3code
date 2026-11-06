@@ -2,6 +2,7 @@ import type {
   ModelSelection,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderTurn,
+  OrchestrationV2Run,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
@@ -85,17 +86,35 @@ export function resolveResumeCompactionContext(input: {
 
 export function resolveResumeCompactionProviderThread(input: {
   readonly providerThreads: ReadonlyArray<OrchestrationV2ProviderThread>;
+  readonly runs: ReadonlyArray<
+    Pick<
+      OrchestrationV2Run,
+      "ordinal" | "freshContext" | "status" | "startedAt" | "restartContinuationOfRunId"
+    >
+  >;
   readonly threadId: ThreadId;
   readonly instanceId: ProviderInstanceId | null;
 }): OrchestrationV2ProviderThread | null {
-  // Match the retained root conversation chosen by ProviderSwitchService.
+  // Match Orchestrator's retained root selection across fresh-session boundaries.
+  let boundary = 0;
+  for (const run of input.runs) {
+    const cancelledBeforeStart =
+      run.status === "cancelled" &&
+      run.startedAt === null &&
+      run.restartContinuationOfRunId === undefined;
+    if (run.freshContext === true && run.status !== "queued" && !cancelledBeforeStart) {
+      boundary = Math.max(boundary, run.ordinal);
+    }
+  }
   return (
     input.providerThreads
       .filter(
         (thread) =>
           thread.appThreadId === input.threadId &&
           thread.ownerNodeId === null &&
-          thread.providerInstanceId === input.instanceId,
+          thread.providerInstanceId === input.instanceId &&
+          (boundary === 0 ||
+            (thread.firstRunOrdinal !== null && thread.firstRunOrdinal >= boundary)),
       )
       .toSorted(
         (left, right) =>

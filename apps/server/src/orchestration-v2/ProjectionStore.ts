@@ -3409,6 +3409,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               AND (status IN ('queued','preparing','starting','running','waiting')
                 OR run_id IN (SELECT value FROM json_each(${cohortRunIds}))
                 OR run_id = ${window.requiredRunId ?? null}
+                OR run_id = (
+                  SELECT run_id FROM orchestration_v2_projection_runs
+                  WHERE thread_id = ${threadId}
+                    AND json_extract(payload_json, '$.freshContext') = 1
+                    AND status <> 'queued'
+                    AND (status <> 'cancelled'
+                      OR json_extract(payload_json, '$.startedAt') IS NOT NULL
+                      OR json_extract(payload_json, '$.restartContinuationOfRunId') IS NOT NULL)
+                  ORDER BY ordinal DESC
+                  LIMIT 1
+                )
                 -- Queued or cancelled turns must not hide the latest actual session.
                 OR run_id = ${latestTodoList?.run_id ?? null}
                 OR run_id = (

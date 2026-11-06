@@ -888,6 +888,7 @@ export function useComposerSend(input: ComposerSendInput) {
       )?.projection;
       const destination = resolveResumeCompactionProviderThread({
         providerThreads: projection?.providerThreads ?? [],
+        runs: projection?.runs ?? [],
         threadId: threadIdForSend,
         instanceId: ctxSelectedModelSelection.instanceId,
       });

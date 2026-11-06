@@ -2535,6 +2535,7 @@ export default function ChatView(props: ChatViewProps) {
     : null;
   const resumeCompactionProviderThread = resolveResumeCompactionProviderThread({
     providerThreads: serverProjection?.providerThreads ?? [],
+    runs: serverProjection?.runs ?? [],
     threadId,
     instanceId: activeProviderInstanceId,
   });

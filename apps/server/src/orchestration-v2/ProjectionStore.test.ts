@@ -2828,6 +2828,45 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           [baselineId],
         );
       }
+      for (const run of [
+        { ordinal: 2, status: "completed", startedAt: nowIso },
+        { ordinal: 3, status: "cancelled", startedAt: null },
+        { ordinal: 4, status: "queued", startedAt: null },
+      ]) {
+        yield* sql`
+          UPDATE orchestration_v2_projection_runs
+          SET status = ${run.status}, payload_json = json_set(payload_json,
+            '$.freshContext', json('true'), '$.status', ${run.status}, '$.startedAt', ${run.startedAt})
+          WHERE thread_id = ${threadId} AND ordinal = ${run.ordinal}
+        `;
+      }
+      const { statements: clearedStatements, tracer: clearedTracer } = traceSqlStatements();
+      const cleared = yield* projectionStore
+        .getThreadSnapshotWindow(threadId, { rowLimit: 76 })
+        .pipe(Effect.withTracer(clearedTracer));
+      assert.include(
+        cleared.projection.runs.map((run) => run.ordinal),
+        2,
+      );
+      assert.notInclude(
+        cleared.projection.runs.map((run) => run.ordinal),
+        3,
+      );
+      assert.strictEqual(cleared.projection.turnItems[0]?.ordinal, 925);
+      const boundaryQuery = clearedStatements.find((statement) =>
+        statement.includes("freshContext"),
+      );
+      assert.isDefined(boundaryQuery);
+      const boundaryPlan = yield* sql.unsafe<{ readonly detail: string }>(
+        `EXPLAIN QUERY PLAN ${boundaryQuery}`,
+      );
+      assert.isTrue(boundaryPlan.some((row) => row.detail.includes("fork_runs_fresh_context_idx")));
+      yield* sql`
+        UPDATE orchestration_v2_projection_runs
+        SET status = 'completed', payload_json = json_remove(json_set(payload_json,
+          '$.status', 'completed', '$.startedAt', ${nowIso}), '$.freshContext')
+        WHERE thread_id = ${threadId} AND ordinal IN (2, 3, 4)
+      `;
       const humanWindow = () =>
         projectionStore.getThreadSnapshotWindow(threadId, {
           rowLimit: 77,
