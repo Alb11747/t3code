@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  MessageId,
   NodeId,
   OrchestratorMcpThreadTimelineItem,
   type OrchestrationV2ThreadProjection,
@@ -10,6 +11,7 @@ import {
   RunId,
   ScheduledTaskId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -122,6 +124,13 @@ function makeRun(input: {
 
 it("readThread preserves caller access errors and prefers activity-run status over a newer cancelled queued run", async () => {
   let callerUnavailable = false;
+  const messageId = MessageId.make("message:old-run");
+  let scopedRunId: RunId | null = activeRunId;
+  let scopedMatches = 1;
+  const runs = [
+    makeRun({ id: activeRunId, ordinal: 1, status: "running" }),
+    makeRun({ id: cancelledRunId, ordinal: 2, status: "cancelled" }),
+  ];
   const projection = {
     thread: baseThread({
       threadId: parentThreadId,
@@ -129,10 +138,7 @@ it("readThread preserves caller access errors and prefers activity-run status ov
       instanceId: parentInstanceId,
       model: "gpt-5.4",
     }),
-    runs: [
-      makeRun({ id: activeRunId, ordinal: 1, status: "running" }),
-      makeRun({ id: cancelledRunId, ordinal: 2, status: "cancelled" }),
-    ],
+    runs,
     visibleTurnItems: [],
     runtimeRequests: [],
     messages: [],
@@ -145,7 +151,22 @@ it("readThread preserves caller access errors and prefers activity-run status ov
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
+          getTimelinePage: (_threadId, options) =>
+            Effect.succeed({
+              items: [],
+              totalItems: 300,
+              hasMore: false,
+              ...(options.forMessageId === undefined
+                ? {}
+                : {
+                    messageScope: {
+                      messageId: options.forMessageId,
+                      inputMatches: scopedMatches,
+                      runId: scopedRunId,
+                      itemCount: 0,
+                    },
+                  }),
+            }),
           getThreadRecords: (threadId) =>
             callerUnavailable
               ? Effect.fail(
@@ -194,10 +215,65 @@ it("readThread preserves caller access errors and prefers activity-run status ov
     expect(result.thread.status).toBe("running");
     expect(result.thread.latestRunId).toBe(cancelledRunId);
     expect(result.thread.activeRunId).toBe(activeRunId);
+    expect(result).not.toHaveProperty("messageScope");
+    runs.push(
+      ...Array.from({ length: 60 }, (_, index) =>
+        makeRun({ id: RunId.make(`run:newer:${index}`), ordinal: index + 3, status: "completed" }),
+      ),
+    );
+    const scoped = yield* service.readThread(makeScope(), {
+      threadId: parentThreadId,
+      view: "activity",
+      forMessageId: messageId,
+      runLimit: 1,
+    });
+    expect(scoped.recentRuns.map((run) => run.runId)).toEqual([activeRunId]);
+    expect(scoped.messageScope).toEqual({
+      messageId,
+      inputMatches: 1,
+      runId: activeRunId,
+      itemCount: 0,
+    });
+    for (const [matches, runId] of [
+      [0, null],
+      [2, null],
+      [1, null],
+      [1, RunId.make("run:missing")],
+    ] as const) {
+      scopedMatches = matches;
+      scopedRunId = runId;
+      const unresolved = yield* service.readThread(makeScope(), {
+        threadId: parentThreadId,
+        view: "activity",
+        forMessageId: messageId,
+      });
+      expect(unresolved.recentRuns).toEqual([]);
+    }
+    for (const incompatible of [
+      {},
+      { view: "messages" as const },
+      { view: "activity" as const, itemId: TurnItemId.make("item:conflict") },
+    ]) {
+      const invalid = yield* service
+        .readThread(makeScope(), {
+          threadId: parentThreadId,
+          forMessageId: messageId,
+          ...incompatible,
+        })
+        .pipe(Effect.flip);
+      expect(invalid.code).toBe("invalid_argument");
+    }
 
     callerUnavailable = true;
     const denied = yield* service
-      .readThread({ ...makeScope(), capabilities: new Set() }, { threadId: parentThreadId })
+      .readThread(
+        { ...makeScope(), capabilities: new Set() },
+        {
+          threadId: parentThreadId,
+          forMessageId: messageId,
+          view: "activity",
+        },
+      )
       .pipe(Effect.flip);
     expect(denied.code).toBe("capability_denied");
     const missingCaller = yield* service
@@ -209,6 +285,7 @@ it("readThread preserves caller access errors and prefers activity-run status ov
 });
 
 it("taskStatus returns task.providerInstanceId rather than the driver kind", async () => {
+  let evidenceLookup = false;
   const parentProjection = {
     thread: baseThread({
       threadId: parentThreadId,
@@ -263,12 +340,15 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
       createdBy: "agent",
     },
     runs: [
-      makeRun({
-        id: childRunId,
-        ordinal: 1,
-        status: "running",
-        instanceId: customCodexInstanceId,
-      }),
+      {
+        ...makeRun({
+          id: childRunId,
+          ordinal: 1,
+          status: "running",
+          instanceId: customCodexInstanceId,
+        }),
+        delegatedTaskId: taskId,
+      },
     ],
     visibleTurnItems: [],
     runtimeRequests: [],
@@ -290,8 +370,50 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
-          getThreadRecords: (threadId) => {
+          getTimelinePage: (_threadId, options) =>
+            Effect.succeed({
+              items: [
+                {
+                  position: 280,
+                  sourceThreadId: childThreadId,
+                  sourceItemId: TurnItemId.make("item:evidence-activity"),
+                  visibility: "local" as const,
+                  item: {
+                    id: TurnItemId.make("item:evidence-activity"),
+                    threadId: childThreadId,
+                    runId: childRunId,
+                    nodeId: null,
+                    providerThreadId: null,
+                    providerTurnId: null,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal: 1,
+                    status: "completed" as const,
+                    title: null,
+                    startedAt: now,
+                    completedAt: now,
+                    updatedAt: now,
+                    type: "command_execution" as const,
+                    input: "inspect fixture",
+                  },
+                },
+              ],
+              totalItems: 281,
+              hasMore: false,
+              messageScope: {
+                messageId: options.forMessageId!,
+                inputMatches: 1,
+                runId: childRunId,
+                itemCount: 2,
+              },
+            }),
+          getThreadShell: () =>
+            Effect.succeed(childProjection.thread as unknown as OrchestrationV2ThreadShell),
+          getProjectThreadRecords: () => Effect.succeed(childProjection),
+          getThreadRecords: (threadId, fields) => {
+            if (evidenceLookup && fields?.some((field) => field === "subagents")) {
+              return Effect.die("Evidence reads must not enter task-result delivery");
+            }
             if (threadId === parentThreadId) return Effect.succeed(parentProjection);
             if (threadId === childThreadId) return Effect.succeed(childProjection);
             return Effect.die(`unexpected thread ${threadId}`);
@@ -323,6 +445,15 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
     expect(result.status).toBe("running");
     expect(result.taskId).toBe(taskId);
     expect(result.childThreadId).toBe(childThreadId);
+    evidenceLookup = true;
+    const evidence = yield* service.readThread(makeScope(), {
+      threadId: childThreadId,
+      view: "activity",
+      forMessageId: MessageId.make("message:evidence"),
+      afterPosition: 279,
+    });
+    expect(evidence.items[0]?.text).toBe("$ inspect fixture");
+    expect(evidence.recentRuns.map((run) => run.runId)).toEqual([childRunId]);
   }).pipe(Effect.provide(layer), Effect.runPromise);
 });
 
@@ -416,6 +547,16 @@ it("readThread and sendToThread reach threads in other projects", async () => {
               items: rows.slice(0, options.limit),
               totalItems: 4,
               hasMore: rows.length > options.limit,
+              ...(options.forMessageId === undefined
+                ? {}
+                : {
+                    messageScope: {
+                      messageId: options.forMessageId,
+                      inputMatches: 1,
+                      runId: activeRunId,
+                      itemCount: 4,
+                    },
+                  }),
             });
           },
           getProjectThreadRecords: (input) =>
@@ -469,11 +610,15 @@ it("readThread and sendToThread reach threads in other projects", async () => {
     expect(foreign.items.map((item) => item.text)).toEqual(
       Array.from({ length: 4 }, () => "Foreign thread said hello"),
     );
-    for (const view of ["messages", "activity"] as const) {
+    for (const selection of [
+      { view: "messages" },
+      { view: "activity" },
+      { view: "activity", forMessageId: MessageId.make("message-0") },
+    ] as const) {
       for (let position = 0; position < 4; position += 1) {
         const page = yield* service.readThread(makeScope(), {
           threadId: foreignThreadId,
-          view,
+          ...selection,
           ...(position === 0 ? {} : { afterPosition: position - 1 }),
           limit: 1,
           maxCharsPerItem: 7,
@@ -494,7 +639,7 @@ it("readThread and sendToThread reach threads in other projects", async () => {
         if (position === 0) {
           const continuation = yield* service.readThread(makeScope(), {
             threadId: foreignThreadId,
-            view,
+            view: selection.view,
             itemId: item.itemId,
             textOffset: 7,
             maxCharsPerItem: 50,

@@ -407,6 +407,10 @@ export const OrchestratorMcpThreadReadInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   itemId: Schema.optional(TurnItemId),
+  forMessageId: Schema.optional(MessageId).annotate({
+    description:
+      "Exact visible message ID. Requires activity view and no itemId; pages only its source/run activity without acknowledging task delivery.",
+  }),
   textOffset: Schema.optional(NonNegativeInt),
   view: Schema.optional(Schema.Literals(["messages", "activity"])),
   afterPosition: Schema.optional(NonNegativeInt),
@@ -496,6 +500,14 @@ export const OrchestratorMcpThreadReadResult = Schema.Struct({
   items: Schema.Array(OrchestratorMcpThreadTimelineItem),
   nextPosition: Schema.NullOr(NonNegativeInt),
   hasMore: Schema.Boolean,
+  messageScope: Schema.optional(
+    Schema.Struct({
+      messageId: MessageId,
+      inputMatches: NonNegativeInt,
+      runId: Schema.NullOr(RunId),
+      itemCount: NonNegativeInt,
+    }),
+  ),
 });
 export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadResult.Type;
 
@@ -869,6 +881,7 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "thread_not_sendable",
       "thread_not_interruptible",
       "invalid_request",
+      "invalid_argument",
       "orchestration_error",
       "thread_credential_required",
       "target_required",

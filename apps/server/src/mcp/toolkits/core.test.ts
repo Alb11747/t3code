@@ -915,6 +915,39 @@ it.effect("discovers workflow stop targets and requires orchestration capability
     expect(read.isError).toBe(false);
     const result = yield* decodeThreadReadResult(read.structuredContent);
     expect(result.items[0]?.subagentId).toBe(subagentId);
+    const scopedRead = (arguments_: Record<string, unknown>, capabilities = scope.capabilities) =>
+      server
+        .callTool({
+          name: "t3_thread_read",
+          arguments: {
+            threadId,
+            forMessageId: "message:missing",
+            ...arguments_,
+          },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, {
+            ...scope,
+            capabilities,
+          }),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+    const scoped = yield* scopedRead({ view: "activity" });
+    expect(scoped.isError).toBe(false);
+    const scopedResult = yield* decodeThreadReadResult(scoped.structuredContent);
+    expect(scopedResult.items).toEqual([]);
+    expect(scopedResult.messageScope).toEqual({
+      messageId: "message:missing",
+      inputMatches: 0,
+      runId: null,
+      itemCount: 0,
+    });
+    for (const selectors of [{}, { view: "messages" }, { view: "activity", itemId }]) {
+      expect(declaredFailure(yield* scopedRead(selectors)).code).toBe("invalid_argument");
+    }
+    expect(declaredFailure(yield* scopedRead({ view: "activity" }, new Set())).code).toBe(
+      "capability_denied",
+    );
     const call = (invocation: McpInvocationContext.McpInvocationScope) =>
       server
         .callTool({
@@ -941,7 +974,22 @@ it.effect("discovers workflow stop targets and requires orchestration capability
             getThreadShell: (id) => Effect.succeed(McpToolAccessTestkit.liveThreadShell(id)),
             getProjectThreadRecords: () =>
               Effect.succeed(McpToolAccessTestkit.idleThreadProjection(shell)),
-            getTimelinePage: () => Effect.succeed({ items: [row], totalItems: 1, hasMore: false }),
+            getTimelinePage: (_id, options) =>
+              Effect.succeed({
+                items: options.forMessageId === undefined ? [row] : [],
+                totalItems: 1,
+                hasMore: false,
+                ...(options.forMessageId === undefined
+                  ? {}
+                  : {
+                      messageScope: {
+                        messageId: options.forMessageId,
+                        inputMatches: 0,
+                        runId: null,
+                        itemCount: 0,
+                      },
+                    }),
+              }),
             stopWorkflow: (input) =>
               Effect.sync(() => {
                 stopped.push(input);

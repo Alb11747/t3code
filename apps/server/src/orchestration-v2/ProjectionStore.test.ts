@@ -750,6 +750,150 @@ const addOrphanedRecoveryCandidate = Effect.fn("addOrphanedRecoveryCandidate")(f
   return threadId;
 });
 
+it.effect("message scopes select the complete source-run interval before sparse pagination", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = yield* addOrphanedRecoveryCandidate("message-scope");
+    const otherThreadId = yield* addOrphanedRecoveryCandidate("message-scope-other");
+    const now = yield* DateTime.now;
+    const runId = RunId.make("run:message-scope:target");
+    const messageId = MessageId.make("message:message-scope:input");
+    const addItem = Effect.fnUntraced(function* (
+      owner: ThreadId,
+      ordinal: number,
+      itemRunId: RunId | null,
+      inputMessageId: MessageId,
+      type: "user_message" | "assistant_message" | "command_execution" = "user_message",
+    ) {
+      yield* store.apply({
+        id: EventId.make(`event:${owner}:${ordinal}`),
+        type: "turn-item.updated",
+        threadId: owner,
+        occurredAt: now,
+        payload: {
+          id: TurnItemId.make(`item:${owner}:${ordinal}`),
+          threadId: owner,
+          runId: itemRunId,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal,
+          status: "completed",
+          title: null,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          ...(type === "user_message"
+            ? {
+                type,
+                messageId: inputMessageId,
+                text: "input",
+                attachments: [],
+                createdBy: "user",
+                creationSource: "mcp",
+                inputIntent: "turn_start",
+              }
+            : type === "assistant_message"
+              ? { type, messageId: inputMessageId, text: "answer", streaming: false }
+              : { type, input: "inspect fixture" }),
+        },
+      });
+    });
+    yield* addItem(threadId, 2, runId, messageId);
+    for (let ordinal = 3; ordinal < 264; ordinal += 1) {
+      yield* addItem(
+        threadId,
+        ordinal,
+        ordinal === 3 ? runId : RunId.make(`run:unrelated:${ordinal}`),
+        MessageId.make(`message:unrelated:${ordinal}`),
+        ordinal === 3 ? "command_execution" : "user_message",
+      );
+    }
+    const answerId = MessageId.make("message:message-scope:answer");
+    yield* addItem(threadId, 264, runId, answerId, "assistant_message");
+    yield* addItem(otherThreadId, 2, runId, MessageId.make("message:other-source"));
+    const options = { view: "activity" as const, forMessageId: messageId, limit: 1 };
+    const first = yield* store.getTimelinePage(threadId, options);
+    assert.deepEqual(first.messageScope, { messageId, inputMatches: 1, runId, itemCount: 3 });
+    assert.deepEqual(
+      first.items.map((row) => row.position),
+      [1],
+    );
+    assert.isTrue(first.hasMore);
+    assert.equal(first.totalItems, 264);
+    const second = yield* store.getTimelinePage(threadId, { ...options, afterPosition: 1 });
+    assert.deepEqual(
+      second.items.map((row) => row.position),
+      [2],
+    );
+    assert.equal(second.items[0]?.item.type, "command_execution");
+    assert.deepEqual(second.messageScope, first.messageScope);
+    assert.isTrue(second.hasMore);
+    const third = yield* store.getTimelinePage(threadId, { ...options, afterPosition: 2 });
+    assert.deepEqual(
+      third.items.map((row) => row.position),
+      [263],
+    );
+    assert.deepEqual(third.messageScope, first.messageScope);
+    assert.isFalse(third.hasMore);
+    const exhausted = yield* store.getTimelinePage(threadId, { ...options, afterPosition: 263 });
+    assert.deepEqual(exhausted.items, []);
+    assert.deepEqual(exhausted.messageScope, first.messageScope);
+    assert.isFalse(exhausted.hasMore);
+    for (const absentId of [MessageId.make("absent"), MessageId.make("message:other-source")]) {
+      const absent = yield* store.getTimelinePage(threadId, { ...options, forMessageId: absentId });
+      assert.deepEqual(absent.items, []);
+      assert.deepEqual(absent.messageScope, {
+        messageId: absentId,
+        inputMatches: 0,
+        runId: null,
+        itemCount: 0,
+      });
+    }
+    const wrongType = yield* store.getTimelinePage(threadId, {
+      ...options,
+      forMessageId: answerId,
+      limit: 100,
+    });
+    assert.deepEqual(wrongType.messageScope, {
+      messageId: answerId,
+      inputMatches: 1,
+      runId,
+      itemCount: 3,
+    });
+    assert.equal(wrongType.items[2]?.item.type, "assistant_message");
+    const nullRunId = MessageId.make("message:null-run");
+    yield* addItem(threadId, 265, null, nullRunId);
+    const nullRun = yield* store.getTimelinePage(threadId, { ...options, forMessageId: nullRunId });
+    assert.deepEqual(nullRun.messageScope, {
+      messageId: nullRunId,
+      inputMatches: 1,
+      runId: null,
+      itemCount: 1,
+    });
+    yield* addItem(threadId, 266, runId, messageId, "assistant_message");
+    const duplicate = yield* store.getTimelinePage(threadId, { ...options, limit: 100 });
+    assert.deepEqual(duplicate.messageScope, {
+      messageId,
+      inputMatches: 2,
+      runId: null,
+      itemCount: 2,
+    });
+    assert.deepEqual(
+      duplicate.items.map((row) => row.position),
+      [1, 265],
+    );
+    const duplicatePage = yield* store.getTimelinePage(threadId, { ...options, afterPosition: 1 });
+    assert.deepEqual(duplicatePage.messageScope, duplicate.messageScope);
+    assert.deepEqual(
+      duplicatePage.items.map((row) => row.position),
+      [265],
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
 const restartCancelledWorkSurvivesStaleRunUpdate = Effect.gen(function* () {
   const store = yield* ProjectionStore.ProjectionStoreV2;
   const threadId = yield* addRolledBackRecoveryCandidate("restart-cancelled-work-stale-update");
@@ -6156,6 +6300,25 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       });
       assert.deepEqual(followingPage.items, targetAfterRollback.visibleTurnItems.slice(2));
       assert.isFalse(followingPage.hasMore);
+      const inheritedMessageId = MessageId.make("message:projection-fork-source-rollback:user:2");
+      const inheritedScope = yield* projectionStore.getTimelinePage(targetThreadId, {
+        view: "activity",
+        forMessageId: inheritedMessageId,
+        limit: 10,
+      });
+      assert.deepEqual(inheritedScope.messageScope, {
+        messageId: inheritedMessageId,
+        inputMatches: 1,
+        runId: sourceRun2Id,
+        itemCount: 2,
+      });
+      assert.deepEqual(
+        inheritedScope.items.map((row) => [row.position, row.sourceThreadId]),
+        [
+          [2, sourceThreadId],
+          [3, sourceThreadId],
+        ],
+      );
 
       assert.deepEqual(
         targetAfterRollback.visibleTurnItems.map((row) => [
