@@ -30,7 +30,7 @@ const make = Effect.gen(function* () {
         Effect.mapError((cause) => new IssueWatchFailedError({ detail: cause.message, cause })),
       );
     if (thread === null || thread.deletedAt !== null) {
-      return yield* threadNotFound();
+      return yield* threadNotFound(engine, threadId, `Thread ${threadId} was not found.`);
     }
     const parsed = parseIssueUrl(input.url);
     if (parsed.kind === "pull-request") {

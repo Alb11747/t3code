@@ -368,6 +368,17 @@ it.effect.each([
           (message) => message.id === input.messageId,
         )?.atToolBoundary,
       ).toBe(true);
+      const fresh = yield* messages.sendToThread({
+        ...input,
+        commandId: CommandId.make("command:fresh-boundary"),
+        messageId: MessageId.make("message:fresh-boundary"),
+        freshContext: true,
+        contextPolicy: "compact",
+      });
+      expect(fresh.delivery).toBe("queued");
+      expect(fresh.run.providerThreadId).not.toBe(retained.id);
+      expect(fresh.run.afterCompactionMessageId).toBeUndefined();
+      expect(fresh.message.atToolBoundary).not.toBe(true);
     }
     if (scenario === "busy-queue") {
       expect(sent.delivery).toBe("queued");

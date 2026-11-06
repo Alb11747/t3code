@@ -812,6 +812,7 @@ function agentUpdateWantsPromptDelivery(
 ): boolean {
   return (
     command.createdBy === "agent" &&
+    command.freshContext !== true &&
     command.dispatchMode.type !== "queue_after_active" &&
     command.attachments.length === 0 &&
     command.notification === undefined &&
