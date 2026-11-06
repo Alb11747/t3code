@@ -977,6 +977,9 @@ function timelineItem(input: {
     creationSource: message?.creationSource ?? null,
     ...(message?.senderThreadId === undefined ? {} : { senderThreadId: message.senderThreadId }),
     type: input.row.item.type,
+    ...(input.row.item.type === "assistant_message" && input.row.item.phase !== undefined
+      ? { phase: input.row.item.phase }
+      : {}),
     status: input.row.item.status,
     title: input.row.item.title,
     text: text === null ? null : text.slice(offset, end),
@@ -2944,6 +2947,15 @@ const make = Effect.gen(function* () {
     }),
     readThread: Effect.fn("OrchestratorMcpService.readThread")(function* (scope, input) {
       const { parent, target, shell } = yield* loadReadableThread(scope, input.threadId);
+      if (
+        input.forMessageId !== undefined &&
+        (input.itemId !== undefined || input.view !== "activity")
+      ) {
+        return yield* failure(
+          "invalid_argument",
+          "forMessageId requires activity view and cannot be combined with itemId.",
+        );
+      }
       const view = input.view ?? "messages";
       const afterPosition = input.afterPosition ?? -1;
       const limit = input.limit ?? DEFAULT_THREAD_READ_LIMIT;
@@ -2954,6 +2966,7 @@ const make = Effect.gen(function* () {
           limit,
           view,
           ...(input.itemId === undefined ? {} : { itemId: input.itemId }),
+          ...(input.forMessageId === undefined ? {} : { forMessageId: input.forMessageId }),
         })
         .pipe(Effect.mapError(threadManagementFailure));
       const page = timeline.items;
@@ -2978,7 +2991,7 @@ const make = Effect.gen(function* () {
         page.filter((row) => row.sourceThreadId === target.thread.id).map((row) => row.item.runId),
       );
       const tasks =
-        parent === undefined
+        parent === undefined || input.forMessageId !== undefined
           ? []
           : directAppOwnedChildTasks(
               {
@@ -3036,7 +3049,13 @@ const make = Effect.gen(function* () {
           shell,
           yield* Clock.currentTimeMillis,
         ),
-        recentRuns: target.runs
+        recentRuns: (input.forMessageId === undefined
+          ? target.runs
+          : target.runs.filter(
+              (run) =>
+                timeline.messageScope?.inputMatches === 1 && run.id === timeline.messageScope.runId,
+            )
+        )
           .toSorted((left, right) => right.ordinal - left.ordinal)
           .slice(0, input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT)
           .map(threadRun),
@@ -3050,6 +3069,7 @@ const make = Effect.gen(function* () {
         ),
         nextPosition: page.at(-1)?.position ?? null,
         hasMore: timeline.hasMore,
+        ...(timeline.messageScope === undefined ? {} : { messageScope: timeline.messageScope }),
       } satisfies OrchestratorMcpThreadReadResult;
     }),
     sendToThread: Effect.fn("OrchestratorMcpService.sendToThread")(function* (scope, input) {

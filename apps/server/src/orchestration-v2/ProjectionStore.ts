@@ -382,6 +382,7 @@ export type ProjectionRecords<K extends ProjectionRecordField> = Pick<
 export interface ProjectionTimelinePageOptions {
   readonly afterPosition?: number;
   readonly itemId?: TurnItemId;
+  readonly forMessageId?: MessageId;
   readonly view?: "messages" | "activity";
   readonly limit: number;
 }
@@ -389,6 +390,12 @@ export interface ProjectionTimelinePage {
   readonly items: ReadonlyArray<OrchestrationV2ProjectedTurnItem>;
   readonly totalItems: number;
   readonly hasMore: boolean;
+  readonly messageScope?: {
+    readonly messageId: MessageId;
+    readonly inputMatches: number;
+    readonly runId: RunId | null;
+    readonly itemCount: number;
+  };
 }
 
 export interface ShellSnapshotOptions {
@@ -5732,17 +5739,29 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         .withTransaction(
           Effect.gen(function* () {
             const index = yield* readTimelineIndex(threadId, new Set());
-            const matching = index.visible
-              .map((row, position) => ({ ...row, position }))
-              .filter((row) =>
-                options.itemId === undefined
-                  ? row.position > (options.afterPosition ?? -1) &&
-                    (options.view === "activity" ||
-                      ["user_message", "assistant_message", "proposed_plan"].includes(
-                        row.item.type,
-                      ))
-                  : row.sourceItemId === options.itemId,
-              );
+            const positioned = index.visible.map((row, position) => ({ ...row, position }));
+            const inputs =
+              options.forMessageId === undefined
+                ? undefined
+                : positioned.filter((row) => row.item.messageId === options.forMessageId);
+            const unique = inputs?.length === 1 ? inputs[0] : undefined;
+            const scoped =
+              inputs === undefined
+                ? positioned
+                : unique === undefined
+                  ? inputs
+                  : positioned.filter(
+                      (row) =>
+                        row.sourceThreadId === unique.sourceThreadId &&
+                        row.item.runId === unique.item.runId,
+                    );
+            const matching = scoped.filter((row) =>
+              options.itemId === undefined
+                ? row.position > (options.afterPosition ?? -1) &&
+                  (options.view === "activity" ||
+                    ["user_message", "assistant_message", "proposed_plan"].includes(row.item.type))
+                : row.sourceItemId === options.itemId,
+            );
             const page = matching.slice(0, options.limit);
             const items = yield* Effect.forEach(page, (row) =>
               Effect.gen(function* () {
@@ -5780,6 +5799,16 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               items,
               totalItems: index.visible.length,
               hasMore: matching.length > page.length,
+              ...(options.forMessageId === undefined
+                ? {}
+                : {
+                    messageScope: {
+                      messageId: options.forMessageId,
+                      inputMatches: inputs?.length ?? 0,
+                      runId: unique?.item.runId ?? null,
+                      itemCount: scoped.length,
+                    },
+                  }),
             };
           }),
         )
