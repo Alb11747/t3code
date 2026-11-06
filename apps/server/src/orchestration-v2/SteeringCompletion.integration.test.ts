@@ -2308,7 +2308,7 @@ it.effect.each([{ canRestart: false }, { canRestart: true }])(
 
 const goalHarness = Effect.fn("goalHarness")(function* (name: string) {
   const harness = yield* nextTurnSelectionHarness(name);
-  const send = (id: string, text: string, delivery: "queue" | "auto") =>
+  const send = (id: string, text: string, delivery: "queue" | "auto", freshContext = false) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       yield* orchestrator.dispatch({
@@ -2319,6 +2319,7 @@ const goalHarness = Effect.fn("goalHarness")(function* (name: string) {
         text,
         attachments: [],
         modelSelection: runSelection,
+        ...(freshContext ? { freshContext } : {}),
         ...(delivery === "queue"
           ? { dispatchMode: { type: "queue_after_active" } }
           : { dispatchMode: { type: "start_immediately" }, deliveryIntent: "auto" }),
@@ -2424,7 +2425,8 @@ it.effect("promotes a queued goal by stopping the running turn", () =>
   ),
 );
 
-it.effect.each(["next", "/goal ship it"])(
+// A fresh message skips compaction as its own turn, which steering a running turn would not.
+it.effect.each(["next", "/goal ship it", "fresh next"])(
   "promoting %s into a compaction stops it and sends it next",
   (promoted) =>
     Effect.scoped(
@@ -2438,7 +2440,7 @@ it.effect.each(["next", "/goal ship it"])(
           const threadId = yield* startFirstTurn;
           yield* send("compact", "/compact", "queue");
           yield* send("queued", "queued", "queue");
-          yield* send("next", promoted, "queue");
+          yield* send("next", promoted, "queue", promoted.startsWith("fresh"));
           const settled = yield* orchestrator.streamDomainEvents.pipe(
             Stream.filter(
               (event) =>

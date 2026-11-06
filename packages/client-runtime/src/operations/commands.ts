@@ -186,6 +186,8 @@ export interface StartThreadTurnInput extends ThreadCommandInput {
   readonly bootstrap?: StartThreadBootstrap;
   readonly sourceProposedPlan?: { readonly threadId: ThreadId; readonly planId: PlanId };
   readonly dispatchMode?: "auto" | "queue" | "steer" | "restart" | "start";
+  /** Start a new provider session; needs the server's `freshContext` capability. */
+  readonly freshContext?: boolean;
 }
 
 export interface InterruptThreadTurnInput extends ThreadCommandInput {
@@ -778,6 +780,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
       ...(input.sourceProposedPlan === undefined
         ? {}
         : { sourcePlanRef: input.sourceProposedPlan }),
+      ...(input.freshContext ? { freshContext: true } : {}),
       dispatchMode: { type: "start_immediately" },
     });
   }
@@ -802,6 +805,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
     ...(input.titleSeed === undefined ? {} : { titleSeed: input.titleSeed }),
     ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
     ...(input.sourceProposedPlan === undefined ? {} : { sourcePlanRef: input.sourceProposedPlan }),
+    ...(input.freshContext ? { freshContext: true } : {}),
     ...(requestedMode !== "queue" ? { deliveryIntent: requestedMode } : {}),
     dispatchMode,
   });

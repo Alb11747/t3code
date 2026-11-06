@@ -407,8 +407,7 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const platform = yield* HostProcess.Platform;
-      const delimiter = platform === "win32" ? ";" : ":";
+      const delimiter = (yield* HostProcess.Platform) === "win32" ? ";" : ":";
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-" });
       const launcher = path.join(root, "bin/t3");
       yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });

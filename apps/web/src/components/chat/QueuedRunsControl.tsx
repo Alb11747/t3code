@@ -117,8 +117,12 @@ export function QueuedRunsControl({
   const workflow = projection ? deriveThreadQueueWorkflowState(projection) : null;
   const queued = workflow?.queuedRuns ?? [];
   const activeRun = workflow?.activeRun ?? null;
-  const canPromote = workflow?.canPromoteToSteer === true;
-  const canSend = workflow?.canSendNow === true || canPromote;
+  // A fresh message starts its own turn: it may skip compaction, but not steer into a turn.
+  const canSendRun = (freshContext: boolean) =>
+    workflow?.canSendNow === true ||
+    (workflow?.canPromoteToSteer === true &&
+      (!freshContext || workflow.promoteSkipsCompaction === true));
+  const canSend = canSendRun(false);
   const queuedImageUrlById = new Map(
     queuedImageAttachmentUrls.flatMap((url, index) => {
       const resource = queuedImageAttachmentResources[index];
@@ -133,7 +137,7 @@ export function QueuedRunsControl({
       key: entry.run.id,
       delivery: entry.delivery,
       // An automatic delivery cannot steer; it can only start a turn of its own.
-      sendable: workflow?.canSendNow === true || (canPromote && !entry.automatic),
+      sendable: workflow?.canSendNow === true || (canSendRun(entry.run.freshContext === true) && !entry.automatic),
       editBlockedReason: entry.editBlockedReason,
       message: entry.message,
       runId: entry.run.id,
@@ -160,6 +164,7 @@ export function QueuedRunsControl({
       message: undefined,
       runId: null,
       messageId: null,
+      freshContext: false,
       serverIndex: null,
       text: message.text,
       editable: true,
@@ -176,7 +181,10 @@ export function QueuedRunsControl({
   ];
 
   const sendQueuedMessage = async (queuedRunId: RunId) => {
-    if (!canSend || steerInFlightRef.current) return;
+    const freshContext = queued.some(
+      ({ run }) => run.id === queuedRunId && run.freshContext === true,
+    );
+    if (!canSendRun(freshContext) || steerInFlightRef.current) return;
     steerInFlightRef.current = true;
     setBusyRunId(queuedRunId);
     if (workflow?.canSendNow) {
@@ -197,7 +205,7 @@ export function QueuedRunsControl({
   useImperativeHandle(ref, () => ({
     steerNext(repeat) {
       const next = queued[0];
-      if (!next || !canSend || (next.automatic && workflow?.canSendNow !== true)) return false;
+      if (!next || !canSendRun(next.run.freshContext === true) || (next.automatic && workflow?.canSendNow !== true)) return false;
       if (!repeat && busyRunId === null) void sendQueuedMessage(next.run.id);
       return true;
     },
