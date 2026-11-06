@@ -3412,7 +3412,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 OR run_id = (
                   SELECT run_id FROM orchestration_v2_projection_runs
                   WHERE thread_id = ${threadId}
-                    AND json_extract(payload_json, '$.freshContext') = 1
+                    AND CASE WHEN json_valid(payload_json)
+                      THEN json_extract(payload_json, '$.freshContext') = 1
+                      ELSE 0 END
                     AND status <> 'queued'
                     AND (status <> 'cancelled'
                       OR json_extract(payload_json, '$.startedAt') IS NOT NULL
