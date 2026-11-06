@@ -13,10 +13,7 @@ import { IssueWatchService } from "../../../issueWatch/IssueWatchService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
-import {
-  PullRequestThreadNotFoundError,
-  PullRequestThreadRequiredError,
-} from "../pullRequests/tools.ts";
+import { PullRequestThreadRequiredError } from "../pullRequests/tools.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -62,7 +59,6 @@ export const IssueToolError = Schema.Union([
   OrchestratorMcpFailure,
   McpCapabilityUnavailableError,
   PullRequestThreadRequiredError,
-  PullRequestThreadNotFoundError,
   IssueUrlInvalidError,
   IssueWatchFromSubagentError,
   IssueWatchFailedError,

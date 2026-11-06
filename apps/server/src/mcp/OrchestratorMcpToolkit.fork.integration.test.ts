@@ -25,6 +25,7 @@ import {
   TurnItemId,
 } from "@t3tools/contracts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -326,6 +327,7 @@ describe("orchestrator MCP toolkit", () => {
             Layer.provideMerge(
               SecretRequests.layer.pipe(
                 Layer.provide(layerMemorySecretStore),
+                Layer.provide(Layer.mock(SecretResolver.SecretResolver)({})),
                 Layer.provide(layerOrchestration),
               ),
             ),

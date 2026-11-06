@@ -247,6 +247,7 @@ function setup(
     panelAnimationsActive: false,
     panelAnimationDurationMs: 0,
     keepFullHistory: false,
+    freshSessionAvailable: false,
     resumeCompaction: {
       usedTokens: 250_000,
       providerInstanceId: sourceInstanceId,

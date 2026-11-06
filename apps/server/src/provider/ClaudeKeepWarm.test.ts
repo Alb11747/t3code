@@ -76,6 +76,7 @@ function fixture(
       Layer.succeed(SecretResolver.SecretResolver, {
         read: (references) => Effect.succeed(references.map(() => "key")),
         invalidate: () => Effect.void,
+        label: (provider) => Effect.succeed(provider),
       }),
       NodeCrypto.layer,
     ]),

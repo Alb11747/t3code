@@ -137,7 +137,9 @@ export function QueuedRunsControl({
       key: entry.run.id,
       delivery: entry.delivery,
       // An automatic delivery cannot steer; it can only start a turn of its own.
-      sendable: workflow?.canSendNow === true || (canSendRun(entry.run.freshContext === true) && !entry.automatic),
+      sendable:
+        workflow?.canSendNow === true ||
+        (canSendRun(entry.run.freshContext === true) && !entry.automatic),
       editBlockedReason: entry.editBlockedReason,
       message: entry.message,
       runId: entry.run.id,
@@ -205,7 +207,12 @@ export function QueuedRunsControl({
   useImperativeHandle(ref, () => ({
     steerNext(repeat) {
       const next = queued[0];
-      if (!next || !canSendRun(next.run.freshContext === true) || (next.automatic && workflow?.canSendNow !== true)) return false;
+      if (
+        !next ||
+        !canSendRun(next.run.freshContext === true) ||
+        (next.automatic && workflow?.canSendNow !== true)
+      )
+        return false;
       if (!repeat && busyRunId === null) void sendQueuedMessage(next.run.id);
       return true;
     },

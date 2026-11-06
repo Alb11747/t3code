@@ -5160,7 +5160,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   ) {
     if (adapterOptions.settings.autoCompactWindow !== "")
       return adapterOptions.settings.autoCompactWindow;
-    const model = compileClaudeModelSelection(modelSelection, modelCatalog).apiModelId.replace(/\[1m\]$/i, "");
+    const model = compileClaudeModelSelection(modelSelection, modelCatalog).apiModelId.replace(
+      /\[1m\]$/i,
+      "",
+    );
     const windowFrom = (settings: unknown) => {
       if (typeof settings !== "object" || settings === null) return undefined;
       const models = Reflect.get(settings, "modelSettings");
@@ -11262,7 +11265,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides) +
             (promptCaching === "disabled" ? ":prompt-caching-disabled" : "") +
             (turnInput.recovery === "drop_thinking" ? `:drop-thinking:${turnInput.attemptId}` : "");
-          const compiledSelection = compileClaudeModelSelection(turnInput.modelSelection, modelCatalog);
+          const compiledSelection = compileClaudeModelSelection(
+            turnInput.modelSelection,
+            modelCatalog,
+          );
           const resumeSessionAt =
             turnInput.recovery === "drop_thinking"
               ? undefined
@@ -11976,7 +11982,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   : yield* makeClaudeUserMessageWithAttachments({
                       text: applyClaudePromptEffortPrefix(
                         turnInput.message.text,
-                        compileClaudeModelSelection(turnInput.modelSelection, modelCatalog).promptEffort,
+                        compileClaudeModelSelection(turnInput.modelSelection, modelCatalog)
+                          .promptEffort,
                       ),
                       attachments: turnInput.message.attachments,
                       attachmentsDir,

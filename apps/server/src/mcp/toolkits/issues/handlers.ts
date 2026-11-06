@@ -6,10 +6,8 @@ import { inactive, IssueWatchService } from "../../../issueWatch/IssueWatchServi
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import {
-  PullRequestThreadNotFoundError,
-  PullRequestThreadRequiredError,
-} from "../pullRequests/tools.ts";
+import { PullRequestThreadRequiredError } from "../pullRequests/tools.ts";
+import { threadNotFound } from "../../threadAccess.ts";
 import {
   type IssueTargetInput,
   IssueUrlInvalidError,
@@ -32,7 +30,7 @@ const make = Effect.gen(function* () {
         Effect.mapError((cause) => new IssueWatchFailedError({ detail: cause.message, cause })),
       );
     if (thread === null || thread.deletedAt !== null) {
-      return yield* new PullRequestThreadNotFoundError({ threadId });
+      return yield* threadNotFound();
     }
     const parsed = parseIssueUrl(input.url);
     if (parsed.kind === "pull-request") {

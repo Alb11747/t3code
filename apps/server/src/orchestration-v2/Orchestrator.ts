@@ -1263,8 +1263,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       isProviderSwitch &&
       activeProviderThread.nativeThreadRef !== null &&
       providerSwitchPlan?.transition.type === "restart_and_resume";
-    const targetProviderThread =
-      freshContext ? undefined : isProviderSwitch && !canResumeAcrossInstances
+    const targetProviderThread = freshContext
+      ? undefined
+      : isProviderSwitch && !canResumeAcrossInstances
         ? rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0]
         : activeProviderThread;
     return { isProviderSwitch, canResumeAcrossInstances, targetProviderThread, providerSwitchPlan };
@@ -6856,7 +6857,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? yield* readHandoffItems(command.threadId, [null])
         : [];
     const { isProviderSwitch, canResumeAcrossInstances, targetProviderThread, providerSwitchPlan } =
-      yield* resolveMessageDestination(projection, modelSelection, freshContext).pipe(mapDispatchError(command));
+      yield* resolveMessageDestination(projection, modelSelection, freshContext).pipe(
+        mapDispatchError(command),
+      );
     yield* assertAgentContextChoice(command, projection, targetProviderThread);
     const sessionsToDetach = uniqueSessions([
       ...projection.providerSessions.filter(
@@ -15382,6 +15385,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const projection = yield* projectionStore.getThreadRecords(threadId, [
           "providerThreads",
           "providerSessions",
+          "runs",
         ]);
         return (yield* resolveMessageDestination(projection, modelSelection)).targetProviderThread;
       },

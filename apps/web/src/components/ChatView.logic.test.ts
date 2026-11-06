@@ -1250,7 +1250,12 @@ describe("planComposerTurn", () => {
         ...running,
         dispatchMode: "steer",
         freshContext: true,
-        resumeCompactionTokens: 120_000,
+        resumeCompaction: {
+          usedTokens: 120_000,
+          sourceUpdatedAt: 0,
+          providerInstanceId: base.selectedModelSelection.instanceId,
+          providerThreadId: base.destinationProviderThreadId,
+        },
       }),
     ).toMatchObject({
       compactBeforeSend: false,

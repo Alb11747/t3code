@@ -260,7 +260,8 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           busy: busyRunId !== null,
           // A fresh message starts its own turn: it may skip compaction, but not steer into a turn.
           canPromoteToSteer:
-            (workflow?.canPromoteToSteer ?? false) && !entry.automatic &&
+            (workflow?.canPromoteToSteer ?? false) &&
+            !entry.automatic &&
             (run.freshContext !== true || workflow?.promoteSkipsCompaction === true),
           canSendNow: workflow?.canSendNow ?? false,
           editBlocked: editBlockedReason !== null || entry.editBlockedReason !== null,
