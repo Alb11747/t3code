@@ -141,6 +141,30 @@ it.layer(NodeServices.layer)("Claude boundary saved history", (it) => {
           "From another agent (delivery batch-middle):\nMiddle update",
           "From the user (delivery batch-last):\nLast update",
         ];
+        const results = path.join(project, "native-session", "tool-results");
+        yield* fs.makeDirectory(results, { recursive: true });
+        const persistedContext = "From another agent (delivery persisted):\nSaved large update";
+        const persistedLast = "From the user (delivery persisted-last):\nLast saved update";
+        const outputPath = path.join(results, "hook-hook-large-1-additionalContext.txt");
+        yield* fs.writeFileString(
+          outputPath,
+          `New messages:\n${persistedContext}\n\n${persistedLast}`,
+        );
+        const persisted = (output: string) =>
+          `<persisted-output>\nOutput too large (29KB). Full output saved to: ${output}\n\nPreview (first 2KB):\nNew messages:\n${persistedContext.slice(0, 30)}\n...\n</persisted-output>`;
+        const outsidePath = path.join(project, "hook-hook-outside-1-additionalContext.txt");
+        yield* fs.writeFileString(
+          outsidePath,
+          "New messages:\nFrom another agent (delivery outside):\nOutside the session",
+        );
+        const wrongOwnerPath = path.join(
+          results,
+          "hook-hook-foreign-owner-1-additionalContext.txt",
+        );
+        yield* fs.writeFileString(
+          wrongOwnerPath,
+          "New messages:\nFrom another agent (delivery wrong-owner):\nAnother hook's output",
+        );
         const rows = [
           entry({ type: "queued_command", source_uuid: "saved" }),
           entry({ type: "queued_command", source_uuid: "saved" }),
@@ -156,6 +180,34 @@ it.layer(NodeServices.layer)("Claude boundary saved history", (it) => {
             content: ["New messages:\nFrom the user (delivery changed-legacy):\nChanged text"],
           }),
           entry({ type: "hook_additional_context", content: ["changed original text"] }),
+          entry({
+            type: "hook_additional_context",
+            hookName: "PostToolBatch",
+            hookEvent: "PostToolBatch",
+            toolUseID: "hook-large",
+            content: [persisted(outputPath)],
+          }),
+          entry({
+            type: "hook_additional_context",
+            hookName: "PostToolBatch",
+            hookEvent: "PostToolBatch",
+            toolUseID: "hook-outside",
+            content: [persisted(outsidePath)],
+          }),
+          entry({
+            type: "hook_additional_context",
+            hookName: "PostToolBatch",
+            hookEvent: "PostToolBatch",
+            toolUseID: "hook-wrong-owner",
+            content: [persisted(wrongOwnerPath)],
+          }),
+          entry({
+            type: "hook_additional_context",
+            hookName: "PostToolBatch",
+            hookEvent: "PostToolBatch",
+            toolUseID: "hook-missing",
+            content: [persisted(path.join(results, "hook-hook-missing-1-additionalContext.txt"))],
+          }),
           { type: "queue-operation", operation: "enqueue", content: "queued-only" },
           { type: "user", uuid: "unrelated-turn" },
         ];
@@ -183,11 +235,33 @@ it.layer(NodeServices.layer)("Claude boundary saved history", (it) => {
             },
             { id: "wrong-legacy", legacyContext: "Original saved update" },
             { id: "partial-legacy", legacyContext: legacyBatch.slice(0, 2).join("\n\n") },
+            { id: "persisted", legacyContext: persistedContext },
+            { id: "persisted-last", legacyContext: persistedLast },
+            {
+              id: "wrong-owner",
+              legacyContext: "From another agent (delivery wrong-owner):\nAnother hook's output",
+            },
+            {
+              id: "missing-file",
+              legacyContext: "From another agent (delivery missing-file):\nNot saved",
+            },
+            {
+              id: "outside",
+              legacyContext: "From another agent (delivery outside):\nOutside the session",
+            },
           ],
         });
         assert.deepEqual(
           [...saved],
-          ["saved", "legacy", "batch-first", "batch-middle", "batch-last"],
+          [
+            "saved",
+            "legacy",
+            "batch-first",
+            "batch-middle",
+            "batch-last",
+            "persisted",
+            "persisted-last",
+          ],
         );
         assert.deepEqual(
           [

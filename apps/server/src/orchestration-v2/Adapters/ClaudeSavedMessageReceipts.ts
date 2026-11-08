@@ -34,7 +34,7 @@ export const readClaudeBoundaryReceipts = Effect.fn("readClaudeBoundaryReceipts"
         Stream.decodeText,
         Stream.splitLines,
         Stream.runForEach((line) =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
             const decoded = decodeLine(line);
             if (Option.isNone(decoded)) return;
             const entry = decoded.value;
@@ -51,16 +51,49 @@ export const readClaudeBoundaryReceipts = Effect.fn("readClaudeBoundaryReceipts"
             } else if (field(attachment, "type") === "hook_additional_context") {
               const content = field(attachment, "content");
               if (!Array.isArray(content)) return;
-              const contexts = content.flatMap((context) => {
-                if (typeof context !== "string") return [];
+              const contexts: string[] = [];
+              for (let context of content) {
+                if (typeof context !== "string") continue;
+                // Claude spills large hook contexts into this session's tool-results directory.
+                const persistedPath =
+                  /^<persisted-output>\r?\nOutput too large \([^\n]+\)\. Full output saved to: (.+)\r?\n/
+                    .exec(context)?.[1]
+                    ?.trimEnd();
+                if (persistedPath !== undefined) {
+                  const toolUseId = field(attachment, "toolUseID");
+                  const hookEvent = field(attachment, "hookEvent");
+                  if (
+                    typeof toolUseId !== "string" ||
+                    (hookEvent !== "PostToolBatch" && hookEvent !== "Stop") ||
+                    path.dirname(path.resolve(persistedPath)) !==
+                      path.join(
+                        input.projectsDirectory,
+                        project,
+                        input.nativeThreadId,
+                        "tool-results",
+                      ) ||
+                    !path.basename(persistedPath).startsWith(`hook-${toolUseId}-`) ||
+                    !/^\d+-additionalContext\.txt$/.test(
+                      path.basename(persistedPath).slice(`hook-${toolUseId}-`.length),
+                    )
+                  )
+                    continue;
+                  const persisted = yield* fileSystem
+                    .readFileString(persistedPath)
+                    .pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.undefined));
+                  if (persisted === undefined) continue;
+                  context = persisted;
+                }
                 const prefix = "New messages:\n";
                 // Legacy hooks saved the complete batch as one wrapped context string.
-                return context.startsWith(prefix)
-                  ? context
-                      .slice(prefix.length)
-                      .split(/\n\n(?=From (?:the user|another agent) \(delivery [^\n)]+\):\n)/)
-                  : [context];
-              });
+                contexts.push(
+                  ...(context.startsWith(prefix)
+                    ? context
+                        .slice(prefix.length)
+                        .split(/\n\n(?=From (?:the user|another agent) \(delivery [^\n)]+\):\n)/)
+                    : [context]),
+                );
+              }
               for (const offer of offers.values()) {
                 if (offer.legacyContext !== undefined && contexts.includes(offer.legacyContext)) {
                   saved.add(offer.id);
