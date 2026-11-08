@@ -23,7 +23,12 @@ git -c credential.helper= -c 'credential.helper=!bash "$FORK_RESOLVER_CREDENTIAL
   --force-with-lease="sync/candidate:$current" "$fork_url" \
   HEAD:refs/heads/sync/candidate "+$upstream_sha:refs/heads/upstream-main"
 fork_gh issue comment "$issue_number" --repo "$fork_repo" --body-file - <"$summary_file"
-fork_gh workflow run fork-sync.yml --repo "$fork_repo" --ref main \
-  -f mode=resume -f "candidate_sha=$candidate_sha" -f "request_run_id=$1"
-jq --arg sha "$candidate_sha" --argjson now "$(date +%s)" '. + {status:"published", candidate_sha:$sha, published_at:$now}' "$ledger" | write_ledger
+checks_run_url=$(fork_gh workflow run fork-sync.yml --repo "$fork_repo" --ref main \
+  -f mode=resume -f "candidate_sha=$candidate_sha" -f "request_run_id=$1")
+checks_run_id=${checks_run_url##*/}
+valid_run_id "$checks_run_id" && [[ $checks_run_url == "https://github.com/$fork_repo/actions/runs/$checks_run_id" ]] ||
+  die "Workflow dispatch did not return its validation run URL."
+printf '%s\n' "$checks_run_url"
+jq --arg sha "$candidate_sha" --arg run "$checks_run_id" --argjson now "$(date +%s)" \
+  '. + {status:"published", candidate_sha:$sha, checks_run_id:$run, published_at:$now}' "$ledger" | write_ledger
 echo "Published candidate $candidate_sha and dispatched resume for request $1."

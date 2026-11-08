@@ -18,6 +18,9 @@ candidate_sha=$(jq -r .candidate_sha "$ledger")
 main_sha=$(jq -r .main_sha "$ledger")
 issue_number=$(jq -r .issue_number "$ledger")
 published_at=$(jq -r .published_at "$ledger")
+checks_run_id=$(jq -r '.checks_run_id // empty' "$ledger")
+valid_run_id "$checks_run_id" || die "Published request is missing its validation run ID; republish the candidate."
+checks_run_url="https://github.com/$fork_repo/actions/runs/$checks_run_id"
 # Waiting does not touch the checkout or ledgers, so let other helpers run.
 flock -u 9
 
@@ -45,11 +48,12 @@ deadline=$((SECONDS + ${FORK_SETTLE_TIMEOUT:-3600}))
 requested_review=false
 settled=false
 while [[ $settled == false ]] && ((SECONDS < deadline)); do
-  # The review job writes the candidate and check result once checks finish.
+  # An unchanged SHA can leave a previous run's result in the PR while its retry runs.
   pr=$(fork_gh pr list --repo "$fork_repo" --head sync/candidate --base upstream-main --state open \
     --json number,headRefOid,body,createdAt --jq '.[0] // empty')
-  if [[ -n $pr ]] && jq -e --arg sha "$candidate_sha" \
-    '.headRefOid == $sha and (.body | contains("as candidate `" + $sha + "`"))' <<<"$pr" >/dev/null; then
+  if [[ -n $pr ]] && jq -e --arg sha "$candidate_sha" --arg url "$checks_run_url" \
+    '.headRefOid == $sha and (.body | contains("as candidate `" + $sha + "`")) and
+      (.body | capture("Checks: \\*\\*[a-z_]+\\*\\* \\((?<url>[^)]+)\\)").url == $url)' <<<"$pr" >/dev/null; then
     checks=$(jq -r '.body | capture("Checks: \\*\\*(?<result>[a-z_]+)\\*\\*").result' <<<"$pr")
     number=$(jq -r .number <<<"$pr")
     if [[ $checks != success ]]; then
