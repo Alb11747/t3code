@@ -6,6 +6,7 @@ import {
   ProviderInstanceId,
   ScheduledTaskId,
   type ScheduledTask,
+  ThreadId,
 } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -17,6 +18,7 @@ import { resolveSettingsScope, type SettingsScopeSearch } from "./settingsScope"
 
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
+  changeDraftProject,
   scheduledTaskDefaultModel,
   scheduledTaskDefaultProjectId,
   scheduledTaskProjectChoices,
@@ -25,6 +27,7 @@ import {
   scheduleFromDraft,
   taskToDraft,
   workspaceStrategyFromDraft,
+  unbindDraftFromThread,
 } from "./scheduledTasksSettings.logic";
 
 const laptopId = EnvironmentId.make("laptop");
@@ -300,6 +303,25 @@ describe("scheduled task workspace selection", () => {
     const draft = taskToDraft({ ...legacyTask, workspaceStrategy });
     expect(workspaceStrategyFromDraft(draft, true)).toEqual({ type: "root" });
     expect(workspaceStrategyFromDraft(draft, false)).toEqual(workspaceStrategy);
+  });
+});
+
+describe("scheduled task destination", () => {
+  it("unbinding leaves the shared checkout for a new worktree from the remote", () => {
+    const rootBound = taskToDraft({
+      ...legacyTask,
+      threadId: ThreadId.make("thread:bound"),
+      workspaceStrategy: { type: "root" },
+    });
+    expect(unbindDraftFromThread(rootBound)).toMatchObject({
+      threadId: "",
+      workspaceMode: "worktree",
+      startFromOrigin: true,
+    });
+    const projectless = changeDraftProject(rootBound, null);
+    expect(projectless.projectId).toBeNull();
+    expect(projectless.threadId).toBe("");
+    expect(workspaceStrategyFromDraft(projectless, true)).toEqual({ type: "root" });
   });
 });
 
