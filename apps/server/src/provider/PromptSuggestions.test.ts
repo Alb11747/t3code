@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { RunId, ThreadId } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
@@ -37,16 +38,23 @@ describe("PromptSuggestions", () => {
       yield* suggestions.claim(threadId, runId);
       yield* suggestions.claim(otherThreadId, runId);
       yield* suggestions.publish(threadId, suggestion);
+      const observedSuggestion = yield* Deferred.make<void>();
       const collected = yield* suggestions.stream(threadId).pipe(
+        Stream.tap((value) =>
+          value?.id === suggestion.id
+            ? Deferred.succeed(observedSuggestion, undefined)
+            : Effect.void,
+        ),
         Stream.takeUntil((value) => value === null),
         Stream.runCollect,
         Effect.forkChild,
       );
-      yield* Effect.yieldNow;
+      yield* Deferred.await(observedSuggestion);
       yield* suggestions.publish(otherThreadId, { id: "suggestion-2", runId, text: "Elsewhere" });
       yield* suggestions.clear(threadId, runId);
 
       const values = yield* Fiber.join(collected);
+      expect(values[0]).toEqual(suggestion);
       expect(values.at(-1)).toBeNull();
       expect(values.some((value) => value?.id === "suggestion-2")).toBe(false);
     }),
