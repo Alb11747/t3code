@@ -6306,9 +6306,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           )
         : command.notification?.source.kind === "delegated_task")
     ) {
-      // If it queues (steering would cancel tools, or the turn is still
-      // starting), the running turn may take it at its next tool boundary.
-      atToolBoundary = true;
+      // Questions keep a next-turn wake if safe steering is unavailable;
+      // a hook offer can remain unconfirmed indefinitely.
+      atToolBoundary = !command.messageId.startsWith("message:delegated-task-question:");
       const active = projection.runs.find((run) => run.status === "running");
       const providerThread = projection.providerThreads.find(
         (row) => row.id === active?.providerThreadId,

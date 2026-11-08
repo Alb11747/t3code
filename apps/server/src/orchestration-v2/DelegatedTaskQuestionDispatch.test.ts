@@ -18,6 +18,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -68,32 +69,32 @@ it.effect.each([
   {
     interruptsTools: false,
     stop: false,
-    atToolBoundary: false,
+    nextTurn: false,
     label: "steers a question into a running parent turn",
   },
   {
     interruptsTools: true,
     stop: false,
-    atToolBoundary: false,
+    nextTurn: false,
     label: "queues and deduplicates retryable questions",
   },
   {
     interruptsTools: true,
     stop: true,
-    atToolBoundary: false,
+    nextTurn: false,
     label: "Stop drops question notices from earlier cohorts",
   },
   {
     interruptsTools: true,
     stop: false,
-    atToolBoundary: true,
-    label: "keeps a question notification when joining at a tool boundary",
+    nextTurn: true,
+    label: "keeps a question queued through a hook boundary and starts it next turn",
   },
-])("$label", ({ interruptsTools, stop, atToolBoundary }) =>
+])("$label", ({ interruptsTools, stop, nextTurn }) =>
   Effect.scoped(
     Effect.gen(function* () {
       const cwd = yield* checkpointWorkspace(
-        `delegated-question-${interruptsTools}-${stop}-${atToolBoundary}`,
+        `delegated-question-${interruptsTools}-${stop}-${nextTurn}`,
       );
       const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
       const started: Array<ProviderAdapter.ProviderAdapterV2TurnInput> = [];
@@ -302,25 +303,57 @@ it.effect.each([
           );
         }
 
-        if (atToolBoundary) {
+        if (nextTurn) {
           const queued = projection.runs.find((run) => run.userMessageId === messageId)!;
           const providerTurnId = projection.providerTurns.find(
             (turn) => turn.status === "running",
           )!.id;
-          for (const boundaryOffer of [
-            { id: "offer-question", step: "offer", providerTurnId },
-            { id: "offer-question", step: "receipt" },
-          ] as const) {
-            yield* orchestrator.dispatch({
+          const offered = yield* Effect.exit(
+            orchestrator.dispatch({
               type: "queued-message.promote-to-steer",
-              commandId: CommandId.make(`claim-question-at-tool-boundary-${boundaryOffer.step}`),
+              commandId: CommandId.make("claim-question-at-tool-boundary"),
               threadId: parentThreadId,
               queuedRunId: queued.id,
               targetRunId: first.runId,
-              boundaryOffer,
-            });
-          }
+              boundaryOffer: { id: "offer-question", step: "offer", providerTurnId },
+            }),
+          );
+          assert.isTrue(Exit.isFailure(offered));
+          const pending = yield* orchestrator.getThreadProjection(parentThreadId);
+          assert.equal(pending.runs.find((run) => run.id === queued.id)?.status, "queued");
+          assert.isUndefined(pending.runs.find((run) => run.id === queued.id)?.boundaryOffer);
+          const completed = yield* orchestrator.streamDomainEvents.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "run.updated" &&
+                event.payload.id === first.runId &&
+                event.payload.status === "waiting",
+            ),
+            Stream.take(1),
+            Stream.runDrain,
+            Effect.forkScoped,
+          );
+          const turn = projection.providerTurns.find((turn) => turn.id === providerTurnId)!;
+          yield* Queue.offer(events, {
+            type: "provider_turn.updated",
+            driver,
+            providerTurn: { ...turn, status: "completed", completedAt: now },
+          });
+          yield* Queue.offer(events, {
+            type: "turn.terminal",
+            driver,
+            providerThreadId: turn.providerThreadId,
+            providerTurnId,
+            runOrdinal: first.runOrdinal,
+            status: "completed",
+            failure: null,
+            threadDisposition: "reusable",
+          });
+          yield* Fiber.join(completed);
           yield* worker.drain();
+          assert.lengthOf(started, 2);
+          assert.equal(started[1]?.runId, queued.id);
+          assert.equal(started[1]?.message.text, notice.text);
           assert.lengthOf(steered, 0);
         }
         const delivered = yield* orchestrator.getThreadProjection(parentThreadId);
@@ -328,10 +361,10 @@ it.effect.each([
           delivered.messages.find((message) => message.id === messageId)?.notification,
           notice.notification,
         );
-        if (!interruptsTools || atToolBoundary) {
+        if (!interruptsTools || nextTurn) {
           assert.equal(
             delivered.messages.find((message) => message.id === messageId)?.runId,
-            first.runId,
+            nextTurn ? started[1]!.runId : first.runId,
           );
           assert.deepEqual(
             delivered.turnItems
@@ -395,7 +428,7 @@ it.effect.each([
           });
         }
         const dropped = yield* orchestrator.getThreadProjection(parentThreadId);
-        if (interruptsTools) {
+        if (interruptsTools && !nextTurn) {
           assert.equal(
             dropped.runs.find((run) => run.userMessageId === messageId)?.status,
             "cancelled",

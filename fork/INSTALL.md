@@ -139,6 +139,8 @@ the fork does not inject a context change between calls in the same batch.
 There is no delivery deadline while a tool call is running. A native timeout
 fallback would cancel MCP calls and could discard reasoning, so it cannot also
 guarantee uninterrupted work.
+Delegated question notices wait for the next turn on Claude, so their delivery
+does not depend on a hook receipt.
 Hooks carry text only, so agent updates and agent promotions with attachments
 wait for the next turn instead of steering. Agents can still choose `restart`,
 which interrupts the turn by design.
