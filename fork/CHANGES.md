@@ -9,6 +9,8 @@ the sync script deletes the line of a change whose upstream PR merged. Closing
 an issue alone does not revert a patch. See `fork/README.md` for how to add or drop
 an entry.
 
+- `fix(server): keep Codex loaded when reasoning effort changes`: effort-only selection changes reuse the loaded native thread and preserve Codex's pinned reasoning baseline and instruction context; model, other-option, runtime-policy and non-Codex changes retain their existing reload behavior. Issue: none linked. PR: https://github.com/pingdotgg/t3code/pull/32915
+
 - `fix(fork): settle the dispatched validation run on retries`: records each candidate publication's workflow run and waits for that run's result, preventing an unchanged candidate SHA from consuming an older failure or success. Fork-only. Issue: https://github.com/Alb11747/t3code/issues/79. PR: none yet
 
 - `feat(usage): show Claude subscription end dates from CLI Proxy`: account details in web, desktop and mobile show the quota router's subscription end beside the plan, keeping it when native quota reports merge into the same account or the hub quota probe fails. Missing or invalid dates stay hidden. Fork-only. Issue: none linked. PR: none yet
