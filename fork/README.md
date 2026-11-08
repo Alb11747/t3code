@@ -92,8 +92,7 @@ authorized scope without waiting for another approval. A good plan covers:
 5. **What must not change.** Existing behaviour, permission checks, and
    security boundaries the feature sits next to.
 6. **Verification.** Focused tests, scoped typecheck and lint, and any
-   real-client check needed before release. Ask before starting dev servers
-   or browsers.
+   real-client check needed before release.
 7. **Release.** One commit plus its `CHANGES.md` entry (_Adding a change_).
    Complete validation, commit, and push `main` once the change is finished
    (_Release lineage_) as part of authorized fork work; report what is still
