@@ -553,12 +553,18 @@ label, or request review for an upstream PR.
    Then comment the PR link on the issue, if there is one.
 
 5. Call `link_pull_request` from the thread that opened the PR, then hand
-   watching to a Sol thread: `t3_thread_launch` with model `gpt-6.1-sol` on
+   watching to a Sol thread on **Lazarus**: `t3_thread_launch` with model `gpt-6.1-sol` on
    provider `codex`, an `existing_worktree` workspace on the PR branch, and a
    message to link the PR, call `watch_pull_request`, and handle follow-ups
    with the `babysit-pr` skill until it merges or closes, subject to the takeover
-   rules below. If you are Sol, call
-   `watch_pull_request` in your own thread instead. T3 wakes the watching
+   rules below. If you are Sol running on Lazarus, call
+   `watch_pull_request` in your own thread instead. From another machine, use
+   `t3_environment_links` to find Lazarus and pass its `environmentId` when
+   creating the maintenance thread and its watch. Confirm `watching: true`
+   and retain the owning thread's link in the handoff; do not claim a watch
+   exists from a PR link alone. Keep the watch active until the PR merges or
+   closes; green checks, a successful deployment, and completing the original
+   implementation do not end monitoring. T3 wakes the watching
    thread when checks finish, someone comments, or the branch conflicts. This
    needs the T3 server running, like the webhook.
 6. Once the PR's review has settled (_Release lineage_), carry the fix in the
