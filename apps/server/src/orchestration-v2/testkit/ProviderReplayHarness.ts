@@ -409,6 +409,7 @@ export function layerWithRegistry<Error>(
         IdAllocator.layer,
         layerProviderEventIngestorProvided,
         layerServerSettings,
+        layerContinuationRequests,
         layerStores,
       ),
     ),

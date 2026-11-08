@@ -22,26 +22,11 @@ const MERGE_BACK_BLOCKING_RUN_STATUSES = new Set<Run["status"]>([
   "running",
 ]);
 
-export type QueuedThreadRunDelivery = "pending" | "queued" | "unconfirmed";
-
-export const QUEUED_DELIVERY_LABELS: Record<QueuedThreadRunDelivery, string> = {
-  pending: "Pending",
-  queued: "Queued",
-  unconfirmed: "Unconfirmed",
-};
-
-/** Shown while an offered message awaits the provider's receipt; it is never resent on its own. */
-export const UNCONFIRMED_DELIVERY_HINT =
-  "Unconfirmed messages may already have reached the agent, so they are never resent on their own. Send one again or remove it; automatic updates can be sent again once the turn ends.";
-
-const UNCONFIRMED_EDIT_BLOCKED_REASON = "This message may already have reached the agent";
-
 export interface QueuedThreadRun {
   readonly run: Run;
-  readonly delivery: QueuedThreadRunDelivery;
-  /** A notification or delegated completion: it starts a turn of its own, never steers one. */
+  readonly delivery: "pending" | "queued" | "unconfirmed";
+  readonly deliveryLabel: "Pending" | "Queued" | "Delivering" | "Unconfirmed";
   readonly automatic: boolean;
-  /** Why this row cannot be edited, or null. */
   readonly editBlockedReason: string | null;
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
@@ -50,6 +35,9 @@ export interface QueuedThreadRun {
   /** Carries the attribution a sent message shows: automation, agent sender, or guest. */
   readonly message?: Message;
 }
+
+export const UNCONFIRMED_DELIVERY_HINT =
+  "This message may already have reached the agent. Sending it again may duplicate it. Send it again or remove it; automatic updates can be sent again once the turn ends.";
 
 export interface ThreadQueueWorkflowState {
   readonly activeRun: Run | null;
@@ -173,16 +161,49 @@ export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQu
       left.ordinal - right.ordinal,
   ).map((run) => {
     const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
+    const offer = run.boundaryOffer;
+    const offeredTurn =
+      offer === undefined
+        ? undefined
+        : projection.providerTurns.find((turn) => turn.id === offer.providerTurnId);
+    const offeredThread = projection.providerThreads.find(
+      (thread) => thread.id === offeredTurn?.providerThreadId,
+    );
+    const delivering =
+      offer !== undefined &&
+      run.queueHeld !== true &&
+      activeRun?.id === offer.targetRunId &&
+      activeRun.status === "running" &&
+      activeRun.activeAttemptId !== null &&
+      offeredTurn?.runAttemptId === activeRun.activeAttemptId &&
+      offeredTurn?.providerThreadId === activeRun.providerThreadId &&
+      offeredTurn?.status === "running" &&
+      offeredThread?.appThreadId === projection.thread.id &&
+      session !== null &&
+      offeredThread?.providerSessionId === session.id &&
+      session.status !== "stopped" &&
+      session.status !== "error";
+    const delivery =
+      offer !== undefined
+        ? delivering
+          ? "pending"
+          : "unconfirmed"
+        : message?.atToolBoundary === true
+          ? "pending"
+          : "queued";
     return {
       run,
-      delivery:
-        run.boundaryOffer !== undefined
-          ? "unconfirmed"
-          : message?.atToolBoundary === true
-            ? "pending"
-            : "queued",
+      delivery,
+      deliveryLabel: delivering
+        ? "Delivering"
+        : delivery === "pending"
+          ? "Pending"
+          : delivery === "unconfirmed"
+            ? "Unconfirmed"
+            : "Queued",
       automatic: message?.notification !== undefined || message?.delegatedCompletion !== undefined,
-      editBlockedReason: run.boundaryOffer === undefined ? null : UNCONFIRMED_EDIT_BLOCKED_REASON,
+      editBlockedReason:
+        offer === undefined ? null : "This message may already have reached the agent",
       // A queued guest message shows the guest's words; the agent still gets the attributed text.
       text: message?.context?.guest?.text ?? message?.text ?? "Queued message",
       attachments: message?.attachments ?? [],

@@ -5,10 +5,7 @@ import {
   queuedRunEditBlockedReason,
 } from "@t3tools/client-runtime/queued-run-edit";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import {
-  QUEUED_DELIVERY_LABELS,
-  UNCONFIRMED_DELIVERY_HINT,
-} from "@t3tools/client-runtime/state/thread-workflows";
+import { UNCONFIRMED_DELIVERY_HINT } from "@t3tools/client-runtime/state/thread-workflows";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import type { ChatAttachment, EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
@@ -187,6 +184,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
       return;
     }
     if (action !== "steer" && action !== "remove") return;
+    if (action === "steer" && entry.automatic && workflow?.canSendNow !== true) return;
     busyRef.current = true;
     setBusyRunId(runId);
     void Haptics.selectionAsync();
@@ -254,17 +252,18 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
         <Text className="pt-6 text-center text-sm text-foreground-muted">No messages waiting.</Text>
       ) : null}
       {queuedRuns.map((entry, index) => {
-        const { run, text, attachments, context, message, delivery } = entry;
-        const deliveryLabel = QUEUED_DELIVERY_LABELS[delivery];
+        const { run, text, attachments, context, message } = entry;
+        const deliveryLabel = entry.deliveryLabel;
+        const rowEditBlockedReason = editBlockedReason ?? entry.editBlockedReason;
         const controls = resolveThreadQueueRowControls({
           busy: busyRunId !== null,
           // A fresh message starts its own turn: it may skip compaction, but not steer into a turn.
           canPromoteToSteer:
-            (workflow?.canPromoteToSteer ?? false) &&
             !entry.automatic &&
+            (workflow?.canPromoteToSteer ?? false) &&
             (run.freshContext !== true || workflow?.promoteSkipsCompaction === true),
           canSendNow: workflow?.canSendNow ?? false,
-          editBlocked: editBlockedReason !== null || entry.editBlockedReason !== null,
+          editBlocked: rowEditBlockedReason !== null,
           isEditing: editing?.runId === run.id,
           isGuestMessage: context?.guest !== undefined,
           text,
@@ -316,7 +315,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                     accessibilityHint={
                       controls.canEdit
                         ? "Opens this message in the composer for editing"
-                        : (editBlockedReason ?? undefined)
+                        : (rowEditBlockedReason ?? undefined)
                     }
                     disabled={!controls.canEdit}
                     onPress={() => void act(run.id, "edit")}
@@ -327,9 +326,6 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                       attachments={attachments}
                     />
                     <View className="min-w-0 flex-1 gap-0.5">
-                      {(hasPending && hasQueued) || delivery === "unconfirmed" ? (
-                        <Text className="text-xs text-foreground-muted">{deliveryLabel}</Text>
-                      ) : null}
                       {message ? (
                         <QueuedRunSender environmentId={target.environmentId} message={message} />
                       ) : null}
@@ -348,6 +344,11 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                         )}
                         {title}
                       </Text>
+                      {entry.delivery !== "queued" ? (
+                        <Text className="text-2xs text-foreground-muted">
+                          {entry.deliveryLabel}
+                        </Text>
+                      ) : null}
                     </View>
                     {controls.isEditing ? (
                       <Text className="shrink-0 text-2xs uppercase tracking-wide text-primary">

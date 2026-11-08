@@ -131,7 +131,7 @@ const scenarios = [
   "human",
   "reported-expiry",
   "warm-reported",
-  "busy-boundary",
+  "busy-preparing",
   "compact-attachment",
   "scheduled",
   "compact",
@@ -164,7 +164,7 @@ it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, prov
     const retained = providerThread(
       "native:retained",
       targetInstanceId,
-      scenario === "small" ? 199_999 : scenario === "busy-boundary" ? 1_000 : 500_000,
+      scenario === "small" ? 199_999 : scenario === "busy-preparing" ? 1_000 : 500_000,
       20,
       epoch,
       providerDriver,
@@ -214,7 +214,7 @@ it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, prov
         },
       ],
     });
-    if (busyQueue || scenario === "busy-boundary") {
+    if (busyQueue || scenario === "busy-preparing") {
       yield* orchestrator.dispatch({
         type: "message.dispatch",
         commandId: CommandId.make("send:busy-work"),
@@ -360,6 +360,28 @@ it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, prov
       expect((yield* messages.sendToThread(input)).delivery).toBe("started");
       return;
     }
+    if (scenario === "busy-preparing") {
+      const sent = yield* messages.sendToThread(input);
+      expect(sent.run.providerThreadId).toBe(retained.id);
+      expect(sent.delivery).toBe("queued");
+      expect(
+        (yield* orchestrator.getThreadRecords(threadId, ["messages"])).messages.find(
+          (message) => message.id === input.messageId,
+        )?.atToolBoundary,
+      ).not.toBe(true);
+      const fresh = yield* messages.sendToThread({
+        ...input,
+        commandId: CommandId.make("command:fresh-boundary"),
+        messageId: MessageId.make("message:fresh-boundary"),
+        freshContext: true,
+        contextPolicy: "compact",
+      });
+      expect(fresh.delivery).toBe("queued");
+      expect(fresh.run.providerThreadId).not.toBe(retained.id);
+      expect(fresh.run.afterCompactionMessageId).toBeUndefined();
+      expect(fresh.message.atToolBoundary).not.toBe(true);
+      return;
+    }
     const error = yield* Effect.flip(messages.sendToThread(input));
     expect(error).toBeInstanceOf(ThreadManagement.ThreadManagementContextPolicyError);
     expect(
@@ -377,25 +399,6 @@ it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, prov
     expect(sent.run.providerThreadId).toBe(
       scenario === "compatible-account" ? first.id : retained.id,
     );
-    if (scenario === "busy-boundary") {
-      expect(sent.delivery).toBe("queued");
-      expect(
-        (yield* orchestrator.getThreadRecords(threadId, ["messages"])).messages.find(
-          (message) => message.id === input.messageId,
-        )?.atToolBoundary,
-      ).toBe(true);
-      const fresh = yield* messages.sendToThread({
-        ...input,
-        commandId: CommandId.make("command:fresh-boundary"),
-        messageId: MessageId.make("message:fresh-boundary"),
-        freshContext: true,
-        contextPolicy: "compact",
-      });
-      expect(fresh.delivery).toBe("queued");
-      expect(fresh.run.providerThreadId).not.toBe(retained.id);
-      expect(fresh.run.afterCompactionMessageId).toBeUndefined();
-      expect(fresh.message.atToolBoundary).not.toBe(true);
-    }
     if (scenario === "busy-queue") {
       expect(sent.delivery).toBe("queued");
       const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
@@ -426,7 +429,7 @@ it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, prov
         scenario === "compatible-account" ||
           scenario === "busy-queue" ||
           scenario === "busy-self-compact" ||
-          scenario === "busy-boundary",
+          scenario === "busy-preparing",
         providerDriver,
       ),
     ),

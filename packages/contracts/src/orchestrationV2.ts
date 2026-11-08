@@ -704,11 +704,7 @@ export const OrchestrationV2Run = Schema.Struct({
   status: OrchestrationV2RunStatus,
   queuePosition: Schema.optional(Schema.NullOr(PositiveInt)),
   queueHeld: Schema.optional(Schema.Boolean),
-  /**
-   * The provider was handed this queued message at a tool boundary of `providerTurnId` and has not
-   * confirmed saving it. Only that receipt joins it to the turn; nothing starts it automatically,
-   * since the agent may already have acted on it.
-   */
+  /** Native input may already be saved; an outstanding offer must never automatically execute. */
   boundaryOffer: Schema.optional(
     Schema.Struct({
       id: TrimmedNonEmptyString,
@@ -1351,7 +1347,7 @@ export const OrchestrationV2ConversationMessage = Schema.Struct({
    * the workflow's opening instead and keep the script behind a disclosure.
    */
   workflowScript: Schema.optional(Schema.Boolean),
-  /** A queued agent update the running turn may take at its next tool boundary. */
+  /** Eligible for native delivery at a root tool boundary instead of interrupting tools. */
   atToolBoundary: Schema.optional(Schema.Literal(true)),
   id: MessageId,
   threadId: ThreadId,
@@ -3333,9 +3329,6 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     queuedRunId: RunId,
     targetRunId: RunId,
-    // The provider delivers the message itself at a tool boundary, with no steer effect: "offer"
-    // records the hand-off to exactly `providerTurnId`, and "receipt" joins the run once the
-    // provider has saved that offer.
     boundaryOffer: Schema.optional(
       Schema.Union([
         Schema.Struct({
@@ -3343,11 +3336,12 @@ export const OrchestrationV2Command = Schema.Union([
           step: Schema.Literal("offer"),
           providerTurnId: ProviderTurnId,
         }),
-        Schema.Struct({ id: TrimmedNonEmptyString, step: Schema.Literal("receipt") }),
+        Schema.Struct({
+          id: TrimmedNonEmptyString,
+          step: Schema.Literals(["receipt", "withdraw"]),
+        }),
       ]),
     ),
-    // An agent's promotion waits for the running turn's next tool boundary when
-    // steering would cancel its tools.
     requestedBy: Schema.optional(Schema.Literal("agent")),
   }),
   Schema.Struct({
@@ -3360,6 +3354,7 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     runId: RunId,
+    requestedBy: Schema.optional(Schema.Literal("agent")),
   }),
   Schema.Struct({
     type: Schema.Literal("queued-run.reorder"),

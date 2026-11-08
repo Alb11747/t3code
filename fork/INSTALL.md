@@ -117,41 +117,26 @@ turn. The stock mobile app stores this preference on the phone and defaults to
 Queue; changing the desktop preference or updating the fork server does not
 change the phone's choice.
 
-User steers use Claude Code's native steering. The stock mobile app sends its
-Steer choice as automatic delivery, so it can still become a queued next turn
-while the server is starting or finishing a provider turn, even if the thread
-already says Running. The server needs a live provider turn before it can steer.
-This also affects short replies and background continuations. A server update
-cannot change the stock app's submission behavior. Native steering itself does
-not guarantee immediate model attention: Claude Code can wait for a foreground
-shell call to return, and can cancel MCP calls in flight. Claude Code can describe
-those cancellations as user refusals. Steers explain that delivery can interrupt
-calls, that a cancellation alone does not establish refusal, and that interrupted
-calls may already have taken effect. Genuine denials and stop requests still apply. A steer that starts
-with a slash command goes without this note so the command still runs.
+Ordinary human and agent steers, including attachments, wait for Claude's next
+root tool-batch boundary and use its non-interrupting native message queue.
+Parallel tools finish their batch before delivery. Messages arriving during a
+final reply wait for the next turn. Explicit restart still interrupts; Stop
+cancels pending native inputs. Goal and maintenance commands, compaction, and
+turns that own a delegated task keep their separate-turn behavior. A Claude CLI
+without the required cancellation capability also waits for the next turn.
 
-Agent text updates normally enter the durable queue and join Claude's current
-turn at its next root tool-batch or Stop boundary, rather than waiting for the
-turn to end. Agent promotions of queued text follow the same rule; human
-promotions stay native. A successful MCP promotion receipt can still mean the
-message is waiting. Parallel tools finish their whole batch before delivery;
-the fork does not inject a context change between calls in the same batch.
-There is no delivery deadline while a tool call is running. A native timeout
-fallback would cancel MCP calls and could discard reasoning, so it cannot also
-guarantee uninterrupted work.
-Delegated question notices wait for the next turn on Claude, so their delivery
-does not depend on a hook receipt.
-Hooks carry text only, so agent updates and agent promotions with attachments
-wait for the next turn instead of steering. Agents can still choose `restart`,
-which interrupts the turn by design.
-An update handed to Claude at a boundary stays in the queue until Claude saves
-it in the session history it resumes from; only then does it join the turn.
-Saved does not mean the model followed it. If the server crashes, Stop cuts the
-hand-off short, or Claude never saves it, the update stays queued as
-**Unconfirmed** and is never resent automatically, since the agent may already
-have acted on it: send it again or remove it. Unconfirmed updates cannot be
-edited, and an unconfirmed automatic notification can be sent again only once
-the turn has ended. Preservation of all thinking tokens has not been verified.
+A successful MCP promotion receipt can mean the message is still waiting.
+**Pending** means it is waiting for a safe boundary; **Delivering** means the
+handoff is in progress. The original message stays queued until Claude saves
+its exact native input. It then appears at the tool boundary where it was
+inserted, even if the saved-history receipt arrives after the reply.
+
+Saved does not mean the model followed the update. An interrupted or crashed
+handoff can remain **Unconfirmed**; the server recovers matching saved receipts
+when available and never automatically resends an ambiguous update. Send it
+again deliberately or remove it. Unconfirmed updates cannot be edited, and an
+automatic notification can be sent again only after the turn ends. Existing
+unconfirmed offers retain this protection when upgrading.
 
 ## Browser access on macOS or other computers
 

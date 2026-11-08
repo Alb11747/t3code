@@ -1,14 +1,20 @@
-import { CommandId, type OrchestrationV2ThreadProjection } from "@t3tools/contracts";
-import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
+import {
+  CommandId,
+  parseGoalCommand,
+  type OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import { isUndeliveredMailboxSteer } from "./NotificationMailbox.ts";
 import { queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
+import { isNativeMaintenanceCommand } from "./CommandPolicy.ts";
 
 const CONTINUATION_MESSAGE_TEXT = "Background task completed.";
 
@@ -236,61 +242,109 @@ export const layer = Layer.effectDiscard(
       },
     );
 
-    // The provider waits on this from a tool-batch or stop hook. Each offer is recorded on its
-    // queued run before the hook returns its text, and the run joins the turn only when the
-    // provider's saved history echoes that offer back. An update that cannot be offered (edited
-    // away, held by Stop, already offered, turn no longer running) stays queued for the next turn.
     const claimAgentMessages: ProviderContinuationRequests.ClaimAgentMessages = Effect.fn(
       "ProviderContinuationService.claimAgentMessages",
     )(
       function* (input) {
-        // This runs at every tool batch: read only queued runs and their messages.
-        const { runs } = yield* threads.getThreadRecords(input.threadId, ["runs"], {
-          runStatuses: ["queued"],
-        });
-        if (runs.length === 0) return [];
-        const { messages } = yield* threads.getThreadRecords(input.threadId, ["messages"], {
-          messageIds: runs.map((run) => run.userMessageId),
-        });
-        const offers: Array<ProviderContinuationRequests.AgentMessageOffer> = [];
-        for (const run of queuedRunsInDeliveryOrder({ runs, messages })) {
-          const message = messages.find((row) => row.id === run.userMessageId);
-          if (message?.atToolBoundary !== true || run.boundaryOffer !== undefined) continue;
-          // Fresh per try: a refusal now must not be replayed at a later boundary.
-          const offerId = yield* ids.allocate.command({
-            fixtureName: "tool-boundary",
-            commandName: "offer",
+        const unhanded: Array<ProviderContinuationRequests.AgentMessageOfferRef> = [];
+        return yield* Effect.gen(function* () {
+          const { runs } = yield* threads.getThreadRecords(input.threadId, ["runs"], {
+            runStatuses: ["queued"],
           });
-          const offered = yield* threads
-            .dispatch({
-              type: "queued-message.promote-to-steer",
-              commandId: offerId,
+          if (runs.length === 0) return [];
+          const { messages } = yield* threads.getThreadRecords(input.threadId, ["messages"], {
+            messageIds: runs.map((run) => run.userMessageId),
+          });
+          const offers: Array<ProviderContinuationRequests.AgentMessageOffer> = [];
+          for (const run of queuedRunsInDeliveryOrder({ runs, messages })) {
+            const message = messages.find((row) => row.id === run.userMessageId);
+            if (
+              message?.atToolBoundary !== true ||
+              run.boundaryOffer !== undefined ||
+              run.queueHeld === true ||
+              run.freshContext === true ||
+              run.delegatedTaskId !== undefined ||
+              isNativeMaintenanceCommand(message) ||
+              parseGoalCommand(message) !== null
+            )
+              continue;
+            const offerId = yield* randomUuidV4;
+            unhanded.push({ id: offerId, queuedRunId: run.id });
+            const offered = yield* Effect.gen(function* () {
+              yield* threads.dispatch({
+                type: "queued-message.promote-to-steer",
+                commandId: CommandId.make(`tool-boundary-offer:${offerId}`),
+                threadId: input.threadId,
+                queuedRunId: run.id,
+                targetRunId: input.runId,
+                boundaryOffer: { id: offerId, step: "offer", providerTurnId: input.providerTurnId },
+              });
+              const current = yield* threads.getThreadRecords(input.threadId, ["messages"], {
+                messageIds: [message.id],
+              });
+              const committed = current.messages.find((row) => row.id === message.id)!;
+              return {
+                id: offerId,
+                queuedRunId: run.id,
+                messageId: committed.id,
+                text: projectComposerContextForProvider({
+                  text: committed.text,
+                  records: committed.context?.records ?? [],
+                }),
+                attachments: committed.attachments,
+                createdBy: committed.createdBy,
+                creationSource: committed.creationSource,
+              };
+            }).pipe(
+              Effect.catch((cause) =>
+                Effect.gen(function* () {
+                  yield* Effect.logWarning(
+                    "orchestration-v2.provider-continuation.agent-message-offer-failed",
+                    {
+                      threadId: input.threadId,
+                      offerId,
+                      cause,
+                    },
+                  );
+                  // No transport has received this offer; undo it before returning the earlier batch.
+                  yield* threads
+                    .dispatch({
+                      type: "queued-message.promote-to-steer",
+                      commandId: CommandId.make(`tool-boundary-withdraw:${offerId}`),
+                      threadId: input.threadId,
+                      queuedRunId: run.id,
+                      targetRunId: input.runId,
+                      boundaryOffer: { id: offerId, step: "withdraw" },
+                    })
+                    .pipe(
+                      Effect.catch((withdrawCause) =>
+                        Effect.logWarning(
+                          "orchestration-v2.provider-continuation.agent-message-withdraw-failed",
+                          {
+                            threadId: input.threadId,
+                            offerId,
+                            cause: withdrawCause,
+                          },
+                        ),
+                      ),
+                    );
+                  return undefined;
+                }),
+              ),
+            );
+            if (offered === undefined) break;
+            offers.push(offered);
+          }
+          return offers;
+        }).pipe(
+          Effect.onInterrupt(() =>
+            settleAgentMessages("withdraw")({
               threadId: input.threadId,
-              queuedRunId: run.id,
-              targetRunId: input.runId,
-              boundaryOffer: { id: offerId, step: "offer", providerTurnId: input.providerTurnId },
-            })
-            // A refusal leaves the update queued. An aborted hook interrupts this
-            // fiber instead, which must stop the loop before the next offer.
-            .pipe(Effect.orElseSucceed(() => undefined));
-          if (offered === undefined) continue;
-          // Offered text is immutable, so this read returns exactly what the offer committed.
-          const current = yield* threads.getThreadRecords(input.threadId, ["messages"], {
-            messageIds: [message.id],
-          });
-          const committed = current.messages.find((row) => row.id === message.id) ?? message;
-          // An agent may promote a message the user queued, so each text names its own author.
-          const author = committed.createdBy === "user" ? "the user" : "another agent";
-          offers.push({
-            id: offerId,
-            queuedRunId: run.id,
-            text: `From ${author} (delivery ${offerId}):\n${projectComposerContextForProvider({
-              text: committed.text,
-              records: committed.context?.records ?? [],
-            })}`,
-          });
-        }
-        return offers;
+              runId: input.runId,
+              offers: unhanded,
+            }),
+          ),
+        );
       },
       (effect, input) =>
         effect.pipe(
@@ -303,26 +357,30 @@ export const layer = Layer.effectDiscard(
         ),
     );
 
-    // Stable command ids make a retried receipt replay its first result. A stale receipt (offer
-    // cancelled, retried or already joined) commits nothing; any failure fails the transcript
-    // mirror call, which Claude retries.
-    const acknowledgeAgentMessages: ProviderContinuationRequests.AcknowledgeAgentMessages =
-      Effect.fn("ProviderContinuationService.acknowledgeAgentMessages")(function* (input) {
+    const settleAgentMessages = (
+      step: "receipt" | "withdraw",
+    ): ProviderContinuationRequests.AcknowledgeAgentMessages =>
+      Effect.fn(`ProviderContinuationService.${step}AgentMessages`)(function* (input) {
         for (const offer of input.offers) {
           yield* threads
             .dispatch({
               type: "queued-message.promote-to-steer",
-              commandId: CommandId.make(`tool-boundary-receipt:${offer.id}`),
+              commandId: CommandId.make(`tool-boundary-${step}:${offer.id}`),
               threadId: input.threadId,
               queuedRunId: offer.queuedRunId,
               targetRunId: input.runId,
-              boundaryOffer: { id: offer.id, step: "receipt" },
+              boundaryOffer: { id: offer.id, step },
             })
             .pipe(
               Effect.tapError((cause) =>
                 Effect.logWarning(
-                  "orchestration-v2.provider-continuation.agent-message-receipt-failed",
-                  { threadId: input.threadId, offerId: offer.id, cause },
+                  "orchestration-v2.provider-continuation.agent-message-settlement-failed",
+                  {
+                    threadId: input.threadId,
+                    offerId: offer.id,
+                    step,
+                    cause,
+                  },
                 ),
               ),
               Effect.orDie,
@@ -332,7 +390,8 @@ export const layer = Layer.effectDiscard(
     if (requests.serveAgentMessages !== undefined) {
       yield* requests.serveAgentMessages({
         claim: claimAgentMessages,
-        acknowledge: acknowledgeAgentMessages,
+        acknowledge: settleAgentMessages("receipt"),
+        withdraw: settleAgentMessages("withdraw"),
       });
     }
 

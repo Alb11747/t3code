@@ -1,7 +1,6 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   deriveThreadQueueWorkflowState,
-  QUEUED_DELIVERY_LABELS,
   UNCONFIRMED_DELIVERY_HINT,
 } from "@t3tools/client-runtime/state/thread-workflows";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
@@ -118,11 +117,11 @@ export function QueuedRunsControl({
   const queued = workflow?.queuedRuns ?? [];
   const activeRun = workflow?.activeRun ?? null;
   // A fresh message starts its own turn: it may skip compaction, but not steer into a turn.
-  const canSendRun = (freshContext: boolean) =>
+  const canSendRun = (freshContext: boolean, automatic: boolean) =>
     workflow?.canSendNow === true ||
-    (workflow?.canPromoteToSteer === true &&
+    (!automatic &&
+      workflow?.canPromoteToSteer === true &&
       (!freshContext || workflow.promoteSkipsCompaction === true));
-  const canSend = canSendRun(false);
   const queuedImageUrlById = new Map(
     queuedImageAttachmentUrls.flatMap((url, index) => {
       const resource = queuedImageAttachmentResources[index];
@@ -135,15 +134,14 @@ export function QueuedRunsControl({
   const items = [
     ...queued.map((entry, serverIndex) => ({
       key: entry.run.id,
-      delivery: entry.delivery,
-      // An automatic delivery cannot steer; it can only start a turn of its own.
-      sendable:
-        workflow?.canSendNow === true ||
-        (canSendRun(entry.run.freshContext === true) && !entry.automatic),
-      editBlockedReason: entry.editBlockedReason,
       message: entry.message,
       runId: entry.run.id,
       messageId: entry.run.userMessageId,
+      freshContext: entry.run.freshContext === true,
+      delivery: entry.delivery,
+      deliveryLabel: entry.deliveryLabel,
+      automatic: entry.automatic,
+      editBlockedReason: entry.editBlockedReason,
       serverIndex,
       text: entry.text,
       // A guest's message keeps the guest's words; the owner can cancel it, not rewrite it.
@@ -160,13 +158,14 @@ export function QueuedRunsControl({
     })),
     ...optimisticQueued.map((message) => ({
       key: message.id,
-      delivery: "queued" as const,
-      sendable: canSend,
-      editBlockedReason: null,
       message: undefined,
       runId: null,
       messageId: null,
       freshContext: false,
+      delivery: "queued" as const,
+      deliveryLabel: "Queued" as const,
+      automatic: false,
+      editBlockedReason: null,
       serverIndex: null,
       text: message.text,
       editable: true,
@@ -183,10 +182,13 @@ export function QueuedRunsControl({
   ];
 
   const sendQueuedMessage = async (queuedRunId: RunId) => {
-    const freshContext = queued.some(
-      ({ run }) => run.id === queuedRunId && run.freshContext === true,
-    );
-    if (!canSendRun(freshContext) || steerInFlightRef.current) return;
+    const entry = queued.find(({ run }) => run.id === queuedRunId);
+    if (
+      !entry ||
+      !canSendRun(entry.run.freshContext === true, entry.automatic) ||
+      steerInFlightRef.current
+    )
+      return;
     steerInFlightRef.current = true;
     setBusyRunId(queuedRunId);
     if (workflow?.canSendNow) {
@@ -206,13 +208,10 @@ export function QueuedRunsControl({
 
   useImperativeHandle(ref, () => ({
     steerNext(repeat) {
-      const next = queued[0];
-      if (
-        !next ||
-        !canSendRun(next.run.freshContext === true) ||
-        (next.automatic && workflow?.canSendNow !== true)
-      )
-        return false;
+      const next = queued.find((entry) =>
+        canSendRun(entry.run.freshContext === true, entry.automatic),
+      );
+      if (!next) return false;
       if (!repeat && busyRunId === null) void sendQueuedMessage(next.run.id);
       return true;
     },
@@ -296,19 +295,16 @@ export function QueuedRunsControl({
                 ),
               ).trim();
           const isEditing = item.runId !== null && item.runId === props.editingRunId;
-          const deliveryLabel = QUEUED_DELIVERY_LABELS[item.delivery];
+          const deliveryLabel = item.deliveryLabel;
           return (
             <li
               key={item.key}
-              aria-label={`${deliveryLabel} message ${position + 1} of ${items.length}, not sent`}
+              aria-label={`Queued message ${position + 1} of ${items.length}, ${item.deliveryLabel}`}
               aria-posinset={position + 1}
               aria-setsize={items.length}
               aria-current={isEditing ? "true" : undefined}
               className="group/queued flex w-full flex-col items-end gap-1"
             >
-              {(hasPending && hasQueued) || item.delivery === "unconfirmed" ? (
-                <span className="pe-1 text-xs text-muted-foreground">{deliveryLabel}</span>
-              ) : null}
               <QueuedMessage
                 environmentId={props.environmentId}
                 message={item.message}
@@ -318,7 +314,7 @@ export function QueuedRunsControl({
                 timestampFormat={props.timestampFormat}
                 onOpenThread={props.onOpenThread}
               >
-                {item.sendable && !isEditing ? (
+                {canSendRun(item.freshContext, item.automatic) && !isEditing ? (
                   <>
                     <Tooltip>
                       <TooltipTrigger render={<span className="flex shrink-0" />}>
@@ -348,6 +344,20 @@ export function QueuedRunsControl({
                     Saving
                   </span>
                 ) : null}
+                {item.delivery !== "queued" ? (
+                  <Tooltip>
+                    <TooltipTrigger render={<span className="px-1" />}>
+                      {item.deliveryLabel}
+                    </TooltipTrigger>
+                    <TooltipPopup>
+                      {item.delivery === "unconfirmed"
+                        ? UNCONFIRMED_DELIVERY_HINT
+                        : item.deliveryLabel === "Delivering"
+                          ? "Waiting for the agent to save this message"
+                          : "Waiting for the next tool boundary or turn"}
+                    </TooltipPopup>
+                  </Tooltip>
+                ) : null}
                 {isEditing ? (
                   <>
                     <span className="px-1 text-foreground">Editing in the composer</span>
@@ -372,9 +382,9 @@ export function QueuedRunsControl({
                           disabled={
                             item.runId === null ||
                             !item.editable ||
+                            item.editBlockedReason !== null ||
                             busyRunId !== null ||
-                            props.editBlockedReason !== null ||
-                            item.editBlockedReason !== null
+                            props.editBlockedReason !== null
                           }
                           onClick={() => {
                             if (item.runId !== null && item.messageId !== null) {
