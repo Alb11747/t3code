@@ -217,7 +217,7 @@ describe("pools", () => {
                     driver: claude,
                     email: "same@example.com",
                     plan: "Claude Subscription",
-                    subscriptionEndsAt: "2026-10-01T00:00:00.000Z",
+                    subscriptionEndsAt: "2026-09-03T13:00:00.000Z",
                     usageLimits,
                   },
                 ],
@@ -231,7 +231,7 @@ describe("pools", () => {
     expect(accounts).toHaveLength(1);
     expect(accounts[0]).toMatchObject({
       key: "env-a:claude",
-      subscriptionEndsAt: "2026-10-01T00:00:00.000Z",
+      subscriptionEndsAt: "2026-09-03T13:00:00.000Z",
       sourceLabel: null,
       redeem: { environmentId: "env-b", input: { instanceId: "claude" } },
       environments: [
@@ -240,6 +240,7 @@ describe("pools", () => {
       ],
     });
     expect(accounts[0]?.limits.windows[0]?.usedPercent).toBe(55);
+    expect(accounts[0]?.limits.windows[0]?.resetsAt).toBe("2026-09-03T13:00:00.000Z");
   });
 
   it.each(["2026-10-01T00:00:00.000Z", undefined])(

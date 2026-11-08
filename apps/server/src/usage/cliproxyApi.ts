@@ -293,7 +293,7 @@ export const makeCliproxyApi = Effect.gen(function* () {
   ) {
     const checkedAt = DateTime.formatIso(yield* DateTime.now);
     const subscriptionEnd =
-      account.provider === "claude" && typeof account.quota_router_subscription_ends_at === "string"
+      typeof account.quota_router_subscription_ends_at === "string"
         ? Option.getOrUndefined(DateTime.make(account.quota_router_subscription_ends_at))
         : undefined;
     const base = {

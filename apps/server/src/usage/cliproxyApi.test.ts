@@ -200,7 +200,12 @@ describe("CLIProxyAPI built-in management API", () => {
     () =>
       Effect.gen(function* () {
         yield* TestClock.setTime(1788710400000);
-        const test = fixture();
+        const test = fixture({
+          accounts: accounts.map((account) => ({
+            ...account,
+            quota_router_subscription_ends_at: "2098-12-30T19:00:00-05:00",
+          })),
+        });
         const api = yield* test.api;
         const result = yield* api.readAccounts(config);
         expect(result.map((account) => account.usageLimits.resetCredits)).toEqual([
@@ -209,6 +214,10 @@ describe("CLIProxyAPI built-in management API", () => {
         ]);
         expect(result[0]?.usageLimits.windows).toMatchObject([
           { id: "secondary", usedPercent: 78, kind: "weekly" },
+        ]);
+        expect(result.map((account) => account.subscriptionEndsAt)).toEqual([
+          "2098-12-31T00:00:00.000Z",
+          "2098-12-31T00:00:00.000Z",
         ]);
         const calls = test.requests.filter((request) => request.body?.url);
         expect(calls.map((request) => request.body?.auth_index).sort()).toEqual([

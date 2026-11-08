@@ -398,10 +398,24 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
       }
     }
   }
-  return [...accounts].map(([key, account]) => ({
-    ...account,
-    subscriptionEndsAt: subscriptionSources.get(key)?.subscriptionEndsAt,
-  }));
+  return [...accounts].map(([key, account]) => {
+    const subscriptionEndsAt = subscriptionSources.get(key)?.subscriptionEndsAt;
+    return {
+      ...account,
+      subscriptionEndsAt,
+      limits: subscriptionEndsAt
+        ? {
+            ...account.limits,
+            windows: account.limits.windows.map((window) =>
+              (window.kind === "session" || window.kind === "weekly") &&
+              (!window.resetsAt || Date.parse(subscriptionEndsAt) < Date.parse(window.resetsAt))
+                ? { ...window, resetsAt: subscriptionEndsAt }
+                : window,
+            ),
+          }
+        : account.limits,
+    };
+  });
 }
 
 export function collectLimitNotices(presentations: LimitPresentations): readonly string[] {
