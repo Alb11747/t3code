@@ -51,6 +51,7 @@ function fixture(
     accounts?: Array<
       (typeof accounts)[number] & {
         disabled?: boolean;
+        quota_router_subscription_ends_at?: unknown;
         id_token: { chatgpt_account_id: string; plan_type?: string; chatgpt_plan_type?: string };
       }
     >;
@@ -336,10 +337,19 @@ describe("CLIProxyAPI built-in management API", () => {
     }),
   );
 
-  it.effect("maps Claude scoped windows without a scheduler plugin", () =>
+  it.effect.each([
+    { endsAt: "2099-02-01T12:00:00+02:00", expected: "2099-02-01T10:00:00.000Z" },
+    { endsAt: "2000-01-01T00:00:00Z", expected: "2000-01-01T00:00:00.000Z" },
+    { endsAt: undefined, expected: undefined },
+    { endsAt: null, expected: undefined },
+    { endsAt: "invalid", expected: undefined },
+    { endsAt: 123, expected: undefined },
+  ])("maps Claude scoped windows and subscription end $endsAt", ({ endsAt, expected }) =>
     Effect.gen(function* () {
       const test = fixture({
-        accounts: [{ ...accounts[0]!, provider: "claude" }],
+        accounts: [
+          { ...accounts[0]!, provider: "claude", quota_router_subscription_ends_at: endsAt },
+        ],
         // The usage endpoint answers 429 to requests without a Claude Code user agent.
         upstream: (request) => ({
           status: request.header?.["User-Agent"]?.startsWith("claude-code/") ? 200 : 429,
@@ -359,6 +369,8 @@ describe("CLIProxyAPI built-in management API", () => {
       });
       const api = yield* test.api;
       const result = yield* api.readAccounts(config);
+      expect(result[0]?.subscriptionEndsAt).toBe(expected);
+      if (expected === undefined) expect(result[0]).not.toHaveProperty("subscriptionEndsAt");
       expect(
         result[0]?.usageLimits.windows.map((window) => [window.id, window.usedPercent]),
       ).toEqual([

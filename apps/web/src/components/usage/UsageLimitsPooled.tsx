@@ -179,6 +179,11 @@ function SegmentPopover({
       </div>
       <div className="flex flex-col gap-1 border-t border-border/60 pt-2.5">
         {account.plan ? <Row label="Plan">{account.plan}</Row> : null}
+        {account.subscriptionEndsAt ? (
+          <Row label="Plan ends">
+            {formatUpcomingTimestamp(account.subscriptionEndsAt, timestampFormat, now)}
+          </Row>
+        ) : null}
         {where ? (
           <Row label={account.environments.length > 0 ? "Signed in" : "Via"}>{where}</Row>
         ) : null}

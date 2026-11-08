@@ -181,7 +181,11 @@ describe("pools", () => {
   };
   const laptop = { entry: { target: { label: "Laptop" } } };
 
-  it("merges one account reported natively on two environments and by a hub into one entry", () => {
+  it.each([
+    { checkedAt, windows: [{ ...window, usedPercent: 10 }] },
+    { checkedAt, windows: [] },
+    { checkedAt, windows: [], unavailable: { reason: "probeFailed" as const } },
+  ])("merges native usage with hub subscription metadata (%j)", (usageLimits) => {
     const native = provider({
       driver: claude,
       instanceId: ProviderInstanceId.make("claude"),
@@ -213,7 +217,8 @@ describe("pools", () => {
                     driver: claude,
                     email: "same@example.com",
                     plan: "Claude Subscription",
-                    usageLimits: { checkedAt, windows: [{ ...window, usedPercent: 10 }] },
+                    subscriptionEndsAt: "2026-10-01T00:00:00.000Z",
+                    usageLimits,
                   },
                 ],
               },
@@ -226,6 +231,7 @@ describe("pools", () => {
     expect(accounts).toHaveLength(1);
     expect(accounts[0]).toMatchObject({
       key: "env-a:claude",
+      subscriptionEndsAt: "2026-10-01T00:00:00.000Z",
       sourceLabel: null,
       redeem: { environmentId: "env-b", input: { instanceId: "claude" } },
       environments: [
@@ -235,6 +241,44 @@ describe("pools", () => {
     });
     expect(accounts[0]?.limits.windows[0]?.usedPercent).toBe(55);
   });
+
+  it.each(["2026-10-01T00:00:00.000Z", undefined])(
+    "uses the freshest hub subscription end, including removal (%s)",
+    (subscriptionEndsAt) => {
+      const snapshot = (checkedAt: string, subscriptionEndsAt: string | undefined) => ({
+        ...laptop,
+        serverConfig: {
+          providers: [],
+          usageLimitSources: [
+            {
+              ...source,
+              accounts: [
+                {
+                  id: "claude.json",
+                  driver: claude,
+                  email: "same@example.com",
+                  subscriptionEndsAt,
+                  usageLimits: { checkedAt, windows: [window] },
+                },
+              ],
+            },
+          ],
+        },
+      });
+      const stale = snapshot(checkedAt, "2026-09-30T00:00:00.000Z");
+      const fresh = snapshot("2026-09-03T11:30:00.000Z", subscriptionEndsAt);
+      for (const reports of [
+        [stale, fresh],
+        [fresh, stale],
+      ]) {
+        const accounts = collectLimitAccounts(
+          new Map(reports.map((report, index) => [EnvironmentId.make(`env-${index}`), report])),
+        );
+        expect(accounts).toHaveLength(1);
+        expect(accounts[0]?.subscriptionEndsAt).toBe(subscriptionEndsAt);
+      }
+    },
+  );
 
   it("uses the freshest reported plan even when the newest quota has no plan", () => {
     const snapshot = (label: string | undefined, checkedAt: string, usedPercent: number) =>

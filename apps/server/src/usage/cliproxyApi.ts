@@ -31,6 +31,7 @@ const AuthFile = Schema.Struct({
   provider: Schema.String,
   email: Schema.optional(Schema.String),
   disabled: Schema.optional(Schema.Boolean),
+  quota_router_subscription_ends_at: Schema.optional(Schema.Unknown),
   id_token: Schema.optional(
     Schema.Struct({
       chatgpt_account_id: Schema.optional(Schema.String),
@@ -291,10 +292,15 @@ export const makeCliproxyApi = Effect.gen(function* () {
     account: typeof AuthFile.Type,
   ) {
     const checkedAt = DateTime.formatIso(yield* DateTime.now);
+    const subscriptionEnd =
+      account.provider === "claude" && typeof account.quota_router_subscription_ends_at === "string"
+        ? Option.getOrUndefined(DateTime.make(account.quota_router_subscription_ends_at))
+        : undefined;
     const base = {
       id: account.id,
       driver: ProviderDriverKind.make(account.provider === "codex" ? "codex" : "claudeAgent"),
       ...(account.email ? { email: account.email } : {}),
+      ...(subscriptionEnd ? { subscriptionEndsAt: DateTime.formatIso(subscriptionEnd) } : {}),
       ...(account.id_token?.chatgpt_account_id?.trim()
         ? { workspaceId: account.id_token.chatgpt_account_id.trim() }
         : {}),

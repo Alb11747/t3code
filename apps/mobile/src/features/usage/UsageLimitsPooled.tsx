@@ -579,6 +579,15 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
                   {account.plan}
                 </Text>
               ) : null}
+              {account.subscriptionEndsAt ? (
+                <Text selectable className="text-sm text-foreground-muted">
+                  Plan ends{" "}
+                  {new Date(account.subscriptionEndsAt).toLocaleString(undefined, {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                  })}
+                </Text>
+              ) : null}
             </View>
             <View className="gap-3 rounded-[24px] border-continuous bg-grouped-card p-4">
               <Text className="text-sm font-t3-medium text-foreground">{window.label}</Text>

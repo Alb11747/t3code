@@ -60,6 +60,7 @@ export const UsageLimitSourceAccount = Schema.Struct({
   driver: ProviderDriverKind,
   email: Schema.optional(TrimmedNonEmptyString),
   plan: Schema.optional(TrimmedNonEmptyString),
+  subscriptionEndsAt: Schema.optional(IsoDateTime),
   workspaceId: Schema.optional(TrimmedNonEmptyString),
   usageLimits: ServerProviderUsageLimits,
 });

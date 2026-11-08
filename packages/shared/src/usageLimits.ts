@@ -14,6 +14,7 @@ import {
   type ServerProviderUsageLimits,
   type ServerProviderUsageWindow,
   type UsageLimitSourceSnapshots,
+  type UsageLimitSourceAccount,
 } from "@t3tools/contracts";
 
 import * as DateTime from "effect/DateTime";
@@ -241,6 +242,7 @@ export interface LimitAccount {
   readonly displayName: string | null;
   readonly email: string | undefined;
   readonly plan: string | undefined;
+  readonly subscriptionEndsAt?: string | undefined;
   readonly accentColor: string | undefined;
   readonly environments: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
@@ -259,6 +261,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
   const creditSources = new Map<string, LimitAccount>();
   const hubRedeems = new Map<string, LimitAccount>();
   const planSources = new Map<string, LimitAccount>();
+  const subscriptionSources = new Map<string, UsageLimitSourceAccount>();
   const merge = (key: string, next: LimitAccount) => {
     // Prefer hub redemption to clear its routing cooldown too; displayed balance still follows the freshest read.
     const previousHub = hubRedeems.get(key);
@@ -360,9 +363,18 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         ? `${presentation.entry.target.label} · ${source.label}`
         : source.label;
       for (const account of source.accounts) {
-        if (limitsNotice(account.usageLimits) !== null) continue;
         const key = `${source.id}:${account.id}${account.workspaceId ? `:${account.workspaceId}` : ""}`;
-        merge(resolveKey(account) ?? key, {
+        const resolvedKey = resolveKey(account) ?? key;
+        const previousSubscription = subscriptionSources.get(resolvedKey);
+        if (
+          !previousSubscription ||
+          Date.parse(account.usageLimits.checkedAt) >
+            Date.parse(previousSubscription.usageLimits.checkedAt)
+        ) {
+          subscriptionSources.set(resolvedKey, account);
+        }
+        if (limitsNotice(account.usageLimits) !== null) continue;
+        merge(resolvedKey, {
           key,
           driver: account.driver,
           displayName: account.email ? null : hubAccountName(account),
@@ -386,7 +398,10 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
       }
     }
   }
-  return [...accounts.values()];
+  return [...accounts].map(([key, account]) => ({
+    ...account,
+    subscriptionEndsAt: subscriptionSources.get(key)?.subscriptionEndsAt,
+  }));
 }
 
 export function collectLimitNotices(presentations: LimitPresentations): readonly string[] {
