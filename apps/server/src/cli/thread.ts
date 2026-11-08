@@ -683,7 +683,7 @@ const threadSendCommand = Command.make("send", {
   message: messageArgument,
   contextPolicy: Flag.Literals("context-policy", ["compact", "keep"]).pipe(
     Flag.withDescription(
-      "For a cold Claude conversation: compact before sending, or keep full history.",
+      "Compact Claude or Codex before sending, or keep full history. Required for large cold Claude conversations.",
     ),
     Flag.optional,
   ),

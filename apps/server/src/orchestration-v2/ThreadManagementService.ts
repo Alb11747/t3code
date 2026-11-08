@@ -853,11 +853,11 @@ const make = Effect.gen(function* () {
         input.threadId,
         selection,
       );
-      if (providerThread?.driver !== "claudeAgent") {
+      if (providerThread?.driver !== "claudeAgent" && providerThread?.driver !== "codex") {
         return yield* new ThreadManagementContextPolicyError({
           threadId: input.threadId,
           message:
-            'contextPolicy:"compact" requires an existing Claude conversation. Use contextPolicy:"keep" to send normally.',
+            'contextPolicy:"compact" requires an existing Claude or Codex conversation. Use contextPolicy:"keep" to send normally.',
         });
       }
       const compactCommandId = CommandId.make(`agent-compact:${input.commandId}`);

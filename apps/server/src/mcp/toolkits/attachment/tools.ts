@@ -49,7 +49,7 @@ const AttachmentSendTool = Tool.make("t3_thread_send_attachments", {
   ...shared,
   dependencies: [...shared.dependencies, DocumentText.DocumentText],
   description:
-    "Send uploaded attachments as a new message to a thread. Large cold Claude conversations require `contextPolicy:'compact'` (idle only) or `contextPolicy:'keep'`. No retry key. Target modes cannot exceed yours. Success does not mean the provider read them or finished.",
+    "Send uploaded attachments as a new message to a thread. `contextPolicy:'compact'` compacts Claude or Codex before delivery; another thread must be idle, your own thread compacts after your turn. Large cold Claude conversations require a context policy: compact or keep. No retry key. Target modes cannot exceed yours. Success does not mean the provider read them or finished.",
   parameters: Schema.Struct({
     threadId: Schema.optional(ThreadId),
     message: Schema.optional(Schema.String.check(Schema.isMaxLength(120000))),

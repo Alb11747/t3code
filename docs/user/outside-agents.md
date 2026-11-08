@@ -117,6 +117,10 @@ idle conversation before the message, or `--context-policy keep` to retain the
 full history. Connected agents make the same choice with `contextPolicy` on
 `t3_thread_send` and `t3_thread_send_attachments`. Without it, the send is refused
 before starting a turn. Warm and smaller conversations need no choice.
+You can also request compaction for an existing Codex conversation with the same
+option. An agent sending to its own busy thread can compact after its current
+turn and deliver its message after successful compaction in one call. Other
+threads must be idle to request compaction.
 If compaction fails or is stopped, the message stays queued. Cancel that queued
 message before resending with `keep` if you want to continue with the full history.
 

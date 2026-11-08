@@ -24,6 +24,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -43,15 +44,16 @@ function providerThread(
   usedTokens: number,
   lastRunOrdinal: number,
   updatedAt: DateTime.Utc,
+  providerDriver = driver,
 ): OrchestrationV2ProviderThread {
   return {
     id: ProviderThreadId.make(id),
-    driver,
+    driver: providerDriver,
     providerInstanceId: instanceId,
     providerSessionId: null,
     appThreadId: threadId,
     ownerNodeId: null,
-    nativeThreadRef: { driver, nativeId: id, strength: "strong" },
+    nativeThreadRef: { driver: providerDriver, nativeId: id, strength: "strong" },
     nativeConversationHeadRef: null,
     status: "idle",
     firstRunOrdinal: 1,
@@ -64,12 +66,14 @@ function providerThread(
   };
 }
 
-function layerTest(compatibleAccounts: boolean) {
+function layerTest(compatibleAccounts: boolean, providerDriver = driver) {
+  const capabilities =
+    providerDriver === "codex" ? CodexProviderCapabilitiesV2 : ClaudeProviderCapabilitiesV2;
   const adapters = [firstInstanceId, targetInstanceId].map(
     (instanceId): ProviderAdapter.ProviderAdapterV2["Service"] => ({
       instanceId,
-      driver,
-      getCapabilities: () => Effect.succeed(ClaudeProviderCapabilitiesV2),
+      driver: providerDriver,
+      getCapabilities: () => Effect.succeed(capabilities),
       planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
       openSession: () => Effect.die("Destination resolution must not open provider sessions"),
     }),
@@ -88,10 +92,10 @@ function layerTest(compatibleAccounts: boolean) {
       list: () => Effect.succeed([firstInstanceId, targetInstanceId]),
       getMetadata: (instanceId) =>
         Effect.succeed({
-          driver,
+          driver: providerDriver,
           continuationKey: compatibleAccounts ? "claude:shared-history" : `claude:${instanceId}`,
           enabled: true,
-          capabilities: ClaudeProviderCapabilitiesV2,
+          capabilities,
         }),
     }),
   );
@@ -106,8 +110,8 @@ function layerTest(compatibleAccounts: boolean) {
     Layer.provide(
       ServerSettings.layerTest({
         providerInstances: {
-          [firstInstanceId]: { driver, enabled: true },
-          [targetInstanceId]: { driver, enabled: true },
+          [firstInstanceId]: { driver: providerDriver, enabled: true },
+          [targetInstanceId]: { driver: providerDriver, enabled: true },
         },
       }),
     ),
@@ -115,7 +119,7 @@ function layerTest(compatibleAccounts: boolean) {
   );
 }
 
-it.effect.each([
+const scenarios = [
   "compatible-account",
   "retained-order",
   "same-instance-active",
@@ -132,7 +136,16 @@ it.effect.each([
   "scheduled",
   "compact",
   "compact-partial",
-] as const)("checks the %s conversation that the next message actually resumes", (scenario) =>
+]
+  .map((scenario) => ({ scenario, providerDriver: driver }))
+  .concat(
+    ["compact", "compact-partial", "busy-self-compact"].map((scenario) => ({
+      scenario,
+      providerDriver: ProviderDriverKind.make("codex"),
+    })),
+  );
+
+it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, providerDriver }) =>
   Effect.gen(function* () {
     const busyQueue = scenario === "busy-queue" || scenario === "busy-self-compact";
     const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -146,6 +159,7 @@ it.effect.each([
       busyQueue ? 1_000 : 500_000,
       20,
       epoch,
+      providerDriver,
     );
     const retained = providerThread(
       "native:retained",
@@ -153,6 +167,7 @@ it.effect.each([
       scenario === "small" ? 199_999 : scenario === "busy-boundary" ? 1_000 : 500_000,
       20,
       epoch,
+      providerDriver,
     );
     const recent = providerThread(
       "native:recent",
@@ -160,6 +175,7 @@ it.effect.each([
       1_000,
       10,
       DateTime.makeUnsafe(69 * 60_000),
+      providerDriver,
     );
     const active = scenario === "same-instance-active" ? retained : first;
     yield* orchestrator.dispatch({
@@ -411,6 +427,7 @@ it.effect.each([
           scenario === "busy-queue" ||
           scenario === "busy-self-compact" ||
           scenario === "busy-boundary",
+        providerDriver,
       ),
     ),
   ),
