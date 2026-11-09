@@ -1,8 +1,5 @@
 import { type OrchestrationV2ProviderTurn, type RunAttemptId } from "@t3tools/contracts";
-import {
-  type ResumeCompaction,
-  resumeCompactionTokensForSelection,
-} from "./chat/compaction.logic";
+import { type ResumeCompaction, resumeCompactionTokensForSelection } from "./chat/compaction.logic";
 import {
   deriveLatestThreadRun,
   deriveThreadRuntime,
