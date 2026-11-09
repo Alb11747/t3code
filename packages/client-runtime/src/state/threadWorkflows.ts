@@ -193,7 +193,7 @@ export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQu
         ? delivering
           ? "pending"
           : "unconfirmed"
-        : message?.atToolBoundary === true
+        : run.deliveryIntent !== undefined || message?.atToolBoundary === true
           ? "pending"
           : "queued";
     return {

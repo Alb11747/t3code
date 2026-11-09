@@ -1,4 +1,8 @@
-import type { OrchestrationV2Run, OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import {
+  type OrchestrationV2Run,
+  type OrchestrationV2ThreadProjection,
+  parseGoalCommand,
+} from "@t3tools/contracts";
 
 export function isAutomaticCompletionRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
@@ -12,6 +16,11 @@ export function isAutomaticCompletionRun(
 export function queuedRunsInDeliveryOrder(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
 ): ReadonlyArray<OrchestrationV2Run> {
+  const goalMessageIds = new Set(
+    projection.messages
+      .filter((message) => parseGoalCommand(message) !== null)
+      .map((message) => message.id),
+  );
   const automaticCompletionMessageIds = new Set(
     projection.messages
       .filter((message) => message.delegatedCompletion !== undefined)
@@ -20,10 +29,17 @@ export function queuedRunsInDeliveryOrder(
   return projection.runs
     .filter((run) => run.status === "queued")
     .toSorted((left, right) => {
+      const commandPriority =
+        Number(right.queuePosition === 1 && goalMessageIds.has(right.userMessageId)) -
+        Number(left.queuePosition === 1 && goalMessageIds.has(left.userMessageId));
+      const steeringPriority =
+        Number(right.deliveryIntent !== undefined) - Number(left.deliveryIntent !== undefined);
       const deliveryPriority =
         Number(automaticCompletionMessageIds.has(right.userMessageId)) -
         Number(automaticCompletionMessageIds.has(left.userMessageId));
       return (
+        commandPriority ||
+        steeringPriority ||
         deliveryPriority ||
         (left.queuePosition ?? left.ordinal) - (right.queuePosition ?? right.ordinal) ||
         left.ordinal - right.ordinal

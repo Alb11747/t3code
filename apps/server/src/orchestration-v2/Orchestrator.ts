@@ -6587,6 +6587,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       runLacksRunningProviderTurn(projection, activeRun)
         ? command.deliveryIntent
         : undefined;
+    if (
+      activeRun !== undefined &&
+      startupDeliveryIntent !== undefined &&
+      (startupDeliveryIntent === "steer" || command.createdBy === "agent") &&
+      (yield* stopReachedRun(command, command.threadId, activeRun.id))
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Target run ${activeRun.id} is stopping and cannot be steered.`,
+      });
+    }
     if (shouldQueue) {
       if (pendingMergeBackTransfers.length > 0) {
         return yield* new OrchestratorDispatchError({
@@ -6597,6 +6609,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       const deliverAtToolBoundary =
         !freshContext &&
+        modelSelection.instanceId === activeRun?.providerInstanceId &&
         command.afterCompactionMessageId === undefined &&
         !command.messageId.startsWith("message:delegated-task-question:") &&
         goalCommand === null &&
@@ -15242,6 +15255,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     function* (stored: OrchestrationV2StoredEvent) {
       if (stored.event.type !== "provider-turn.updated") return;
       const threadId = stored.event.threadId;
+      const providerTurnId = stored.event.payload.id;
       // Under the lock so a send still committing its queued run is seen. Each promotion can
       // restart the target, so the next one decides from fresh records.
       yield* threadDispatch.withLock(
@@ -15256,7 +15270,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             );
             const next = queuedRunsInDeliveryOrder(projection)
               .filter((queued) => {
-                if (queued.deliveryIntent === undefined || queued.queueHeld === true) return false;
+                if (
+                  queued.deliveryIntent === undefined ||
+                  queued.queueHeld === true ||
+                  queued.boundaryOffer !== undefined ||
+                  queued.delegatedTaskId !== undefined
+                )
+                  return false;
                 if (attempted.has(queued.id)) return false;
                 // The message may have been edited into a command that must run as its own turn.
                 const message = projection.messages.find((m) => m.id === queued.userMessageId);
@@ -15288,7 +15308,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             attempted.add(next.queued.id);
             yield* dispatchWithReceiptEffect({
               type: "queued-message.promote-to-steer",
-              commandId: CommandId.make(`command:system:startup-steer:${next.queued.id}`),
+              commandId: CommandId.make(
+                `command:system:startup-steer:${next.queued.id}:${providerTurnId}`,
+              ),
               threadId,
               queuedRunId: next.queued.id,
               targetRunId: next.mode.targetRunId,

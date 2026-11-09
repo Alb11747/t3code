@@ -334,10 +334,12 @@ it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, prov
       // The calling agent's own turn is the busy run: compact after it, then deliver.
       const sent = yield* messages.sendToThread({
         ...input,
+        mode: "steer",
         senderThreadId: threadId,
         contextPolicy: "compact",
       });
       expect(sent.delivery).toBe("queued");
+      expect(sent.run.deliveryIntent).toBeUndefined();
       const compactId = MessageId.make(`agent-compact:${input.messageId}`);
       expect(sent.run.afterCompactionMessageId).toBe(compactId);
       const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);

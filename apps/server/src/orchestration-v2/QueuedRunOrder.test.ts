@@ -6,16 +6,17 @@ describe("queued run delivery order", () => {
   it("keeps automatic completion delivery ahead of visible queued messages", () => {
     const projection = {
       messages: [
-        { id: "message:visible-first" },
+        { id: "message:visible-first", text: "First queued message" },
         {
           id: "message:automatic",
+          text: "Task completed",
           delegatedCompletion: {
             generation: 1,
             parentRunId: "run:parent",
             taskIds: ["task:child"],
           },
         },
-        { id: "message:visible-second" },
+        { id: "message:visible-second", text: "Second queued message" },
       ],
       runs: [
         {

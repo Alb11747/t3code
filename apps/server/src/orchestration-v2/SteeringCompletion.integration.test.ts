@@ -2653,9 +2653,14 @@ it.effect("a side chat that opens with /goal gets its context on the next questi
   ),
 );
 
-it.effect.each(["auto", "steer"] as const)(
-  "rejects an agent %s update after Stop instead of queueing it behind the stopped run",
-  (mode) =>
+it.effect.each([
+  { mode: "auto", turnStatus: "running" },
+  { mode: "steer", turnStatus: "running" },
+  { mode: "auto", turnStatus: "completed" },
+  { mode: "steer", turnStatus: "completed" },
+] as const)(
+  "rejects an agent $mode update after Stop with a $turnStatus provider turn",
+  ({ mode, turnStatus }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
@@ -2673,6 +2678,22 @@ it.effect.each(["auto", "steer"] as const)(
             runId: started[0]!.runId,
             holdQueue: true,
           });
+          if (turnStatus === "completed") {
+            const turn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
+            const now = yield* DateTime.now;
+            yield* (yield* EventSink.EventSinkV2).write({
+              events: [
+                {
+                  id: EventId.make("completed-after-stop"),
+                  type: "provider-turn.updated",
+                  threadId,
+                  runId: started[0]!.runId,
+                  occurredAt: now,
+                  payload: { ...turn, status: "completed", completedAt: now },
+                },
+              ],
+            });
+          }
           // Nothing was queued before Stop, so a queued update would have no hold
           // and would start on its own once the provider stops.
           const error = yield* sendUpdate(threadId, "agent", mode).pipe(Effect.flip);

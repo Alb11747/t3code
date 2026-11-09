@@ -1659,15 +1659,17 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       yield* dispatchFollowUp("other-model", "Use another model for this.", "other-model");
       yield* dispatchFollowUp("rejected", "This promotion was already rejected.");
       const rejectedRun = (yield* orchestrator.getThreadProjection(threadId)).runs[3]!;
-      yield* orchestrator
-        .dispatch({
-          type: "queued-message.promote-to-steer",
-          commandId: CommandId.make(`command:system:startup-steer:${rejectedRun.id}`),
-          threadId,
-          queuedRunId: rejectedRun.id,
-          targetRunId: (yield* orchestrator.getThreadProjection(threadId)).runs[0]!.id,
-        })
-        .pipe(Effect.flip);
+      for (const suffix of ["", ":runtime-startup-steer-turn"]) {
+        yield* orchestrator
+          .dispatch({
+            type: "queued-message.promote-to-steer",
+            commandId: CommandId.make(`command:system:startup-steer:${rejectedRun.id}${suffix}`),
+            threadId,
+            queuedRunId: rejectedRun.id,
+            targetRunId: (yield* orchestrator.getThreadProjection(threadId)).runs[0]!.id,
+          })
+          .pipe(Effect.flip);
+      }
       yield* dispatchFollowUp("goal", "Check the goal.");
       yield* orchestrator.dispatch({
         type: "queued-run.edit",
@@ -1676,6 +1678,8 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         runId: (yield* orchestrator.getThreadProjection(threadId)).runs[4]!.id,
         text: "/goal finish the work",
       });
+      yield* dispatchFollowUp("unconfirmed", "This update may already be saved.");
+      const unconfirmedRun = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
       yield* dispatchFollowUp("steer", "Also do this.");
       const steerMessageId = MessageId.make("runtime-startup-steer-steer");
 
@@ -1705,6 +1709,21 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       yield* eventSink.write({
         commandId: CommandId.make("runtime-startup-steer-running"),
         events: [
+          {
+            id: EventId.make("runtime-startup-steer-unconfirmed"),
+            type: "run.updated",
+            threadId,
+            runId: unconfirmedRun.id,
+            occurredAt: now,
+            payload: {
+              ...unconfirmedRun,
+              boundaryOffer: {
+                id: "unconfirmed-offer",
+                targetRunId: run.id,
+                providerTurnId: ProviderTurnId.make("runtime-startup-steer-turn"),
+              },
+            },
+          },
           {
             id: EventId.make("runtime-startup-steer-run-event"),
             type: "run.updated",
@@ -1755,7 +1774,50 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         (yield* orchestrator.getThreadProjection(threadId)).runs.map(
           (candidate) => candidate.status,
         ),
-        ["running", "queued", "queued", "queued", "queued", "cancelled"],
+        ["running", "queued", "queued", "queued", "queued", "queued", "cancelled"],
+      );
+      const retrySequence = yield* orchestrator.getThreadEventSequence(threadId);
+      const firstTurn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
+      yield* eventSink.write({
+        commandId: CommandId.make("runtime-startup-steer-next-turn"),
+        events: [
+          {
+            id: EventId.make("runtime-startup-steer-finished-turn"),
+            type: "provider-turn.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: { ...firstTurn, status: "completed", completedAt: now },
+          },
+          {
+            id: EventId.make("runtime-startup-steer-retry-turn-event"),
+            type: "provider-turn.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: {
+              ...firstTurn,
+              id: ProviderTurnId.make("runtime-startup-steer-retry-turn"),
+              ordinal: 2,
+            },
+          },
+        ],
+      });
+      yield* eventSink.stream({ threadId, afterSequence: retrySequence }).pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "turn-item.updated" &&
+            stored.event.payload.type === "user_message" &&
+            stored.event.payload.messageId === rejectedRun.userMessageId,
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      assert.equal(
+        (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+          (candidate) => candidate.id === rejectedRun.id,
+        )?.status,
+        "cancelled",
       );
     }),
   );

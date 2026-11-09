@@ -900,7 +900,8 @@ const make = Effect.gen(function* () {
     if (compactBeforeSend) {
       dispatchMode = { type: "queue_after_active" };
     } else if (mode === "steer" || mode === "restart") {
-      if (steerableRun === undefined) {
+      const targetRun = mode === "steer" ? (steerableRun ?? latestActiveRun(target)) : steerableRun;
+      if (targetRun === undefined) {
         return yield* new ThreadManagementNoSteerableRunError({
           threadId: input.threadId,
           mode,
@@ -908,7 +909,7 @@ const make = Effect.gen(function* () {
       }
       dispatchMode = {
         type: mode === "steer" ? "steer_active" : "restart_active",
-        targetRunId: steerableRun.id,
+        targetRunId: targetRun.id,
       };
     } else if (mode === "auto" && steerableRun !== undefined) {
       dispatchMode = { type: "steer_active", targetRunId: steerableRun.id };
@@ -935,7 +936,10 @@ const make = Effect.gen(function* () {
           ? {}
           : { modelSelection: input.modelSelection }),
       ...(input.freshContext ? { freshContext: true } : {}),
-      ...(mode === "auto" && steerableRun === undefined ? { deliveryIntent: "auto" as const } : {}),
+      ...(!compactBeforeSend &&
+      (mode === "steer" || (mode === "auto" && steerableRun === undefined))
+        ? { deliveryIntent: mode }
+        : {}),
       dispatchMode,
       createdBy: input.createdBy,
       creationSource: input.creationSource,

@@ -525,6 +525,7 @@ it.effect("retains automation and sender attribution while a message waits in th
       creationSource: "mcp",
     });
     assert.equal(queued.delivery, "queued");
+    assert.isUndefined(queued.run.deliveryIntent);
     const projection = yield* threads.getThreadProjection(launched.threadId);
     const message = projection.messages.find((item) => item.id === queued.message.id);
     assert.equal(message?.scheduledTaskId, scheduledTaskId);
@@ -545,19 +546,22 @@ it.effect("retains automation and sender attribution while a message waits in th
     });
     assert.equal(fresh.delivery, "queued");
     assert.isTrue(fresh.run.freshContext);
-    const auto = yield* threads.sendToThread({
-      projectId,
-      commandId: CommandId.make("command:automation:queued-auto"),
-      threadId: launched.threadId,
-      messageId: MessageId.make("message:automation:queued-auto"),
-      text: "Also check the docs",
-      attachments: [],
-      mode: "auto",
-      createdBy: "agent",
-      creationSource: "mcp",
-    });
-    assert.equal(auto.delivery, "queued");
-    assert.equal(auto.run.deliveryIntent, "auto");
+    assert.isUndefined(fresh.run.deliveryIntent);
+    for (const mode of ["auto", "steer"] as const) {
+      const pending = yield* threads.sendToThread({
+        projectId,
+        commandId: CommandId.make(`command:automation:queued-${mode}`),
+        threadId: launched.threadId,
+        messageId: MessageId.make(`message:automation:queued-${mode}`),
+        text: "Also check the docs",
+        attachments: [],
+        mode,
+        createdBy: "agent",
+        creationSource: "mcp",
+      });
+      assert.equal(pending.delivery, "queued");
+      assert.equal(pending.run.deliveryIntent, mode);
+    }
   }).pipe(Effect.provide(harness.layer));
 });
 
