@@ -10,6 +10,7 @@ import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { useEffect } from "react";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useFilesystemReadAccess } from "~/state/filesystem";
@@ -251,6 +252,7 @@ export function useProjectFileQuery(
   cwd: string,
   relativePath: string | null,
   enabled = true,
+  openRequestId?: number,
 ): ProjectFileQueryState {
   // Read media-like paths too; a failed read is how folders with those names are detected.
   const fileAccess = useFilesystemReadAccess(environmentId);
@@ -261,6 +263,12 @@ export function useProjectFileQuery(
       ? getProjectFileQueryAtom(environmentId, cwd, relativePath)
       : EMPTY_PROJECT_FILE_QUERY_ATOM;
   const result = useAtomValue(atom);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- an explicit file open revalidates the cached disk read
+  useEffect(() => {
+    if (openRequestId === undefined) return;
+    const cached = appAtomRegistry.get(atom);
+    if (cached._tag !== "Initial" && !cached.waiting) appAtomRegistry.refresh(atom);
+  }, [atom, openRequestId]);
   const refreshAtom = useAtomRefresh(atom);
   const refresh = () => refreshAtom();
   const readData = AsyncResult.getOrElse(result, () => null);

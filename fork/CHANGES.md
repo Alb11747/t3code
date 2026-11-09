@@ -9,6 +9,8 @@ the sync script deletes the line of a change whose upstream PR merged. Closing
 an issue alone does not revert a patch. See `fork/README.md` for how to add or drop
 an entry.
 
+- `fix(web): reread cached files when explicitly opened`: reopening a file tab or clicking its chat link again reads current host text immediately, even inside the cache freshness window. Applies to web and desktop. Related issue: https://github.com/pingdotgg/t3code/issues/29345. Related PR: https://github.com/pingdotgg/t3code/pull/29409
+
 - `fix(server): preserve startup steering intent`: follow-ups sent with Steer during setup or a provider-turn handoff retain their delivery intent and join the next eligible turn. Web, desktop, mobile and automatic sends preserve the selected follow-up behavior. Carries flamboh's reviewed change. Issue: https://github.com/pingdotgg/t3code/issues/23271. PR: https://github.com/pingdotgg/t3code/pull/25749
 - `fix(server): prioritize pending steering over completion notices`: retained Steer and Auto sends remain Pending during handoffs and run before background completion notices, while explicit Queue, required compaction, Stop and goal-command preemption keep their behavior. MCP Steer accepts startup gaps; uncertain hook offers stay protected from replay, and a rejected startup promotion can retry on a later provider turn. Fork follow-up to the startup fix. Issues: https://github.com/pingdotgg/t3code/issues/23271 and https://github.com/pingdotgg/t3code/issues/25646. Related PR: https://github.com/pingdotgg/t3code/pull/25749
 
