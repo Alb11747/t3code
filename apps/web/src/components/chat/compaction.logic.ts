@@ -1,5 +1,4 @@
 import type {
-  ModelSelection,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderTurn,
   OrchestrationV2Run,
@@ -13,13 +12,12 @@ import {
   resolveSelectableProviderInstanceEntry,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
-import { getDisplayModelName, type ModelEsque } from "./providerIconUtils";
 import {
   deriveLatestContextWindowSnapshot,
   latestProviderTurnTokenUsage,
 } from "@t3tools/client-runtime/state/context-window";
 
-export function providerSupportsManualCompaction(
+function providerSupportsManualCompaction(
   provider: ProviderInstanceEntry | null | undefined,
 ): boolean {
   return provider?.snapshot.slashCommands.some((command) => command.name === "compact") ?? false;
@@ -47,6 +45,13 @@ export function hasAvailableCompactionProvider(input: {
   return providerSupportsManualCompaction(
     resolveSelectableProviderInstanceEntry(compatibleProviders, input.instanceId ?? undefined),
   );
+}
+
+export function formatContextWindowCompactionMessage(autoCompactThreshold?: number | null): string {
+  if (typeof autoCompactThreshold === "number" && autoCompactThreshold > 0) {
+    return `Compacts automatically at about ${autoCompactThreshold.toLocaleString("en-US")} tokens.`;
+  }
+  return "Context compacts automatically when needed.";
 }
 
 export interface ResumeCompaction {
@@ -135,53 +140,4 @@ export function resumeCompactionTokensForSelection(input: {
     input.selectedInstanceId === resumeCompaction.providerInstanceId
     ? resumeCompaction.usedTokens
     : null;
-}
-
-export function resolveContextWindowModelDisplayName(
-  selection: ModelSelection | null | undefined,
-  modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>,
-): string | null {
-  if (!selection) {
-    return null;
-  }
-
-  const selectedModel = modelOptionsByInstance
-    .get(selection.instanceId)
-    ?.find((model) => model.slug === selection.model);
-
-  return selectedModel ? getDisplayModelName(selectedModel) : selection.model;
-}
-
-export function formatContextWindowCompactionMessage(
-  modelDisplayName: string | null | undefined,
-  autoCompactThreshold?: number | null,
-): string {
-  if (typeof autoCompactThreshold === "number" && autoCompactThreshold > 0) {
-    return `Compacts automatically at about ${autoCompactThreshold.toLocaleString("en-US")} tokens.`;
-  }
-  return modelDisplayName
-    ? `Context for ${modelDisplayName} compacts automatically when needed.`
-    : "Context compacts automatically when needed.";
-}
-
-export function shouldReserveContextWindowMeter(input: {
-  readonly meterEnabled: boolean;
-  readonly detailLoading: boolean;
-  readonly threadStarted: boolean;
-  readonly providerReportsContextWindow: boolean | null;
-}): boolean {
-  return (
-    input.meterEnabled &&
-    input.detailLoading &&
-    input.threadStarted &&
-    input.providerReportsContextWindow !== false
-  );
-}
-
-export function formatContextWindowCost(cost: {
-  readonly amount: number;
-  readonly currency: string;
-}): string {
-  const fractionDigits = Math.abs(cost.amount) > 0 && Math.abs(cost.amount) < 0.01 ? 4 : 2;
-  return `${cost.currency} ${cost.amount.toFixed(fractionDigits)}`;
 }
