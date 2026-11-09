@@ -277,6 +277,7 @@ function setup(
     setKeepFullHistory: vi.fn(),
     anchorNewTurn: vi.fn(),
     acknowledgeActiveThreadWoke: vi.fn(),
+    handleNewThreadInActiveProject: vi.fn(),
     persistThreadSettingsForNextTurn: vi
       .fn()
       .mockResolvedValue({ _tag: "Success", value: undefined }),
