@@ -212,10 +212,7 @@ import {
   getComposerReasoningStep,
 } from "./composerProviderState";
 import { readPromptUltrathink } from "./TraitsPicker";
-import {
-  type ResumeCompaction,
-  resumeCompactionTokensForSelection,
-} from "./compaction.logic";
+import { type ResumeCompaction, resumeCompactionTokensForSelection } from "./compaction.logic";
 import {
   buildAttachmentVideoPreview,
   buildExpandedImagePreview,
@@ -2960,7 +2957,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           models: selectedProviderModels,
           modelOptions: composerModelOptions?.[selectedInstanceId],
           reportedModelSelection,
-          planModeEnabled: settings.planModeEnabled,
         });
         if (!modelOptions) return;
         useComposerDraftStore

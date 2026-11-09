@@ -207,7 +207,6 @@ function setup(
       updatedAt: thread.updatedAt,
     },
     activeProjectDefaultModelSelection: null,
-    activeProposedPlan: null,
     activeMessageCount: 2,
     isServerThread: true,
     isLocalDraftThread: false,
@@ -254,7 +253,6 @@ function setup(
       providerThreadId: ProviderThreadId.make("claude-conversation"),
       sourceUpdatedAt: Date.parse("2026-10-26T17:00:00.000Z"),
     },
-    showPlanFollowUpPrompt: false,
     usageLimitsKey: null,
     usageLimitsOffered: false,
     openUsageLimits: vi.fn(),
@@ -279,8 +277,6 @@ function setup(
     setKeepFullHistory: vi.fn(),
     anchorNewTurn: vi.fn(),
     acknowledgeActiveThreadWoke: vi.fn(),
-    handleInteractionModeChange: vi.fn(),
-    handleNewThreadInActiveProject: vi.fn(),
     persistThreadSettingsForNextTurn: vi
       .fn()
       .mockResolvedValue({ _tag: "Success", value: undefined }),

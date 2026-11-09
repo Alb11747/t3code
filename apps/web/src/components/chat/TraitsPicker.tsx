@@ -287,7 +287,7 @@ export function getFastModeTraitToggle(input: {
   models: ReadonlyArray<ServerProviderModel>;
   modelOptions: ProviderOptions | undefined;
   reportedModelSelection?: ModelSelection | null | undefined;
-  planModeEnabled: boolean;
+  includePlanAgent?: boolean | undefined;
 }): ProviderOptions | null {
   const selected = getSelectedTraits(
     input.provider,
@@ -296,7 +296,7 @@ export function getFastModeTraitToggle(input: {
     "none",
     input.modelOptions,
     true,
-    input.planModeEnabled,
+    input.includePlanAgent,
   );
   if (selected.modelIsUnavailable) return null;
   const fastMode = selected.fastModeDescriptor;

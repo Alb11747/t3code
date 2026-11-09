@@ -6944,7 +6944,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               if (
                 input.status === "completed" &&
                 input.context.subagent === null &&
-                !input.continueRun &&
+                overloadAttempt === undefined &&
                 !holdsForGoal &&
                 nativeThreadId != null
               ) {

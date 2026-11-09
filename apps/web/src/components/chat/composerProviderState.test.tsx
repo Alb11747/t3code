@@ -254,7 +254,7 @@ describe("getComposerFastModeToggle", () => {
       model: MODEL,
       models: modelWith(descriptors),
       modelOptions,
-      planModeEnabled: true,
+      includePlanAgent: true,
     });
   }
 

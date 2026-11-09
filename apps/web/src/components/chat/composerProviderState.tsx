@@ -204,14 +204,14 @@ export function getComposerFastModeToggle(input: {
   models: ReadonlyArray<ServerProviderModel>;
   modelOptions: ReadonlyArray<ProviderOptionSelection> | null | undefined;
   reportedModelSelection?: ModelSelection | null | undefined;
-  planModeEnabled: boolean;
+  includePlanAgent?: boolean | undefined;
 }): ReadonlyArray<ProviderOptionSelection> | null {
   const { selections } = resolveComposerOptionSelections(
     input.models,
     input.model,
     input.provider,
     input.modelOptions,
-    input.planModeEnabled,
+    input.includePlanAgent,
   );
   return getFastModeTraitToggle({ ...input, modelOptions: selections });
 }
