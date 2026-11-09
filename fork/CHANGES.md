@@ -9,6 +9,8 @@ the sync script deletes the line of a change whose upstream PR merged. Closing
 an issue alone does not revert a patch. See `fork/README.md` for how to add or drop
 an entry.
 
+- `fix(server): preserve startup steering intent`: follow-ups sent with Steer during setup or a provider-turn handoff retain their delivery intent and join the next eligible turn. Web, desktop, mobile and automatic sends preserve the selected follow-up behavior. Carries flamboh's reviewed change. Issue: https://github.com/pingdotgg/t3code/issues/23271. PR: https://github.com/pingdotgg/t3code/pull/25749
+
 - `feat(server): compact Codex before agent continuations`: agent text and attachment sends accept `contextPolicy: "compact"` for an existing Codex conversation, using native compaction and holding the continuation until it succeeds, as Claude already does. Self-sends queue compaction after the caller's current turn; other threads must be idle. Fork-only. Issue: none linked. PR: none yet
 - `fix(server): keep Codex loaded when reasoning effort changes`: effort-only selection changes reuse the loaded native thread and preserve Codex's pinned reasoning baseline and instruction context; model, other-option, runtime-policy and non-Codex changes retain their existing reload behavior. Issue: none linked. PR: https://github.com/pingdotgg/t3code/pull/32915
 
