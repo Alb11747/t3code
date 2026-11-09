@@ -1237,9 +1237,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       Effect.void,
     onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
     readChildMetadata?: Parameters<typeof withCodexReplayChildMetadata>[2],
-    adapterOptions: Partial<
-      Pick<CodexAdapterV2.CodexAdapterV2Options, "settings" | "promptSuggestions">
-    > = {},
+    adapterOptions: Partial<Pick<CodexAdapterV2.CodexAdapterV2Options, "settings">> = {},
     decorateClient: (
       client: CodexClient.CodexAppServerClient["Service"],
     ) => CodexClient.CodexAppServerClient["Service"] = (client) => client,
@@ -1383,7 +1381,6 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     });
 
   runCodexAdapterForkSuite({
-    DEFAULT_CODEX_SETTINGS,
     makeCodexReplayHarness,
     makeCodexReplayTranscript,
     codexReplayPreamble,

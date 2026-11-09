@@ -77,7 +77,6 @@ import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as SecretResolver from "./secrets/SecretResolver.ts";
 import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceRegistryHydration.ts";
 import * as ProjectSettingsOverrideSweep from "./provider/ProjectSettingsOverrideSweep.ts";
-import * as PromptSuggestions from "./provider/PromptSuggestions.ts";
 import * as ClaudeKeepWarm from "./provider/ClaudeKeepWarm.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
@@ -687,7 +686,6 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ),
   Layer.provideMerge(ProviderRegistry.layer),
   Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
-  Layer.provideMerge(PromptSuggestions.layer),
   // Provided below provider hydration so Claude adapters and the WebSocket routes share it.
   Layer.provideMerge(ClaudeKeepWarm.layer),
   // Provider hydration builds the Claude runner, which reports agents to the same scanner the

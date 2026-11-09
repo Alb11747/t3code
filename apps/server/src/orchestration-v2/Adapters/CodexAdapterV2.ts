@@ -1,11 +1,6 @@
 import { pipe } from "effect/Function";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
-import {
-  makeCodexComposerPredictions,
-  makeCodexPredictionClaims,
-} from "../../provider/CodexComposerPredictions.ts";
-import * as PromptSuggestions from "../../provider/PromptSuggestions.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import { codexFailureRetryable, codexOverloadRetryDelayMs } from "./CodexRetryPolicy.ts";
@@ -106,7 +101,6 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import { FetchHttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { resolveAttachmentPath, resolveAttachmentPathById } from "../../attachmentStore.ts";
@@ -1676,7 +1670,6 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
 ) {
   const clientFactory = yield* CodexAppServerClientFactory;
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
-  const promptSuggestions = yield* PromptSuggestions.PromptSuggestions;
   const digest = yield* Digest.Digest;
   const fileSystem = yield* FileSystem.FileSystem;
   const hostEnvironment = yield* HostProcess.Environment;
@@ -1713,7 +1706,6 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
     idAllocator,
     serverConfig,
     continuationRequests,
-    promptSuggestions,
     ...hooks,
   });
 });
@@ -1724,7 +1716,6 @@ export interface CodexAdapterV2Options {
   readonly environment: NodeJS.ProcessEnv;
   readonly clientFactory: CodexAppServerClientFactoryShape;
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
-  readonly promptSuggestions?: Omit<typeof PromptSuggestions.PromptSuggestions.Service, "stream">;
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
   readonly compatibility?: (
     version: string,
@@ -1745,16 +1736,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
   adapterOptions: CodexAdapterV2Options,
 ) {
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
-  const random = yield* SecureRandom.SecureRandom;
   const readMcpSession = (threadId: ThreadId | null) =>
     threadId === null ? Effect.undefined : mcpSessions.read(threadId, adapterOptions.instanceId);
   const { clientFactory, digest, fileSystem, idAllocator, serverConfig } = adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests;
-  const promptSuggestions =
-    adapterOptions.promptSuggestions ?? PromptSuggestions.PromptSuggestions.defaultValue();
-  const composerPredictions = yield* makeCodexComposerPredictions.pipe(
-    Effect.provide(FetchHttpClient.layer),
-  );
 
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
@@ -1907,11 +1892,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           new Map<ProviderThreadId, Extract<OrchestrationV2TurnItem, { type: "error" }>>(),
         );
         const activeTurns = yield* Ref.make(new Map<string, ActiveCodexTurnContext>());
-        const predictions = yield* makeCodexPredictionClaims({
-          composerPredictions,
-          promptSuggestions,
-          random,
-        });
         const turnTokenUsageByThread = new Map<string, CodexTurnTokenUsageState>();
         const usageStateForThread = (nativeThreadId: string) => {
           let state = turnTokenUsageByThread.get(nativeThreadId);
@@ -2230,9 +2210,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             fileChangeKindsByItem: new Map(),
             runningCompactionItemIds: new Set(),
           };
-          yield* predictions.claim(input.turnInput.threadId, input.turnInput.runId, context);
-          // Cleanup may suspend while the public start caller is cancelled.
-          // Do not publish the native turn that its run has already abandoned.
           if (isAbandoned()) return context;
           yield* Ref.update(limitedTurnItems, (current) => {
             const next = new Map(current);
@@ -6931,25 +6908,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* Deferred.succeed(input.context.nativeStartReady, undefined);
               }
               yield* flushReadyRootTerminals();
-              if (
-                adapterOptions.settings.promptSuggestions &&
-                input.context.input.message.createdBy === "user" &&
-                (input.context.input.message.creationSource === "web" ||
-                  input.context.input.message.creationSource === "mobile") &&
-                input.context.input.message.scheduledTaskId === undefined &&
-                input.context.subagent === null &&
-                input.status === "completed" &&
-                !holdsForGoal &&
-                overloadAttempt === undefined &&
-                nativeThreadId != null
-              ) {
-                yield* predictions.predictAfter(input.context.input.threadId, input.context, {
-                  client,
-                  environment: resolvedRuntime?.environment ?? adapterOptions.environment,
-                  nativeThreadId,
-                  model: input.context.input.modelSelection.model,
-                });
-              }
               if (!retainSettledContext && !interruptInProgress) {
                 yield* Ref.update(runningCommandItemsByTurn, (current) => {
                   if (!current.has(input.nativeTurnId)) {
@@ -7661,13 +7619,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               turnInput.restartContinuationOfRunId === undefined
                 ? parseGoalCommand(turnInput.message)
                 : null;
-            if (goalCommand !== null) {
-              return predictions
-                .revoke(turnInput.threadId)
-                .pipe(Effect.andThen(runGoalCommand(turnInput, goalCommand)));
-            }
+            if (goalCommand !== null) return runGoalCommand(turnInput, goalCommand);
             return Effect.gen(function* () {
-              yield* predictions.revoke(turnInput.threadId);
               yield* startNativeTurn(
                 turnInput,
                 turnInput.restartContinuationOfRunId === undefined
@@ -8280,9 +8233,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
           rollbackThread: Effect.fn("CodexAdapterV2.rollbackThread")(
             function* (threadInput) {
-              if (threadInput.providerThread.appThreadId !== null) {
-                yield* predictions.revoke(threadInput.providerThread.appThreadId);
-              }
               const threadId = yield* getNativeThreadId(threadInput.providerThread);
               const numTurns = yield* resolveCodexRollbackTurnCount(threadInput);
               const nativeConversationHeadRef =

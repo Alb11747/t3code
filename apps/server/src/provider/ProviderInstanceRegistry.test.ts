@@ -99,7 +99,6 @@ const makeCodexConfig = (overrides: Partial<CodexSettings>): CodexSettings => ({
   binaryPath: "codex",
   homePath: "",
   shadowHomePath: "",
-  promptSuggestions: false,
   launchArgs: "",
   customModels: [],
   ...overrides,
@@ -113,7 +112,6 @@ const makeClaudeConfig = (overrides: Partial<ClaudeSettings>): ClaudeSettings =>
   launchArgs: "",
   autoCompactWindow: "",
   uncachedColdCompaction: false,
-  promptSuggestions: false,
   idleCompaction: "default",
   ...overrides,
 });

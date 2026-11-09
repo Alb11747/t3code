@@ -2,12 +2,8 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
-  CheckpointId,
-  type CodexSettings,
   type OrchestrationV2ProviderThread,
   RunAttemptId,
-  RunId,
-  ScheduledTaskId,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -20,33 +16,26 @@ import type * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import type * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import type * as Path from "effect/Path";
 import * as Random from "effect/Random";
 import * as Scope from "effect/Scope";
-import * as Stream from "effect/Stream";
-import { FetchHttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
 
-import * as PromptSuggestions from "../../provider/PromptSuggestions.ts";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
 import type { withCodexReplayChildMetadata } from "./CodexAdapterV2.testkit.ts";
 
 type ReplayEntry = CodexReplay.CodexAppServerReplayEntry;
 
 export interface CodexAdapterForkSuiteInput {
-  readonly DEFAULT_CODEX_SETTINGS: CodexSettings;
   readonly makeCodexReplayHarness: (
     transcript: CodexReplay.CodexAppServerReplayTranscript,
     onEvent?: (event: ProviderAdapter.ProviderAdapterV2Event) => Effect.Effect<unknown>,
     onRequest?: (method: string, params: unknown) => Effect.Effect<void>,
     readChildMetadata?: Parameters<typeof withCodexReplayChildMetadata>[2],
-    adapterOptions?: Partial<
-      Pick<CodexAdapterV2.CodexAdapterV2Options, "settings" | "promptSuggestions">
-    >,
+    adapterOptions?: Partial<Pick<CodexAdapterV2.CodexAdapterV2Options, "settings">>,
     decorateClient?: (
       client: CodexClient.CodexAppServerClient["Service"],
     ) => CodexClient.CodexAppServerClient["Service"],
@@ -98,12 +87,11 @@ export interface CodexAdapterForkSuiteInput {
 }
 
 /**
- * Fork-only Codex adapter cases (composer predictions, abandoned turn starts, overload
+ * Fork-only Codex adapter cases (abandoned turn starts, overload
  * retries), registered inside the upstream suite so they share its replay harness.
  */
 export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
   const {
-    DEFAULT_CODEX_SETTINGS,
     makeCodexReplayHarness,
     makeCodexReplayTranscript,
     codexReplayPreamble,
@@ -111,324 +99,6 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
     makeCodexTestTurnInput,
     withReplayRequestId,
   } = input;
-
-  it.effect.each([
-    {
-      name: "web prompt in an agent-created thread",
-      message: { createdBy: "user", creationSource: "web" },
-      predict: true,
-    },
-    {
-      name: "mobile prompt in an agent-created thread",
-      message: { createdBy: "user", creationSource: "mobile" },
-      predict: true,
-    },
-    {
-      name: "agent launch or follow-up",
-      message: { createdBy: "agent", creationSource: "mcp" },
-      predict: false,
-    },
-    {
-      name: "automatic provider wake",
-      message: { createdBy: "agent", creationSource: "provider" },
-      predict: false,
-    },
-    {
-      name: "system prompt",
-      message: { createdBy: "system", creationSource: "server" },
-      predict: false,
-    },
-    {
-      name: "user-created scheduled task",
-      message: {
-        createdBy: "user",
-        creationSource: "web",
-        scheduledTaskId: ScheduledTaskId.make("scheduled-prediction"),
-      },
-      predict: false,
-    },
-  ] as const)("only requests composer predictions for a direct user prompt: $name", (testCase) =>
-    Effect.gen(function* () {
-      const nativeThreadId = "prediction-origin-thread";
-      const nativeTurnId = "prediction-origin-turn";
-      const prompt = "Implement";
-      const completed = yield* Deferred.make<void>();
-      const authRequests: unknown[] = [];
-      const harness = yield* makeCodexReplayHarness(
-        makeCodexReplayTranscript({
-          scenario: `prediction-origin-${testCase.name}`,
-          entries: [
-            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
-            {
-              type: "emit_inbound",
-              frame: {
-                method: "turn/completed",
-                params: {
-                  threadId: nativeThreadId,
-                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
-                },
-              },
-            },
-          ],
-        }),
-        undefined,
-        undefined,
-        undefined,
-        { settings: { ...DEFAULT_CODEX_SETTINGS, promptSuggestions: true } },
-        (client) => ({
-          ...client,
-          request: ((method: string, params: unknown) => {
-            if (method === "getAuthStatus") {
-              authRequests.push(params);
-              return Effect.succeed({ authMethod: null, authToken: null });
-            }
-            return client.raw.request(method, params);
-          }) as CodexClient.CodexAppServerClient["Service"]["request"],
-          handleServerNotification: (method, handler) =>
-            client.handleServerNotification(method, (payload) =>
-              handler(payload).pipe(
-                Effect.tap(() =>
-                  method === "turn/completed"
-                    ? Deferred.succeed(completed, undefined)
-                    : Effect.void,
-                ),
-              ),
-            ),
-        }),
-      );
-      const turnInput = makeCodexTestTurnInput({
-        threadId: harness.threadId,
-        providerThread: harness.providerThread,
-        now: yield* DateTime.now,
-        attemptId: RunAttemptId.make("prediction-origin-attempt"),
-        text: prompt,
-      });
-      yield* harness.runtime.startTurn({
-        ...turnInput,
-        appThread: { ...turnInput.appThread, createdBy: "agent", creationSource: "mcp" },
-        message: { ...turnInput.message, ...testCase.message },
-      });
-      yield* Deferred.await(completed);
-      yield* TestClock.adjust("0 millis");
-      assert.lengthOf(authRequests, testCase.predict ? 1 : 0);
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
-        ),
-      ),
-    ),
-  );
-
-  it.effect.each([
-    { action: "next turn", late: false },
-    { action: "rollback", late: false },
-    { action: "close", late: false },
-    { action: "next turn", late: true },
-    { action: "rollback", late: true },
-    { action: "close", late: true },
-    { action: "provider switch", late: true },
-  ] as const)("revokes composer predictions on $action (late=$late)", ({ action, late }) =>
-    Effect.gen(function* () {
-      const nativeThreadId = "prediction-thread";
-      const nativeTurnId = "prediction-native-turn";
-      const prompt = "Implement";
-      const nextTurn: Array<CodexReplay.CodexAppServerReplayEntry> = [
-        {
-          type: "expect_outbound",
-          frame: {
-            id: 4,
-            method: "turn/start",
-            params: {
-              threadId: nativeThreadId,
-              input: [{ type: "text", text: "Next" }],
-              cwd: "/workspace",
-              model: "gpt-5.4",
-              approvalPolicy: "never",
-              approvalsReviewer: "user",
-              sandboxPolicy: { type: "dangerFullAccess" },
-              summary: "detailed",
-              collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
-            },
-          },
-        },
-        {
-          type: "emit_inbound",
-          frame: {
-            id: 4,
-            result: { turn: makeCodexReplayTurn({ id: "next-turn", status: "inProgress" }) },
-          },
-        },
-      ];
-      const transcript = makeCodexReplayTranscript({
-        scenario: `prediction-${action}-${late}`,
-        entries: [
-          ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
-          {
-            type: "emit_inbound",
-            label: "completed",
-            frame: {
-              method: "turn/completed",
-              params: {
-                threadId: nativeThreadId,
-                turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
-              },
-            },
-          },
-          ...(action === "next turn" ? nextTurn : []),
-        ],
-      });
-      const store = yield* PromptSuggestions.make;
-      const suggested = yield* Deferred.make<void>();
-      const requested = yield* Deferred.make<void>();
-      const responseReturned = yield* Deferred.make<void>();
-      let resolveResponse!: (response: Response) => void;
-      let signal: AbortSignal | null | undefined;
-      const fetch: typeof globalThis.fetch = async (_url, init) => {
-        if (init?.method === "GET") return Response.json({ is_enabled: true, prompt: "Predict" });
-        signal = init?.signal;
-        if (!late) {
-          Deferred.doneUnsafe(requested, Effect.void);
-          return new Response(
-            'data: {"type":"response.output_text.delta","delta":"{\\"suggestion\\":\\"Add tests\\"}"}\n\ndata: {"type":"response.completed"}\n\n',
-          );
-        }
-        const response = await new Promise<Response>((resolve) => {
-          resolveResponse = resolve;
-          Deferred.doneUnsafe(requested, Effect.void);
-        });
-        Deferred.doneUnsafe(responseReturned, Effect.void);
-        return response;
-      };
-      const sessionScope = yield* Scope.make();
-      yield* Effect.addFinalizer(() => Scope.close(sessionScope, Exit.void));
-      const harness = yield* makeCodexReplayHarness(
-        transcript,
-        undefined,
-        undefined,
-        undefined,
-        {
-          settings: { ...DEFAULT_CODEX_SETTINGS, promptSuggestions: true },
-          promptSuggestions: {
-            ...store,
-            publish: (threadId, suggestion) =>
-              store
-                .publish(threadId, suggestion)
-                .pipe(Effect.andThen(Deferred.succeed(suggested, undefined))),
-          },
-        },
-        (client) => ({
-          ...client,
-          request: ((method: string, params: unknown) => {
-            if (method === "getAuthStatus")
-              return Effect.succeed({ authMethod: "chatgpt", authToken: "token" });
-            if (method === "config/read") return Effect.succeed({ config: {} });
-            if (method === "thread/read") return Effect.succeed({ thread: { turns: [] } });
-            return client.raw.request(method, params);
-          }) as CodexClient.CodexAppServerClient["Service"]["request"],
-          raw: {
-            ...client.raw,
-            request: (method, params) =>
-              method === "account/read"
-                ? Effect.succeed({
-                    workspaceRouting: {
-                      backendOrigin: "https://chatgpt.example",
-                      chatgptAccountId: "account",
-                    },
-                  })
-                : client.raw.request(method, params),
-          },
-        }),
-      ).pipe(
-        Effect.provideService(Scope.Scope, sessionScope),
-        Effect.provideService(FetchHttpClient.Fetch, fetch),
-      );
-      const turnInput = makeCodexTestTurnInput({
-        threadId: harness.threadId,
-        providerThread: harness.providerThread,
-        now: yield* DateTime.now,
-        attemptId: RunAttemptId.make("prediction-attempt"),
-        text: prompt,
-      });
-      yield* harness.runtime
-        .startTurn(turnInput)
-        .pipe(Effect.provideService(FetchHttpClient.Fetch, fetch));
-      const current = store.stream(harness.threadId).pipe(
-        Stream.take(1),
-        Stream.runCollect,
-        Effect.map(([suggestion]) => suggestion),
-      );
-      const lateResponse = () =>
-        resolveResponse(
-          new Response(
-            'data: {"type":"response.output_text.delta","delta":"{\\"suggestion\\":\\"Too late\\"}"}\n\ndata: {"type":"response.completed"}\n\n',
-          ),
-        );
-      yield* harness.firstTerminal;
-      yield* Deferred.await(requested);
-      if (!late) {
-        yield* Deferred.await(suggested);
-        const suggestion = yield* current;
-        assert.equal(suggestion?.text, "Add tests");
-        assert.equal(suggestion?.runId, turnInput.runId);
-        assert.match(suggestion!.id, /^[0-9a-f-]{36}$/);
-      }
-      if (action === "provider switch") {
-        // Another provider's run takes the thread while this session stays open.
-        const newer = { id: "newer", runId: RunId.make("other-provider-run"), text: "Keep going" };
-        yield* store.claim(harness.threadId, newer.runId);
-        yield* store.publish(harness.threadId, newer);
-        lateResponse();
-        yield* Deferred.await(suggested);
-        assert.deepEqual(yield* current, newer, "A stale run must not publish");
-        yield* Scope.close(sessionScope, Exit.void);
-        assert.deepEqual(yield* current, newer, "A stale run must not clear");
-        return;
-      }
-      if (action === "next turn") {
-        yield* harness.runtime.startTurn({
-          ...turnInput,
-          message: { ...turnInput.message, text: "Next" },
-          runId: RunId.make("next-run"),
-          attemptId: RunAttemptId.make("next-attempt"),
-        });
-      } else if (action === "rollback") {
-        yield* harness.runtime.rollbackThread({
-          providerThread: harness.providerThread,
-          target: {
-            type: "thread_start",
-            checkpointId: CheckpointId.make("prediction-checkpoint"),
-            appRunOrdinal: 0,
-          },
-          providerThreadTurns: [],
-        });
-      } else {
-        yield* Scope.close(sessionScope, Exit.void);
-      }
-      assert.isNull(yield* current);
-      if (late) {
-        assert.isTrue(signal?.aborted);
-        lateResponse();
-        yield* Deferred.await(responseReturned);
-        yield* Effect.yieldNow;
-        assert.isNull(yield* current, "Late results must not publish");
-      }
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
-        ),
-      ),
-    ),
-  );
 
   it.effect("skips two cancelled queued starts and waits for an abandoned turn to complete", () =>
     Effect.gen(function* () {
@@ -649,126 +319,6 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
       yield* Deferred.await(retryRegistered);
       assert.deepEqual(interruptedTurns, [compactTurnId]);
       assert.deepEqual([...registeredTurns], [retriedTurnId]);
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
-        ),
-      ),
-    ),
-  );
-
-  it.effect("does not publish an abandoned turn after a suspended suggestion claim", () =>
-    Effect.gen(function* () {
-      const nativeThreadId = "cancelled-registration-thread";
-      const abandonedTurnId = "cancelled-registration-turn";
-      const retriedTurnId = "registration-retry-turn";
-      const prompt = "Run a command.";
-      const preamble = codexReplayPreamble({
-        nativeThreadId,
-        nativeTurnId: abandonedTurnId,
-        prompt,
-      });
-      const retryPreamble = codexReplayPreamble({
-        nativeThreadId,
-        nativeTurnId: retriedTurnId,
-        prompt,
-      });
-      const completed = (id: string): CodexReplay.CodexAppServerReplayEntry => ({
-        type: "emit_inbound",
-        frame: {
-          method: "turn/completed",
-          params: {
-            threadId: nativeThreadId,
-            turn: makeCodexReplayTurn({ id, status: "completed" }),
-          },
-        },
-      });
-      const transcript = makeCodexReplayTranscript({
-        scenario: "cancelled-during-prediction-cleanup",
-        entries: [
-          ...preamble.slice(0, -1),
-          {
-            type: "expect_outbound",
-            frame: {
-              id: 4,
-              method: "turn/interrupt",
-              params: { threadId: nativeThreadId, turnId: abandonedTurnId },
-            },
-          },
-          { type: "emit_inbound", frame: { id: 4, result: {} } },
-          completed(abandonedTurnId),
-          withReplayRequestId(retryPreamble.at(-3)!, 5),
-          withReplayRequestId(retryPreamble.at(-2)!, 5),
-          retryPreamble.at(-1)!,
-          completed(retriedTurnId),
-        ],
-      });
-      const cleanupStarted = yield* Deferred.make<void>();
-      const releaseCleanup = yield* Deferred.make<void>();
-      const retryRegistered = yield* Deferred.make<void>();
-      const registeredTurns = new Set<string>();
-      let claimCount = 0;
-      const harness = yield* makeCodexReplayHarness(
-        transcript,
-        (event) =>
-          Effect.gen(function* () {
-            if (event.type !== "provider_turn.updated") return;
-            const id = event.providerTurn.nativeTurnRef?.nativeId;
-            if (id != null) registeredTurns.add(id);
-            if (id === retriedTurnId) yield* Deferred.succeed(retryRegistered, undefined);
-          }),
-        undefined,
-        undefined,
-        {
-          promptSuggestions: {
-            publish: () => Effect.void,
-            clear: () => Effect.void,
-            // Hold the first claim, made once the native response starts
-            // registration, until the retry has started.
-            claim: () =>
-              Effect.gen(function* () {
-                claimCount++;
-                if (claimCount === 1) {
-                  yield* Deferred.succeed(cleanupStarted, undefined);
-                  yield* Deferred.await(releaseCleanup);
-                }
-              }),
-          },
-        },
-      );
-      const turnInput = (attempt: string) =>
-        Effect.map(DateTime.now, (now) =>
-          makeCodexTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now,
-            attemptId: RunAttemptId.make(attempt),
-            text: prompt,
-          }),
-        );
-      const first = yield* harness.runtime
-        .startTurn(yield* turnInput("cancelled"))
-        .pipe(Effect.forkScoped);
-      yield* Deferred.await(cleanupStarted);
-      yield* Fiber.interrupt(first);
-      assert.deepEqual([...registeredTurns], []);
-      const retry = yield* harness.runtime
-        .startTurn(yield* turnInput("retry"))
-        .pipe(Effect.forkScoped);
-      yield* Deferred.succeed(releaseCleanup, undefined);
-      yield* Fiber.join(retry);
-      yield* Deferred.await(retryRegistered);
-      yield* harness.firstTerminal;
-      assert.deepEqual([...registeredTurns], [retriedTurnId]);
-      assert.deepEqual(
-        harness.terminalEvents().map((event) => event.status),
-        ["completed"],
-      );
     }).pipe(
       Effect.scoped,
       Effect.provide(

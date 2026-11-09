@@ -729,22 +729,13 @@ export const CodexSettings = makeProviderSettingsSchema(
         description: "Additional CLI arguments passed to codex app-server on session start.",
       }),
     ),
-    promptSuggestions: Schema.Boolean.pipe(
-      Schema.withDecodingDefault(Effect.succeed(false)),
-      Schema.annotateKey({
-        title: "Composer predictions",
-        description:
-          "After a turn started by your prompt, predict your next prompt with ChatGPT's composer prediction service and show it in the empty composer (Right Arrow or Tab to use it). Skips agent messages and scheduled tasks. Needs ChatGPT sign-in; whether it counts against usage is unverified.",
-        providerSettingsForm: { control: "switch" },
-      }),
-    ),
     customModels: Schema.Array(CustomModelSetting).pipe(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
   },
   {
-    order: ["binaryPath", "homePath", "shadowHomePath", "launchArgs", "promptSuggestions"],
+    order: ["binaryPath", "homePath", "shadowHomePath", "launchArgs"],
   },
 );
 export type CodexSettings = typeof CodexSettings.Type;
@@ -831,15 +822,6 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         providerSettingsForm: { control: "switch", clearWhenEmpty: "omit" },
       }),
     ),
-    promptSuggestions: Schema.Boolean.pipe(
-      Schema.withDecodingDefault(Effect.succeed(false)),
-      Schema.annotateKey({
-        title: "Prompt suggestions",
-        description:
-          "Suggest a next prompt in the empty composer after each turn. Press Right Arrow or Tab to use it.",
-        providerSettingsForm: { control: "switch" },
-      }),
-    ),
     idleCompaction: InstanceIdleCompaction.pipe(
       Schema.withDecodingDefault(Effect.succeed("default" as const)),
       Schema.annotateKey({
@@ -862,7 +844,6 @@ export const ClaudeSettings = makeProviderSettingsSchema(
       "idleCompaction",
       "launchArgs",
       "uncachedColdCompaction",
-      "promptSuggestions",
     ],
   },
 );

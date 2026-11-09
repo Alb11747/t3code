@@ -107,7 +107,6 @@ import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEve
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
-import * as PromptSuggestions from "../../provider/PromptSuggestions.ts";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 import * as ClaudeKeepWarm from "../../provider/ClaudeKeepWarm.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -139,9 +138,6 @@ beforeEach(() => {
 });
 
 const DEFAULT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({});
-const PROMPT_SUGGESTIONS_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({
-  promptSuggestions: true,
-});
 const AUTO_COMPACT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({
   autoCompactWindow: "300000",
 });
@@ -358,20 +354,6 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
       ClaudeAdapterV2.claudeQueryEnvironment(env, lineage("subagent"), undefined),
       env,
     );
-  });
-
-  it("asks the SDK for prompt suggestions only when the setting is on", () => {
-    const optionsFor = (settings: ClaudeSettings) =>
-      ClaudeAdapterV2.makeClaudeQueryOptions({
-        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-        nativeThreadId: "native-thread-prompt-suggestions",
-        resume: false,
-        cwd: "/workspace",
-        settings,
-      });
-
-    assert.isUndefined(optionsFor(DEFAULT_CLAUDE_SETTINGS).promptSuggestions);
-    assert.isTrue(optionsFor(PROMPT_SUGGESTIONS_CLAUDE_SETTINGS).promptSuggestions);
   });
 
   it("pins Claude's auto tool search on through flag settings", () => {
@@ -3267,7 +3249,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly settings?: ClaudeSettings;
     readonly modelCatalog?: Effect.Effect<ClaudeModelCatalog>;
     readonly freshQueueOnReopen?: boolean;
-    readonly promptSuggestions?: ClaudeAdapterV2.ClaudeAdapterV2Options["promptSuggestions"];
     readonly claimAgentMessages?: ProviderContinuationRequests.ClaimAgentMessages;
     readonly allocateSessionId?: Effect.Effect<string>;
     readonly queryFailure?: Effect.Effect<never, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
@@ -3377,9 +3358,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               Effect.andThen(changes.notify),
             ),
         },
-        ...(options?.promptSuggestions === undefined
-          ? {}
-          : { promptSuggestions: options.promptSuggestions }),
         queryRunner: {
           allocateSessionId:
             options?.allocateSessionId ??
@@ -7287,239 +7265,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* limit({ status: "allowed", rateLimitType: "seven_day" });
         yield* fail(resetAt);
       }
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
-        ),
-      ),
-    ),
-  );
-
-  const promptSuggestionFrame = claudeSdkFrame({
-    type: "prompt_suggestion",
-    suggestion: "  Add a regression test for the sidebar.  ",
-    uuid: "00000000-0000-4000-8000-000000000701",
-    session_id: WAKE_NATIVE_SESSION,
-  });
-
-  const makePromptSuggestionHarness = Effect.gen(function* () {
-    const store = yield* PromptSuggestions.make;
-    const harness = yield* makeWakeHarnessWithOptions({
-      close: (sdkMessages) => Queue.shutdown(sdkMessages),
-      promptSuggestions: store,
-    });
-    const current = (threadId: ThreadId = harness.threadId) =>
-      store.stream(threadId).pipe(
-        Stream.take(1),
-        Stream.runCollect,
-        Effect.map(([suggestion]) => suggestion),
-      );
-    const now = yield* DateTime.now;
-    const startTurn = Effect.fnUntraced(function* (
-      ordinal: number,
-      threadId: ThreadId = harness.threadId,
-    ) {
-      const input = makeClaudeTestTurnInput({
-        threadId,
-        providerThread: harness.providerThread,
-        now,
-        attemptId: RunAttemptId.make(`attempt-claude-suggestion-${ordinal}`),
-        providerTurnOrdinal: ordinal,
-        text: "Fix the sidebar.",
-        attachments: [],
-      });
-      yield* harness.runtime.startTurn(input);
-      return input;
-    });
-    const completeTurn = Effect.fnUntraced(function* (
-      ordinal: number,
-      threadId: ThreadId = harness.threadId,
-    ) {
-      const input = yield* startTurn(ordinal, threadId);
-      yield* Queue.offer(
-        harness.sdkMessages,
-        makeResultFrame({
-          uuid: `00000000-0000-4000-8000-00000000070${ordinal + 1}`,
-          result: "Done.",
-        }),
-      );
-      yield* Queue.take(harness.terminalReceipts);
-      return input;
-    });
-    return { harness, store, current, startTurn, completeTurn };
-  });
-
-  it.effect("publishes Claude's suggestion after a completed turn until the next turn starts", () =>
-    Effect.gen(function* () {
-      const { harness, current, completeTurn } = yield* makePromptSuggestionHarness;
-      const first = yield* completeTurn(1);
-      yield* harness.offerAndWait(promptSuggestionFrame);
-      assert.deepEqual(yield* current(), {
-        id: "00000000-0000-4000-8000-000000000701",
-        runId: first.runId,
-        text: "Add a regression test for the sidebar.",
-      });
-      yield* completeTurn(2);
-      assert.isNull(yield* current());
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
-        ),
-      ),
-    ),
-  );
-
-  it.effect("drops a suggestion that arrives once the next turn has started", () =>
-    Effect.gen(function* () {
-      const { harness, current, startTurn, completeTurn } = yield* makePromptSuggestionHarness;
-      yield* completeTurn(1);
-      yield* startTurn(2);
-      yield* harness.offerAndWait(promptSuggestionFrame);
-      assert.isNull(yield* current());
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
-        ),
-      ),
-    ),
-  );
-
-  it.effect("clears a suggestion for another app thread of the session on rollback", () =>
-    Effect.gen(function* () {
-      const { harness, current, completeTurn } = yield* makePromptSuggestionHarness;
-      const otherThreadId = ThreadId.make("thread-claude-suggestion-other");
-      yield* completeTurn(1, otherThreadId);
-      yield* harness.offerAndWait(promptSuggestionFrame);
-      assert.isNotNull(yield* current(otherThreadId));
-      yield* harness.runtime.rollbackThread({
-        providerThread: harness.providerThread,
-        providerThreadTurns: [],
-        target: {
-          type: "thread_start",
-          checkpointId: CheckpointId.make("checkpoint-claude-suggestion-other-rollback"),
-          appRunOrdinal: 0,
-        },
-      });
-      assert.isNull(yield* current(otherThreadId));
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
-        ),
-      ),
-    ),
-  );
-
-  it.effect("clears the suggestion when the thread rolls back", () =>
-    Effect.gen(function* () {
-      const { harness, current, completeTurn } = yield* makePromptSuggestionHarness;
-      yield* completeTurn(1);
-      yield* harness.offerAndWait(promptSuggestionFrame);
-      assert.isNotNull(yield* current());
-      yield* harness.runtime.rollbackThread({
-        providerThread: harness.providerThread,
-        providerThreadTurns: [],
-        target: {
-          type: "thread_start",
-          checkpointId: CheckpointId.make("checkpoint-claude-suggestion-rollback"),
-          appRunOrdinal: 0,
-        },
-      });
-      assert.isNull(yield* current());
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
-        ),
-      ),
-    ),
-  );
-
-  it.effect("clears the suggestion when a background wake starts and offers none after it", () =>
-    Effect.gen(function* () {
-      const { harness, current, completeTurn } = yield* makePromptSuggestionHarness;
-      yield* completeTurn(1);
-      yield* harness.offerAndWait(promptSuggestionFrame);
-      assert.isNotNull(yield* current());
-      yield* harness.offerAndWait(wakeTurnInit);
-      assert.isNull(yield* current());
-      yield* harness.offerAndWait(
-        makeAssistantTextFrame({
-          uuid: "00000000-0000-4000-8000-000000000711",
-          text: "The background task finished.",
-        }),
-      );
-      assert.isNull(yield* current());
-      yield* harness.offerAndWait(
-        claudeSdkFrame({
-          type: "prompt_suggestion",
-          suggestion: "Check the test results.",
-          uuid: "00000000-0000-4000-8000-000000000712",
-          session_id: WAKE_NATIVE_SESSION,
-        }),
-      );
-      assert.isNull(yield* current());
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
-        ),
-      ),
-    ),
-  );
-
-  it.effect("leaves a newer run's suggestion from another provider alone", () =>
-    Effect.gen(function* () {
-      const { harness, store, current, completeTurn } = yield* makePromptSuggestionHarness;
-      yield* completeTurn(1);
-      // The thread switched providers while this session stayed open.
-      const newer = { id: "newer", runId: RunId.make("run-other-provider"), text: "Keep going" };
-      yield* store.claim(harness.threadId, newer.runId);
-      yield* store.publish(harness.threadId, newer);
-      yield* harness.offerAndWait(promptSuggestionFrame);
-      assert.deepEqual(yield* current(), newer);
-      yield* harness.offerAndWait(wakeTurnInit);
-      assert.deepEqual(yield* current(), newer);
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
-        ),
-      ),
-    ),
-  );
-
-  it.effect("releases a turn's claim even when no suggestion arrived", () =>
-    Effect.gen(function* () {
-      const { harness, store, current, completeTurn } = yield* makePromptSuggestionHarness;
-      const first = yield* completeTurn(1);
-      yield* harness.offerAndWait(wakeTurnInit);
-      yield* store.publish(harness.threadId, { id: "late", runId: first.runId, text: "Late" });
-      assert.isNull(yield* current());
     }).pipe(
       Effect.provide(
         Layer.mergeAll(

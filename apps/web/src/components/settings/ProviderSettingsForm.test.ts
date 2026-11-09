@@ -25,7 +25,6 @@ describe("ProviderSettingsForm helpers", () => {
       "homePath",
       "shadowHomePath",
       "launchArgs",
-      "promptSuggestions",
     ]);
   });
 
@@ -58,7 +57,6 @@ describe("ProviderSettingsForm helpers", () => {
       "idleCompaction",
       "launchArgs",
       "uncachedColdCompaction",
-      "promptSuggestions",
     ]);
   });
 

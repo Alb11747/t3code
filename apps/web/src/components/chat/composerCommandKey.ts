@@ -34,8 +34,6 @@ import type { Dispatch, RefObject, SetStateAction } from "react";
  * Returns the editor's key handler; it reads the inputs captured by the render that built it.
  */
 export function composerCommandKeyHandler(input: {
-  readonly promptSuggestion: ChatComposerProps["promptSuggestion"];
-  readonly onDismissPromptSuggestion: ChatComposerProps["onDismissPromptSuggestion"];
   readonly keybindings: ChatComposerProps["keybindings"];
   readonly sendShortcut: ChatComposerProps["settings"]["sendShortcut"];
   readonly routeKind: ChatComposerProps["routeKind"];
@@ -88,8 +86,6 @@ export function composerCommandKeyHandler(input: {
   ) => void;
 }) {
   const {
-    promptSuggestion,
-    onDismissPromptSuggestion,
     keybindings,
     sendShortcut,
     routeKind,
@@ -221,29 +217,6 @@ export function composerCommandKeyHandler(input: {
     const { trigger } = resolveActiveComposerTrigger();
     const menuIsActive =
       !isLiteralPendingAnswer && (composerMenuOpenRef.current || trigger !== null);
-    // Right Arrow or Tab fills the draft with the suggestion and never sends;
-    // Esc hides it.
-    if (
-      promptSuggestion !== null &&
-      promptRef.current.length === 0 &&
-      !menuIsActive &&
-      submissionIntent === null &&
-      !event.isComposing &&
-      event.keyCode !== 229 &&
-      !event.shiftKey &&
-      !event.altKey &&
-      !event.metaKey &&
-      !event.ctrlKey
-    ) {
-      if (key === "ArrowRight" || key === "Tab") {
-        replacePromptFromHistory(promptSuggestion.text);
-        return true;
-      }
-      if (key === "Escape") {
-        onDismissPromptSuggestion(promptSuggestion.id);
-        return true;
-      }
-    }
     if (key === "Escape") {
       if (!menuIsActive || event.isComposing || event.keyCode === 229) return false;
       dismissComposerTrigger(trigger);
