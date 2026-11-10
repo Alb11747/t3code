@@ -24,9 +24,8 @@ const MERGE_BACK_BLOCKING_RUN_STATUSES = new Set<Run["status"]>([
 
 export interface QueuedThreadRun {
   readonly run: Run;
-  readonly delivery: "pending" | "queued" | "unconfirmed";
-  readonly deliveryLabel: "Pending" | "Queued" | "Delivering" | "Unconfirmed";
-  readonly automatic: boolean;
+  readonly delivery: "pending" | "queued" | "delivering";
+  readonly deliveryLabel: "Pending" | "Queued" | "Delivering";
   readonly editBlockedReason: string | null;
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
@@ -35,9 +34,6 @@ export interface QueuedThreadRun {
   /** Carries the attribution a sent message shows: automation, agent sender, or guest. */
   readonly message?: Message;
 }
-
-export const UNCONFIRMED_DELIVERY_HINT =
-  "This message may already have reached the agent. Sending it again may duplicate it. Send it again or remove it; automatic updates can be sent again once the turn ends.";
 
 export interface ThreadQueueWorkflowState {
   readonly activeRun: Run | null;
@@ -133,11 +129,8 @@ export function getUserQueuedThreadRuns(
       )
       .map((message) => message.id),
   );
-  // An offered automatic delivery stays visible: only the user can send it again or remove it.
   return projection.runs.filter(
-    (run) =>
-      run.status === "queued" &&
-      (run.boundaryOffer !== undefined || !automaticCompletionMessageIds.has(run.userMessageId)),
+    (run) => run.status === "queued" && !automaticCompletionMessageIds.has(run.userMessageId),
   );
 }
 
@@ -166,49 +159,20 @@ export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQu
       left.ordinal - right.ordinal,
   ).map((run) => {
     const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
-    const offer = run.boundaryOffer;
-    const offeredTurn =
-      offer === undefined
-        ? undefined
-        : projection.providerTurns.find((turn) => turn.id === offer.providerTurnId);
-    const offeredThread = projection.providerThreads.find(
-      (thread) => thread.id === offeredTurn?.providerThreadId,
-    );
-    const delivering =
-      offer !== undefined &&
-      run.queueHeld !== true &&
-      activeRun?.id === offer.targetRunId &&
-      activeRun.status === "running" &&
-      activeRun.activeAttemptId !== null &&
-      offeredTurn?.runAttemptId === activeRun.activeAttemptId &&
-      offeredTurn?.providerThreadId === activeRun.providerThreadId &&
-      offeredTurn?.status === "running" &&
-      offeredThread?.appThreadId === projection.thread.id &&
-      session !== null &&
-      offeredThread?.providerSessionId === session.id &&
-      session.status !== "stopped" &&
-      session.status !== "error";
+    // The server settles every offer once Claude reports it started or never read it.
     const delivery =
-      offer !== undefined
-        ? delivering
-          ? "pending"
-          : "unconfirmed"
+      run.boundaryOffer !== undefined
+        ? "delivering"
         : run.deliveryIntent !== undefined || message?.atToolBoundary === true
           ? "pending"
           : "queued";
     return {
       run,
       delivery,
-      deliveryLabel: delivering
-        ? "Delivering"
-        : delivery === "pending"
-          ? "Pending"
-          : delivery === "unconfirmed"
-            ? "Unconfirmed"
-            : "Queued",
-      automatic: message?.notification !== undefined || message?.delegatedCompletion !== undefined,
+      deliveryLabel:
+        delivery === "delivering" ? "Delivering" : delivery === "pending" ? "Pending" : "Queued",
       editBlockedReason:
-        offer === undefined ? null : "This message may already have reached the agent",
+        delivery === "delivering" ? "This message is being delivered to the agent" : null,
       // A queued guest message shows the guest's words; the agent still gets the attributed text.
       text: message?.context?.guest?.text ?? message?.text ?? "Queued message",
       attachments: message?.attachments ?? [],

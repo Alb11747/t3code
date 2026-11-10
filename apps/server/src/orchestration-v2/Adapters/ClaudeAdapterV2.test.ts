@@ -3261,6 +3261,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly reopenFailure?: Effect.Effect<void, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
     readonly offerFailure?: Effect.Effect<void, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
     readonly withdrawAgentMessages?: ProviderContinuationRequests.AcknowledgeAgentMessages;
+    readonly acknowledgeAgentMessages?: ProviderContinuationRequests.AcknowledgeAgentMessages;
     readonly onHandoff?: (
       handoff: NonNullable<Parameters<ClaudeAdapterV2.ClaudeAgentSdkQuerySession["offer"]>[2]>,
     ) => void;
@@ -3357,6 +3358,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ...(options?.withdrawAgentMessages === undefined
             ? {}
             : { withdrawAgentMessages: options.withdrawAgentMessages }),
+          ...(options?.acknowledgeAgentMessages === undefined
+            ? {}
+            : { acknowledgeAgentMessages: options.acknowledgeAgentMessages }),
           offer: (request) =>
             Effect.sync(() => {
               continuationRequests.push(request);
@@ -3571,7 +3575,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   });
 
   it.effect(
-    "hands off a mixed boundary batch before returning and reserves before early receipts",
+    "hands off a boundary batch before returning and settles it from Claude's lifecycle reports",
     () =>
       Effect.gen(function* () {
         const image = ChatImageAttachment.make({
@@ -3599,6 +3603,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const claims: Parameters<ProviderContinuationRequests.ClaimAgentMessages>[0][] = [];
         const withdrawals: Parameters<ProviderContinuationRequests.AcknowledgeAgentMessages>[0][] =
           [];
+        const lateReceipts: Parameters<ProviderContinuationRequests.AcknowledgeAgentMessages>[0][] =
+          [];
         const harness = yield* makeWakeHarnessWithOptions({
           claimAgentMessages: (claim) =>
             Effect.sync(() => {
@@ -3608,6 +3614,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           withdrawAgentMessages: (withdrawal) =>
             Effect.sync(() => {
               withdrawals.push(withdrawal);
+            }),
+          acknowledgeAgentMessages: (receipt) =>
+            Effect.sync(() => {
+              lateReceipts.push(receipt);
             }),
           onHandoff: (handoff) => {
             handoffs.push(handoff);
@@ -3636,10 +3646,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
         const options = harness.getOpenedOptions();
         const hook = options?.hooks?.PostToolBatch?.[0]?.hooks[0];
-        const store = options?.sessionStore;
         assert.isDefined(hook);
-        assert.isDefined(store);
-        if (hook === undefined || store === undefined) return;
+        if (hook === undefined) return;
         const signal = yield* Effect.abortSignal;
         const hookInput = {
           hook_event_name: "PostToolBatch" as const,
@@ -3704,69 +3712,59 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           withdrawals.flatMap((withdrawal) => withdrawal.offers),
           [],
         );
-        const receipt = (id: string) => ({
-          type: "attachment",
-          isSidechain: false,
-          sessionId: WAKE_NATIVE_SESSION,
-          attachment: { type: "queued_command", source_uuid: id },
-        });
-        const key = { projectKey: "-repo", sessionId: WAKE_NATIVE_SESSION };
-        yield* Effect.promise(() =>
-          store.append({ ...key, sessionId: "foreign" }, [receipt(offers[0]!.id)]),
+        const deliveryEvents = () =>
+          harness.events.flatMap((event) =>
+            event.type === "boundary_messages.updated" ? [event] : [],
+          );
+        assert.lengthOf(deliveryEvents(), 0);
+        const lifecycle = (id: string, state: string) =>
+          harness.offerAndWait(
+            claudeSdkFrame({
+              type: "command_lifecycle",
+              command_uuid: id,
+              state,
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+        yield* lifecycle(offers[0]!.id, "queued");
+        assert.lengthOf(deliveryEvents(), 0);
+        yield* lifecycle(offers[0]!.id, "started");
+        // Removed unread: it goes back to the queue instead of being reported delivered.
+        yield* lifecycle(offers[1]!.id, "cancelled");
+        // A started input that a later abort cancels was still read.
+        yield* lifecycle(offers[0]!.id, "cancelled");
+        assert.deepEqual(
+          withdrawals.flatMap((withdrawal) => withdrawal.offers.map((offer) => offer.id)),
+          [offers[1]!.id],
         );
-        yield* Effect.promise(() =>
-          store.append({ ...key, subpath: "subagents/child" }, [receipt(offers[0]!.id)]),
-        );
-        yield* Effect.promise(() => store.append(key, [receipt(offers[0]!.id)]));
-        assert.lengthOf(
-          harness.events.filter((event) => event.type === "boundary_messages.updated"),
-          0,
-        );
-        yield* harness.offerAndWait(
-          claudeSdkFrame({
-            type: "command_lifecycle",
-            command_uuid: offers[0]!.id,
-            state: "started",
-            session_id: WAKE_NATIVE_SESSION,
-          }),
-        );
-        yield* harness.until(
-          () =>
-            harness.events.filter((event) => event.type === "boundary_messages.updated").length >=
-            2,
-        );
-        yield* Effect.promise(() =>
-          store.append(
-            key,
-            offers.map((offer) => receipt(offer.id)),
-          ),
-        );
-        yield* harness.until(
-          () =>
-            harness.events.filter((event) => event.type === "boundary_messages.updated").length >=
-            3,
-        );
-        yield* Effect.promise(() =>
-          store.append(
-            key,
-            offers.map((offer) => receipt(offer.id)),
-          ),
-        );
-        const deliveryEvents = harness.events.filter(
-          (event) => event.type === "boundary_messages.updated",
+        // A result proves nothing about input Claude has not reported; it stays offered.
+        yield* harness.offerAndWait(makeResultFrame({ uuid: "boundary-result", result: "Done." }));
+        yield* Queue.take(harness.terminalReceipts);
+        assert.deepEqual(
+          deliveryEvents().map((event) => event.step),
+          ["reserve", "receipt"],
         );
         assert.deepEqual(
-          deliveryEvents.map((event) => event.step),
-          ["reserve", "receipt", "receipt"],
-        );
-        assert.deepEqual(
-          deliveryEvents[0]!.offers.map((offer) => offer.messageId),
+          deliveryEvents()[0]!.offers.map((offer) => offer.messageId),
           offers.map((offer) => offer.messageId),
         );
         assert.deepEqual(
-          deliveryEvents.slice(1).flatMap((event) => event.offers.map((offer) => offer.id)),
-          offers.map((offer) => offer.id),
+          deliveryEvents()[1]!.offers.map((offer) => offer.id),
+          [offers[0]!.id],
         );
+        assert.lengthOf(withdrawals, 1);
+        // Later reports settle directly, since the ended turn no longer ingests events.
+        yield* lifecycle(offers[2]!.id, "discarded");
+        for (const offer of offers.slice(3)) yield* lifecycle(offer.id, "started");
+        assert.deepEqual(
+          withdrawals.flatMap((withdrawal) => withdrawal.offers.map((offer) => offer.id)),
+          [offers[1]!.id, offers[2]!.id],
+        );
+        assert.deepEqual(
+          lateReceipts.flatMap((receipt) => receipt.offers.map((offer) => offer.id)),
+          offers.slice(3).map((offer) => offer.id),
+        );
+        assert.lengthOf(deliveryEvents(), 2);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -3865,6 +3863,139 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ),
       ),
     ),
+  );
+
+  it.effect.each(["interrupted turn", "query exit", "session close"] as const)(
+    "settles unreported handed-off input on %s",
+    (ending) =>
+      Effect.gen(function* () {
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const offers: ProviderContinuationRequests.AgentMessageOffer[] = [0, 1].map((index) => ({
+          id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+          queuedRunId: RunId.make(`ending-queued-${index}`),
+          messageId: MessageId.make(`ending-message-${index}`),
+          text: `UPDATE_${index}`,
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+        }));
+        const handoffs: Array<
+          NonNullable<Parameters<ClaudeAdapterV2.ClaudeAgentSdkQuerySession["offer"]>[2]>
+        > = [];
+        const withdrawals: Parameters<ProviderContinuationRequests.AcknowledgeAgentMessages>[0][] =
+          [];
+        const directReceipts: string[] = [];
+        const sessionScope = yield* Scope.make();
+        const harness = yield* makeWakeHarnessWithOptions({
+          claimAgentMessages: () => Effect.succeed(offers),
+          withdrawAgentMessages: (withdrawal) =>
+            Effect.sync(() => {
+              withdrawals.push(withdrawal);
+            }),
+          acknowledgeAgentMessages: (receipt) =>
+            Effect.sync(() => {
+              directReceipts.push(...receipt.offers.map((offer) => offer.id));
+            }),
+          onHandoff: (handoff) => {
+            handoffs.push(handoff);
+          },
+          // The query runner turns the interrupt receipt's cancelled list into discards.
+          interrupt: Effect.sync(() => handoffs[0]!.onDiscarded()),
+          close: (messages) => Queue.shutdown(messages),
+        }).pipe(Scope.provide(sessionScope));
+        const attemptId = RunAttemptId.make("ending-boundary-attempt");
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId,
+            text: "Work.",
+            attachments: [],
+          }),
+        );
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "init",
+            capabilities: ["interrupt_cancel_queued_v1"],
+            user_message_uuid: harness.promptUuid(0),
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        const hook = harness.getOpenedOptions()?.hooks?.PostToolBatch?.[0]?.hooks[0];
+        assert.isDefined(hook);
+        if (hook === undefined) return;
+        const signal = yield* Effect.abortSignal;
+        const pending = yield* Effect.promise(() =>
+          hook(
+            {
+              hook_event_name: "PostToolBatch",
+              session_id: WAKE_NATIVE_SESSION,
+              transcript_path: "/repo/session.jsonl",
+              cwd: "/repo",
+              tool_calls: [],
+            },
+            undefined,
+            { signal },
+          ),
+        ).pipe(Effect.forkChild);
+        yield* harness.until(() => handoffs.length === 2);
+        for (const handoff of handoffs) {
+          handoff.onPulled();
+          handoff.onConsumed();
+        }
+        yield* Fiber.join(pending);
+        if (ending === "interrupted turn") {
+          yield* harness.runtime.interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId: idAllocator.derive.providerTurn({
+              driver: harness.providerThread.driver,
+              nativeTurnId: `turn:${attemptId}`,
+            }),
+          });
+        } else if (ending === "query exit") {
+          yield* Queue.shutdown(harness.processQueues.at(-1)!);
+        } else {
+          // Idle release: the turn ended with the input unreported, then the session closes.
+          yield* harness.offerAndWait(makeResultFrame({ uuid: "idle-result", result: "Done." }));
+        }
+        yield* Queue.take(harness.terminalReceipts);
+        if (ending === "session close") yield* Scope.close(sessionScope, Exit.void);
+        const steps = harness.events.flatMap((event) =>
+          event.type === "boundary_messages.updated" ? [event.step] : [],
+        );
+        const withdrawn = new Set(
+          withdrawals.flatMap((withdrawal) => withdrawal.offers.map((offer) => offer.id)),
+        );
+        const received = harness.events.flatMap((event) =>
+          event.type === "boundary_messages.updated" && event.step === "receipt"
+            ? event.offers.map((offer) => offer.id)
+            : [],
+        );
+        // Stop's receipt proves which input was removed unread. Input a lost process never
+        // reported is unknowable and counts as delivered, so it is never sent twice.
+        assert.deepEqual([...withdrawn], ending === "interrupted turn" ? [offers[0]!.id] : []);
+        const delivered = (ending === "interrupted turn" ? offers.slice(1) : offers).map(
+          (offer) => offer.id,
+        );
+        if (ending === "session close") {
+          assert.deepEqual(steps, []);
+          assert.deepEqual(directReceipts, delivered);
+        } else {
+          assert.deepEqual(steps, ["reserve", "receipt"]);
+          assert.deepEqual(received, delivered);
+        }
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
   );
 
   it.effect.each(["release-after", "cancel-after", "release-before", "resume-pending"] as const)(

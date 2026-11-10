@@ -1,8 +1,5 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import {
-  deriveThreadQueueWorkflowState,
-  UNCONFIRMED_DELIVERY_HINT,
-} from "@t3tools/client-runtime/state/thread-workflows";
+import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import {
   isAttachmentOnlyBootstrapPrompt,
@@ -117,11 +114,11 @@ export function QueuedRunsControl({
   const queued = workflow?.queuedRuns ?? [];
   const activeRun = workflow?.activeRun ?? null;
   // A fresh message starts its own turn: it may skip compaction, but not steer into a turn.
-  const canSendRun = (freshContext: boolean, automatic: boolean) =>
-    workflow?.canSendNow === true ||
-    (!automatic &&
-      workflow?.canPromoteToSteer === true &&
-      (!freshContext || workflow.promoteSkipsCompaction === true));
+  const canSendRun = (freshContext: boolean, delivering: boolean) =>
+    !delivering &&
+    (workflow?.canSendNow === true ||
+      (workflow?.canPromoteToSteer === true &&
+        (!freshContext || workflow.promoteSkipsCompaction === true)));
   const queuedImageUrlById = new Map(
     queuedImageAttachmentUrls.flatMap((url, index) => {
       const resource = queuedImageAttachmentResources[index];
@@ -140,7 +137,6 @@ export function QueuedRunsControl({
       freshContext: entry.run.freshContext === true,
       delivery: entry.delivery,
       deliveryLabel: entry.deliveryLabel,
-      automatic: entry.automatic,
       editBlockedReason: entry.editBlockedReason,
       serverIndex,
       text: entry.text,
@@ -164,7 +160,6 @@ export function QueuedRunsControl({
       freshContext: false,
       delivery: "queued" as const,
       deliveryLabel: "Queued" as const,
-      automatic: false,
       editBlockedReason: null,
       serverIndex: null,
       text: message.text,
@@ -185,7 +180,7 @@ export function QueuedRunsControl({
     const entry = queued.find(({ run }) => run.id === queuedRunId);
     if (
       !entry ||
-      !canSendRun(entry.run.freshContext === true, entry.automatic) ||
+      !canSendRun(entry.run.freshContext === true, entry.delivery === "delivering") ||
       steerInFlightRef.current
     )
       return;
@@ -209,7 +204,7 @@ export function QueuedRunsControl({
   useImperativeHandle(ref, () => ({
     steerNext(repeat) {
       const next = queued.find((entry) =>
-        canSendRun(entry.run.freshContext === true, entry.automatic),
+        canSendRun(entry.run.freshContext === true, entry.delivery === "delivering"),
       );
       if (!next) return false;
       if (!repeat && busyRunId === null) void sendQueuedMessage(next.run.id);
@@ -254,9 +249,8 @@ export function QueuedRunsControl({
 
   const collapsible = items.length > QUEUE_VISIBLE_ROWS;
   const visibleItems = collapsible && !showAll ? items.slice(0, QUEUE_VISIBLE_ROWS - 1) : items;
-  const hasPending = items.some((item) => item.delivery === "pending");
-  const hasQueued = items.some((item) => item.delivery !== "pending");
-  const hasUnconfirmed = items.some((item) => item.delivery === "unconfirmed");
+  const hasPending = items.some((item) => item.delivery !== "queued");
+  const hasQueued = items.some((item) => item.delivery === "queued");
   const heading = hasPending
     ? hasQueued
       ? "Pending and queued messages"
@@ -280,8 +274,6 @@ export function QueuedRunsControl({
             {hasPending ? "Messages are delivered when the agent can safely receive them." : null}
             {hasPending && hasQueued ? <br /> : null}
             {hasQueued ? "Queued messages wait for a later turn." : null}
-            {hasUnconfirmed ? <br /> : null}
-            {hasUnconfirmed ? UNCONFIRMED_DELIVERY_HINT : null}
           </TooltipPopup>
         </Tooltip>
       </h3>
@@ -314,7 +306,7 @@ export function QueuedRunsControl({
                 timestampFormat={props.timestampFormat}
                 onOpenThread={props.onOpenThread}
               >
-                {canSendRun(item.freshContext, item.automatic) && !isEditing ? (
+                {canSendRun(item.freshContext, item.delivery === "delivering") && !isEditing ? (
                   <>
                     <Tooltip>
                       <TooltipTrigger render={<span className="flex shrink-0" />}>
@@ -350,11 +342,9 @@ export function QueuedRunsControl({
                       {item.deliveryLabel}
                     </TooltipTrigger>
                     <TooltipPopup>
-                      {item.delivery === "unconfirmed"
-                        ? UNCONFIRMED_DELIVERY_HINT
-                        : item.deliveryLabel === "Delivering"
-                          ? "Waiting for the agent to save this message"
-                          : "Waiting for the next tool boundary or turn"}
+                      {item.delivery === "delivering"
+                        ? "Handing this message to the agent"
+                        : "Waiting for the next tool boundary or turn"}
                     </TooltipPopup>
                   </Tooltip>
                 ) : null}

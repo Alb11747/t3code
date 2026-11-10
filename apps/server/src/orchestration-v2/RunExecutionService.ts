@@ -1564,7 +1564,7 @@ export const layer: Layer.Layer<
               });
             }
             if (event.step === "receipt") {
-              // The control-event barrier commits earlier items before a saved receipt joins its slot.
+              // The control-event barrier commits earlier items before a receipt joins its slot.
               const acknowledge = continuationRequests.acknowledgeAgentMessages;
               if (acknowledge === undefined) {
                 return yield* Effect.die("Native message receipt handler is not installed.");

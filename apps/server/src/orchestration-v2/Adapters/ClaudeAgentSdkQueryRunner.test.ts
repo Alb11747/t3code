@@ -333,7 +333,11 @@ it.effect.each([
 it.effect("Stop fences the input producer before cancelling a partly written batch", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const interrupt = vi.fn(async () => undefined);
+      // Claude's receipt names the written input it removed unread.
+      const interrupt = vi.fn(async () => ({
+        still_queued: [],
+        cancelled: ["00000000-0000-4000-8000-first"],
+      }));
       const querySpy = vi
         .spyOn(ClaudeSdk, "query")
         .mockImplementation(() => ({ close: vi.fn(), interrupt }) as unknown as ClaudeSdk.Query);
@@ -346,6 +350,7 @@ it.effect("Stop fences the input producer before cancelling a partly written bat
       if (typeof prompt === "string") throw new Error("Expected streaming input");
       const input = prompt[Symbol.asyncIterator]();
       const discarded = Promise.withResolvers<void>();
+      const discardedIds: string[] = [];
       const consumed: string[] = [];
       const pulled: string[] = [];
       const message = (content: string): ClaudeSdk.SDKUserMessage => ({
@@ -353,6 +358,7 @@ it.effect("Stop fences the input producer before cancelling a partly written bat
         message: { role: "user", content },
         parent_tool_use_id: null,
         session_id: FORK_SESSION_ID,
+        uuid: `00000000-0000-4000-8000-${content}`,
       });
       const handoff = (id: string) => ({
         isCurrent: () => true,
@@ -363,6 +369,7 @@ it.effect("Stop fences the input producer before cancelling a partly written bat
           consumed.push(id);
         },
         onDiscarded: () => {
+          discardedIds.push(id);
           discarded.resolve();
         },
       });
@@ -381,6 +388,7 @@ it.effect("Stop fences the input producer before cancelling a partly written bat
       yield* Fiber.join(stopping);
       assert.deepEqual(consumed, ["first", "second"]);
       assert.lengthOf(interrupt.mock.calls, 1);
+      assert.deepEqual(discardedIds, ["third", "first"]);
       const afterStop = vi.fn();
       yield* session.offer(message("fourth"), undefined, {
         ...handoff("fourth"),

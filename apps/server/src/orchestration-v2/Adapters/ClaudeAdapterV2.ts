@@ -5,7 +5,6 @@ import {
   toolOutputImages,
 } from "@t3tools/shared/toolOutput";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
-import { readClaudeBoundaryReceipts } from "./ClaudeSavedMessageReceipts.ts";
 import { claudeTaskOutputRoot, tailClaudeTaskOutput } from "./ClaudeTaskOutputTail.ts";
 import {
   CLAUDE_PERMANENT_FAILURE_CODES,
@@ -1233,6 +1232,11 @@ export const layerQueryRunner: Layer.Layer<
           const promptLock = yield* Semaphore.make(1);
           let promptFenced = false;
           let inFlightPrompt: Promise<void> | undefined;
+          // Written inputs Stop can still cancel unread; its receipt names the ones it removed.
+          const writtenHandoffs = new Map<
+            string,
+            NonNullable<Parameters<ClaudeAgentSdkQuerySession["offer"]>[2]>
+          >();
           const queuedPrompts = Stream.fromPull(
             Effect.succeed(Queue.take(promptQueue).pipe(Effect.map((queued) => [queued] as const))),
           ).pipe(
@@ -1254,6 +1258,8 @@ export const layerQueryRunner: Layer.Layer<
                 yield queued.message;
                 // SDK 0.3.316 writes the yielded input before requesting the next one.
                 queued.handoff?.onConsumed();
+                if (queued.handoff !== undefined && queued.message.uuid !== undefined)
+                  writtenHandoffs.set(queued.message.uuid, queued.handoff);
                 consumed.resolve();
                 inFlightPrompt = undefined;
               }
@@ -1630,6 +1636,15 @@ export const layerQueryRunner: Layer.Layer<
                   // Stop is the only interrupt, and it must not leave queued input to run on its own.
                   try: () => interruptClaudeQuery(queryRuntime, cancelsQueuedOnInterrupt),
                   catch: (cause) => queryRunnerError(cause, "interrupt"),
+                }),
+              ),
+              // The receipt precedes the stopped turn's result; its lifecycle frames may not
+              // be read before the process closes.
+              Effect.tap((receipt) =>
+                Effect.sync(() => {
+                  for (const uuid of receipt?.cancelled ?? [])
+                    writtenHandoffs.get(uuid)?.onDiscarded();
+                  writtenHandoffs.clear();
                 }),
               ),
               Effect.tap(() =>
@@ -4640,7 +4655,10 @@ interface ClaudeLiveQueryContext {
 interface ClaudeBoundaryBatch {
   readonly context: ActiveClaudeTurnContext;
   readonly offers: ReadonlyArray<ProviderContinuationRequests.AgentMessageOffer>;
-  readonly saved: Set<string>;
+  /** Written to the CLI's input. */
+  readonly consumed: Set<string>;
+  /** Claude reported command_lifecycle "started": the input entered the conversation. */
+  readonly started: Set<string>;
   readonly emitted: Set<string>;
   readonly withdrawn: Set<string>;
   reserved: boolean;
@@ -5053,6 +5071,7 @@ export interface ClaudeAdapterV2Options {
       request: ProviderContinuationRequests.ProviderContinuationRequest,
     ) => Effect.Effect<void>;
     readonly claimAgentMessages?: ProviderContinuationRequests.ClaimAgentMessages;
+    readonly acknowledgeAgentMessages?: ProviderContinuationRequests.AcknowledgeAgentMessages;
     readonly withdrawAgentMessages?: ProviderContinuationRequests.AcknowledgeAgentMessages;
   };
 }
@@ -10691,7 +10710,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const flushBoundaryReceipts = Effect.fnUntraced(function* (batch: ClaudeBoundaryBatch) {
           if (!batch.reserved) return;
           const offers = batch.offers.filter(
-            (offer) => batch.saved.has(offer.id) && !batch.emitted.has(offer.id),
+            (offer) => batch.started.has(offer.id) && !batch.emitted.has(offer.id),
           );
           if (offers.length === 0) return;
           yield* emitProviderEvent({
@@ -10722,38 +10741,87 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
         };
 
-        const reconcileBoundaryReceipts = Effect.fn("ClaudeAdapterV2.reconcileBoundaryReceipts")(
-          function* (live: ClaudeLiveQueryContext) {
-            const offers = live.boundaryBatches.flatMap((batch) =>
-              batch.offers.filter(
-                (offer) => !batch.saved.has(offer.id) && !batch.withdrawn.has(offer.id),
-              ),
+        const acceptBoundaryOffers = Effect.fnUntraced(function* (
+          batch: ClaudeBoundaryBatch,
+          offerIds: ReadonlyArray<string>,
+        ) {
+          if (offerIds.length === 0) return;
+          for (const id of offerIds) batch.started.add(id);
+          if ((yield* Ref.get(activeTurn)) !== batch.context) {
+            // The turn's terminal event already ended its event ingestion; settle directly. Input
+            // that started Claude's next native turn is still recorded once, in its offered turn.
+            const offers = batch.offers.filter(
+              (offer) => batch.started.has(offer.id) && !batch.emitted.has(offer.id),
             );
-            if (offers.length === 0) return;
-            const saved = yield* readClaudeBoundaryReceipts({
-              projectsDirectory: path.join(homePath, "projects"),
-              nativeThreadId: live.nativeThreadId,
+            const acknowledge = continuationRequests.acknowledgeAgentMessages;
+            if (acknowledge === undefined || offers.length === 0) return;
+            yield* acknowledge({
+              threadId: batch.context.input.threadId,
+              runId: batch.context.input.runId,
               offers,
-            }).pipe(
-              Effect.provideService(FileSystem.FileSystem, fileSystem),
-              Effect.provideService(Path.Path, path),
-            );
-            yield* live.boundaryLock.withPermits(1)(
-              Effect.gen(function* () {
-                for (const batch of live.boundaryBatches) {
-                  for (const offer of batch.offers)
-                    if (saved.has(offer.id)) batch.saved.add(offer.id);
-                  yield* flushBoundaryReceipts(batch);
-                }
-                pruneBoundaryBatches(live.boundaryBatches);
-              }),
-            );
-          },
-          Effect.catchTags({
-            PlatformError: (cause) =>
-              Effect.logWarning("orchestration-v2.claude-boundary-history-read-failed", { cause }),
-          }),
-        );
+            });
+            for (const offer of offers) batch.emitted.add(offer.id);
+            return;
+          }
+          if (!batch.reserved) {
+            yield* emitProviderEvent({
+              type: "boundary_messages.updated",
+              driver: CLAUDE_PROVIDER,
+              threadId: batch.context.input.threadId,
+              runId: batch.context.input.runId,
+              providerTurnId: batch.context.providerTurnId,
+              step: "reserve",
+              offers: batch.offers.map(({ id, queuedRunId, messageId }) => ({
+                id,
+                queuedRunId,
+                messageId,
+              })),
+            });
+            batch.reserved = true;
+          }
+          yield* flushBoundaryReceipts(batch);
+        });
+
+        const withdrawBoundaryOffers = Effect.fnUntraced(function* (
+          batch: ClaudeBoundaryBatch,
+          offers: ReadonlyArray<ProviderContinuationRequests.AgentMessageOffer>,
+        ) {
+          const withdraw = continuationRequests.withdrawAgentMessages;
+          if (withdraw === undefined || offers.length === 0) return;
+          yield* withdraw({
+            threadId: batch.context.input.threadId,
+            runId: batch.context.input.runId,
+            offers,
+          });
+          for (const offer of offers) batch.withdrawn.add(offer.id);
+        });
+
+        // While the process lives, Claude reports every written input as started or removed.
+        // Input it never reported when the process ends is unknowable; it counts as delivered
+        // so nothing is sent twice. Input never written provably did not reach the agent.
+        const settleBoundaryOffersOfEndedProcess = Effect.fnUntraced(function* (
+          live: ClaudeLiveQueryContext,
+        ) {
+          yield* live.boundaryLock.withPermits(1)(
+            Effect.gen(function* () {
+              for (const batch of live.boundaryBatches) {
+                batch.accepting = false;
+                const open = batch.offers.filter(
+                  (offer) => !batch.emitted.has(offer.id) && !batch.withdrawn.has(offer.id),
+                );
+                yield* withdrawBoundaryOffers(
+                  batch,
+                  open.filter((offer) => !batch.consumed.has(offer.id)),
+                );
+                yield* acceptBoundaryOffers(
+                  batch,
+                  open.filter((offer) => batch.consumed.has(offer.id)).map((offer) => offer.id),
+                );
+              }
+              pruneBoundaryBatches(live.boundaryBatches);
+            }),
+          );
+        });
 
         const handleSdkMessage = Effect.fnUntraced(function* (input: {
           readonly query: ClaudeAgentSdkQuerySession;
@@ -10764,31 +10832,27 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const liveQuery = yield* Ref.get(queryContext);
           if (liveQuery?.query === input.query) {
             const lifecycle = claudePromptLifecycle(message);
-            if (lifecycle?.state === "started") {
+            if (lifecycle !== null) {
               yield* liveQuery.boundaryLock.withPermits(1)(
                 Effect.gen(function* () {
                   for (const batch of liveQuery.boundaryBatches) {
+                    const offer = batch.offers.find((candidate) => candidate.id === lifecycle.uuid);
                     if (
-                      batch.reserved ||
-                      batch.context !== context ||
-                      !batch.offers.some((offer) => offer.id === lifecycle.uuid)
+                      offer === undefined ||
+                      batch.started.has(offer.id) ||
+                      batch.withdrawn.has(offer.id)
                     )
                       continue;
-                    yield* emitProviderEvent({
-                      type: "boundary_messages.updated",
-                      driver: CLAUDE_PROVIDER,
-                      threadId: batch.context.input.threadId,
-                      runId: batch.context.input.runId,
-                      providerTurnId: batch.context.providerTurnId,
-                      step: "reserve",
-                      offers: batch.offers.map(({ id, queuedRunId, messageId }) => ({
-                        id,
-                        queuedRunId,
-                        messageId,
-                      })),
-                    });
-                    batch.reserved = true;
-                    yield* flushBoundaryReceipts(batch);
+                    if (lifecycle.state === "started") {
+                      yield* acceptBoundaryOffers(batch, [offer.id]);
+                    } else if (
+                      // Removed before it entered the conversation, so the agent never read it.
+                      lifecycle.state === "cancelled" ||
+                      lifecycle.state === "discarded" ||
+                      lifecycle.state === "refused"
+                    ) {
+                      yield* withdrawBoundaryOffers(batch, [offer]);
+                    }
                   }
                   pruneBoundaryBatches(liveQuery.boundaryBatches);
                 }),
@@ -10796,7 +10860,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             }
             if (message.type === "result") {
               for (const batch of liveQuery.boundaryBatches) batch.accepting = false;
-              yield* reconcileBoundaryReceipts(liveQuery);
             }
           }
           if (
@@ -11684,7 +11747,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     const batch: ClaudeBoundaryBatch = {
                       context,
                       offers,
-                      saved: new Set(),
+                      consumed: new Set(),
+                      started: new Set(),
                       emitted: new Set(),
                       withdrawn,
                       reserved: false,
@@ -11711,9 +11775,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                           isCurrent,
                           onPulled: () => preparedOffer.reservation.commit(),
                           onConsumed: () => {
+                            batch.consumed.add(preparedOffer.offer.id);
                             void runPromise(Deferred.succeed(preparedOffer.consumed, undefined));
                           },
                           onDiscarded: () => {
+                            batch.consumed.delete(preparedOffer.offer.id);
                             neverHandedOff.add(preparedOffer.offer.id);
                             void runPromise(Deferred.succeed(preparedOffer.consumed, undefined));
                             const withdraw = continuationRequests.withdrawAgentMessages;
@@ -11762,35 +11828,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ),
               ),
             );
-          const receiptStore: NonNullable<ClaudeQueryOptions["sessionStore"]> = {
-            load: async () => null,
-            append: (key, entries) =>
-              runPromise(
-                boundaryLock.withPermits(1)(
-                  Effect.gen(function* () {
-                    if (key.sessionId !== nativeThreadId || key.subpath !== undefined) return;
-                    for (const entry of entries) {
-                      if (
-                        entry.type !== "attachment" ||
-                        entry.isSidechain !== false ||
-                        entry.sessionId !== nativeThreadId
-                      )
-                        continue;
-                      const attachment = field(entry, "attachment");
-                      if (field(attachment, "type") !== "queued_command") continue;
-                      const sourceUuid = field(attachment, "source_uuid");
-                      if (typeof sourceUuid !== "string") continue;
-                      for (const batch of boundaryBatches) {
-                        if (!batch.offers.some((offer) => offer.id === sourceUuid)) continue;
-                        batch.saved.add(sourceUuid);
-                      }
-                    }
-                    for (const batch of boundaryBatches) yield* flushBoundaryReceipts(batch);
-                    pruneBoundaryBatches(boundaryBatches);
-                  }),
-                ),
-              ),
-          };
           let queryOptions = makeClaudeQueryOptions({
             modelSelection: turnInput.modelSelection,
             modelCatalog,
@@ -11899,8 +11936,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...queryOptions.hooks,
             PostToolBatch: [{ timeout: 120, hooks: [postToolBatch] }],
           };
-          queryOptions.sessionStore = receiptStore;
-          queryOptions.sessionStoreFlush = "eager";
           const resolvedTurnCwd = yield* fileSystem
             .realPath(turnInput.runtimePolicy.cwd ?? ".")
             .pipe(Effect.orElseSucceed(() => turnInput.runtimePolicy.cwd));
@@ -12024,7 +12059,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             Effect.exit,
             Effect.flatMap(
               Effect.fnUntraced(function* (exit: ClaudeQueryStreamExit) {
-                yield* reconcileBoundaryReceipts(context);
+                yield* settleBoundaryOffersOfEndedProcess(context);
                 const heldContext = yield* Ref.get(activeTurn);
                 if (
                   (yield* Ref.get(queryContext))?.query === querySession &&
@@ -12870,6 +12905,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const existing = yield* Ref.get(queryContext);
           if (existing !== null) {
             yield* existing.query.close.pipe(Effect.ignore);
+            // Scope shutdown can interrupt the stream before its exit handler settles offers.
+            yield* settleBoundaryOffersOfEndedProcess(existing);
           }
           yield* Effect.yieldNow;
           yield* queryRunner.assertComplete.pipe(

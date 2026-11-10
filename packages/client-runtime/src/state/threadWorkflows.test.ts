@@ -137,7 +137,7 @@ describe("thread workflows", () => {
             providerTurnId: "provider-turn-active",
           },
         },
-        // An automatic notification stays hidden until offered; then only the user can settle it.
+        // Automatic notifications stay hidden, offered or not.
         { id: "notice", status: "queued", userMessageId: "message-notice", ordinal: 5 },
         {
           id: "offered-notice",
@@ -201,22 +201,19 @@ describe("thread workflows", () => {
     } as never);
 
     expect(
-      state.queuedRuns.map(({ run, text, delivery, automatic, editBlockedReason }) => [
+      state.queuedRuns.map(({ run, text, delivery, editBlockedReason }) => [
         run.id,
         text,
         delivery,
-        automatic,
         editBlockedReason !== null,
       ]),
     ).toEqual([
-      ["first", "First", "queued", false, false],
-      ["later", "Later", "pending", false, false],
-      ["offered", "Offered", "unconfirmed", false, true],
-      ["offered-notice", "Offered notice", "unconfirmed", true, true],
+      ["first", "First", "queued", false],
+      ["later", "Later", "pending", false],
+      ["offered", "Offered", "delivering", true],
     ]);
     expect(state.queuedRuns.map(({ attachments }) => attachments.map(({ id }) => id))).toEqual([
       ["attachment-first"],
-      [],
       [],
       [],
     ]);
@@ -300,160 +297,6 @@ describe("thread workflows", () => {
       );
     }
   });
-
-  it("keeps offered automatic deliveries visible while hiding unoffered completions", () => {
-    const state = deriveThreadQueueWorkflowState({
-      thread: { id: "thread", activeProviderThreadId: null },
-      runs: [
-        {
-          id: "provider-wake",
-          status: "queued",
-          userMessageId: "provider-wake",
-          ordinal: 4,
-          queuePosition: 3,
-          boundaryOffer: { id: "offer-wake", targetRunId: "previous", providerTurnId: "turn-old" },
-        },
-        {
-          id: "automatic",
-          status: "queued",
-          userMessageId: "message-automatic",
-          ordinal: 2,
-          queuePosition: 1,
-        },
-        {
-          id: "visible",
-          status: "queued",
-          userMessageId: "message-visible",
-          ordinal: 3,
-          queuePosition: 2,
-        },
-      ],
-      messages: [
-        {
-          id: "provider-wake",
-          text: "Model-facing text",
-          notification: {
-            source: { kind: "monitor" },
-            outcome: "updated",
-            summary: "Monitor updated",
-          },
-        },
-        {
-          id: "message-automatic",
-          text: "A delegated task reached a terminal state.",
-          delegatedCompletion: {
-            generation: 1,
-            parentRunId: "run:parent",
-            taskIds: ["task:child"],
-          },
-        },
-        { id: "message-visible", text: "Visible queued message" },
-      ],
-      providerTurns: [],
-      providerThreads: [],
-      providerSessions: [],
-    } as never);
-
-    expect(state.queuedRuns.map(({ run, text }) => [run.id, text])).toEqual([
-      ["visible", "Visible queued message"],
-      ["provider-wake", "Model-facing text"],
-    ]);
-    expect(state.queuedRuns[1]).toMatchObject({
-      delivery: "unconfirmed",
-      deliveryLabel: "Unconfirmed",
-      automatic: true,
-      editBlockedReason: expect.any(String),
-    });
-  });
-
-  it.each([
-    { change: "active", delivery: "pending", label: "Delivering" },
-    { change: "active-automatic", delivery: "pending", label: "Delivering" },
-    { change: "ended", delivery: "unconfirmed", label: "Unconfirmed" },
-    { change: "stopped-session", delivery: "unconfirmed", label: "Unconfirmed" },
-    { change: "replaced-attempt", delivery: "unconfirmed", label: "Unconfirmed" },
-    { change: "replaced-turn", delivery: "unconfirmed", label: "Unconfirmed" },
-    { change: "foreign-thread", delivery: "unconfirmed", label: "Unconfirmed" },
-    { change: "detached-session", delivery: "unconfirmed", label: "Unconfirmed" },
-    { change: "held", delivery: "unconfirmed", label: "Unconfirmed" },
-  ])(
-    "shows $change boundary offers with their actual delivery state",
-    ({ change, delivery, label }) => {
-      const state = deriveThreadQueueWorkflowState({
-        thread: { id: "thread", activeProviderThreadId: "provider-thread" },
-        runs: [
-          {
-            id: "active",
-            status: change === "ended" ? "interrupted" : "running",
-            providerThreadId: "provider-thread",
-            activeAttemptId: change === "replaced-attempt" ? "attempt-new" : "attempt-active",
-            ordinal: 1,
-          },
-          {
-            id: "offered",
-            status: "queued",
-            userMessageId: "message-offered",
-            ordinal: 2,
-            queueHeld: change === "held",
-            boundaryOffer: { id: "offer", targetRunId: "active", providerTurnId: "provider-turn" },
-          },
-          { id: "waiting", status: "queued", userMessageId: "message-waiting", ordinal: 3 },
-        ],
-        messages: [
-          {
-            id: "message-offered",
-            text: "Offered",
-            atToolBoundary: true,
-            ...(change === "active-automatic"
-              ? {
-                  notification: {
-                    source: { kind: "monitor" },
-                    outcome: "updated",
-                    summary: "Updated",
-                  },
-                }
-              : {}),
-          },
-          { id: "message-waiting", text: "Waiting", atToolBoundary: true },
-        ],
-        providerTurns: [
-          {
-            id: "provider-turn",
-            providerThreadId: change === "foreign-thread" ? "other-thread" : "provider-thread",
-            runAttemptId: "attempt-active",
-            status: change === "replaced-turn" ? "completed" : "running",
-          },
-        ],
-        providerThreads: [
-          {
-            id: "provider-thread",
-            appThreadId: "thread",
-            providerSessionId: change === "detached-session" ? null : "provider-session",
-          },
-        ],
-        providerSessions: [
-          {
-            id: "provider-session",
-            status: change === "stopped-session" ? "stopped" : "running",
-            capabilities: capabilities({ queued: true, steer: true }),
-          },
-        ],
-      } as never);
-
-      expect(state.queuedRuns[0]).toMatchObject({
-        delivery,
-        deliveryLabel: label,
-        automatic: change === "active-automatic",
-        editBlockedReason: expect.any(String),
-      });
-      expect(state.queuedRuns[1]).toMatchObject({
-        delivery: "pending",
-        deliveryLabel: "Pending",
-        automatic: false,
-        editBlockedReason: null,
-      });
-    },
-  );
 
   it("removes only the promoted head from the visible queue", () => {
     const state = deriveThreadQueueWorkflowState({

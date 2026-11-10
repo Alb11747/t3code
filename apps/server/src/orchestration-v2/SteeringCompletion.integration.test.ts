@@ -2475,6 +2475,64 @@ it.effect("an agent update joins the running turn at its next tool boundary, onc
   ),
 );
 
+it.effect("an update Claude drops unread after its turn ended starts on the idle thread", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { events, started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+        "agent-update-late-withdraw",
+        { activeSteeringInterruptsTools: true },
+      );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+        const threadId = yield* startFirstTurn;
+        const first = started[0]!;
+        yield* sendUpdate(threadId, "agent", "auto");
+        const offers = yield* offerAtToolBoundary(threadId, first.runId);
+        assert.lengthOf(offers, 1);
+        const completed = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "run.updated" &&
+              event.payload.id === first.runId &&
+              event.payload.status === "waiting",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        const turn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
+        yield* Queue.offer(events, {
+          type: "provider_turn.updated",
+          driver,
+          providerTurn: { ...turn, status: "completed", completedAt: yield* DateTime.now },
+        });
+        yield* Queue.offer(events, {
+          type: "turn.terminal",
+          driver,
+          providerThreadId: turn.providerThreadId,
+          providerTurnId: turn.id,
+          runOrdinal: first.runOrdinal,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        });
+        yield* Fiber.join(completed);
+        yield* worker.drain();
+        yield* orchestrator.resumeQueuedRuns;
+        yield* worker.drain();
+        // Still offered, so nothing starts it.
+        assert.equal(started.length, 1);
+        yield* requests.withdrawAgentMessages!({ threadId, runId: first.runId, offers });
+        yield* worker.drain();
+        assert.equal(started.length, 2);
+        assert.deepEqual(steered, []);
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
 it.effect.each([
   { offered: false, after: "nothing" },
   { offered: true, after: "nothing" },
@@ -2568,25 +2626,21 @@ it.effect.each([
               runId: sent.run.id,
             });
           } else if (after === "send again") {
-            yield* orchestrator.dispatch({
-              type: "queued-run.start",
-              commandId: CommandId.make("send-offered"),
-              threadId,
-              runId: sent.run.id,
-            });
-            yield* worker.drain();
-            // The user's explicit send starts the update as its own run.
-            assert.notEqual(
-              (yield* orchestrator.getThreadProjection(threadId)).runs.find(
-                (run) => run.id === sent.run.id,
-              )?.status,
-              "queued",
-            );
+            // The adapter settles an offer from Claude's report; nobody can send it twice.
+            const refused = yield* orchestrator
+              .dispatch({
+                type: "queued-run.start",
+                commandId: CommandId.make("send-offered"),
+                threadId,
+                runId: sent.run.id,
+              })
+              .pipe(Effect.flip);
+            assert.equal(refused._tag, "OrchestratorDispatchError");
           }
           if (!offered) return;
 
-          // Claude saved the offer before stopping, so its late receipt joins the stopped turn,
-          // unless the user already cancelled or resent it.
+          // Claude started the offer before stopping, so its late receipt joins the stopped turn,
+          // unless the user already cancelled it.
           yield* receiveAtToolBoundary(threadId, first.runId, offers);
           const settled = yield* orchestrator.getThreadProjection(threadId);
           const message = settled.messages.find(
@@ -2597,9 +2651,9 @@ it.effect.each([
               candidate.type === "user_message" &&
               candidate.messageId === MessageId.make("message:update"),
           );
-          if (after === "cancel" || after === "send again") {
+          if (after === "cancel") {
             assert.notInclude(
-              ["queued", ...(after === "cancel" ? [] : ["cancelled"])],
+              ["queued"],
               settled.runs.find((run) => run.id === sent.run.id)?.status,
             );
             assert.equal(message?.runId, sent.run.id);
@@ -3366,7 +3420,7 @@ it.effect.each(["receipt", "withdraw", "cancel", "retry", "resume"] as const)(
             }),
             [],
           );
-          let offers = yield* requests.claimAgentMessages!({
+          const offers = yield* requests.claimAgentMessages!({
             threadId,
             runId: first.runId,
             providerTurnId: turn.id,
@@ -3435,44 +3489,25 @@ it.effect.each(["receipt", "withdraw", "cancel", "retry", "resume"] as const)(
               })
               .pipe(Effect.flip);
             assert.equal(crossed._tag, "OrchestratorDispatchError");
-            const originalOffers = offers;
-            const agentRetry = yield* orchestrator
-              .dispatch({
-                type: "queued-message.promote-to-steer",
-                commandId: CommandId.make("agent-reoffer"),
-                threadId,
-                queuedRunId: sent.run.id,
-                targetRunId: first.runId,
-                requestedBy: "agent",
-              })
-              .pipe(Effect.flip);
-            assert.equal(agentRetry._tag, "OrchestratorDispatchError");
-            for (const commandId of ["human-reoffer", "human-reoffer-again"]) {
-              yield* orchestrator.dispatch({
-                type: "queued-message.promote-to-steer",
-                commandId: CommandId.make(commandId),
-                threadId,
-                queuedRunId: sent.run.id,
-                targetRunId: first.runId,
-              });
+            for (const requestedBy of ["agent", undefined] as const) {
+              const reoffer = yield* orchestrator
+                .dispatch({
+                  type: "queued-message.promote-to-steer",
+                  commandId: CommandId.make(`reoffer-${requestedBy ?? "human"}`),
+                  threadId,
+                  queuedRunId: sent.run.id,
+                  targetRunId: first.runId,
+                  ...(requestedBy === undefined ? {} : { requestedBy }),
+                })
+                .pipe(Effect.flip);
+              assert.equal(reoffer._tag, "OrchestratorDispatchError");
             }
-            assert.isUndefined(
+            assert.equal(
               (yield* orchestrator.getThreadProjection(threadId)).runs.find(
                 (run) => run.id === sent.run.id,
-              )?.boundaryOffer,
+              )?.boundaryOffer?.id,
+              offers[0]!.id,
             );
-            yield* requests.acknowledgeAgentMessages!({
-              threadId,
-              runId: first.runId,
-              offers: originalOffers,
-            });
-            offers = yield* requests.claimAgentMessages!({
-              threadId,
-              runId: first.runId,
-              providerTurnId: turn.id,
-            });
-            assert.lengthOf(offers, 1);
-            assert.notEqual(offers[0]!.id, originalOffers[0]!.id);
           }
           yield* orchestrator.dispatch({
             type: "run.interrupt",
@@ -3505,23 +3540,18 @@ it.effect.each(["receipt", "withdraw", "cancel", "retry", "resume"] as const)(
               runId: sent.run.id,
             });
           } else if (settlement === "retry") {
-            const refused = yield* orchestrator
-              .dispatch({
-                type: "queued-run.start",
-                commandId: CommandId.make("agent-retry"),
-                threadId,
-                runId: sent.run.id,
-                requestedBy: "agent",
-              })
-              .pipe(Effect.flip);
-            assert.equal(refused._tag, "OrchestratorDispatchError");
-            yield* orchestrator.dispatch({
-              type: "queued-run.start",
-              commandId: CommandId.make("retry"),
-              threadId,
-              runId: sent.run.id,
-            });
-            yield* worker.drain();
+            for (const requestedBy of ["agent", undefined] as const) {
+              const refused = yield* orchestrator
+                .dispatch({
+                  type: "queued-run.start",
+                  commandId: CommandId.make(`retry-${requestedBy ?? "human"}`),
+                  threadId,
+                  runId: sent.run.id,
+                  ...(requestedBy === undefined ? {} : { requestedBy }),
+                })
+                .pipe(Effect.flip);
+              assert.equal(refused._tag, "OrchestratorDispatchError");
+            }
           } else if (settlement === "resume") {
             yield* orchestrator.dispatch({
               type: "queue.resume",
@@ -3539,7 +3569,7 @@ it.effect.each(["receipt", "withdraw", "cancel", "retry", "resume"] as const)(
           const settled = yield* orchestrator.getThreadProjection(threadId);
           const run = settled.runs.find((run) => run.id === sent.run.id)!;
           const message = settled.messages.find((message) => message.id === "message:update")!;
-          if (settlement === "receipt") {
+          if (settlement === "receipt" || settlement === "retry") {
             assert.equal(message.runId, first.runId);
             const item = settled.turnItems.find(
               (item) => item.type === "user_message" && item.messageId === message.id,
@@ -3559,7 +3589,6 @@ it.effect.each(["receipt", "withdraw", "cancel", "retry", "resume"] as const)(
             );
             assert.equal(run.queueHeld, settlement === "withdraw");
           }
-          if (settlement === "retry") assert.notEqual(run.status, "queued");
           assert.deepEqual(steered, []);
         }).pipe(Effect.provide(layer));
       }),

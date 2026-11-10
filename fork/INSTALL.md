@@ -126,17 +126,13 @@ turns that own a delegated task keep their separate-turn behavior. A Claude CLI
 without the required cancellation capability also waits for the next turn.
 
 A successful MCP promotion receipt can mean the message is still waiting.
-**Pending** means it is waiting for a safe boundary; **Delivering** means the
-handoff is in progress. The original message stays queued until Claude saves
-its exact native input. It then appears at the tool boundary where it was
-inserted, even if the saved-history receipt arrives after the reply.
-
-Saved does not mean the model followed the update. An interrupted or crashed
-handoff can remain **Unconfirmed**; the server recovers matching saved receipts
-when available and never automatically resends an ambiguous update. Send it
-again deliberately or remove it. Unconfirmed updates cannot be edited, and an
-automatic notification can be sent again only after the turn ends. Existing
-unconfirmed offers retain this protection when upgrading.
+**Pending** means it is waiting for a safe boundary; **Delivering** means
+Claude is taking it. Once Claude reports the message started, it leaves the
+queue and appears at the tool boundary where it was inserted. If Claude drops
+it unread, for example because you pressed Stop first, it returns to the queue
+and waits for the next safe boundary or turn. If Claude or the server stops
+after taking a message but before Claude reports it, the message counts as
+delivered and is never sent twice.
 
 ## Browser access on macOS or other computers
 

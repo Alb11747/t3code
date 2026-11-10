@@ -6557,12 +6557,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           )
         : noticeKind === "delegated_task" || commandNotice)
     ) {
-      // Questions keep a next-turn wake if safe steering is unavailable;
-      // a hook offer can remain unconfirmed indefinitely.
       const active = projection.runs.find((run) => run.status === "running");
       const providerThread = projection.providerThreads.find(
         (row) => row.id === active?.providerThreadId,
       );
+      // Questions keep a next-turn wake if safe steering is unavailable, not a hook offer.
       atToolBoundary =
         (!commandNotice || providerThread?.goal?.status === "active") &&
         !command.messageId.startsWith("message:delegated-task-question:");
@@ -10528,7 +10527,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Queued run ${queuedRun.id} is missing message or execution state.`,
       });
     }
-    // The provider saved the offer in its history, so Stop no longer refuses its receipt.
+    // Claude reported reading the offer, so Stop no longer refuses its receipt.
     const receipt = command.boundaryOffer?.step === "receipt" ? queuedRun.boundaryOffer : undefined;
     if (command.boundaryOffer?.step === "offer") {
       // Stop wins: a held queue or a stopped turn keeps the update queued.
@@ -10560,12 +10559,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: "Automatic completion deliveries cannot be promoted to Steer.",
       });
     }
-    // The agent may already have read an offered update; only a person may send it again.
-    if (command.requestedBy === "agent" && queuedRun.boundaryOffer !== undefined) {
+    if (command.boundaryOffer === undefined && queuedRun.boundaryOffer !== undefined) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
-        cause: `Queued run ${queuedRun.id} may already have reached the agent; it is not sent again automatically.`,
+        cause: `Queued run ${queuedRun.id} is already being delivered to the agent.`,
       });
     }
 
@@ -10603,7 +10601,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const targetRun = projection.runs.find((run) => run.id === command.targetRunId);
     if (command.boundaryOffer?.step === "offer") {
-      // The run stays queued with its message until the provider confirms saving the offer. A
+      // The run stays queued with its message until Claude reports reading the offer. A
       // hook from a replaced or restarted turn cannot offer into the run's newer turn.
       const offeredTurnId = command.boundaryOffer.providerTurnId;
       const providerTurn = projection.providerTurns.find(
@@ -10745,7 +10743,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         // The same refusals as the boundary join: Stop wins, and a run that
         // owns a delegated task keeps its own turn.
         if (
-          (queuedRun.queueHeld === true && queuedRun.boundaryOffer === undefined) ||
+          queuedRun.queueHeld === true ||
           queuedRun.delegatedTaskId !== undefined ||
           (yield* stopReachedRun(command, command.threadId, targetRun.id))
         ) {
@@ -10753,18 +10751,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             commandId: command.commandId,
             commandType: command.type,
             cause: `Queued run ${queuedRun.id} cannot wait for the running turn's next tool boundary.`,
-          });
-        }
-        if (queuedRun.boundaryOffer !== undefined) {
-          const { boundaryOffer: _boundaryOffer, ...retryRun } = queuedRun;
-          yield* emitEvent({
-            type: "run.updated",
-            threadId: command.threadId,
-            runId: queuedRun.id,
-            nodeId: queuedRootNode.id,
-            providerInstanceId: queuedRun.providerInstanceId,
-            occurredAt: now,
-            payload: { ...retryRun, queueHeld: false },
           });
         }
         yield* emitEvent({
@@ -11091,7 +11077,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
-        cause: "This message may already have reached the agent; cancel or send it instead.",
+        cause: "This message is already being delivered to the agent.",
       });
     }
     const queuedMessage = projection.messages.find(
@@ -14717,16 +14703,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           const selectedMessage = projection.messages.find(
             (message) => message.id === selectedRun?.userMessageId,
           );
-          // An automatic delivery the agent may already have seen is sent again only by a person.
           if (
             selectedRun === undefined ||
             selectedMessage === undefined ||
-            ((selectedMessage.delegatedCompletion !== undefined ||
-              selectedMessage.notification !== undefined) &&
-              selectedRun.boundaryOffer === undefined) ||
-            (command.type === "queued-run.start" &&
-              command.requestedBy === "agent" &&
-              selectedRun.boundaryOffer !== undefined) ||
+            selectedMessage.delegatedCompletion !== undefined ||
+            selectedMessage.notification !== undefined ||
+            selectedRun.boundaryOffer !== undefined ||
             projection.runs.some(isActiveRun)
           ) {
             return yield* new OrchestratorDispatchError({
@@ -14754,7 +14736,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const now = yield* DateTime.now;
         const queued = projection.runs.filter((run) => run.status === "queued");
         for (const run of queued) {
-          const { boundaryOffer: _boundaryOffer, ...retryRun } = run;
           yield* emit(
             events,
             command,
@@ -14764,10 +14745,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             runId: run.id,
             providerInstanceId: run.providerInstanceId,
             occurredAt: now,
-            payload: {
-              ...(run.id === selectedRunId ? retryRun : run),
-              queueHeld: false,
-            },
+            payload: { ...run, queueHeld: false },
           });
         }
         if (queued.length === 0) {
@@ -15111,6 +15089,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       command.type === "queue.resume" ||
       command.type === "queued-run.start" ||
+      // An offer Claude drops after its turn ended rejoins an idle queue.
+      (command.type === "queued-message.promote-to-steer" &&
+        command.boundaryOffer?.step === "withdraw") ||
       (command.type === "thread.runtime-mode.set" && runtimeModeCeiling !== undefined)
     ) {
       yield* mapDispatchError(command)(

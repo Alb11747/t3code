@@ -1696,8 +1696,8 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         runId: (yield* orchestrator.getThreadProjection(threadId)).runs[4]!.id,
         text: "/goal finish the work",
       });
-      yield* dispatchFollowUp("unconfirmed", "This update may already be saved.");
-      const unconfirmedRun = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+      yield* dispatchFollowUp("offered", "This update is being delivered.");
+      const offeredRun = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
       yield* dispatchFollowUp("steer", "Also do this.");
       const steerMessageId = MessageId.make("runtime-startup-steer-steer");
 
@@ -1728,15 +1728,15 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         commandId: CommandId.make("runtime-startup-steer-running"),
         events: [
           {
-            id: EventId.make("runtime-startup-steer-unconfirmed"),
+            id: EventId.make("runtime-startup-steer-offered"),
             type: "run.updated",
             threadId,
-            runId: unconfirmedRun.id,
+            runId: offeredRun.id,
             occurredAt: now,
             payload: {
-              ...unconfirmedRun,
+              ...offeredRun,
               boundaryOffer: {
-                id: "unconfirmed-offer",
+                id: "in-flight-offer",
                 targetRunId: run.id,
                 providerTurnId: ProviderTurnId.make("runtime-startup-steer-turn"),
               },

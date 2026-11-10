@@ -5,7 +5,6 @@ import {
   queuedRunEditBlockedReason,
 } from "@t3tools/client-runtime/queued-run-edit";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { UNCONFIRMED_DELIVERY_HINT } from "@t3tools/client-runtime/state/thread-workflows";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import type { ChatAttachment, EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
@@ -135,9 +134,8 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   const [busyRunId, setBusyRunId] = useState<RunId | null>(null);
   const busyRef = useRef(false);
   const queuedRuns = workflow?.queuedRuns ?? [];
-  const hasPending = queuedRuns.some((entry) => entry.delivery === "pending");
-  const hasQueued = queuedRuns.some((entry) => entry.delivery !== "pending");
-  const hasUnconfirmed = queuedRuns.some((entry) => entry.delivery === "unconfirmed");
+  const hasPending = queuedRuns.some((entry) => entry.delivery !== "queued");
+  const hasQueued = queuedRuns.some((entry) => entry.delivery === "queued");
   const heading = hasPending
     ? hasQueued
       ? "Pending and queued messages"
@@ -184,7 +182,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
       return;
     }
     if (action !== "steer" && action !== "remove") return;
-    if (action === "steer" && entry.automatic && workflow?.canSendNow !== true) return;
+    if (action === "steer" && entry.delivery === "delivering") return;
     busyRef.current = true;
     setBusyRunId(runId);
     void Haptics.selectionAsync();
@@ -192,7 +190,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
       await cancel(buildCancelQueuedRunCommand({ ...target, runId }));
     } else if (workflow?.canSendNow) {
       await resume({ ...target, input: { threadId: target.threadId, runId } });
-    } else if (workflow?.activeRun && workflow.canPromoteToSteer && !entry.automatic) {
+    } else if (workflow?.activeRun && workflow.canPromoteToSteer) {
       await promote({
         ...target,
         input: {
@@ -225,9 +223,6 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           Queued messages wait for a later turn.
         </Text>
       ) : null}
-      {hasUnconfirmed ? (
-        <Text className="py-3 text-sm text-foreground-muted">{UNCONFIRMED_DELIVERY_HINT}</Text>
-      ) : null}
       {workflow?.isHeld && queuedRuns.length > 0 ? (
         <View className="gap-2 py-3">
           <Text className="text-sm text-foreground-muted">Queue paused</Text>
@@ -259,10 +254,10 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           busy: busyRunId !== null,
           // A fresh message starts its own turn: it may skip compaction, but not steer into a turn.
           canPromoteToSteer:
-            !entry.automatic &&
+            entry.delivery !== "delivering" &&
             (workflow?.canPromoteToSteer ?? false) &&
             (run.freshContext !== true || workflow?.promoteSkipsCompaction === true),
-          canSendNow: workflow?.canSendNow ?? false,
+          canSendNow: entry.delivery !== "delivering" && (workflow?.canSendNow ?? false),
           editBlocked: rowEditBlockedReason !== null,
           isEditing: editing?.runId === run.id,
           isGuestMessage: context?.guest !== undefined,
