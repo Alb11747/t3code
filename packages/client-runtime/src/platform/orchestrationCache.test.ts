@@ -23,7 +23,7 @@ import { applyOrchestrationV2ProjectionEvent } from "../state/orchestrationV2Pro
 import {
   COMPACT_THREAD_CACHE_SCHEMA_VERSION,
   decodeStoredThreadSnapshot,
-  encodeStoredThreadSnapshot,
+  makeStoredThreadSnapshotEncoder,
 } from "./threadCacheEncoding.ts";
 
 const environmentId = EnvironmentId.make("environment-cache-test");
@@ -43,13 +43,16 @@ class TestCacheDecodeError extends Schema.TaggedError<TestCacheDecodeError>()(
 describe("orchestration cache envelopes", () => {
   it.effect("rejects compact caches that predate the combined fork history format", () =>
     Effect.gen(function* () {
-      const encoded = yield* encodeStoredThreadSnapshot({
+      const encoded = yield* makeStoredThreadSnapshotEncoder({
+        format: "compact",
+        yieldToHost: Effect.void,
+      })({
         environmentId,
         threadId: v2ThreadId,
         snapshot: { snapshotSequence: 4, projection: v2Projection },
       });
       for (const version of [5, 6]) {
-        const stale = encoded.replace(
+        const stale = Option.getOrThrow(encoded).replace(
           `"schemaVersion":${COMPACT_THREAD_CACHE_SCHEMA_VERSION}`,
           `"schemaVersion":${version}`,
         );
