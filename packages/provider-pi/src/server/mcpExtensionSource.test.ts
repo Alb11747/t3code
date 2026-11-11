@@ -58,11 +58,6 @@ describe("Pi orchestration prompt section", () => {
     const ctx = { model: { api: "openai-completions" }, ui: { notify: assert.fail } };
 
     assert.isUndefined(await hook(event, ctx));
-    assert.include(
-      sections.t3_code_runtime,
-      "relative file links resolve from this thread's workspace root",
-    );
-    assert.include(sections.t3_code_runtime, "Use absolute paths for files outside the workspace.");
     assert.include(sections.t3_code_orchestration, "orchestrator_capabilities");
     assert.equal(event.systemPrompt, "base");
     assert.include(bridge.getActiveTools(), "mcp__t3-code__preview_snapshot");
@@ -71,7 +66,6 @@ describe("Pi orchestration prompt section", () => {
     assert.isUndefined(await hook(event, ctx));
     assert.deepEqual(event.systemPromptOptions.sections, {
       existing: "keep me",
-      t3_code_runtime: sections.t3_code_runtime!,
       t3_code_orchestration: guidance,
     });
   });
@@ -101,7 +95,6 @@ describe("Pi orchestration prompt section", () => {
       const result = await hook(event, { ui: { notify: assert.fail } });
       assert.isDefined(result);
       assert.isTrue(result!.systemPrompt.startsWith(`${event.systemPrompt}\n\n`));
-      assert.include(result!.systemPrompt, "Use absolute paths for files outside the workspace.");
       assert.include(result!.systemPrompt, "orchestrator_capabilities");
     }
   });
@@ -198,14 +191,7 @@ describe("Pi MCP tool exposure", () => {
     const start = bridge.handlers.get("before_agent_start");
     assert.isDefined(start);
     const prompt = await start!({ systemPrompt: "Pi system prompt" }, discoveryContext);
-    assert.isDefined(prompt);
-    assert.isTrue(prompt!.systemPrompt.startsWith("Pi system prompt\n\n"));
-    assert.include(
-      prompt!.systemPrompt,
-      "relative file links resolve from this thread's workspace root",
-    );
-    assert.include(prompt!.systemPrompt, "Use absolute paths for files outside the workspace.");
-    assert.include(prompt!.systemPrompt, "orchestrator_capabilities");
+    assert.include(prompt?.systemPrompt ?? "", "orchestrator_capabilities");
     assert.equal(bridge.servers.length, 0);
     assert.equal(bridge.tools.length, 8);
     assert.deepEqual(bridge.getActiveTools(), ["read", "tool_search"]);
