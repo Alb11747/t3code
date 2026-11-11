@@ -4884,8 +4884,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }).pipe(Effect.orDie),
         );
 
+        // Premium-only notifications advertise native usage before an ordinary quota snapshot exists.
+        let nativeUsageAdvertised = false;
         yield* client.handleServerNotification("account/rateLimits/updated", (payload) =>
           Effect.gen(function* () {
+            nativeUsageAdvertised = true;
             const previous = yield* Ref.getAndUpdate(rateLimitSnapshot, (previous) =>
               mergeCodexRateLimits(previous, payload.rateLimits),
             );
@@ -6340,14 +6343,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           context: ActiveCodexTurnContext,
           event: CodexRootTerminalEvent,
         ) {
-          const awaitsReset =
-            event.status === "failed" &&
-            event.failure.class === "usage_limit" &&
-            event.failure.resetAt == null &&
-            // The account read only reports the ordinary allowance, never a sharing cap's reset.
-            !classifyCodexManagedError(event.failure.code)?.usageLimit &&
-            codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot)) === null;
-          if (!awaitsReset) yield* publishRootTerminal(context, event);
+          yield* publishRootTerminal(context, event);
           const continued = continuedRuns.get(context.providerTurnId) ?? [context];
           if (event.status !== "completed") {
             yield* Ref.update(
@@ -6364,15 +6360,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             nativeThreadId == null ? undefined : rootProviderThreads.get(nativeThreadId);
           if (nativeThreadId != null && rootProviderThread !== undefined) {
             rootProviderThreads.set(nativeThreadId, { ...rootProviderThread, status: "idle" });
-          }
-          // Notification handlers block response routing, so the read and terminal get a fiber.
-          if (awaitsReset) {
-            yield* readUsageLimitReset.pipe(
-              Effect.andThen(
-                turnTerminalizationPermit.withPermits(1)(publishRootTerminal(context, event)),
-              ),
-              Effect.forkIn(scope, { startImmediately: true }),
-            );
           }
         });
 
@@ -7163,7 +7150,24 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       : { failureErrorInfo: payload.turn.error.codexErrorInfo }),
                   }),
             };
-            yield* finalizeCodexTurn(terminal);
+            const failure = status === "failed" ? resolveRootFailure(terminal) : undefined;
+            if (
+              context.subagent === null &&
+              failure?.class === "usage_limit" &&
+              failure.resetAt == null &&
+              !classifyCodexManagedError(failure.code)?.usageLimit &&
+              // Only accounts advertising native usage support this read.
+              nativeUsageAdvertised &&
+              codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot)) === null
+            ) {
+              // Read before choosing a reset-less retry, without blocking response routing.
+              yield* readUsageLimitReset.pipe(
+                Effect.andThen(finalizeCodexTurn(terminal)),
+                Effect.forkIn(scope, { startImmediately: true }),
+              );
+            } else {
+              yield* finalizeCodexTurn(terminal);
+            }
           }),
         );
 

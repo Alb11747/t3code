@@ -6335,6 +6335,26 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       expectedClass: "usage_limit",
     },
     {
+      name: "reset-read-stop",
+      code: "usageLimitExceeded",
+      notification: false,
+      expectedClass: "usage_limit",
+    },
+    {
+      name: "reset-read-failure",
+      forkRetry: true,
+      code: "usageLimitExceeded",
+      notification: false,
+      expectedClass: "usage_limit",
+    },
+    {
+      name: "usage-without-native-snapshot",
+      forkRetry: true,
+      code: "usageLimitExceeded",
+      notification: false,
+      expectedClass: "usage_limit",
+    },
+    {
       name: "replacement",
       code: "usageLimitExceeded",
       completionMessage: "A different failure.",
@@ -6458,7 +6478,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         };
         const readsReset =
           scenario.name === "first-request-reset" || scenario.name === "newer-reset-during-read";
-        const readsAccount = readsReset;
+        const readsAccount =
+          readsReset ||
+          scenario.name === "reset-read-failure" ||
+          scenario.name === "reset-read-stop";
         const premium = {
           ...snapshot,
           frame: {
@@ -6512,7 +6535,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             )
               ? [snapshot]
               : []),
-            ...(readsReset ? [premium] : []),
+            ...(readsAccount ? [premium] : []),
             ...(scenario.name === "deferred-reset"
               ? [
                   {
@@ -6614,6 +6637,25 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   },
                 ]
               : []),
+            ...(scenario.name === "reset-read-stop"
+              ? [
+                  { ...premium, label: "reset-read-pending" },
+                  {
+                    type: "expect_outbound" as const,
+                    label: "turn/interrupt",
+                    frame: {
+                      id: 5,
+                      method: "turn/interrupt",
+                      params: { threadId: nativeThreadId, turnId: nativeTurnId },
+                    },
+                  },
+                  {
+                    type: "emit_inbound" as const,
+                    label: "turn/interrupt",
+                    frame: { id: 5, result: {} },
+                  },
+                ]
+              : []),
             ...(readsAccount && !readsReset
               ? [
                   {
@@ -6661,14 +6703,22 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ],
         });
         const snapshotReceipt = yield* Deferred.make<void>();
+        const resetReadStarted = yield* Deferred.make<void>();
+        const methods: string[] = [];
         const harness = yield* makeCodexReplayHarness(
           transcript,
           undefined,
+          (method) =>
+            Effect.gen(function* () {
+              methods.push(method);
+            }),
           undefined,
           undefined,
           undefined,
-          undefined,
-          undefined,
+          (entry) =>
+            entry.label === "reset-read-pending"
+              ? Deferred.succeed(resetReadStarted, undefined).pipe(Effect.asVoid)
+              : Effect.void,
           () => Deferred.succeed(snapshotReceipt, undefined),
         );
         yield* harness.runtime.startTurn(
@@ -6680,6 +6730,22 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             attemptId: RunAttemptId.make(`attempt-limit-${scenario.name}`),
           }),
         );
+        if (scenario.name === "reset-read-stop") {
+          yield* Deferred.await(resetReadStarted);
+          yield* harness.runtime.interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+              driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+              nativeTurnId,
+            }),
+          });
+          yield* harness.firstTerminal;
+          assert.lengthOf(
+            methods.filter((method) => method === "account/rateLimits/read"),
+            1,
+          );
+          return;
+        }
         if ("forkRetry" in scenario) {
           yield* harness.until(() =>
             harness.events.some(
