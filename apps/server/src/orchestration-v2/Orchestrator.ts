@@ -179,7 +179,11 @@ import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import { ProviderSwitchServiceV2 } from "./ProviderSwitchService.ts";
-import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
+import {
+  isAutomaticCompletionRun,
+  queuedRunsInDeliveryOrder,
+  queuedSteeringRunIds,
+} from "./QueuedRunOrder.ts";
 import { isRuntimePolicyAboveCeilingError, RuntimePolicyV2 } from "./RuntimePolicy.ts";
 import {
   endOrphanedNativeSubagent,
@@ -3076,7 +3080,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     const { messages: queuedQuestions } = yield* projectionStore
       .getThreadRecords(command.parentThreadId, ["messages"], {
-        queuedQuestionTaskIds: [task.id],
+        queuedQuestionTaskIds: task.childThreadId === null ? [] : [task.id],
       })
       .pipe(mapDispatchError(command));
     const { runs: queuedRuns } = yield* projectionStore
@@ -6765,7 +6769,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const startupDeliveryIntent =
       activeRun !== undefined &&
       !freshContext &&
-      !waitsForFreshContext &&
       (command.deliveryIntent === "auto" || command.deliveryIntent === "steer") &&
       goalCommand === null &&
       delegatedCompletion === undefined &&
@@ -15350,10 +15353,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ["runs", "messages", "providerTurns", "providerThreads", "providerSessions"],
               { turnItemTypes: [], messageRoles: ["user"] },
             );
+            const steeringRunIds = queuedSteeringRunIds(projection.runs);
             const next = queuedRunsInDeliveryOrder(projection)
               .filter((queued) => {
                 if (
-                  queued.deliveryIntent === undefined ||
+                  !steeringRunIds.has(queued.id) ||
                   queued.queueHeld === true ||
                   queued.boundaryOffer !== undefined ||
                   queued.delegatedTaskId !== undefined

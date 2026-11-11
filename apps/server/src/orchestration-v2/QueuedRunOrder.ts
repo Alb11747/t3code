@@ -13,6 +13,25 @@ export function isAutomaticCompletionRun(
   );
 }
 
+export function queuedSteeringRunIds(runs: ReadonlyArray<OrchestrationV2Run>) {
+  const firstFreshPosition = Math.min(
+    ...runs
+      .filter((run) => run.status === "queued" && run.freshContext === true)
+      .map((run) => run.queuePosition ?? run.ordinal),
+  );
+  return new Set(
+    runs
+      .filter(
+        (run) =>
+          run.status === "queued" &&
+          (run.deliveryIntent === "steer" ||
+            (run.deliveryIntent === "auto" &&
+              (run.queuePosition ?? run.ordinal) < firstFreshPosition)),
+      )
+      .map((run) => run.id),
+  );
+}
+
 export function queuedRunsInDeliveryOrder(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
 ): ReadonlyArray<OrchestrationV2Run> {
@@ -26,6 +45,7 @@ export function queuedRunsInDeliveryOrder(
       .filter((message) => message.delegatedCompletion !== undefined)
       .map((message) => message.id),
   );
+  const steeringRunIds = queuedSteeringRunIds(projection.runs);
   return projection.runs
     .filter((run) => run.status === "queued")
     .toSorted((left, right) => {
@@ -33,7 +53,7 @@ export function queuedRunsInDeliveryOrder(
         Number(right.queuePosition === 1 && goalMessageIds.has(right.userMessageId)) -
         Number(left.queuePosition === 1 && goalMessageIds.has(left.userMessageId));
       const steeringPriority =
-        Number(right.deliveryIntent !== undefined) - Number(left.deliveryIntent !== undefined);
+        Number(steeringRunIds.has(right.id)) - Number(steeringRunIds.has(left.id));
       const deliveryPriority =
         Number(automaticCompletionMessageIds.has(right.userMessageId)) -
         Number(automaticCompletionMessageIds.has(left.userMessageId));
