@@ -339,6 +339,7 @@ export interface ProjectionRecordFilter {
   readonly providerTurnAttemptIds?: ReadonlyArray<RunAttemptId>;
   readonly messageRoles?: ReadonlyArray<OrchestrationV2ConversationMessage["role"]>;
   readonly monitorNotificationsOnly?: boolean;
+  readonly queuedQuestionTaskIds?: ReadonlyArray<NodeId>;
   readonly turnItemRunId?: RunId;
   readonly messageIds?: ReadonlyArray<MessageId>;
   readonly messageRunIds?: ReadonlyArray<RunId>;
@@ -357,6 +358,7 @@ export interface ProjectionRecordFilter {
   readonly subagentIds?: ReadonlyArray<NodeId>;
   readonly subagentRunIds?: ReadonlyArray<RunId>;
   readonly nodeIds?: ReadonlyArray<NodeId>;
+  readonly attemptIds?: ReadonlyArray<RunAttemptId>;
   readonly turnItemRequestIds?: ReadonlyArray<RuntimeRequestId>;
   readonly turnItemTypes?: ReadonlyArray<OrchestrationV2TurnItem["type"]>;
   readonly turnItemStatuses?: ReadonlyArray<OrchestrationV2TurnItem["status"]>;
@@ -3537,13 +3539,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 ))
             ORDER BY ordinal ASC
           `,
-          fields !== undefined && !fields.includes("attempts")
+          (fields !== undefined && !fields.includes("attempts")) ||
+          (window === undefined && matchesNothing(filter?.attemptIds))
             ? Effect.succeed([])
             : window === undefined
               ? sql<PayloadRow>`
             SELECT payload_json
             FROM orchestration_v2_projection_run_attempts
-            WHERE thread_id = ${threadId}
+            WHERE ${threadColumn(filter?.attemptIds)} = ${threadId}
+              ${filter?.attemptIds === undefined ? sql`` : sql`AND attempt_id IN (SELECT value FROM json_each(${encodeIdList(filter.attemptIds)}))`}
             ORDER BY run_id ASC, attempt_ordinal ASC
           `
               : sql<PayloadRow>`
@@ -3729,16 +3733,36 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           `,
           (fields !== undefined && !fields.includes("messages")) ||
           (window === undefined &&
-            matchesNothing(filter?.messageIds, filter?.messageRoles, filter?.messageRunIds))
+            matchesNothing(
+              filter?.messageIds,
+              filter?.messageRoles,
+              filter?.messageRunIds,
+              filter?.queuedQuestionTaskIds,
+            ))
             ? Effect.succeed([])
             : window === undefined
               ? sql<PayloadRow>`
                 SELECT payload_json FROM orchestration_v2_projection_messages
-                WHERE ${threadColumn(filter?.messageIds)} = ${threadId}
+                WHERE ${threadColumn(filter?.messageIds ?? filter?.queuedQuestionTaskIds)} = ${threadId}
                   ${filter?.messageIds === undefined ? sql`` : sql`AND message_id IN (SELECT value FROM json_each(${encodeIdList(filter.messageIds)}))`}
                   ${filter?.messageRoles === undefined ? sql`` : sql`AND role IN (SELECT value FROM json_each(${encodeIdList(filter.messageRoles)}))`}
                   ${filter?.monitorNotificationsOnly === true ? sql`AND json_extract(payload_json, '$.notification.source.kind') = 'monitor'` : sql``}
                   ${filter?.messageRunIds === undefined ? sql`` : sql`AND run_id IN (SELECT value FROM json_each(${encodeIdList(filter.messageRunIds)}))`}
+                  ${
+                    filter?.queuedQuestionTaskIds === undefined
+                      ? sql``
+                      : sql`AND message_id GLOB 'message:delegated-task-question:*'
+                          AND json_extract(payload_json, '$.creationSource') = 'server'
+                          AND json_extract(payload_json, '$.notification.source.kind') = 'delegated_task'
+                          AND run_id IN (
+                            SELECT run_id FROM orchestration_v2_projection_runs
+                            WHERE thread_id = ${threadId} AND status = 'queued'
+                          )
+                          AND EXISTS (
+                            SELECT 1 FROM json_each(payload_json, '$.notification.source.taskIds') AS task
+                            WHERE task.value IN (SELECT value FROM json_each(${encodeIdList(filter.queuedQuestionTaskIds)}))
+                          )`
+                  }
                 ORDER BY created_at ASC, message_id ASC
               `
               : sql<PayloadRow>`
@@ -3890,6 +3914,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           const loadedMessageIds =
             filter?.messageIds === undefined &&
             filter?.messageRunIds === undefined &&
+            filter?.queuedQuestionTaskIds === undefined &&
             (filter?.messageRoles === undefined ||
               (filter.messageRoles.includes("user") && filter.messageRoles.includes("assistant")))
               ? undefined

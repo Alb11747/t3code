@@ -3074,27 +3074,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       payload: updatedTask,
     });
 
+    const { messages: queuedQuestions } = yield* projectionStore
+      .getThreadRecords(command.parentThreadId, ["messages"], {
+        queuedQuestionTaskIds: [task.id],
+      })
+      .pipe(mapDispatchError(command));
     const { runs: queuedRuns } = yield* projectionStore
-      .getThreadRecords(command.parentThreadId, ["runs"], { runStatuses: ["queued"] })
+      .getThreadRecords(command.parentThreadId, ["runs"], {
+        runIds: queuedQuestions.flatMap((message) =>
+          message.runId === null ? [] : [message.runId],
+        ),
+        runStatuses: ["queued"],
+      })
       .pipe(mapDispatchError(command));
     const queuedProjection = yield* projectionStore
-      .getThreadRecords(
-        command.parentThreadId,
-        [
-          "nodes",
-          "messages",
-          ...(queuedRuns.some((run) => run.activeAttemptId !== null) ? ["attempts" as const] : []),
-        ],
-        {
-          nodeIds: queuedRuns.flatMap((run) => (run.rootNodeId === null ? [] : [run.rootNodeId])),
-          messageIds: queuedRuns.map((run) => run.userMessageId),
-        },
-      )
+      .getThreadRecords(command.parentThreadId, ["nodes", "attempts"], {
+        nodeIds: queuedRuns.flatMap((run) => (run.rootNodeId === null ? [] : [run.rootNodeId])),
+        attemptIds: queuedRuns.flatMap((run) =>
+          run.activeAttemptId === null ? [] : [run.activeAttemptId],
+        ),
+      })
       .pipe(mapDispatchError(command));
     yield* cancelQueuedDelegatedQuestions({
       command,
       events,
-      projection: { ...queuedProjection, runs: queuedRuns },
+      projection: { ...queuedProjection, runs: queuedRuns, messages: queuedQuestions },
       now,
       taskIds: [task.id],
     });
@@ -6753,9 +6757,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const activeRunMessage = projection.messages.find(
       (message) => message.id === activeRun?.userMessageId,
     );
+    // Automatic delivery must not cross a fresh conversation already ahead in the queue.
+    const waitsForFreshContext =
+      command.deliveryIntent !== "steer" &&
+      command.dispatchMode.type !== "steer_active" &&
+      projection.runs.some((run) => run.status === "queued" && run.freshContext === true);
     const startupDeliveryIntent =
       activeRun !== undefined &&
       !freshContext &&
+      !waitsForFreshContext &&
       (command.deliveryIntent === "auto" || command.deliveryIntent === "steer") &&
       goalCommand === null &&
       delegatedCompletion === undefined &&
@@ -6787,6 +6797,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       const deliverAtToolBoundary =
         !freshContext &&
+        !waitsForFreshContext &&
         modelSelection.instanceId === activeRun?.providerInstanceId &&
         command.afterCompactionMessageId === undefined &&
         !command.messageId.startsWith("message:delegated-task-question:") &&

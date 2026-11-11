@@ -593,6 +593,8 @@ it.effect.each([
         ? [
             {
               id: MessageId.make("message_queued_restart"),
+              text: "Resume this work after restart",
+              attachments: [],
               createdBy: "user",
               ...(scenario === "starting-scheduled" ? { scheduledTaskId: "scheduled-task" } : {}),
             },

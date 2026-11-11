@@ -401,6 +401,7 @@ describe("OrchestratorMcpService", () => {
         // The child's own delegation is still running.
         subagents: [{ status: "running" }],
         providerThreads: [],
+        providerTurns: [],
         runtimeRequests: [],
         turnItems: [],
       } as unknown as OrchestrationV2ThreadProjection;
