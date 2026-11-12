@@ -24,10 +24,10 @@ If a fetch fails, it's best to stop and report it rather than work from stale re
 | -------------------------------------- | ------------------------------------------------------------- |
 | `fork/CHANGES.md`                      | One line per fork change: what, why, upstream issues and PRs. |
 | `fork/scripts/sync-upstream.sh`        | Merges upstream; first reverts patches whose PR merged.       |
-| `fork/scripts/sync-before-push.sh`     | Syncs main to upstream's newest nightly before a fork push.   |
+| `fork/scripts/check-sync-request.sh`   | Blocks a fork push while a sync request is open.              |
 | `fork/scripts/t3-resolver/`            | Claims, prepares, publishes, or reports failed T3 requests.   |
 | `fork/T3-RESOLVER.md`                  | Trusted procedure for the webhook-started T3 Codex agent.     |
-| `.github/workflows/fork-sync.yml`      | Per upstream nightly: sync, check, promote or review PR.      |
+| `.github/workflows/fork-sync.yml`      | When dispatched: sync, check, promote or review PR.           |
 | `.github/workflows/fork-checks.yml`    | Upstream's release checks on GitHub-hosted runners.           |
 | `.github/workflows/fork-release.yml`   | On push to `main`: check, build, publish a GitHub prerelease. |
 | `.github/workflows/fork-pr-checks.yml` | Optional hosted checks, dispatched on demand.                 |
@@ -151,10 +151,8 @@ attempt at the previous one.
    with upstream_. If blocked by a sync request, report it and arrange
    automatic continuation (_Waiting for a sync_) rather than leaving the task
    waiting for another user message.
-   Main may lag upstream's newest nightly while you
-   work; step 6 syncs it before an app push. Changes confined to workflows,
-   actions and `fork/` are exempt from starting a sync, but no push to `main`
-   may land while a sync request is open:
+   Main may lag upstream by up to about three days; pushes do not sync it
+   (step 6). No push to `main` may land while a sync request is open:
    promotion rejects the candidate as stale once main moves, so wait for it to
    settle. Start from fork `main` in a new worktree
    (`git fetch origin && git worktree add -b <branch> <path> origin/main`).
@@ -222,32 +220,31 @@ attempt at the previous one.
    commit; an upstream pass alone does not validate a different fork commit.
 
 6. Right before pushing an app change, run
-   `fork/scripts/sync-before-push.sh` so the release builds on upstream's
-   newest nightly. It returns at once when main already has it; otherwise it
-   runs **Fork sync** (or joins a running one) and waits for a clean merge to
-   be checked and promoted, about 25 minutes. Exit 3 means the sync hit a
-   conflict and a request is open: watch that issue and resume automatically
-   (_Waiting for a sync_), or resolve it (_Syncing with upstream_), then run
-   the script again. The sync's
-   own release is cancelled by your push if it follows within Fork release's
-   15-minute wait, so this builds once. Then fetch `origin` and rebase the
+   `fork/scripts/check-sync-request.sh`. Pushes do not sync with upstream
+   first: the release builds on whatever nightly main already has, and the
+   watchdog syncs about every three days (_Syncing with upstream_). Do not
+   dispatch **Fork sync** to get a newer upstream for your change; each
+   conflicting sync starts a model-driven resolver. Exit 3 means a sync
+   request is open: watch that issue and resume automatically (_Waiting for a
+   sync_), or resolve it (_Syncing with upstream_), then run the script
+   again. Then fetch `origin` and rebase the
    task branch's own commits onto current `origin/main` (they are not on
    `main` yet, so this rewrites nothing published); rerun focused checks if
    the rebase touched the change's files. When finished (_Release
    lineage_), push from the task
    worktree with `git push origin HEAD:main` (a plain push: it must fast-forward).
    **Fork release**
-   waits 15 minutes (the `fork-release-delay` environment's wait timer), runs
+   waits 2 hours (the `fork-release-delay` environment's wait timer), runs
    the validation gate, then builds and publishes. It skips hosted checks when a
    local receipt or matching hosted pass exists on the exact release commit.
    Record the receipt after any rebase and before the main push; otherwise
    the release falls back to the hosted matrix. Both the normal release and
-   Labs fallback use this gate. The wait is
-   short because a fork push is a change you want soon; it batches a quick
-   follow-up or another thread's push close behind. Upstream syncs wait far
-   longer (_Syncing with upstream_). A newer push cancels the older run at any
-   stage, so pushes from several threads close together build once. There's
-   no need to hold a finished change for other threads' work.
+   Labs fallback use this gate. The wait batches fork changes: a newer push
+   cancels the older run at any stage and restarts the wait, so every change
+   pushed within two hours of the previous one ships in one release. There's
+   no need to hold a finished change for other threads' work; push it and let
+   the wait collect them. To ship sooner, approve the waiting deployment in
+   the run's page (repository admins can bypass the timer).
    If the push is rejected because another thread pushed first,
    `git fetch origin`, rebase onto `origin/main`, and push again. After the
    wait, Fork release compares files with the newest published release and
@@ -322,7 +319,7 @@ A sync conflict pauses the push, not ownership of the task. Watch its exact
 tracking issue and continue the authorized work after resolution without asking
 the user to restart it. Prefer a native issue watch when available. Otherwise,
 reuse or create one thread-bound `schedule_task` with `bindToCurrentThread: true`
-and an interval of ten minutes. A PR watch won't work for an issue (it
+and an interval of 30 minutes; each check is a model turn. A PR watch won't work for an issue (it
 rejects issue URLs); avoid shell polling loops and new top-level threads too.
 
 Give the watcher the issue URL, task worktree and branch, pending commits,
@@ -332,7 +329,7 @@ failure needs attention. If reading it fails, retry on the next scheduled check;
 after three consecutive failures, report the access problem and pause the task's
 watcher rather than silently dropping it.
 
-When the issue closes, fetch `origin` and rerun `sync-before-push.sh`: closure or
+When the issue closes, fetch `origin` and rerun `check-sync-request.sh`: closure or
 a successful resolver handoff alone does not prove promotion. If another sync
 issue blocks it, update the same watcher to follow that issue. Once the script
 succeeds, disable the watcher before resuming work, rebase the task's unpublished
@@ -657,16 +654,15 @@ the Actions tab, which syncs immediately.
    already contains that commit. The fork follows released nightlies rather
    than every upstream `main` commit. A manual run with `upstream=main` syncs
    to upstream's tip instead.
-2. The watchdog waits for upstream to settle: it dispatches once upstream
-   has published no new nightly for 12 hours, or once the oldest nightly the
-   fork lacks is 24 hours old, onto the newest nightly at that point. Upstream
-   ships a nightly every 4–6 hours, and each sync is a release with no fork
-   change, so syncing every nightly made most releases upstream-only. Replaying
-   October 9–15, 2026, this rule cut sync-only releases from 21 to 5 a week,
-   keeping the fork at most about 31 hours behind upstream. Shorter quiet
-   periods saved little (nightlies arrive before the timer runs out); a
-   36-hour cap saved two or three more releases at up to 41 hours behind. Your
-   own pushes sync first instead (_Adding a change_, step 6). It also skips while a sync is running, for 12
+2. The watchdog dispatches once the oldest nightly the fork lacks is 72 hours
+   old, onto the newest nightly at that point, so the fork runs at most about
+   three days behind upstream. Fork pushes no longer sync first (_Adding a
+   change_, step 6), so these are the only automatic syncs. Each sync that
+   conflicts starts a gpt-6.1-sol resolver run, a Codex review and often
+   follow-up fixes; in November 2026, with pushes syncing first and a 24-hour
+   cap, that was more than one conflict a day and about 15% of the owner's
+   model tokens. Batching three days of upstream into one sync costs one
+   resolver run instead of several small ones. It also skips while a sync is running, for 12
    hours after a failed run (a failure without a conflict issue needs a fix,
    not a retry), and while a conflict issue was updated in the last 24 hours.
 3. `sync-upstream.sh --onto <nightly SHA>` reverts fork commits whose
@@ -786,7 +782,7 @@ After a crashed claim, retry after three hours or inspect/reset its ledger
 deliberately. The helpers serialize mutations and reject a second active request
 for the shared checkout. Failed/expired artifacts and stale requests require
 local inspection; manual `sync` can generate a fresh request. Keep the issue
-fallback (resolver claims and `sync-before-push.sh` rely on the open issue) until an actual signed webhook → candidate → resume trial succeeds.
+fallback (resolver claims and `check-sync-request.sh` rely on the open issue) until an actual signed webhook → candidate → resume trial succeeds.
 
 ## Releases and updates
 

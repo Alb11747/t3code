@@ -43,11 +43,10 @@ permissions:
   contents: read
 
 jobs:
-  # The fork-release-delay environment (repository settings) has a 15-minute
-  # wait timer, so a burst of pushes cancels itself here before any runner
-  # starts and only the last push builds. It is short because a fork push is a
-  # change wanted soon; upstream syncs settle in fork-sync.yml instead. Without
-  # the environment there is no wait.
+  # The fork-release-delay environment (repository settings) has a 2-hour
+  # wait timer, so pushes within two hours of each other cancel here before
+  # any runner starts and ship as one release. Without the environment there
+  # is no wait.
   #
   # It also disables upstream workflows that a sync or push added: they need
   # upstream's runners or credentials, or automate upstream's issues, and stay
