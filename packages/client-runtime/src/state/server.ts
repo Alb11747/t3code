@@ -1407,6 +1407,10 @@ export function createServerEnvironmentAtoms<R, E>(
         key: ({ environmentId, input }) => JSON.stringify([environmentId, input]),
       },
     }),
+    resolveUsageResetSnooze: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:resolve-usage-reset-snooze",
+      tag: WS_METHODS.providerResolveUsageResetSnooze,
+    }),
     refreshProviders: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:refresh-providers",
       tag: WS_METHODS.serverRefreshProviders,

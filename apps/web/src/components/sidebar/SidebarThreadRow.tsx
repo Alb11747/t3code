@@ -28,6 +28,7 @@ import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environ
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
+  type ThreadId,
   type EnvironmentMachineKind,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -106,6 +107,8 @@ import {
   ThreadSearchPullRequestNumber,
 } from "../ThreadStatusIndicators";
 import { pickSnoozePreset, resolveSnoozePresets, type SnoozePreset } from "../Sidebar.snooze";
+import { resolveUsageResetSnooze } from "../usageResetSnooze";
+import { USAGE_RESET_SNOOZE_LABEL } from "../usageResetSnooze.logic";
 import { useThreadShell } from "../../state/entities";
 import { ProjectFavicon, type ProjectFaviconProject } from "../ProjectFavicon";
 import { ThreadSearchMatchExcerpt } from "../ThreadSearchMatch";
@@ -379,8 +382,9 @@ function SnoozeMenuButton(props: {
   onSnooze: (preset: Pick<SnoozePreset, "snoozedUntil">) => void;
   timestampFormat: TimestampFormat;
   environmentId: EnvironmentId;
+  threadId: ThreadId;
 }) {
-  const { open, onOpenChange, onSnooze, timestampFormat, environmentId } = props;
+  const { open, onOpenChange, onSnooze, timestampFormat, environmentId, threadId } = props;
   const presets = open
     ? // oxlint-disable-next-line react/purity -- Presets are resolved only while the menu is open, so each opening reads a fresh time.
       resolveSnoozePresets(new Date(), timestampFormat, environmentId)
@@ -422,6 +426,15 @@ function SnoozeMenuButton(props: {
           </MenuItem>
         ))}
         {presets.length > 0 ? <MenuSeparator /> : null}
+        <MenuItem
+          onClick={async (event) => {
+            event.stopPropagation();
+            const choice = await resolveUsageResetSnooze({ environmentId, threadId });
+            if (choice) onSnooze(choice);
+          }}
+        >
+          {USAGE_RESET_SNOOZE_LABEL}
+        </MenuItem>
         <MenuItem
           onClick={async (event) => {
             event.stopPropagation();
@@ -1568,6 +1581,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                           onSnooze={handleSnoozePreset}
                           timestampFormat={props.timestampFormat}
                           environmentId={thread.environmentId}
+                          threadId={thread.id}
                         />
                       ) : null}
                       {props.settlementSupported ? (

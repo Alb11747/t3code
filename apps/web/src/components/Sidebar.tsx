@@ -228,6 +228,8 @@ import {
   snoozeWakeLabel,
   type SnoozePreset,
 } from "./Sidebar.snooze";
+import { resolveUsageResetSnooze } from "./usageResetSnooze";
+import { USAGE_RESET_SNOOZE_ACTION, USAGE_RESET_SNOOZE_LABEL } from "./usageResetSnooze.logic";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { deriveProviderEntriesByEnvironment } from "../providerInstances";
 import { useStableCallback } from "../hooks/useStableCallback";
@@ -2344,9 +2346,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         disabled: !canOperateThreads(selectedThreads),
                       })),
                       {
+                        id: USAGE_RESET_SNOOZE_ACTION,
+                        label: USAGE_RESET_SNOOZE_LABEL,
+                        separatorBefore: snoozePresets.length > 0,
+                        disabled: !canOperateThreads(selectedThreads),
+                      },
+                      {
                         id: "snooze:custom",
                         label: "Custom…",
-                        separatorBefore: snoozePresets.length > 0,
                         disabled: !canOperateThreads(selectedThreads),
                       },
                     ],
@@ -2391,8 +2398,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       if (clicked.value === "settle" && actionTargets.length === 0) return;
       if (clicked.value !== "mark-unread" && !checkThreadOperations(actionTargets)) return;
       if (clicked.value?.startsWith("snooze:")) {
-        const preset =
-          clicked.value === "snooze:custom"
+        // Each thread's usage resets with the account its own next message would use.
+        const usageReset = clicked.value === USAGE_RESET_SNOOZE_ACTION;
+        const sharedPreset = usageReset
+          ? undefined
+          : clicked.value === "snooze:custom"
             ? await requestCustomSnooze()
             : pickSnoozePreset(
                 snoozePresets,
@@ -2400,13 +2410,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 timestampFormat,
                 selectedThreads[0]!.environmentId,
               );
-        if (preset) {
+        if (usageReset || sharedPreset) {
           const coSnoozingKeys = new Set(threadKeys);
           clearSelection();
           const outcomes = await Promise.all(
             selectedThreads.map(async (thread) => {
               const threadRef = scopeThreadRef(thread.environmentId, thread.id);
-              const outcome = await performSnooze(threadRef, preset, { coSnoozingKeys });
+              const preset = sharedPreset ?? (await resolveUsageResetSnooze(threadRef));
+              const outcome = preset
+                ? await performSnooze(threadRef, preset, { coSnoozingKeys })
+                : ({ status: "skipped" } as const);
               return { outcome, threadRef };
             }),
           );
@@ -2666,12 +2679,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           const preset =
             clicked.value === "snooze:custom"
               ? await requestCustomSnooze()
-              : pickSnoozePreset(
-                  snoozePresets,
-                  clicked.value.slice("snooze:".length),
-                  timestampFormat,
-                  thread.environmentId,
-                );
+              : clicked.value === USAGE_RESET_SNOOZE_ACTION
+                ? await resolveUsageResetSnooze(threadRef)
+                : pickSnoozePreset(
+                    snoozePresets,
+                    clicked.value.slice("snooze:".length),
+                    timestampFormat,
+                    thread.environmentId,
+                  );
           if (preset) attemptSnooze(threadRef, preset);
           return;
         }

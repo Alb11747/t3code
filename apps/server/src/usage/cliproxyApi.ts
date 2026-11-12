@@ -132,8 +132,16 @@ const Control = Schema.Struct({
   ),
 });
 
+// Fork: quota-router 0.22 previews the account its next pick for a session would use.
+const NextPick = Schema.Struct({
+  account: Schema.optional(Schema.NullOr(Schema.String)),
+  basis: Schema.optional(Schema.String),
+  reset_at: Schema.optional(Schema.NullOr(Schema.String)),
+});
+
 const decodeAuthFiles = Schema.decodeUnknownEffect(AuthFiles);
 const decodeControl = Schema.decodeUnknownEffect(Control);
+const decodeNextPick = Schema.decodeUnknownEffect(NextPick);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeApiResponse = Schema.decodeUnknownEffect(ApiResponse);
 const decodeCreditList = Schema.decodeUnknownEffect(Schema.fromJsonString(CreditList));
@@ -609,5 +617,35 @@ export const makeCliproxyApi = Effect.gen(function* () {
     yield* management(config, "control/keep-warm", { sessions, expires_at: expiresAt });
   });
 
-  return { readAccounts, consume, keepWarmHolds, releaseKeepWarm };
+  /**
+   * The quota router's reset for the account it would route this session to next. `null` means the
+   * hub cannot preview picks (stock CLIProxyAPI or an older router); a known pick may still have an unknown reset.
+   */
+  const nextPickReset = Effect.fn("CliproxyApi.nextPickReset")(function* (
+    config: CliproxyHub,
+    input: {
+      readonly provider: "claude" | "codex";
+      readonly session?: string;
+      readonly model?: string;
+    },
+  ) {
+    const query = new URLSearchParams({ provider: input.provider });
+    if (input.session) query.set("session", input.session);
+    if (input.model) query.set("model", input.model);
+    const pick = yield* management(config, `control/next?${query}`).pipe(
+      Effect.flatMap(decodeNextPick),
+      Effect.tapError((error) =>
+        Effect.logDebug("quota router could not preview its next pick", { error }),
+      ),
+      Effect.option,
+    );
+    // No account means the router could not tell (no pool for the provider), unlike an unknown reset.
+    if (Option.isNone(pick) || !pick.value.account) return null;
+    const resetsAt = pick.value.reset_at
+      ? Option.getOrNull(Option.map(DateTime.make(pick.value.reset_at), DateTime.formatIso))
+      : null;
+    return { resetsAt };
+  });
+
+  return { readAccounts, consume, keepWarmHolds, releaseKeepWarm, nextPickReset };
 });

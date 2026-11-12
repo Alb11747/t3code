@@ -8,6 +8,11 @@ import {
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
 import { ClaudeKeepWarmActionError, ClaudeKeepWarmActionInput } from "./claudeKeepWarm.ts";
 import {
+  UsageResetSnooze,
+  UsageResetSnoozeError,
+  UsageResetSnoozeInput,
+} from "./usageResetSnooze.ts";
+import {
   McpAppCallToolInput,
   McpAppCallToolResult,
   McpAppReadResourceInput,
@@ -445,6 +450,7 @@ export const WS_METHODS = {
   providerAuthStart: "provider.auth.start",
   providerConsumeResetCredit: "provider.consumeResetCredit",
   claudeKeepWarmAction: "provider.claude.keepWarmAction",
+  providerResolveUsageResetSnooze: "provider.resolveUsageResetSnooze",
   providerAuthComplete: "provider.auth.complete",
   chatGptReconnectProfile: "provider.chatgpt.reconnect-profile",
   chatGptImportProfile: "provider.chatgpt.import-profile",
@@ -693,6 +699,12 @@ const WsProviderConsumeResetCreditRpc = Rpc.make(WS_METHODS.providerConsumeReset
   payload: ProviderConsumeResetCreditInput,
   success: ProviderConsumeResetCreditResult,
   error: Schema.Union([ProviderSetupError, UsageLimitSourceError, EnvironmentAuthorizationError]),
+});
+
+const WsProviderResolveUsageResetSnoozeRpc = Rpc.make(WS_METHODS.providerResolveUsageResetSnooze, {
+  payload: UsageResetSnoozeInput,
+  success: UsageResetSnooze,
+  error: Schema.Union([UsageResetSnoozeError, EnvironmentAuthorizationError]),
 });
 
 const WsClaudeKeepWarmActionRpc = Rpc.make(WS_METHODS.claudeKeepWarmAction, {
@@ -2080,6 +2092,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUpdateProviderRpc,
   WsProviderConsumeResetCreditRpc,
   WsClaudeKeepWarmActionRpc,
+  WsProviderResolveUsageResetSnoozeRpc,
   WsProviderAuthStartRpc,
   WsProviderAuthCompleteRpc,
   WsChatGptReconnectProfileRpc,

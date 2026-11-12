@@ -37,6 +37,13 @@ export class UsageLimitSources extends Context.Service<
     readonly consumeResetCredit: (
       input: UsageLimitSourceConsumeResetCreditInput,
     ) => Effect.Effect<ProviderConsumeResetCreditResult, UsageLimitSourceError>;
+    /** The source's quota-router pick preview; null when it is disabled or cannot preview picks. */
+    readonly nextPickReset: (input: {
+      readonly sourceId: UsageLimitSourceId;
+      readonly provider: "claude" | "codex";
+      readonly session?: string;
+      readonly model?: string;
+    }) => Effect.Effect<{ readonly resetsAt: string | null } | null>;
   }
 >()("t3/usage/UsageLimitSources") {}
 
@@ -148,6 +155,20 @@ export const make = Effect.gen(function* () {
     return result;
   }, refreshLock.withPermits(1));
 
+  const nextPickReset = Effect.fn("UsageLimitSources.nextPickReset")(function* (
+    input: Parameters<UsageLimitSources["Service"]["nextPickReset"]>[0],
+  ) {
+    const settings = yield* settingsService.getSettings.pipe(
+      Effect.orElseSucceed((): ServerSettings | null => null),
+    );
+    const config = settings?.usageLimitSources[input.sourceId];
+    if (!config?.enabled) return null;
+    const managementKey = yield* readManagementKey(config).pipe(Effect.orElseSucceed(() => ""));
+    if (managementKey.length === 0) return null;
+    const { sourceId: _, ...pick } = input;
+    return yield* api.nextPickReset({ url: config.url, managementKey }, pick);
+  });
+
   yield* settingsService.streamChanges.pipe(
     Stream.map((settings) => settings.usageLimitSources),
     Stream.changes,
@@ -180,6 +201,7 @@ export const make = Effect.gen(function* () {
   return {
     current: Ref.get(stateRef),
     consumeResetCredit,
+    nextPickReset,
     refresh,
     get streamChanges() {
       return Stream.unwrap(

@@ -10,6 +10,11 @@ import {
 } from "./thread-list-v2-row-appearance";
 import { RowPressable } from "../../components/ui/RowPressable";
 import { CustomSnoozeSheet } from "./CustomSnoozeSheet";
+import {
+  resolveUsageResetSnooze,
+  USAGE_RESET_SNOOZE_ACTION,
+  USAGE_RESET_SNOOZE_LABEL,
+} from "./usageResetSnooze";
 import { ThreadContextNoteSheet } from "./ThreadContextNoteSheet";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { threadArrangementOpenAtom } from "../../state/thread-order";
@@ -868,6 +873,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         title: preset.label,
         subtitle: preset.whenLabel,
       })),
+      { id: USAGE_RESET_SNOOZE_ACTION, title: USAGE_RESET_SNOOZE_LABEL },
       { id: "snooze:custom", title: "Custom…" },
     ],
     [snoozePresets],
@@ -1111,6 +1117,15 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       if (nativeEvent.event === "delete") handleDelete();
       if (nativeEvent.event === "snooze:custom") {
         setCustomSnoozeOpen(true);
+        return;
+      }
+      if (nativeEvent.event === USAGE_RESET_SNOOZE_ACTION) {
+        void resolveUsageResetSnooze(
+          { environmentId: thread.environmentId, threadId: thread.id },
+          thread.modelSelection,
+        ).then((snoozedUntil) => {
+          if (snoozedUntil) handleSnooze(snoozedUntil);
+        });
         return;
       }
       const snoozeSelection = resolveThreadListV2SnoozeMenuSelection({

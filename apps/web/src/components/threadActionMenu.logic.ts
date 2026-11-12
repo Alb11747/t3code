@@ -1,6 +1,8 @@
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
 
+import { USAGE_RESET_SNOOZE_ACTION, USAGE_RESET_SNOOZE_LABEL } from "./usageResetSnooze.logic";
+
 export type ThreadActionMenuId =
   | "find"
   | "new-thread-on-branch"
@@ -165,10 +167,11 @@ export function buildThreadActionMenuItems(
                     label: `${preset.label} (${preset.whenLabel})`,
                   })),
                   {
-                    id: "snooze:custom" as const,
-                    label: "Custom…",
+                    id: USAGE_RESET_SNOOZE_ACTION,
+                    label: USAGE_RESET_SNOOZE_LABEL,
                     separatorBefore: state.snoozePresets.length > 0,
                   },
+                  { id: "snooze:custom" as const, label: "Custom…" },
                 ],
               },
         ]

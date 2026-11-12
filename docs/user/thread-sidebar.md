@@ -363,6 +363,15 @@ local time zone, or a duration in minutes, hours, or days. Durations start when
 you confirm; one day means 24 hours. On web and desktop, you can also snooze
 several selected threads together. Choose **Wake thread** to bring a thread back early.
 
+Choose **Snooze → Until usage resets** to wake a thread when the account its next
+message will use gets quota back. If you switched the thread's provider without
+sending yet, the new provider counts. A blocked account wakes the thread once every
+blocking limit resets; an account with quota left wakes it at its next reset. Behind
+a CLIProxyAPI hub running the quota router, the time is the reset of the account the
+router will route the thread to. Other hubs, or several hubs serving the same
+provider, use the soonest reset among their accounts for that provider. Selecting
+several threads snoozes each one until its own account's reset.
+
 A snoozed thread keeps working and stays hidden until its wake time, even while
 its agent wakes itself for background work. It comes back early for an approval,
 a new question, a failed run, or a message or answer you send. You can snooze an existing

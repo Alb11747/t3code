@@ -722,3 +722,58 @@ describe("CLIProxyAPI built-in management API", () => {
     }),
   );
 });
+
+describe("quota-router next-pick preview", () => {
+  const hubAnswering = (answer: (url: URL) => Response) =>
+    makeCliproxyApi.pipe(
+      Effect.provideService(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.succeed(HttpClientResponse.fromWeb(request, answer(new URL(request.url)))),
+        ),
+      ),
+      Effect.provide(NodeCrypto.layer),
+    );
+
+  it.effect("asks for the session's pick and returns that account's reset", () =>
+    Effect.gen(function* () {
+      const seen: URL[] = [];
+      const api = yield* hubAnswering((url) => {
+        seen.push(url);
+        return Response.json({
+          account: "account-0123456789abcdef",
+          basis: "pinned",
+          reset_at: "2026-11-12T17:30:00.123456789+01:00",
+        });
+      });
+      const pick = yield* api.nextPickReset(config, {
+        provider: "claude",
+        session: "abc def",
+        model: "claude-opus-5-5",
+      });
+      expect(pick).toEqual({ resetsAt: "2026-11-12T16:30:00.123Z" });
+      expect(seen[0]?.pathname).toMatch(/\/v0\/management\/control\/next$/);
+      expect(Object.fromEntries(seen[0]!.searchParams)).toEqual({
+        provider: "claude",
+        session: "abc def",
+        model: "claude-opus-5-5",
+      });
+    }),
+  );
+
+  it.effect("falls back when the router cannot determine an account", () =>
+    Effect.gen(function* () {
+      const api = yield* hubAnswering(() =>
+        Response.json({ provider: "codex", account: null, basis: "earliest", reset_at: null }),
+      );
+      expect(yield* api.nextPickReset(config, { provider: "codex" })).toBeNull();
+    }),
+  );
+
+  it.effect("reports that a stock hub without the route cannot preview picks", () =>
+    Effect.gen(function* () {
+      const api = yield* hubAnswering(() => new Response("404 page not found", { status: 404 }));
+      expect(yield* api.nextPickReset(config, { provider: "codex" })).toBeNull();
+    }),
+  );
+});
