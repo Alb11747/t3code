@@ -6978,6 +6978,100 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  // regression: #8879 Claude's end_turn marks the reply so a continued run keeps it visible
+  it.effect.each(["streamed", "snapshot", "result"] as const)(
+    "marks %s text of the end_turn message as the final answer",
+    (delivery) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("final-answer-attempt"),
+            text: "Check and answer",
+            attachments: [],
+          }),
+        );
+        const stream = (event: unknown) =>
+          claudeSdkFrame({
+            type: "stream_event",
+            event,
+            parent_tool_use_id: null,
+            session_id: WAKE_NATIVE_SESSION,
+            uuid: "stream-frame",
+          });
+        const snapshot = (id: string, text: string, stopReason: string | null) =>
+          claudeSdkFrame({
+            type: "assistant",
+            uuid: `${id}-snapshot`,
+            session_id: WAKE_NATIVE_SESSION,
+            parent_tool_use_id: null,
+            message: {
+              id,
+              model: "claude-sonnet-4-6",
+              content: [{ type: "text", text }],
+              stop_reason: stopReason,
+            },
+          });
+        // Streamed snapshots carry a null stop reason; the stream's message_delta reports it after.
+        const message = (id: string, text: string, stopReason: string) =>
+          delivery === "streamed"
+            ? [
+                stream({ type: "message_start", message: { id } }),
+                stream({
+                  type: "content_block_start",
+                  index: 0,
+                  content_block: { type: "text", text },
+                }),
+                stream({ type: "content_block_stop", index: 0 }),
+                snapshot(id, text, null),
+                stream({ type: "message_delta", delta: { stop_reason: stopReason } }),
+              ]
+            : [snapshot(id, text, stopReason)];
+        const frames =
+          delivery === "result"
+            ? []
+            : [
+                ...message("progress", "Checking.", "tool_use"),
+                ...message("answer", "Done.", "end_turn"),
+              ];
+        for (const frame of frames) yield* harness.offerAndWait(frame);
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({ uuid: "final-answer-result", result: "Done." }),
+        );
+        yield* Queue.take(harness.terminalReceipts);
+        const phases = new Map(
+          harness.events.flatMap((event) =>
+            event.type === "turn_item.updated" && event.turnItem.type === "assistant_message"
+              ? [[event.turnItem.text, event.turnItem.phase] as const]
+              : [],
+          ),
+        );
+        assert.deepEqual(
+          [...phases],
+          delivery === "result"
+            ? [["Done.", "final_answer"]]
+            : [
+                ["Checking.", undefined],
+                ["Done.", "final_answer"],
+              ],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+  );
+
   // regression: #15892 non-execution metadata is carried through, not guessed from result text
   it.effect.each(["cancelled", "interrupted", "denied", "permission_denied", undefined])(
     "preserves native tool non-execution metadata %s without inferring a denial from text",

@@ -4509,6 +4509,8 @@ function providerFailureFromApiRetry(message: SDKAPIRetryMessage): Orchestration
   });
 }
 
+type ClaudeAssistantTurnItem = Extract<OrchestrationV2TurnItem, { type: "assistant_message" }>;
+
 function buildAssistantArtifacts(input: {
   readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
   readonly turnInput: ProviderAdapter.ProviderAdapterV2TurnInput;
@@ -4521,10 +4523,11 @@ function buildAssistantArtifacts(input: {
   readonly completedAt: DateTime.Utc;
   // A streamed message keeps its first timestamp across updates.
   readonly createdAt?: DateTime.Utc;
+  readonly finalAnswer?: boolean;
 }): {
   readonly node: OrchestrationV2ExecutionNode;
   readonly message: OrchestrationV2ConversationMessage;
-  readonly turnItem: OrchestrationV2TurnItem;
+  readonly turnItem: ClaudeAssistantTurnItem;
 } {
   const nodeId = input.idAllocator.derive.nodeFromProviderItem({
     driver: CLAUDE_PROVIDER,
@@ -4595,6 +4598,7 @@ function buildAssistantArtifacts(input: {
       completedAt,
       updatedAt: input.completedAt,
       type: "assistant_message",
+      ...(input.finalAnswer === true ? { phase: "final_answer" as const } : {}),
       messageId,
       text: input.text,
       streaming,
@@ -4658,6 +4662,13 @@ interface ActiveClaudeTurnContext {
   readonly assistant: {
     fallbackText: string;
     fallbackNativeItemId: string;
+    fallbackFinalAnswer: boolean;
+    // end_turn marks a native message's text as the reply, often after its blocks were published.
+    readonly textMessages: Map<
+      string,
+      { finalAnswer: boolean; readonly items: Map<string, ClaudeAssistantTurnItem> }
+    >;
+    readonly textMessageIdByItem: Map<string, string>;
     emittedNativeItemIds: Set<string>;
     // Text blocks stream as `${message.id}:text:${n}`; the block's snapshot has its own uuid.
     readonly streamBlocks: Map<number, string>;
@@ -8437,6 +8448,34 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             }),
         });
 
+        const textMessage = (context: ActiveClaudeTurnContext, nativeMessageId: string) => {
+          let message = context.assistant.textMessages.get(nativeMessageId);
+          if (message === undefined) {
+            message = { finalAnswer: false, items: new Map() };
+            context.assistant.textMessages.set(nativeMessageId, message);
+          }
+          return message;
+        };
+
+        const markFinalAnswer = Effect.fnUntraced(function* (
+          context: ActiveClaudeTurnContext,
+          nativeMessageId: string,
+        ) {
+          const message = textMessage(context, nativeMessageId);
+          if (message.finalAnswer) return;
+          message.finalAnswer = true;
+          const updatedAt = yield* DateTime.now;
+          for (const [nativeItemId, item] of message.items) {
+            const turnItem = { ...item, phase: "final_answer" as const, updatedAt };
+            message.items.set(nativeItemId, turnItem);
+            yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CLAUDE_PROVIDER,
+              turnItem,
+            });
+          }
+        });
+
         const publishAssistantArtifacts = Effect.fnUntraced(function* (input: {
           readonly context: ActiveClaudeTurnContext;
           readonly nativeItemId: string;
@@ -8447,6 +8486,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           readonly createdAt?: DateTime.Utc;
         }) {
           const ordinal = yield* resolveItemOrdinal(input.context, input.nativeItemId);
+          const nativeMessageId = input.context.assistant.textMessageIdByItem.get(
+            input.nativeItemId,
+          );
+          const message =
+            nativeMessageId === undefined ? undefined : textMessage(input.context, nativeMessageId);
           const artifacts = buildAssistantArtifacts({
             idAllocator,
             turnInput: input.context.input,
@@ -8458,7 +8502,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             startedAt: input.startedAt,
             completedAt: input.completedAt,
             ...(input.createdAt === undefined ? {} : { createdAt: input.createdAt }),
+            finalAnswer: message?.finalAnswer === true,
           });
+          message?.items.set(input.nativeItemId, artifacts.turnItem);
           yield* Effect.all(
             [
               emitProviderEvent({
@@ -8702,6 +8748,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               providerTurnId: input.context.providerTurnId,
               nativeItemId: input.context.assistant.fallbackNativeItemId,
               text: input.context.assistant.fallbackText,
+              finalAnswer: input.context.assistant.fallbackFinalAnswer,
               ordinal,
               startedAt: input.context.startedAt,
               completedAt: input.completedAt,
@@ -9955,6 +10002,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 usage === undefined ? null : { messageId: event.message.id, usage };
               if (usage !== undefined) yield* emitContextUsage(context, usage, true);
             } else if (event.type === "message_delta") {
+              if (event.delta.stop_reason === "end_turn" && reasoning.messageId !== null) {
+                yield* markFinalAnswer(context, reasoning.messageId);
+              }
               const usage: typeof event.usage | undefined = event.usage;
               const stream = context.streamUsage;
               if (stream?.usage && usage !== undefined) {
@@ -9998,6 +10048,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               assistant.nextBlockIndex.set(reasoning.messageId, index + 1);
               const itemId = `${reasoning.messageId}:text:${index}`;
               assistant.streamBlocks.set(event.index, itemId);
+              assistant.textMessageIdByItem.set(itemId, reasoning.messageId);
               assistant.lastReply = null;
               assistant.streamItems.set(itemId, {
                 startedAt: yield* DateTime.now,
@@ -10044,6 +10095,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               }
             }
             return;
+          }
+          if (message.type === "assistant" && !message.parent_tool_use_id) {
+            context.assistant.textMessageIdByItem.set(message.uuid, message.message.id);
+            // Streamed snapshots leave stop_reason null; transcript lines carry it.
+            if (message.message.stop_reason === "end_turn") {
+              yield* markFinalAnswer(context, message.message.id);
+            }
           }
           // Snapshot text the stream did not deliver, once any of it streamed.
           const unstreamedSnapshotText: Array<string> = [];
@@ -11032,6 +11090,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           ) {
             context.assistant.fallbackText = resultText.text;
             context.assistant.fallbackNativeItemId = resultText.nativeItemId;
+            context.assistant.fallbackFinalAnswer =
+              message.type === "result" && message.stop_reason === "end_turn";
           }
 
           if (message.type === "result") {
@@ -12360,6 +12420,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               assistant: {
                 fallbackText: "",
                 fallbackNativeItemId: `assistant:${turnInput.runId}`,
+                fallbackFinalAnswer: false,
+                textMessages: new Map(),
+                textMessageIdByItem: new Map(),
                 emittedNativeItemIds: new Set(),
                 streamBlocks: new Map(),
                 nextBlockIndex: new Map(),

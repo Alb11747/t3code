@@ -1077,23 +1077,18 @@ export function messageFoldRunId(
   return null;
 }
 
-function answersBeforeSteers(feed: ReadonlyArray<ThreadFeedEntry>): ReadonlySet<MessageId> {
-  const ids = new Set<MessageId>();
-  let previous: ThreadFeedEntry | undefined;
-  for (const entry of feed) {
-    if (
+// Steers and wakes can continue a run past its answer, so a confirmed answer stays visible anywhere.
+function finalAnswerIds(feed: ReadonlyArray<ThreadFeedEntry>): ReadonlySet<MessageId> {
+  return new Set(
+    feed.flatMap((entry) =>
       entry.type === "message" &&
-      isSteerMessage(entry.message) &&
-      previous?.type === "message" &&
-      previous.message.role === "assistant" &&
-      previous.message.projectedItem?.item.type === "assistant_message" &&
-      previous.message.projectedItem.item.phase === "final_answer"
-    ) {
-      ids.add(previous.message.id);
-    }
-    previous = entry;
-  }
-  return ids;
+      entry.message.role === "assistant" &&
+      entry.message.projectedItem?.item.type === "assistant_message" &&
+      entry.message.projectedItem.item.phase === "final_answer"
+        ? [entry.message.id]
+        : [],
+    ),
+  );
 }
 
 function deriveThreadFeedRunFolds(
@@ -1103,7 +1098,7 @@ function deriveThreadFeedRunFolds(
   feedFailedRunIds: ReadonlySet<RunId>,
 ): ReadonlyMap<string, ThreadFeedRunFold> {
   const terminalAssistantMessageIdByRun = new Map<RunId, string>();
-  const retainedAnswerIds = answersBeforeSteers(feed);
+  const retainedAnswerIds = finalAnswerIds(feed);
   const interruptedRunIds = new Set<RunId>();
   const failedRunIds = new Set(feedFailedRunIds);
   const promptIndexByRunId = new Map<RunId, number>();
@@ -1458,7 +1453,7 @@ function zenAnswerMessageIds(
 ): ReadonlySet<MessageId> {
   const replies: Array<{ readonly message: ThreadFeedMessage; readonly index: number }> = [];
   const lastReplyByResponse = new Map<string, MessageId>();
-  const steerAnswers = new Set(answersBeforeSteers(feed));
+  const steerAnswers = new Set(finalAnswerIds(feed));
   let userMessages = 0;
   let awaitingReply = false;
   let candidate: MessageId | null = null;

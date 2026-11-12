@@ -1435,6 +1435,18 @@ describe("buildThreadFeed", () => {
       "wake",
       "thinking:",
     ]);
+    // regression: #8879 a wake that continues the run keeps the earlier confirmed answer
+    for (const phase of ["commentary", "final_answer", undefined] as const) {
+      const earlier = { ...answer, ...(phase === undefined ? {} : { phase }) };
+      const continued = [user, earlier, passed, { ...wake, runId }, final];
+      const feed = buildThreadFeed(continued.map((item, index) => projected(item, index)));
+      expect(
+        deriveThreadFeedPresentation(feed, null, new Set()).some(
+          (row) => row.type === "message" && row.message.id === answer.messageId,
+        ),
+      ).toBe(phase === "final_answer");
+      expect(rows(continued, "zen").includes("answer")).toBe(phase === "final_answer");
+    }
   });
 });
 
