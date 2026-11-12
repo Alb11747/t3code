@@ -9,6 +9,7 @@ import { Button } from "../ui/button";
 import { providerClients } from "../settings/providerDriverMeta";
 import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
 import { LimitWindows, ResetCredits } from "../usage/UsageLimits";
+import { UsageBalanceDetails } from "../usage/UsageBalanceDetails";
 import { ComposerBanner } from "./ComposerBanner";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 
@@ -137,6 +138,7 @@ function UsageLimitsBannerBody({
                   now={now}
                 />
               )}
+              <UsageBalanceDetails limits={account.limits} />
               {externalUsage ? (
                 <Button
                   size="sm"

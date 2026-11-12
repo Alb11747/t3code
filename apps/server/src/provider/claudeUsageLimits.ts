@@ -81,6 +81,25 @@ function percentFromAmounts(used: number | null | undefined, limit: number | nul
   return Number.isFinite(percent) ? clampPercent(percent) : undefined;
 }
 
+function readExtraUsage(rateLimits: NonNullable<SDKControlGetUsageResponse["rate_limits"]>) {
+  const spend = Option.getOrUndefined(
+    decodeSpendBudget((rateLimits as { readonly spend?: unknown }).spend),
+  );
+  if (
+    !spend?.enabled ||
+    !spend.used.currency.trim() ||
+    spend.used.currency.trim() !== spend.limit.currency.trim() ||
+    spend.used.exponent !== spend.limit.exponent
+  )
+    return undefined;
+  const scale = 10 ** spend.used.exponent;
+  const used = spend.used.amount_minor / scale;
+  const limit = spend.limit.amount_minor / scale;
+  return Number.isFinite(scale) && Number.isFinite(used) && Number.isFinite(limit)
+    ? { used, limit, currency: spend.used.currency.trim() }
+    : undefined;
+}
+
 function readSpendPercent(rateLimits: NonNullable<SDKControlGetUsageResponse["rate_limits"]>) {
   const spend = Option.getOrUndefined(
     decodeSpendBudget((rateLimits as { readonly spend?: unknown }).spend),
@@ -210,8 +229,9 @@ export function claudeUsageResponseToLimits(input: {
       usedPercent: spendPercent,
     });
   }
+  const extraUsage = readExtraUsage(response.rate_limits);
   return {
-    limits: makeUsageLimits({ checkedAt, windows }),
+    limits: { ...makeUsageLimits({ checkedAt, windows }), ...(extraUsage ? { extraUsage } : {}) },
     names: { overageIncluded },
   };
 }

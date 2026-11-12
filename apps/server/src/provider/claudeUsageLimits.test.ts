@@ -140,6 +140,7 @@ describe("claudeUsageResponseToLimits", () => {
       {
         checkedAt,
         windows: [monthlyWindow],
+        extraUsage: { used: 46.31, limit: 500, currency: "USD" },
       },
     );
     const response = {
@@ -209,11 +210,13 @@ describe("claudeUsageResponseToLimits", () => {
         extra_usage: { ...rateLimits.extra_usage, is_enabled: false },
       },
     };
+    expect(claudeUsageResponseToLimits({ checkedAt, response }).limits.extraUsage).toBeUndefined();
     expect(claudeUsageResponseToLimits({ checkedAt, response }).limits.windows).toEqual([]);
     response.rate_limits.spend = {
       ...rateLimits.spend,
       limit: { ...rateLimits.spend.limit, currency: "EUR" },
     };
+    expect(claudeUsageResponseToLimits({ checkedAt, response }).limits.extraUsage).toBeUndefined();
     expect(claudeUsageResponseToLimits({ checkedAt, response }).limits.windows).toEqual([]);
     response.rate_limits.spend = {
       ...rateLimits.spend,

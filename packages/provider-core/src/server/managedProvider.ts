@@ -188,6 +188,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
               state.snapshot.usageLimits !== usageBeforeProbe
             ? state.snapshot.usageLimits
             : resolveUsageLimitsAfterProbe({
+                beforeProbe: usageBeforeProbe,
                 published: state.snapshot.usageLimits,
                 probed: probedSnapshot.usageLimits,
               });
@@ -320,9 +321,11 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       }
       return;
     }
+    const beforeProbe = snapshot.usageLimits;
     const probed = yield* input.checkUsageLimits;
     const next = yield* Ref.modify(snapshotStateRef, (state) => {
       const usageLimits = resolveUsageLimitsAfterProbe({
+        beforeProbe,
         published: state.snapshot.usageLimits,
         probed,
       });

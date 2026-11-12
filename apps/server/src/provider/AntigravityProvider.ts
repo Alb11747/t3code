@@ -234,6 +234,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
   const scope = yield* Effect.scope;
   const refreshUsage = Effect.fn("AntigravityProvider.refreshUsage")(function* () {
     if (!options.probeUsage || (yield* PublishingUsage)) return;
+    const beforeProbe = (yield* SubscriptionRef.get(metadata)).draft.usageLimits;
     yield* FiberHandle.run(
       usageRead,
       options.probeUsage.pipe(
@@ -243,6 +244,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
             draft: {
               ...state.draft,
               usageLimits: resolveUsageLimitsAfterProbe({
+                beforeProbe,
                 published: state.draft.usageLimits,
                 probed,
               }),

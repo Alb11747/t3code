@@ -53,12 +53,22 @@ export function applyUsageLimitsUpdate(input: {
   readonly checkedAt: string;
 }): ServerProviderUsageLimits | undefined {
   const { previous, update } = input;
-  if (update.windows.length === 0 || previous?.unavailable?.reason === "unsupported") {
+  if (
+    (update.windows.length === 0 && update.creditBalance === undefined) ||
+    previous?.unavailable?.reason === "unsupported"
+  ) {
     return previous;
   }
   const merged = new Map(previous?.windows.map((window) => [window.id, window] as const));
   // Codex repeats unchanged limits on token ticks; avoid allocating snapshots for no-ops.
-  let changed = false;
+  const creditBalance =
+    update.creditBalance === undefined
+      ? previous?.creditBalance
+      : (update.creditBalance ?? undefined);
+  let changed =
+    creditBalance?.balance !== previous?.creditBalance?.balance ||
+    creditBalance?.hasCredits !== previous?.creditBalance?.hasCredits ||
+    creditBalance?.unlimited !== previous?.creditBalance?.unlimited;
   for (const window of update.windows) {
     const existing = merged.get(window.id);
     const next: ServerProviderUsageWindow = {
@@ -83,6 +93,8 @@ export function applyUsageLimitsUpdate(input: {
     previous === undefined ? { reason: "probeFailed" as const } : previous.unavailable;
   return {
     ...makeUsageLimits({ checkedAt: input.checkedAt, windows: merged.values() }),
+    ...(creditBalance !== undefined ? { creditBalance } : {}),
+    ...(previous?.extraUsage !== undefined ? { extraUsage: previous.extraUsage } : {}),
     ...(previous?.resetCredits !== undefined ? { resetCredits: previous.resetCredits } : {}),
     ...(unavailable !== undefined ? { unavailable } : {}),
   };
@@ -100,6 +112,7 @@ function usageWindowEquals(a: ServerProviderUsageWindow, b: ServerProviderUsageW
 }
 
 export function resolveUsageLimitsAfterProbe(input: {
+  readonly beforeProbe: ServerProviderUsageLimits | undefined;
   readonly published: ServerProviderUsageLimits | undefined;
   readonly probed: ServerProviderUsageLimits | undefined;
 }): ServerProviderUsageLimits | undefined {
@@ -114,7 +127,17 @@ export function resolveUsageLimitsAfterProbe(input: {
     !probed.unavailable &&
     Date.parse(published.checkedAt) > Date.parse(probed.checkedAt)
   ) {
-    return { ...probed, checkedAt: published.checkedAt, windows: published.windows };
+    // Window-only updates retain the balance object; only changed credits outrank the probe.
+    const creditsChanged = published.creditBalance !== input.beforeProbe?.creditBalance;
+    const { creditBalance: _creditBalance, ...probedWithoutCredits } = probed;
+    return {
+      ...(creditsChanged ? probedWithoutCredits : probed),
+      checkedAt: published.checkedAt,
+      windows: published.windows,
+      ...(creditsChanged && published.creditBalance !== undefined
+        ? { creditBalance: published.creditBalance }
+        : {}),
+    };
   }
   return probed;
 }

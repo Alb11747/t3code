@@ -37,6 +37,7 @@ import {
   refreshEnvironmentLimits,
 } from "./usageLimitsRefresh";
 import { usageProviderKind, useProviderColors } from "./usageProviders";
+import { UsageBalanceDetails } from "./UsageBalanceDetails";
 
 const PACE_LABEL = { ahead: "ahead of pace", on: "on pace", under: "under pace" } as const;
 
@@ -134,7 +135,7 @@ function WindowRow(props: {
   );
 }
 
-function AccountInstanceLabel({ value }: { readonly value: string }) {
+export function AccountInstanceLabel({ value }: { readonly value: string }) {
   const [revealed, setRevealed] = useState(false);
   if (!value.includes("@")) {
     return (
@@ -207,6 +208,7 @@ export function AccountLimits(props: {
           ))}
         </View>
       )}
+      <UsageBalanceDetails limits={limits} />
       {externalUsage ? (
         <Pressable
           accessibilityRole="link"

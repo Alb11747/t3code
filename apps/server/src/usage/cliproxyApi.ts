@@ -63,6 +63,15 @@ const CodexWindow = Schema.Struct({
   limit_window_seconds: Schema.optional(Schema.Number),
 });
 const CodexUsage = Schema.Struct({
+  credits: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        balance: Schema.optional(Schema.NullOr(Schema.String)),
+        has_credits: Schema.Boolean,
+        unlimited: Schema.Boolean,
+      }),
+    ),
+  ),
   plan_type: Schema.optional(Schema.String),
   rate_limit: Schema.NullOr(
     Schema.Struct({
@@ -292,6 +301,15 @@ const CODEX_HUB: HubProvider = {
           checkedAt,
           snapshot: {
             planType: planType ?? null,
+            ...(usage.credits
+              ? {
+                  credits: {
+                    balance: usage.credits.balance ?? null,
+                    hasCredits: usage.credits.has_credits,
+                    unlimited: usage.credits.unlimited,
+                  },
+                }
+              : {}),
             primary: toWindow(usage.rate_limit?.primary_window),
             secondary: toWindow(usage.rate_limit?.secondary_window),
           },

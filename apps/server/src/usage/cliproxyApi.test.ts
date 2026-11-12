@@ -238,6 +238,39 @@ describe("CLIProxyAPI built-in management API", () => {
       }),
   );
 
+  it.effect("maps purchased balances from hub usage without reset credits", () =>
+    Effect.gen(function* () {
+      for (const credits of [
+        { balance: "0", has_credits: false, unlimited: false },
+        { balance: "12.3400", has_credits: true, unlimited: false },
+        { has_credits: true, unlimited: false },
+        { has_credits: false, unlimited: true },
+        undefined,
+      ]) {
+        const test = fixture({
+          accounts: [accounts[0]!],
+          upstream: (request) => ({
+            status: 200,
+            body: request.url?.endsWith("/usage")
+              ? { rate_limit: null, ...(credits ? { credits } : {}) }
+              : { credits: [] },
+          }),
+        });
+        const api = yield* test.api;
+        const result = yield* api.readAccounts(config);
+        expect(result[0]?.usageLimits.creditBalance).toEqual(
+          credits
+            ? {
+                hasCredits: credits.has_credits,
+                unlimited: credits.unlimited,
+                ...("balance" in credits ? { balance: credits.balance } : {}),
+              }
+            : undefined,
+        );
+      }
+    }),
+  );
+
   it.effect("resolves a missing usage plan from current, then legacy, token plans", () =>
     Effect.gen(function* () {
       const test = fixture({
@@ -426,6 +459,9 @@ describe("CLIProxyAPI built-in management API", () => {
         }),
       });
       const result = yield* (yield* test.api).readAccounts(config);
+      expect(result[0]?.usageLimits.extraUsage).toEqual(
+        "spend" in budget ? { used: 46.31, limit: 500, currency: "USD" } : undefined,
+      );
       expect(
         result[0]?.usageLimits.windows.map((window) => [window.id, window.usedPercent]),
       ).toEqual([

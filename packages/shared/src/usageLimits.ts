@@ -216,6 +216,46 @@ const nativeReport = (provider: ServerProvider): AccountReport => ({
   usageLimits: provider.usageLimits,
 });
 
+function usageBalanceResolver(
+  reports: readonly AccountReport[],
+  resolveKey: (report: AccountReport) => string | null,
+) {
+  const sources = new Map<
+    string,
+    Partial<Record<"creditBalance" | "extraUsage", ServerProviderUsageLimits>>
+  >();
+  for (const report of reports) {
+    const key = resolveKey(report);
+    const limits = report.usageLimits;
+    if (
+      !key ||
+      !limits ||
+      (!limits.creditBalance && !limits.extraUsage) ||
+      limitsNotice(limits) !== null
+    )
+      continue;
+    const previous = sources.get(key) ?? {};
+    for (const field of ["creditBalance", "extraUsage"] as const) {
+      if (
+        limits[field] !== undefined &&
+        (!previous[field] || Date.parse(limits.checkedAt) > Date.parse(previous[field].checkedAt))
+      ) {
+        previous[field] = limits;
+      }
+    }
+    sources.set(key, previous);
+  }
+  return (key: string | null, limits: ServerProviderUsageLimits): ServerProviderUsageLimits => {
+    const source = key ? sources.get(key) : undefined;
+    if (!source || limits.unavailable) return limits;
+    return {
+      ...limits,
+      ...(source.creditBalance ? { creditBalance: source.creditBalance.creditBalance } : {}),
+      ...(source.extraUsage ? { extraUsage: source.extraUsage.extraUsage } : {}),
+    };
+  };
+}
+
 // Include every enabled login, even unreadable workspaces.
 function accountKeyResolver(reports: Iterable<AccountReport>) {
   const workspaces = new Map<string, Set<string>>();
@@ -331,14 +371,14 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
       },
     });
   };
-  const resolveKey = accountKeyResolver(
-    [...presentations.values()].flatMap((presentation) => [
-      ...(presentation.serverConfig?.providers ?? [])
-        .filter((provider) => provider.enabled)
-        .map(nativeReport),
-      ...(presentation.serverConfig?.usageLimitSources ?? []).flatMap((source) => source.accounts),
-    ]),
-  );
+  const reports = [...presentations.values()].flatMap((presentation) => [
+    ...(presentation.serverConfig?.providers ?? [])
+      .filter((provider) => provider.enabled)
+      .map(nativeReport),
+    ...(presentation.serverConfig?.usageLimitSources ?? []).flatMap((source) => source.accounts),
+  ]);
+  const resolveKey = accountKeyResolver(reports);
+  const resolveBalances = usageBalanceResolver(reports, resolveKey);
   for (const [environmentId, presentation] of presentations) {
     const label = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
@@ -401,12 +441,13 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
   }
   return [...accounts].map(([key, account]) => {
     const subscriptionEndsAt = subscriptionSources.get(key)?.subscriptionEndsAt;
+    const limits = resolveBalances(key, account.limits);
     return {
       ...account,
       subscriptionEndsAt,
       limits: subscriptionEndsAt
         ? {
-            ...account.limits,
+            ...limits,
             windows: account.limits.windows.map((window) =>
               (window.kind === "session" || window.kind === "weekly") &&
               (!window.resetsAt || Date.parse(subscriptionEndsAt) < Date.parse(window.resetsAt))
@@ -414,7 +455,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
                 : window,
             ),
           }
-        : account.limits,
+        : limits,
     };
   });
 }
@@ -651,7 +692,47 @@ export function limitsNotice(limits: ServerProviderUsageLimits): string | null {
   if (limits.unavailable?.reason === "probeFailed") {
     return limits.unavailable.message ?? "Could not read limits.";
   }
-  return limits.windows.length === 0 ? "No limits reported." : null;
+  return limits.windows.length === 0 && !limits.creditBalance && !limits.extraUsage
+    ? "No limits reported."
+    : null;
+}
+
+export function usageBalanceDetails(limits: ServerProviderUsageLimits) {
+  const details: { label: string; value: string }[] = [];
+  const credits = limits.creditBalance;
+  if (credits) {
+    const formatted =
+      credits.balance === undefined ? undefined : formatCreditBalance(credits.balance);
+    details.push({
+      label: "Purchased credits",
+      value: credits.unlimited
+        ? "Unlimited"
+        : formatted !== undefined
+          ? `${formatted} credits`
+          : credits.hasCredits
+            ? "Available · balance unavailable"
+            : "0 credits",
+    });
+  }
+  const extra = limits.extraUsage;
+  if (extra) {
+    const format = (amount: number) =>
+      `${extra.currency} ${amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+    details.push({
+      label: "Monthly extra usage",
+      value: `${format(extra.used)} / ${format(extra.limit)} spent`,
+    });
+  }
+  return details;
+}
+
+function formatCreditBalance(balance: string): string {
+  const amount = Number(balance);
+  if (amount < 0.01 && /[1-9]/.test(balance)) return "<0.01";
+  return amount.toLocaleString(undefined, {
+    maximumFractionDigits: 2,
+    notation: amount >= 1e12 ? "scientific" : "standard",
+  });
 }
 
 export function remainingPercent(window: ServerProviderUsageWindow): number {
@@ -845,10 +926,12 @@ export function collectProviderUsageLimits(
 ): UsageLimitsReport | null {
   const selected = providers.find((provider) => provider.instanceId === instanceId);
   if (!selected || !hasProviderUsageLimits(selected.driver, providers, sources)) return null;
-  const resolveKey = accountKeyResolver([
+  const reports = [
     ...providers.filter((provider) => provider.enabled).map(nativeReport),
     ...sources.flatMap((source) => source.accounts),
-  ]);
+  ];
+  const resolveKey = accountKeyResolver(reports);
+  const resolveBalances = usageBalanceResolver(reports, resolveKey);
   type NativeSnapshot = { provider: ServerProvider; limits: ServerProviderUsageLimits };
   const nativeByAccount = new Map<
     string,
@@ -931,7 +1014,10 @@ export function collectProviderUsageLimits(
       ...(provider.displayName ? { displayName: provider.displayName } : {}),
       ...(provider.accentColor ? { accentColor: provider.accentColor } : {}),
       ...(provider.auth.email ? { email: provider.auth.email } : {}),
-      limits: shownCredits ? { ...limits, resetCredits: shownCredits } : limits,
+      limits: resolveBalances(
+        key,
+        shownCredits ? { ...limits, resetCredits: shownCredits } : limits,
+      ),
     });
   }
   for (const source of sources) {
@@ -955,7 +1041,7 @@ export function collectProviderUsageLimits(
           : {}),
         ...(account.plan ? { plan: account.plan } : {}),
         ...(account.email ? { email: account.email } : {}),
-        limits: account.usageLimits,
+        limits: resolveBalances(key, account.usageLimits),
       });
     }
     if (source.error && (matching.length > 0 || source.accounts.length === 0)) {

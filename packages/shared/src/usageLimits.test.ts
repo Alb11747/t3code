@@ -16,6 +16,8 @@ import {
   collectLimitAccounts,
   collectExternalUsageLinks,
   collectLimitNotices,
+  limitsNotice,
+  usageBalanceDetails,
   collectLimitPools,
   elapsedShare,
   exhaustedUsageWindow,
@@ -163,6 +165,18 @@ describe("pace", () => {
   });
 });
 
+it("keeps positive fractional credits visible and bounds very large balances", () => {
+  const value = (balance: string) =>
+    usageBalanceDetails({
+      checkedAt: "2026-09-03T12:00:00.000Z",
+      windows: [],
+      creditBalance: { balance, hasCredits: true, unlimited: false },
+    })[0]?.value;
+  expect(value("0.0000001")).toContain("<0.01");
+  expect(value(`1.${"2".repeat(1000)}`)!.length).toBeLessThan(30);
+  expect(value(`1${"0".repeat(100)}`)!.length).toBeLessThan(30);
+});
+
 describe("pools", () => {
   const checkedAt = "2026-09-03T11:00:00.000Z";
   const weekly = {
@@ -180,6 +194,80 @@ describe("pools", () => {
     checkedAt,
   };
   const laptop = { entry: { target: { label: "Laptop" } } };
+
+  it("keeps the freshest reported balances when duplicate accounts omit them", () => {
+    const creditBalance = { balance: "123.4500", hasCredits: true, unlimited: false };
+    const extraUsage = { used: 12.5, limit: 50, currency: "USD" };
+    const native = provider({
+      auth: { status: "authenticated", email: "same@example.com" },
+      usageLimits: { checkedAt, windows: [window], creditBalance, extraUsage },
+    });
+    const fresher = {
+      ...native,
+      instanceId: ProviderInstanceId.make("second"),
+      usageLimits: { checkedAt: "2026-09-03T11:30:00.000Z", windows: [window] },
+    };
+    const presentations = new Map([
+      [EnvironmentId.make("env-a"), { ...laptop, serverConfig: { providers: [native, fresher] } }],
+    ]);
+    expect(collectLimitAccounts(presentations)[0]?.limits).toMatchObject({
+      creditBalance,
+      extraUsage,
+    });
+    expect(
+      collectProviderUsageLimits(native.instanceId, [native, fresher], [], now)?.accounts[0]
+        ?.limits,
+    ).toMatchObject({ creditBalance, extraUsage });
+    const zero = { ...creditBalance, balance: "0", hasCredits: false };
+    const newest = {
+      ...native,
+      instanceId: ProviderInstanceId.make("third"),
+      usageLimits: {
+        checkedAt: "2026-09-03T11:45:00.000Z",
+        windows: [window],
+        creditBalance: zero,
+      },
+    };
+    presentations.get(EnvironmentId.make("env-a"))!.serverConfig.providers.push(newest);
+    expect(collectLimitAccounts(presentations)[0]?.limits.creditBalance).toEqual(zero);
+  });
+
+  it.each([
+    { creditBalance: { balance: "0", hasCredits: false, unlimited: false } },
+    { creditBalance: { hasCredits: true, unlimited: true } },
+    { extraUsage: { used: 12.5, limit: 50, currency: "USD" } },
+  ])("retains balance-only accounts without inventing quota windows (%j)", (balance) => {
+    const limits = { checkedAt, windows: [], ...balance };
+    expect(limitsNotice(limits)).toBeNull();
+    const accounts = collectLimitAccounts(
+      new Map([
+        [
+          EnvironmentId.make("env-a"),
+          {
+            ...laptop,
+            serverConfig: {
+              providers: [],
+              usageLimitSources: [
+                {
+                  ...source,
+                  accounts: [
+                    {
+                      id: "balance-only",
+                      driver: claude,
+                      usageLimits: limits,
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      ]),
+    );
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]?.limits).toEqual(limits);
+    expect(collectLimitPools(accounts, now).flatMap((pool) => pool.windows)).toEqual([]);
+  });
 
   it.each([
     { checkedAt, windows: [{ ...window, usedPercent: 10 }] },

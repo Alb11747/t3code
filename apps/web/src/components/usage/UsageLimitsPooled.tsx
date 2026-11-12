@@ -42,6 +42,7 @@ import { OpenAI } from "../Icons";
 import { Alert, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { PaceIcon, ResetCreditDialog, barColor, usePaceMark, useResetCredit } from "./UsageLimits";
+import { UsageBalanceDetails } from "./UsageBalanceDetails";
 
 function accountInitials(email: string): string {
   const [local = "", domain = ""] = email.split("@");
@@ -198,6 +199,7 @@ function SegmentPopover({
           <Row label="Restores">+{reset.restoresPercent}% of pool</Row>
         ) : null}
       </div>
+      <UsageBalanceDetails limits={account.limits} />
       {choices.length > 0 && redeem ? (
         <div className="flex flex-col gap-1.5 border-t border-border/60 pt-2.5 text-muted-foreground">
           {choices.map((choice) => (
@@ -618,12 +620,19 @@ export function UsageLimitsPooled({
 }) {
   const [segmentPopover] = useState(() => PopoverCreateHandle<SegmentPayload>());
   const segmentPopoverActions = useRef<PopoverPrimitive.Root.Actions | null>(null);
-  const pools = collectLimitPools(collectLimitAccounts(presentations), now);
+  const accounts = collectLimitAccounts(presentations);
+  const balanceAccounts = accounts.filter(
+    (account) => account.limits.creditBalance || account.limits.extraUsage,
+  );
+  const pools = collectLimitPools(accounts, now).filter((pool) => pool.windows.length > 0);
   const notices = collectLimitNotices(presentations);
   const externalLinks = collectExternalUsageLinks(presentations);
   return (
     <div className="flex flex-col gap-8">
-      {pools.length === 0 && notices.length === 0 && externalLinks.length === 0 ? (
+      {pools.length === 0 &&
+      balanceAccounts.length === 0 &&
+      notices.length === 0 &&
+      externalLinks.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No provider on the selected environments reports subscription limits.
         </p>
@@ -648,6 +657,37 @@ export function UsageLimitsPooled({
           ) : null
         }
       </Popover>
+      {balanceAccounts.length > 0 ? (
+        <section className="flex flex-col gap-3" aria-label="Credit balances and extra usage">
+          <h2 className="text-sm font-medium text-foreground">Credits and extra usage</h2>
+          {balanceAccounts.map((account) => (
+            <div
+              key={account.key}
+              className="flex flex-col gap-3 rounded-lg border border-border/60 p-4"
+            >
+              <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
+                <AccountAvatar account={account} />
+                <span>{providerClients.get(account.driver)?.label ?? account.driver}</span>
+                {account.email ? (
+                  <RedactedSensitiveText
+                    value={account.email}
+                    ariaLabel="Toggle account email visibility"
+                    revealTooltip="Click to reveal email"
+                    hideTooltip="Click to hide email"
+                    className="min-w-0 truncate"
+                  />
+                ) : (
+                  <AccountName
+                    account={account}
+                    className="min-w-0 truncate text-muted-foreground"
+                  />
+                )}
+              </div>
+              <UsageBalanceDetails limits={account.limits} />
+            </div>
+          ))}
+        </section>
+      ) : null}
       {externalLinks.map((link) => (
         <section
           key={link.url}

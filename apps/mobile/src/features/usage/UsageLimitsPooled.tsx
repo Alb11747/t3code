@@ -27,7 +27,8 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { environmentPresentations } from "../../state/presentation";
-import { ResetCredits } from "./UsageLimitsSection";
+import { AccountInstanceLabel, ResetCredits } from "./UsageLimitsSection";
+import { UsageBalanceDetails } from "./UsageBalanceDetails";
 import { usageProviderKind, useProviderColors } from "./usageProviders";
 
 const PACE_LABEL = { ahead: "Ahead of pace", on: "On pace", under: "Under pace" } as const;
@@ -415,13 +416,18 @@ export function UsageLimitsSection({
     selectedEnvironmentIds === null
       ? presentations
       : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
-  const pools = collectLimitPools(collectLimitAccounts(selected), now);
+  const accounts = collectLimitAccounts(selected);
+  const balanceAccounts = accounts.filter(
+    (account) => account.limits.creditBalance || account.limits.extraUsage,
+  );
+  const pools = collectLimitPools(accounts, now).filter((pool) => pool.windows.length > 0);
   const notices = collectLimitNotices(selected);
   const externalLinks = collectExternalUsageLinks(selected);
   const colors = useProviderColors();
   return (
     <View className="gap-6">
       {pools.length === 0 &&
+      balanceAccounts.length === 0 &&
       notices.length === 0 &&
       failedLabels.length === 0 &&
       externalLinks.length === 0 ? (
@@ -464,6 +470,21 @@ export function UsageLimitsSection({
           </Fragment>
         );
       })}
+      {balanceAccounts.length > 0 ? (
+        <View className="gap-3">
+          <Text className="text-base font-t3-medium text-foreground">Credits and extra usage</Text>
+          {balanceAccounts.map((account) => (
+            <View key={account.key} className="gap-3 rounded-xl border border-border-subtle p-4">
+              <Text className="text-sm font-t3-medium text-foreground">
+                {providerClients.get(account.driver)?.label ?? account.driver}
+                {account.plan ? ` · ${account.plan}` : ""}
+              </Text>
+              <AccountInstanceLabel value={account.email ?? account.displayName ?? account.key} />
+              <UsageBalanceDetails limits={account.limits} />
+            </View>
+          ))}
+        </View>
+      ) : null}
       {externalLinks.map((link) => (
         <View key={link.url} className="gap-3 rounded-xl border border-border-subtle p-4">
           <Text className="text-base font-t3-medium text-foreground">{link.label}</Text>
@@ -625,6 +646,7 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
                 <Text className="text-sm text-foreground-muted">{account.sourceLabel}</Text>
               )}
             </View>
+            <UsageBalanceDetails limits={account.limits} />
             {account.redeem && account.limits.resetCredits ? (
               <View className="gap-3 rounded-[24px] border-continuous bg-grouped-card p-4">
                 <Text className="text-sm font-t3-medium text-foreground">Reset credits</Text>

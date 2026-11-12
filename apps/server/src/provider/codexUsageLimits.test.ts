@@ -11,6 +11,37 @@ import {
 const checkedAt = "2026-07-18T10:00:00.000Z";
 
 describe("codexRateLimitsToLimits", () => {
+  it("retains purchased credit values and sparse changes separately from reset credits", () => {
+    for (const balance of ["0", "123.4500", undefined, "-1", "bad", "Infinity"]) {
+      const credits = {
+        ...(balance === undefined ? {} : { balance }),
+        hasCredits: true,
+        unlimited: false,
+      };
+      const expected = {
+        hasCredits: true,
+        unlimited: false,
+        ...(["0", "123.4500"].includes(balance ?? "") ? { balance } : {}),
+      };
+      expect(codexRateLimitsToLimits({ checkedAt, snapshot: { credits } }).creditBalance).toEqual(
+        expected,
+      );
+    }
+    const credits = { hasCredits: false, unlimited: true };
+    expect(codexRateLimitsToLimits({ checkedAt, snapshot: { credits } }).creditBalance).toEqual(
+      credits,
+    );
+    expect(codexRateLimitsToLimits({ checkedAt, snapshot: {} }).creditBalance).toBeUndefined();
+    expect(codexRateLimitsToUpdate({ credits })).toEqual({ windows: [], creditBalance: credits });
+    expect(codexRateLimitsToUpdate({ credits: { ...credits } }, { credits })).toBeUndefined();
+    expect(codexRateLimitsToUpdate({ credits: null }, { credits })).toEqual({
+      windows: [],
+      creditBalance: null,
+    });
+    expect(mergeCodexRateLimits({ credits }, { primary: null })?.credits).toEqual(credits);
+    expect(mergeCodexRateLimits({ credits }, { credits: null })?.credits).toBeNull();
+  });
+
   it("shows an Enterprise monthly credit allowance in reads and notifications without a duration", () => {
     const snapshot = {
       limitId: "codex",

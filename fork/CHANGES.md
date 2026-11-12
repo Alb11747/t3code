@@ -9,6 +9,8 @@ the sync script deletes the line of a change whose upstream PR merged. Closing
 an issue alone does not revert a patch. See `fork/README.md` for how to add or drop
 an entry.
 
+- `feat(usage): show Codex credit balances and Claude extra usage`: Usage → Limits, account details and `/usage-limits` show purchased Codex credits separately from reset credits, including hub accounts; Claude shows monthly spending amounts when the provider supplies explicit currency units. Covers web, desktop and mobile without changing CLIProxy. Issue: none linked. PR: none yet
+
 - `fix(server): a slow remote fetch no longer fails worktree creation at 30s`: the remote fetch before a start-from-origin worktree gets a five-minute bound instead of the 30-second Git default, so a slow but healthy fetch finishes and a hung one still fails clearly. Carries juliusmarminge's maintainer takeover of watson's fix. Issue: https://github.com/pingdotgg/t3code/issues/10916. PR: https://github.com/pingdotgg/t3code/pull/24604
 
 - `fix(web): reread cached files when explicitly opened`: reopening a file tab or clicking its chat link again reads current host text immediately, even inside the cache freshness window. Applies to web and desktop. Related issue: https://github.com/pingdotgg/t3code/issues/29345. Related PR: https://github.com/pingdotgg/t3code/pull/29409

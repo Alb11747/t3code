@@ -1,6 +1,7 @@
 import type {
   ProviderUsageLimitsUpdate,
   ServerProviderResetCredits,
+  ServerProviderCreditBalance,
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
@@ -17,6 +18,11 @@ interface CodexRateLimitWindow {
 }
 
 export interface CodexRateLimitSnapshot {
+  readonly credits?: {
+    readonly balance?: string | null;
+    readonly hasCredits: boolean;
+    readonly unlimited: boolean;
+  } | null;
   readonly limitId?: string | null;
   readonly planType?: string | null;
   readonly rateLimitReachedType?: string | null;
@@ -113,6 +119,22 @@ function codexResetCreditsToContract(
   };
 }
 
+function codexCreditBalance(
+  credits: CodexRateLimitSnapshot["credits"],
+): ServerProviderCreditBalance | undefined {
+  if (!credits) return undefined;
+  const balance = credits.balance;
+  return {
+    hasCredits: credits.hasCredits,
+    unlimited: credits.unlimited,
+    ...(typeof balance === "string" &&
+    /^[0-9]+(?:\.[0-9]+)?$/.test(balance) &&
+    Number.isFinite(Number(balance))
+      ? { balance }
+      : {}),
+  };
+}
+
 export function codexRateLimitsToLimits(input: {
   readonly snapshot: CodexRateLimitSnapshot;
   readonly rateLimitsByLimitId?:
@@ -123,13 +145,16 @@ export function codexRateLimitsToLimits(input: {
   readonly checkedAt: string;
 }): ServerProviderUsageLimits {
   const resetCredits = codexResetCreditsToContract(input.resetCredits);
-  const windows = codexRateLimitsToWindows(input.rateLimitsByLimitId?.codex ?? input.snapshot);
+  const snapshot = input.rateLimitsByLimitId?.codex ?? input.snapshot;
+  const windows = codexRateLimitsToWindows(snapshot);
+  const creditBalance = codexCreditBalance(snapshot.credits);
   return {
     ...makeUsageLimits({
       checkedAt: input.checkedAt,
       windows,
     }),
     ...(resetCredits ? { resetCredits } : {}),
+    ...(creditBalance ? { creditBalance } : {}),
   };
 }
 
@@ -149,7 +174,17 @@ export function codexRateLimitsToUpdate(
       existing.windowDurationMins !== window.windowDurationMins
     );
   });
-  return windows.length > 0 ? { windows } : undefined;
+  const creditBalance = codexCreditBalance(snapshot.credits);
+  const previousBalance = codexCreditBalance(previous?.credits);
+  const creditsChanged =
+    (!snapshot.limitId || snapshot.limitId === "codex") &&
+    snapshot.credits !== undefined &&
+    (creditBalance?.balance !== previousBalance?.balance ||
+      creditBalance?.hasCredits !== previousBalance?.hasCredits ||
+      creditBalance?.unlimited !== previousBalance?.unlimited);
+  return windows.length > 0 || creditsChanged
+    ? { windows, ...(creditsChanged ? { creditBalance: creditBalance ?? null } : {}) }
+    : undefined;
 }
 
 export function codexRateLimitsFailureMessage(error: CodexErrors.CodexAppServerError): string {
@@ -182,6 +217,7 @@ export function mergeCodexRateLimits(
       : {}),
     ...(update.primary !== undefined ? { primary: update.primary } : {}),
     ...(update.secondary !== undefined ? { secondary: update.secondary } : {}),
+    ...(update.credits !== undefined ? { credits: update.credits } : {}),
     ...(update.individualLimit !== undefined ? { individualLimit: update.individualLimit } : {}),
   };
 }

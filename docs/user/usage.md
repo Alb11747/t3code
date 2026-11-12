@@ -110,6 +110,12 @@ setting removes it from `settings.json`.
 
 ## Track subscription limits
 
+**Usage → Limits** also shows purchased Codex credits for accounts that report a
+balance, separately from banked reset credits. Claude accounts that report a
+currency-based spending allowance show monthly extra usage spent against that
+allowance. These details also appear in `/usage-limits`. ChatGPT connections that
+only provide **Manage usage** still use ChatGPT's usage page.
+
 **Usage → Limits** pools every subscription account it can see per provider, so with several Codex
 or Claude accounts across your enabled environments and hubs you read one number per window rather than a
 list. Each window card shows how much of the pool is left and a bar with one segment per account,
