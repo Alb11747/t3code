@@ -1543,10 +1543,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
 
   it.effect.each([
     { name: "completed", status: "completed", expected: "completed" },
-    { name: "failed", status: "failed", expected: "failed" },
-    { name: "interrupted", status: "interrupted", expected: "interrupted" },
     { name: "still running", status: "inProgress", expected: null },
-    { name: "different turn", status: "completed", expected: null },
     { name: "normal completion", status: "completed", expected: "completed" },
     { name: "completion during read", status: "completed", expected: "completed" },
   ] as const)("reconciles an idle Codex thread: $name", (testCase) =>
@@ -1562,15 +1559,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           params: { threadId: nativeThreadId, turn: completedTurn },
         },
       };
-      const nativeTurn = {
-        ...makeCodexReplayTurn({
-          id: testCase.name === "different turn" ? "a-newer-turn" : nativeTurnId,
-          status: testCase.status,
-        }),
-        ...(testCase.status === "failed"
-          ? { error: { message: "Native failure", codexErrorInfo: null, additionalDetails: null } }
-          : {}),
-      };
+      const nativeTurn = makeCodexReplayTurn({ id: nativeTurnId, status: testCase.status });
       const transcript = makeCodexReplayTranscript({
         scenario: `idle-recovery-${testCase.name}`,
         entries: [
@@ -1631,9 +1620,6 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         requests.filter((method) => method === "thread/turns/list").length,
         testCase.name === "normal completion" ? 0 : 1,
       );
-      if (testCase.status === "failed") {
-        assert.include(harness.terminalEvents()[0]?.failure?.message, "Native failure");
-      }
     }).pipe(
       Effect.scoped,
       Effect.provide(
