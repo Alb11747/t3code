@@ -825,6 +825,18 @@ fallback (resolver claims and `sync-before-push.sh` rely on the open issue) unti
 | `CLERK_*`, `RELAY_URL`     | variable | T3 Connect public client settings (see Releases and updates).          |
 | Upstream workflows         | Actions  | Disabled except `release-desktop.yml`; Fork release disables new ones. |
 
+GitHub sometimes disables all workflows on this fork. The Actions tab then
+shows **Workflows on this fork have been disabled** and no runs start, while
+`gh api repos/Alb11747/t3code/actions/permissions` and the workflow states still
+report enabled/active. This is a self-serve switch, not an abuse freeze, and
+needs no support ticket. Open `https://github.com/Alb11747/t3code/actions`
+signed in as the owner (agents: the AgentBridge **personal** profile) and
+click **I understand my workflows, go ahead and re-enable them**. Only the
+fork's own workflows become active again; upstream's stay disabled. Then rerun
+whatever was missed, such as a sync or a release for an unreleased push. This
+happened on November 11–12, 2026 after low usage (34 jobs in the prior day), so
+the job budget does not prevent it.
+
 Sync pushes over SSH with a deploy key instead of `GITHUB_TOKEN`, because
 `GITHUB_TOKEN` cannot push upstream's workflow-file changes and its pushes don't
 start `fork-release.yml`. To rotate the key: generate one
