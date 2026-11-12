@@ -209,6 +209,8 @@ import {
   ComposerRestingImagePreviews,
 } from "./ComposerAttachmentStrip";
 import { CollapsedComposerStopAction, ComposerPrimaryActions } from "./ComposerPrimaryActions";
+import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
+import { ContextWindowMeter } from "./ContextWindowMeter";
 import { ComposerFooterPrimaryActions } from "./ComposerFooterControls";
 import { useCompactionAccountNote } from "./threadAccountSendGuard";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
@@ -436,6 +438,7 @@ export interface ChatComposerProps {
   activeProjectId: ProjectId | null;
   projectName?: string | undefined;
 
+  contextWindow?: ContextWindowSnapshot | null;
   compactThreadUnavailable: boolean;
   compactDisabled: boolean;
 
@@ -3723,6 +3726,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   >
                     {composerControls}
                   </div>
+                  {settings.contextWindowMeterEnabled && props.contextWindow ? (
+                    <ContextWindowMeter
+                      usage={props.contextWindow}
+                      {...(selectedProviderStatus?.slashCommands.some(
+                        (command) => command.name === "compact",
+                      )
+                        ? { onCompact: compactThreadContextStable }
+                        : {})}
+                      compactDisabled={compactDisabled || noProviderAvailable || isSendBusy}
+                    />
+                  ) : null}
                   <ComposerFooterPrimaryActions
                     // Stop state belongs to one thread; the composer stays mounted across threads.
                     key={`${environmentId}:${activeThreadId ?? "new"}`}

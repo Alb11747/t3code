@@ -26,6 +26,9 @@ export function LabsSettingsPanel() {
         <SimlockHostsRow />
         <FastWorktreeCheckoutRow />
       </SettingsSection>
+      <SettingsSection id="legacy-features" title="Legacy">
+        <ContextWindowMeterRow />
+      </SettingsSection>
     </SettingsPageContainer>
   );
 }
@@ -257,6 +260,26 @@ function FastWorktreeCheckoutRow() {
           checked={settings.fastWorktreeCheckout}
           onCheckedChange={(checked) => updateSettings({ fastWorktreeCheckout: Boolean(checked) })}
           aria-label="Fast worktree checkout"
+        />
+      }
+    />
+  );
+}
+
+function ContextWindowMeterRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  return (
+    <SettingsRow
+      {...searchableSetting("legacy-context-window-indicator")}
+      description="Shows context window usage as a circular indicator in the composer."
+      control={
+        <Switch
+          checked={settings.contextWindowMeterEnabled}
+          onCheckedChange={(checked) =>
+            updateSettings({ contextWindowMeterEnabled: Boolean(checked) })
+          }
+          aria-label="Context window indicator (legacy)"
         />
       }
     />

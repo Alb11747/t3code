@@ -295,6 +295,10 @@ earlier messages, and the thread marks where it began with **New session**.
 Earlier messages and diffs stay in the thread. Dismiss the notice above the
 composer to keep the current session instead.
 
+For a composer meter on web and desktop, enable **Settings → Labs → Legacy →
+Context window indicator (legacy)**. Its popover shows usage and offers manual
+compaction when the provider supports it.
+
 On web and desktop, turn on **Context window** in **Settings → Appearance →
 Thread details** to see context usage in the thread details card. It appears
 once the provider reports usage.
