@@ -318,6 +318,17 @@ describe("ClientSettings notifications", () => {
   });
 });
 
+describe("ClientSettings context window meter", () => {
+  it("preserves the legacy opt-in and accepts scoped updates", () => {
+    expect(decodeClientSettings({}).contextWindowMeterEnabled).toBe(false);
+    const settings = decodeClientSettings({ contextWindowMeterEnabled: true });
+    expect(encodeClientSettings(settings).contextWindowMeterEnabled).toBe(true);
+    expect(decodeClientSettingsPatch({ contextWindowMeterEnabled: false })).toEqual({
+      contextWindowMeterEnabled: false,
+    });
+  });
+});
+
 describe("ClientSettings quit confirmation", () => {
   it.each([
     [true, "hold"],
