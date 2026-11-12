@@ -2320,7 +2320,7 @@ describe("CursorAdapterV2", () => {
           authorizationHeader: "Bearer synthetic-cursor-token",
           browserToolsAvailable: false,
         });
-        const t3Servers = cursorMcpServers(yield* mcpSessions.read(threadId));
+        const t3Servers = cursorMcpServers(yield* mcpSessions.read(threadId, instanceId));
         const modelSelection = { instanceId, model: "composer-2.5" };
         const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: "full-access",

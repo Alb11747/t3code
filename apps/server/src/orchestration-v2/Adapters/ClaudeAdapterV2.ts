@@ -12348,7 +12348,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           nativeThreadId: string,
           queryPolicy: Effect.Success<ReturnType<typeof queryPolicyForTurn>>,
         ) {
-          const mcpSession = yield* mcpSessions.read(turnInput.threadId);
+          const mcpSession = yield* mcpSessions.read(turnInput.threadId, adapterOptions.instanceId);
           const mcpOverrides = claudeMcpQueryOverrides({
             mcpSession,
             readOnlySandbox:
