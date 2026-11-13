@@ -1,6 +1,9 @@
 import type {
+  NodeId,
   OrchestrationV2ProviderFailure,
+  OrchestrationV2RunAttempt,
   OrchestrationV2ThreadProjection,
+  RunId,
 } from "@t3tools/contracts";
 import { isProviderNativeSubagentThread } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "./model.ts";
@@ -74,4 +77,24 @@ export function claudeThinkingRecoveryTarget(
   )
     return null;
   return { runId: run.id, attemptId: attempt.id };
+}
+
+/** Whether the attempt that failed at `nodeId` was followed by a retry that dropped its thinking. */
+export function retriedWithDroppedThinking(
+  attempts: ReadonlyArray<OrchestrationV2RunAttempt>,
+  runId: RunId,
+  nodeId: NodeId | null,
+): boolean {
+  const failed = attempts.find(
+    (attempt) => attempt.runId === runId && attempt.rootNodeId === nodeId,
+  );
+  return (
+    failed !== undefined &&
+    attempts.some(
+      (attempt) =>
+        attempt.runId === runId &&
+        attempt.attemptOrdinal === failed.attemptOrdinal + 1 &&
+        attempt.recovery === "drop_thinking",
+    )
+  );
 }

@@ -101,7 +101,8 @@ When Claude rejects preserved thinking because its conversation prefix changed,
 the failure row offers **Retry with dropped thinking**. This explicit retry may
 run without earlier reasoning. It keeps the saved conversation, messages, tool
 results, signatures and files, and continues the failed turn without resending
-the original prompt. Later turns keep their normal preservation policy, so a
+the original prompt. Afterwards the failure row shows a warning that the retry
+dropped earlier thinking. Later turns keep their normal preservation policy, so a
 later prefix mismatch may need another explicit recovery.
 
 This action uses Claude Code's native request controls and needs no special

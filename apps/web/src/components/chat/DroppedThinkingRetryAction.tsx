@@ -6,8 +6,11 @@ import {
   type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
-import { claudeThinkingRecoveryTarget } from "@t3tools/shared/orchestrationV2ClaudeThinkingRecovery";
-import { RotateCcwIcon } from "lucide-react";
+import {
+  claudeThinkingRecoveryTarget,
+  retriedWithDroppedThinking,
+} from "@t3tools/shared/orchestrationV2ClaudeThinkingRecovery";
+import { RotateCcwIcon, TriangleAlertIcon } from "lucide-react";
 import { useRef, useState } from "react";
 
 import { useThreadProjection } from "../../state/entities";
@@ -15,6 +18,9 @@ import { useEnvironmentScope } from "../../state/session";
 import { threadEnvironment } from "../../state/threads";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { Button } from "../ui/button";
+
+const DROPPED_THINKING_NOTICE =
+  "Retried with earlier thinking dropped. Claude may not recall its reasoning from before this point.";
 
 export function DroppedThinkingRetryAction(props: {
   readonly environmentId: EnvironmentId;
@@ -28,6 +34,13 @@ export function DroppedThinkingRetryAction(props: {
   const retry = useOrchestrationCommand(threadEnvironment.retryRun);
   const inFlight = useRef(false);
   const [busy, setBusy] = useState(false);
+  if (thread && retriedWithDroppedThinking(thread.projection.attempts, props.runId, props.nodeId))
+    return (
+      <p className="ms-7 flex items-center gap-1.5 pb-1 text-xs text-warning-foreground">
+        <TriangleAlertIcon aria-hidden className="size-3.5 shrink-0" />
+        {DROPPED_THINKING_NOTICE}
+      </p>
+    );
   if (
     target?.runId !== props.runId ||
     thread?.projection.attempts.find((attempt) => attempt.id === target.attemptId)?.rootNodeId !==

@@ -7,7 +7,10 @@ import {
   type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
-import { claudeThinkingRecoveryTarget } from "@t3tools/shared/orchestrationV2ClaudeThinkingRecovery";
+import {
+  claudeThinkingRecoveryTarget,
+  retriedWithDroppedThinking,
+} from "@t3tools/shared/orchestrationV2ClaudeThinkingRecovery";
 import { useRef, useState } from "react";
 import { View } from "react-native";
 
@@ -34,10 +37,24 @@ export function DroppedThinkingRetryAction(props: {
         : null;
     },
   );
+  const dropped = useAtomValue(
+    environmentThreadDetails.threadAtom(scopeThreadRef(props.environmentId, props.threadId)),
+    (thread) =>
+      thread !== undefined &&
+      thread !== null &&
+      retriedWithDroppedThinking(thread.projection.attempts, props.runId, props.nodeId),
+  );
   const canOperate = useEnvironmentScope(props.environmentId, AuthOrchestrationOperateScope);
   const retry = useAtomCommand(threadEnvironment.retryRun);
   const inFlight = useRef(false);
   const [busy, setBusy] = useState(false);
+  if (dropped)
+    return (
+      <Text className="ml-7 mt-2 text-xs text-warning-foreground">
+        Retried with earlier thinking dropped. Claude may not recall its reasoning from before this
+        point.
+      </Text>
+    );
   if (target?.runId !== props.runId) return null;
 
   async function recover() {
