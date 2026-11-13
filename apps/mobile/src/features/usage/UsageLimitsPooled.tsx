@@ -11,6 +11,7 @@ import {
   cursorUsageWindowDetails,
   displayLimitWindows,
   formatResetsIn,
+  formatUsageCredits,
   paceRemainingPercent,
   remainingPercent,
   type LimitAccount,
@@ -574,6 +575,11 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
               {account.plan ? (
                 <Text selectable className="text-sm text-foreground-muted">
                   {account.plan}
+                </Text>
+              ) : null}
+              {account.limits.usageCredits ? (
+                <Text selectable className="text-sm text-foreground-muted">
+                  Credits {formatUsageCredits(account.limits.usageCredits)}
                 </Text>
               ) : null}
               {account.subscriptionEndsAt ? (

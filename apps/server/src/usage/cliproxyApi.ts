@@ -70,6 +70,16 @@ const CodexUsage = Schema.Struct({
       secondary_window: Schema.optional(Schema.NullOr(CodexWindow)),
     }),
   ),
+  // Fork: pay-as-you-go credits; the balance arrives as decimal text or a number.
+  credits: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        has_credits: Schema.optional(Schema.NullOr(Schema.Boolean)),
+        unlimited: Schema.optional(Schema.NullOr(Schema.Boolean)),
+        balance: Schema.optional(Schema.NullOr(Schema.Union([Schema.String, Schema.Number]))),
+      }),
+    ),
+  ),
 });
 const ClaudeWindow = Schema.Struct({
   utilization: Schema.Number,
@@ -303,6 +313,13 @@ const CODEX_HUB: HubProvider = {
             planType: planType ?? null,
             primary: toWindow(usage.rate_limit?.primary_window),
             secondary: toWindow(usage.rate_limit?.secondary_window),
+            credits: usage.credits
+              ? {
+                  hasCredits: usage.credits.has_credits ?? false,
+                  unlimited: usage.credits.unlimited ?? false,
+                  balance: usage.credits.balance == null ? null : String(usage.credits.balance),
+                }
+              : null,
           },
         }),
         ...(available

@@ -40,12 +40,22 @@ export const ServerProviderResetCredits = Schema.Struct({
 });
 export type ServerProviderResetCredits = typeof ServerProviderResetCredits.Type;
 
+/** Fork: Codex pay-as-you-go credits that keep a plan working past its usage limits. */
+export const ServerProviderUsageCredits = Schema.Struct({
+  hasCredits: Schema.Boolean,
+  unlimited: Schema.Boolean,
+  /** Remaining credits, absent when the provider reports no number. */
+  balance: Schema.optional(Schema.Number.check(Schema.isFinite())),
+});
+export type ServerProviderUsageCredits = typeof ServerProviderUsageCredits.Type;
+
 /** Clear bars for unavailable accounts; retain last good bars after a failed probe. */
 export const ServerProviderUsageLimits = Schema.Struct({
   checkedAt: IsoDateTime,
   windows: ForwardCompatibleArray(ServerProviderUsageWindow),
   credentialFingerprint: Schema.optional(TrimmedNonEmptyString),
   resetCredits: Schema.optional(ServerProviderResetCredits),
+  usageCredits: Schema.optional(ServerProviderUsageCredits),
   externalUsage: Schema.optional(
     Schema.Struct({
       label: TrimmedNonEmptyString,

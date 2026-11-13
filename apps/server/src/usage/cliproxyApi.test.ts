@@ -107,6 +107,7 @@ function fixture(
                     limit_window_seconds: 604800,
                   },
                 },
+                credits: { has_credits: true, unlimited: false, balance: "36120.76" },
               },
       };
       return HttpClientResponse.fromWeb(
@@ -219,6 +220,11 @@ describe("CLIProxyAPI built-in management API", () => {
         expect(result[0]?.usageLimits.windows).toMatchObject([
           { id: "secondary", usedPercent: 78, kind: "weekly" },
         ]);
+        expect(result[0]?.usageLimits.usageCredits).toEqual({
+          hasCredits: true,
+          unlimited: false,
+          balance: 36120.76,
+        });
         expect(result.map((account) => account.subscriptionEndsAt)).toEqual([
           "2098-12-31T00:00:00.000Z",
           "2098-12-31T00:00:00.000Z",

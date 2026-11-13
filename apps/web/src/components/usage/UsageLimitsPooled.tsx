@@ -7,6 +7,7 @@ import {
   cursorUsageWindowDetails,
   displayLimitWindows,
   formatResetsIn,
+  formatUsageCredits,
   type LimitAccount,
   type LimitPool,
   type LimitPoolMember,
@@ -180,6 +181,9 @@ function SegmentPopover({
           <Row label="Plan ends">
             {formatUpcomingTimestamp(account.subscriptionEndsAt, timestampFormat, now)}
           </Row>
+        ) : null}
+        {account.limits.usageCredits ? (
+          <Row label="Credits">{formatUsageCredits(account.limits.usageCredits)}</Row>
         ) : null}
         {where ? (
           <Row label={account.environments.length > 0 ? "Signed in" : "Via"}>{where}</Row>

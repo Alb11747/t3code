@@ -1,6 +1,7 @@
 import type {
   ProviderUsageLimitsUpdate,
   ServerProviderResetCredits,
+  ServerProviderUsageCredits,
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
@@ -25,6 +26,11 @@ export interface CodexRateLimitSnapshot {
   readonly individualLimit?: {
     readonly remainingPercent: number;
     readonly resetsAt: number;
+  } | null;
+  readonly credits?: {
+    readonly hasCredits: boolean;
+    readonly unlimited: boolean;
+    readonly balance?: string | null;
   } | null;
 }
 
@@ -113,6 +119,22 @@ function codexResetCreditsToContract(
   };
 }
 
+/** Codex reports the balance as decimal text; anything else is treated as unknown. */
+function codexUsageCredits(
+  credits: CodexRateLimitSnapshot["credits"],
+): ServerProviderUsageCredits | undefined {
+  if (!credits) return undefined;
+  const balance =
+    typeof credits.balance === "string" && /^\d+(?:\.\d+)?$/.test(credits.balance.trim())
+      ? Number(credits.balance)
+      : undefined;
+  return {
+    hasCredits: credits.hasCredits,
+    unlimited: credits.unlimited,
+    ...(balance === undefined || !Number.isFinite(balance) ? {} : { balance }),
+  };
+}
+
 export function codexRateLimitsToLimits(input: {
   readonly snapshot: CodexRateLimitSnapshot;
   readonly rateLimitsByLimitId?:
@@ -123,13 +145,16 @@ export function codexRateLimitsToLimits(input: {
   readonly checkedAt: string;
 }): ServerProviderUsageLimits {
   const resetCredits = codexResetCreditsToContract(input.resetCredits);
-  const windows = codexRateLimitsToWindows(input.rateLimitsByLimitId?.codex ?? input.snapshot);
+  const general = input.rateLimitsByLimitId?.codex ?? input.snapshot;
+  const windows = codexRateLimitsToWindows(general);
+  const usageCredits = codexUsageCredits(general.credits ?? input.snapshot.credits);
   return {
     ...makeUsageLimits({
       checkedAt: input.checkedAt,
       windows,
     }),
     ...(resetCredits ? { resetCredits } : {}),
+    ...(usageCredits ? { usageCredits } : {}),
   };
 }
 

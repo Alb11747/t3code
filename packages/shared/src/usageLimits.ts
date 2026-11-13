@@ -12,6 +12,7 @@ import {
   PROVIDER_DISPLAY_NAMES,
   type ServerProvider,
   type ServerProviderResetCredits,
+  type ServerProviderUsageCredits,
   type ServerProviderUsageLimits,
   type ServerProviderUsageWindow,
   type UsageLimitSourceSnapshots,
@@ -328,6 +329,8 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         ...(creditSource?.limits.resetCredits
           ? { resetCredits: creditSource.limits.resetCredits }
           : { resetCredits: undefined }),
+        // Fork: a source that does not read Codex credits must not hide another's balance.
+        usageCredits: winner.limits.usageCredits ?? (fresher ? previous : next).limits.usageCredits,
       },
     });
   };
@@ -652,6 +655,14 @@ export function limitsNotice(limits: ServerProviderUsageLimits): string | null {
     return limits.unavailable.message ?? "Could not read limits.";
   }
   return limits.windows.length === 0 ? "No limits reported." : null;
+}
+
+/** Fork: Codex usage credits as one short value, such as "36,120.76" or "unlimited". */
+export function formatUsageCredits(credits: ServerProviderUsageCredits): string {
+  if (credits.unlimited) return "Unlimited";
+  if (credits.balance !== undefined)
+    return credits.balance.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return credits.hasCredits ? "Available" : "None";
 }
 
 export function remainingPercent(window: ServerProviderUsageWindow): number {

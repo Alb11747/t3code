@@ -39,7 +39,7 @@ describe("codexRateLimitsToLimits", () => {
     expect(codexRateLimitsToUpdate(snapshot)).toEqual({ windows });
   });
 
-  it("maps primary and secondary onto the session and weekly windows", () => {
+  it("maps primary and secondary onto the session and weekly windows, with usage credits", () => {
     expect(
       codexRateLimitsToLimits({
         checkedAt,
@@ -47,10 +47,12 @@ describe("codexRateLimitsToLimits", () => {
           planType: "plus",
           primary: { usedPercent: 12, resetsAt: 1_784_000_000, windowDurationMins: 300 },
           secondary: { usedPercent: 47, resetsAt: 1_784_500_000, windowDurationMins: 10080 },
+          credits: { hasCredits: true, unlimited: false, balance: "36120.76" },
         },
       }),
     ).toEqual({
       checkedAt,
+      usageCredits: { hasCredits: true, unlimited: false, balance: 36120.76 },
       windows: [
         {
           id: "primary",
