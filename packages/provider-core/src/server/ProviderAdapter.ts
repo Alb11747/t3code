@@ -601,6 +601,8 @@ export interface ProviderAdapterV2ForkThreadInput {
   readonly sourceProviderThread: OrchestrationV2ProviderThread;
   readonly sourceProviderTurns?: ReadonlyArray<OrchestrationV2ProviderTurn>;
   readonly providerTurnId?: ProviderTurnId;
+  /** A later source turn may be writing past the boundary, so it cannot fall back to the conversation head. */
+  readonly sourceBusy?: boolean;
   readonly targetThreadId: ThreadId;
   readonly ownerNodeId?: NodeId;
   readonly modelSelection?: ModelSelection;
