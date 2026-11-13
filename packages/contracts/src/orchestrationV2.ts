@@ -927,7 +927,8 @@ export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChi
 
 /**
  * When a delegated child's turn endings wake its parent. `settled` holds a completed
- * turn while the child still has live work, as the first result always is.
+ * turn while the child still has live work, as the first result always is. Unrelated to
+ * `completionWake: "settled_only"`, where it is the parent's run that has ended.
  */
 export const OrchestrationV2DelegatedTaskNotifyParent = Schema.Literals(["every_turn", "settled"]);
 export type OrchestrationV2DelegatedTaskNotifyParent =

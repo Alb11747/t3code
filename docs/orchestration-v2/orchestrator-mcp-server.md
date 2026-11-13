@@ -276,7 +276,9 @@ delegations, native subagents, background work). `notifyParent: "settled"` holds
 those follow-up tasks the same way when their turn completes; a failed or interrupted
 turn still wakes the parent at once, and the held tasks are delivered together once the
 child's work settles. Questions and the child's own `t3_thread_send` messages take
-separate paths and are never held. A task stores the policy, its follow-ups copy it, and a
+separate paths and are never held. A held turn includes a reply to the parent's own
+message, so the parent's brief tells the child to send what cannot wait with
+`t3_thread_send` rather than end a turn while its work is still running. A task stores the policy, its follow-ups copy it, and a
 `delegate_task` that omits it inherits the calling child's own policy, so one setting at
 the root covers the tree. Linked-environment children ignore it.
 
