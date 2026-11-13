@@ -20,6 +20,7 @@ import * as Schema from "effect/Schema";
 import { Argument, Command, Flag } from "effect/cli";
 import { ChildProcess } from "effect/process";
 
+import { assertNotLiveHome } from "./lib/dev-live-home.ts";
 import { type DevShareError, shareDevServer, unshareDevServer } from "./lib/dev-share.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
 
@@ -680,6 +681,7 @@ interface DevRunnerCliInput {
   readonly dryRun: boolean;
   readonly share: boolean;
   readonly seed?: boolean | undefined;
+  readonly allowLiveHome?: boolean | undefined;
   readonly built: boolean;
   readonly runArgs: ReadonlyArray<string>;
 }
@@ -760,6 +762,9 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
   yield* Effect.logInfo(
     `[dev-runner] mode=${input.mode} source=${source}${selectionSuffix} serverPort=${String(env.T3CODE_PORT)} webPort=${String(env.PORT)} baseDir=${baseDir}`,
   );
+  if (input.mode !== "dev:web" && !input.allowLiveHome && env.T3CODE_HOME !== undefined) {
+    yield* assertNotLiveHome(env.T3CODE_HOME);
+  }
 
   // Before the share block: --dry-run only resolves and prints. Sharing would
   // replace, then tear down, whatever mapping the port already had — a
@@ -970,6 +975,10 @@ export const devRunnerCli = Command.make("dev-runner", {
       "Seed an empty worktree database from ~/.t3 on first start (read-only, via migrate-dev-db) if the source is at most 500 MiB. On by default; --no-seed or T3CODE_DEV_SEED=0 skips it.",
     ),
     Flag.withFallbackConfig(optionalBooleanConfig("T3CODE_DEV_SEED")),
+  ),
+  allowLiveHome: Flag.Boolean("allow-live-home").pipe(
+    Flag.withDescription("Allow a dev server on the live ~/.t3 home, which is refused by default."),
+    Flag.withDefault(false),
   ),
   built: Flag.Boolean("built").pipe(
     Flag.withDescription(

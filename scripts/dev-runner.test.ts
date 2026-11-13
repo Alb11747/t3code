@@ -697,6 +697,8 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         readonly t3Home: string | undefined;
         readonly cwd: string;
         readonly ambientHome: string | undefined;
+        readonly userHome?: string;
+        readonly allowLiveHome?: boolean;
       }) =>
         Effect.gen(function* () {
           let captured: Record<string, string | undefined> | undefined;
@@ -712,12 +714,19 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
             }),
           );
 
-          yield* runDevRunnerWithInput({ ...devServerInput, t3Home: input.t3Home }).pipe(
+          yield* runDevRunnerWithInput({
+            ...devServerInput,
+            t3Home: input.t3Home,
+            allowLiveHome: input.allowLiveHome,
+          }).pipe(
             Effect.provide(Layer.mergeAll(emptyConfigLayer, netServiceLayer, spawnerLayer)),
             Effect.provideService(HostProcess.Platform, "linux"),
             Effect.provideService(HostProcess.WorkingDirectory, input.cwd),
             // No ~/.t3 here, so these runs never seed from this machine's install.
-            Effect.provideService(HostProcess.HomeDirectory, input.cwd),
+            Effect.provideService(
+              HostProcess.HomeDirectory,
+              input.userHome ?? NodePath.join(input.cwd, "home"),
+            ),
             Effect.provideService(
               HostProcess.Environment,
               input.ambientHome === undefined ? {} : { T3CODE_HOME: input.ambientHome },
@@ -897,6 +906,36 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
           });
           assert.equal(home, path.resolve("/home/user/.t3"));
         }),
+      );
+
+      it.effect("refuses the live ~/.t3 unless a worktree, --home-dir or opt-out avoids it", () =>
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const root = yield* makeWorktree;
+          const userHome = yield* makeWorktree;
+          const liveHome = path.join(userHome, ".t3");
+          NodeFS.mkdirSync(liveHome);
+          NodeFS.symlinkSync(liveHome, path.join(userHome, "link"));
+          const live = { t3Home: undefined, cwd: NodeOS.tmpdir(), userHome, ambientHome: liveHome };
+
+          for (const t3Home of [undefined, liveHome, path.join(userHome, "link")]) {
+            const selected = t3Home === undefined ? {} : { t3Home, ambientHome: undefined };
+            const error = yield* Effect.flip(spawnedHome({ ...live, ...selected }));
+            assert.equal(error._tag, "DevRunnerLiveHomeError");
+            assert.include(error.message, t3Home ?? liveHome);
+          }
+          // No home: the server keeps dev state in ~/.t3/dev.
+          assert.equal(yield* spawnedHome({ ...live, ambientHome: undefined }), undefined);
+          assert.equal(
+            yield* spawnedHome({ ...live, cwd: root }),
+            path.join(path.resolve(root), ".t3"),
+          );
+          assert.equal(
+            yield* spawnedHome({ ...live, t3Home: "/tmp/explicit-home" }),
+            path.resolve("/tmp/explicit-home"),
+          );
+          assert.equal(yield* spawnedHome({ ...live, allowLiveHome: true }), liveHome);
+        }).pipe(Effect.scoped),
       );
     });
   });
