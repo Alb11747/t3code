@@ -82,10 +82,11 @@ Open **Settings → Scheduled tasks** to create scheduled tasks or manage existi
 ones across your connected environments. Use the settings filter to narrow the
 list by environment or project. Each task runs on the environment you choose,
 using its project, model, and workspace settings. Fixed-time schedules use that
-environment's time zone by default, which may differ from your phone's. Agents
-can specify an IANA `timeZone` in a fixed-time schedule, such as
+environment's time zone by default, which may differ from your phone's. To use
+another zone, enter an IANA name such as `UTC` or `America/Toronto` in the task's
+**Time zone** field; leave it empty for the environment's local time. Agents can
+set the same `timeZone` in a fixed-time schedule, such as
 `{type:"fixed_time", timeOfDay:"04:00", timeZone:"UTC"}` for 04:00 UTC daily.
-Editing the task keeps its configured time zone.
 Choose **Once** to run a task a single time at a date and time in your own time
 zone. If the environment is offline then, the task runs when it is back.
 

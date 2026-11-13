@@ -274,18 +274,25 @@ const legacyTask: ScheduledTask = {
 };
 
 describe("editing scheduled task branch settings", () => {
-  it.each([undefined, "UTC", "America/Toronto"])(
-    "preserves timeZone %s through an edit",
-    (timeZone) => {
-      const schedule = {
-        type: "fixed_time" as const,
-        timeOfDay: "04:00",
-        weekdays: [1, 3],
-        ...(timeZone ? { timeZone } : {}),
-      };
-      expect(scheduleFromDraft(taskToDraft({ ...legacyTask, schedule }))).toEqual(schedule);
-    },
-  );
+  it.each([
+    [undefined, undefined, null],
+    ["UTC", undefined, "UTC"],
+    ["America/Toronto", undefined, "America/Toronto"],
+    ["UTC", " Asia/Tokyo ", "Asia/Tokyo"],
+    // Clearing the field must send null: an omitted zone keeps the stored one.
+    ["UTC", "", null],
+  ])("saves stored timeZone %s edited to %s as %s", (stored, edited, sent) => {
+    const schedule = {
+      type: "fixed_time" as const,
+      timeOfDay: "04:00",
+      weekdays: [1, 3],
+      ...(stored ? { timeZone: stored } : {}),
+    };
+    const draft = taskToDraft({ ...legacyTask, schedule });
+    expect(
+      scheduleFromDraft(edited === undefined ? draft : { ...draft, timeZone: edited }),
+    ).toEqual({ ...schedule, timeZone: sent });
+  });
 
   it("keeps an omitted origin flag on the local base branch", () => {
     const draft = taskToDraft(legacyTask);

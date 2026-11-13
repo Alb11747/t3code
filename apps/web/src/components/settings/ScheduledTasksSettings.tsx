@@ -93,6 +93,7 @@ import { readEnvironmentScope } from "~/state/session";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { EnvironmentRow, useEnvironmentTransportLabel } from "./EnvironmentRow";
 import { SettingsGroup } from "./SettingsGroup";
+import { ScheduledTaskTimeZoneField } from "./ScheduledTaskTimeZoneField";
 import { settingsScopeEnvironmentLabel, settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
 import {
   WEBHOOK_SIGNATURE_DEFAULTS,
@@ -2136,9 +2137,10 @@ function ScheduledTaskEditorForm({
                     </Toggle>
                   ))}
                 </ToggleGroup>
-                <p className="w-full break-words text-xs text-muted-foreground">
-                  Time zone: {draft.timeZone ?? "server local"}.
-                </p>
+                <ScheduledTaskTimeZoneField
+                  value={draft.timeZone ?? ""}
+                  onChange={(timeZone) => setDraft((current) => ({ ...current, timeZone }))}
+                />
               </div>
             ) : (
               <div className="flex items-center gap-2">

@@ -14,18 +14,24 @@ import {
 } from "./scheduledTaskDraft";
 
 describe("scheduleDraftForTask", () => {
-  it.each([undefined, "UTC", "America/Toronto"])(
-    "preserves timeZone %s through an edit",
-    (timeZone) => {
-      const schedule = {
-        type: "fixed_time" as const,
-        timeOfDay: "04:00",
-        weekdays: [1, 3],
-        ...(timeZone ? { timeZone } : {}),
-      };
-      expect(scheduleFromDraft(scheduleDraftForTask({ schedule }))).toEqual(schedule);
-    },
-  );
+  it.each([
+    [undefined, undefined, null],
+    ["UTC", undefined, "UTC"],
+    ["America/Toronto", undefined, "America/Toronto"],
+    // Clearing the field must send null: an omitted zone keeps the stored one.
+    ["UTC", "", null],
+  ])("saves stored timeZone %s edited to %s as %s", (stored, edited, sent) => {
+    const schedule = {
+      type: "fixed_time" as const,
+      timeOfDay: "04:00",
+      weekdays: [1, 3],
+      ...(stored ? { timeZone: stored } : {}),
+    };
+    const draft = scheduleDraftForTask({ schedule });
+    expect(
+      scheduleFromDraft(edited === undefined ? draft : { ...draft, timeZone: edited }),
+    ).toEqual({ ...schedule, timeZone: sent });
+  });
 
   it("opens legacy sub-minute schedules at the writable minimum", () => {
     const draft = scheduleDraftForTask({ schedule: { type: "interval", everyMs: 30_000 } });

@@ -195,7 +195,8 @@ export function scheduleFromDraft(draft: ScheduleDraft): ScheduledTaskUpsertSche
   return {
     type: "fixed_time",
     timeOfDay: draft.timeOfDay,
-    ...(draft.timeZone ? { timeZone: draft.timeZone } : {}),
+    // Null clears a stored zone back to server-local time; omission would keep it.
+    timeZone: draft.timeZone?.trim() || null,
     ...(weekdays.length === 7 ? {} : { weekdays }),
   };
 }

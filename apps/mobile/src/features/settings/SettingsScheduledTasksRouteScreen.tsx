@@ -175,6 +175,8 @@ function FormField(props: {
   readonly disabled?: boolean;
   readonly placeholder?: string;
   readonly borderTop?: boolean;
+  /** Identifiers such as time zone names, which autocorrect and capitalization break. */
+  readonly verbatim?: boolean;
 }) {
   return (
     <View
@@ -190,6 +192,7 @@ function FormField(props: {
         onChangeText={props.onChange}
         textAlignVertical="center"
         keyboardType={props.keyboardType}
+        {...(props.verbatim ? { autoCapitalize: "none", autoCorrect: false } : {})}
         placeholder={props.placeholder}
         placeholderTextColorClassName="accent-foreground-muted"
         className="min-h-8 font-sans text-base text-foreground"
@@ -1129,6 +1132,17 @@ function TaskForm({
                           })();
                   setDraft({ ...draft, schedule: { ...draft.schedule, weekdays } });
                 }}
+              />
+              <FormField
+                label="Time zone"
+                value={draft.schedule.timeZone ?? ""}
+                placeholder="Server local, or a name such as UTC"
+                verbatim
+                disabled={saving}
+                borderTop
+                onChange={(timeZone) =>
+                  setDraft({ ...draft, schedule: { ...draft.schedule, timeZone } })
+                }
               />
             </>
           ) : draft.schedule.mode === "webhook" && webhookDenial !== undefined && draft.enabled ? (
