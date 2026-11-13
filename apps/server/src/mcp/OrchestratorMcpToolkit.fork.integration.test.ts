@@ -298,6 +298,7 @@ describe("orchestrator MCP toolkit", () => {
               moveThreadTasks: () => Effect.die("unused in this test"),
               runNow: () => Effect.die("ScheduledTaskService.runNow is unused in this test"),
               rotateWebhookToken: () => Effect.die("unused in this test"),
+              testScript: () => Effect.die("unused in this test"),
               listWebhookDeliveries: () => Effect.die("unused in this test"),
               getWebhookDelivery: () => Effect.die("unused in this test"),
               triggerWebhook: () => Effect.die("unused in this test"),

@@ -17,6 +17,7 @@ import {
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
 } from "./orchestrationV2.ts";
 import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
+import { ScheduledTaskScript, ScheduledTaskScriptSource } from "./scheduledTaskScript.ts";
 
 const TimeOfDay = TrimmedNonEmptyString.check(
   Schema.isPattern(/^([01]?\d|2[0-3]):([0-5]\d)$/),
@@ -276,6 +277,8 @@ export const ScheduledTask = Schema.Struct({
   webhook: Schema.optional(ScheduledTaskWebhookEndpoint),
   /** Why the task cannot run regardless of `enabled`, such as a managed policy refusing webhooks. */
   blockedByPolicy: Schema.optionalKey(Schema.String),
+  /** Fork: the check script that runs before each run. */
+  script: Schema.optionalKey(ScheduledTaskScript),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
@@ -307,6 +310,9 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
   creationSource: Schema.optional(OrchestrationV2CreationSource),
+  /** Fork: omitted keeps the stored script, null removes it and its state. */
+  script: Schema.optional(Schema.NullOr(ScheduledTaskScriptSource)),
+  resetScriptState: Schema.optional(Schema.Boolean),
 });
 export type ScheduledTaskUpsertInput = typeof ScheduledTaskUpsertInput.Type;
 

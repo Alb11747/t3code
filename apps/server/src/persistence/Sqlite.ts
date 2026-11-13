@@ -7,6 +7,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { runMigrations } from "./Migrations.ts";
 import { ensureForkProjectionIndexes } from "./ForkProjectionIndexes.ts";
+import { ensureScheduledTaskScriptTable } from "./ForkScheduledTaskScripts.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
 import * as ServerConfig from "../config.ts";
 
@@ -37,6 +38,7 @@ const layerSetup = Layer.effectDiscard(
     yield* runMigrations();
     // Fork-only indexes must not consume upstream migration IDs.
     yield* ensureForkProjectionIndexes();
+    yield* ensureScheduledTaskScriptTable();
     // Collecting stats scans every page, and stale small-table stats cause scans after growth; use indexes by default.
     // Connections cache stats; reload after deleting them.
     const statTables = yield* sql`SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat1'`;

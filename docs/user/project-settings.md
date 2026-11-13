@@ -176,6 +176,37 @@ than** on the task.
 
 ## Defaults and inheritance
 
+## Check scripts
+
+Under **Advanced** in a task's editor on desktop or web, a check script decides
+whether each run goes ahead. It is the body of a JavaScript function that runs
+on the environment before every run, including manual and webhook runs. Return
+`false` to skip the run, or an object such as
+`{ run: false, reason: "Usage is high", nextRunAt: "2026-11-14T09:00:00Z" }`.
+`prompt` replaces the run's prompt, and `nextRunAt` moves the next run (at least
+a minute away), so a task can wait three days instead of one or wake just before
+a deadline. If the script throws or takes longer than 30 seconds, the run fails
+instead of starting.
+
+The script receives `ctx` with the current time, the task, its prompt, usage for
+every account the environment knows about (5-hour and weekly windows, reset
+credits and Codex usage credits, including CLI Proxy accounts), the thread the
+task posts into (whether it is running, its latest activity, its context size
+and when its Claude prompt cache expires), and the webhook request. `ctx.state`
+is saved after each check, even when the run then fails to start, so a script
+can remember when it last ran. A one-time task skipped without `nextRunAt` does
+not run, and editing or pausing a task while its script runs cancels that run. **Examples**
+inserts scripts that skip runs while usage is high, run less often when usage
+is low, and keep a Claude thread's cache warm. **Test script** runs the script
+once and shows its decision, logs and `ctx` without starting a run or saving
+state. The task list marks runs a script skipped.
+
+Scripts run with the environment's full access to files, commands and the
+network, so editing or testing one requires terminal access to that environment.
+Anyone who can see scheduled tasks can read the script and its saved state;
+keep secrets out of it. Mobile keeps a task's script when you save the task
+there but can't edit it.
+
 Threads contains the model and workspace for new threads. Browser controls agent browser
 access. Source control contains automatic pull, the default pull request merge method and text
 generation. The same rows edit environment defaults or project overrides depending on the

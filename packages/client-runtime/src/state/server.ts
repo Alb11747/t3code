@@ -1586,6 +1586,11 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:scheduled-task:run-now",
       tag: WS_METHODS.scheduledTasksRunNow,
     }),
+    // Fork: a dry run of a task script. Off the config lane, since a script can take 30 seconds.
+    testScheduledTaskScript: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:scheduled-task:test-script",
+      tag: WS_METHODS.scheduledTasksTestScript,
+    }),
     rotateScheduledTaskWebhookToken: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:rotate-webhook-token",
       tag: WS_METHODS.scheduledTasksRotateWebhookToken,

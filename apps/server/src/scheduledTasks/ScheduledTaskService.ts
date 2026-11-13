@@ -24,6 +24,8 @@ import {
   type ScheduledTaskSetEnabledInput,
   type ScheduledTaskThreadMode,
   type ScheduledTaskUpsertInput,
+  type ScheduledTaskTestScriptInput,
+  type ScheduledTaskTestScriptResult,
   managedPolicyDeniedMessage,
   scheduledTaskThreadMode,
   managedRuntimeModeDenial,
@@ -75,6 +77,7 @@ import {
 } from "./webhookDedupe.ts";
 import { describeFailedWebhookFilter, findFailedWebhookFilter } from "./webhookFilter.ts";
 import { constantTimeEquals, verifyWebhookSignature } from "./webhookVerification.ts";
+import * as TaskScripts from "./ScheduledTaskScript.ts";
 
 export const WEBHOOK_ROUTE_PREFIX = "/api/hooks";
 const isScheduledTaskError = Schema.is(ScheduledTaskError);
@@ -287,6 +290,10 @@ export class ScheduledTaskService extends Context.Service<
     readonly getWebhookDelivery: (
       input: ScheduledTaskGetWebhookDeliveryInput,
     ) => Effect.Effect<ScheduledTaskGetWebhookDeliveryResult, ScheduledTaskError>;
+    /** Fork: runs a task script without dispatching or saving its state. */
+    readonly testScript: (
+      input: ScheduledTaskTestScriptInput,
+    ) => Effect.Effect<ScheduledTaskTestScriptResult, ScheduledTaskError>;
     /** Verifies, logs and dispatches; returns after logging while the run continues in the background. */
     readonly triggerWebhook: (
       request: WebhookTriggerRequest,
@@ -464,6 +471,8 @@ export const layer = Layer.effect(
     const scheduler = yield* Scheduler.Scheduler;
     const readWebhookOrigin = yield* ScheduledTaskWebhookOrigin;
     const managedPolicy = yield* ManagedPolicy.ManagedPolicy;
+    const scripts = yield* TaskScripts.ScheduledTaskScripts;
+    const scriptStore = TaskScripts.makeScriptStore(sql);
     const webhookPolicyOrganization = ManagedPolicy.deniedBy(managedPolicy, "webhookTasks");
     // Existing webhook tasks stay stored but report why they do not run.
     const webhookPolicyBlock =
@@ -536,11 +545,12 @@ export const layer = Layer.effect(
     const listRows = Effect.fn("ScheduledTaskService.listRows")(function* () {
       const rows = yield* selectAllRows();
       const origin = yield* readWebhookOrigin;
-      return yield* Effect.forEach(
+      const tasks = yield* Effect.forEach(
         rows,
         (row) => decodeRow(row, origin).pipe(Effect.map(withPolicy)),
         { concurrency: 1 },
       );
+      return yield* scriptStore.attachAll(tasks);
     });
 
     const getRows = (id: ScheduledTaskId) =>
@@ -581,7 +591,13 @@ export const layer = Layer.effect(
       );
       const row = rows[0];
       if (row === undefined) return null;
-      return withPolicy(yield* decodeRow(row, yield* readWebhookOrigin));
+      return yield* scriptStore
+        .attachOne(withPolicy(yield* decodeRow(row, yield* readWebhookOrigin)))
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not load schedule task.", { taskId: id, cause }),
+          ),
+        );
     });
 
     const findWebhookCredentials = (id: ScheduledTaskId) =>
@@ -852,6 +868,8 @@ export const layer = Layer.effect(
         readonly deliveryId: string;
         readonly prompt: string;
         readonly dispatched: Ref.Ref<boolean>;
+        /** Fork: the full request, for task scripts; the delivery log keeps a truncated copy. */
+        readonly request: WebhookRequest;
       },
     ) {
       // Read before reserving: nothing between the reservation and its release may fail.
@@ -907,6 +925,115 @@ export const layer = Layer.effect(
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
+        // Fork: a task script can skip this run, replace its prompt or move the next run.
+        const script = active.script;
+        const scriptState =
+          script === undefined
+            ? null
+            : yield* scriptStore
+                .readForCheck(active.id)
+                .pipe(
+                  Effect.mapError((cause) =>
+                    taskError("Could not read the task script.", { taskId: task.id, cause }),
+                  ),
+                );
+        const evaluation =
+          script === undefined || scriptState === null
+            ? null
+            : yield* scripts.evaluate({
+                source: script.source,
+                trigger,
+                task: active,
+                prompt: webhook?.prompt ?? active.prompt,
+                projectId: active.projectId,
+                threadId: active.threadId === null ? null : ThreadId.make(active.threadId),
+                stateJson: scriptState.stateJson,
+                webhook:
+                  webhook === undefined
+                    ? null
+                    : {
+                        deliveryId: webhook.deliveryId,
+                        method: webhook.request.method,
+                        query: webhook.request.query,
+                        headers: webhook.request.headers,
+                        body: webhook.request.bodyText,
+                      },
+              });
+        // Webhook tasks have no next run to move.
+        const scriptNextRunAt =
+          evaluation?.decision?.nextRunAtMs == null || active.schedule.type === "webhook"
+            ? null
+            : iso(DateTime.makeUnsafe(evaluation.decision.nextRunAtMs));
+        if (script !== undefined && scriptState !== null && evaluation !== null) {
+          const checkedAt = iso(yield* localNow);
+          yield* scriptStore
+            .recordCheck({
+              taskId: active.id,
+              source: script.source,
+              check: TaskScripts.scriptCheck(evaluation, checkedAt),
+              stateVersion: scriptState.version,
+              stateJson: evaluation.decision?.stateJson,
+            })
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Could not record a task script check.", {
+                  taskId: task.id,
+                  cause,
+                }),
+              ),
+            );
+          if (evaluation.outcome === "skip") {
+            if (webhook !== undefined) {
+              yield* notifyChanged;
+              return yield* new WebhookDeliverySkipped({
+                reason: TaskScripts.scriptSkipMessage(evaluation),
+              });
+            }
+            const next = !active.enabled
+              ? active.nextRunAt
+              : (scriptNextRunAt ??
+                (trigger === "scheduled" ? nextRunAt(active, startedAt) : active.nextRunAt));
+            // An edit since this run read the task wins; the next poll checks the edited task.
+            yield* sql`
+              UPDATE scheduled_tasks SET next_run_at = ${next}, updated_at = ${checkedAt}
+              WHERE task_id = ${active.id} AND updated_at = ${active.updatedAt}
+                AND last_run_status <> 'running'
+            `.pipe(
+              Effect.mapError((cause) =>
+                taskError("Could not reschedule the skipped run.", { taskId: task.id, cause }),
+              ),
+            );
+            yield* notifyChanged;
+            return {
+              task: (yield* findTask(active.id)) ?? active,
+              threadId: null,
+              dispatchFailed: false,
+            };
+          }
+        }
+        // The script can take seconds; a pause, edit or deletion meanwhile wins over this run.
+        if (evaluation !== null) {
+          const current = yield* findTask(active.id);
+          if (
+            current === null ||
+            current.updatedAt !== active.updatedAt ||
+            // Run now works on paused tasks; only a pause stops the others.
+            (trigger !== "manual" && !current.enabled)
+          ) {
+            const reason =
+              current === null
+                ? "The task was deleted while its script ran."
+                : "The task changed while its script ran.";
+            if (webhook !== undefined) return yield* new WebhookDeliverySkipped({ reason });
+            if (trigger !== "scheduled") return yield* taskError(reason, { taskId: task.id });
+            return { task: current ?? active, threadId: null, dispatchFailed: false };
+          }
+        }
+        const scriptFailure =
+          evaluation?.outcome === "error"
+            ? `The task script failed: ${evaluation.error ?? "unknown error"}`
+            : null;
+
         if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
         else
           yield* sql
@@ -931,7 +1058,7 @@ export const layer = Layer.effect(
             : `${active.id}:webhook:${webhook.deliveryId}`;
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
-        const prompt = webhook?.prompt ?? active.prompt;
+        const prompt = evaluation?.decision?.prompt ?? webhook?.prompt ?? active.prompt;
         const threadMode = scheduledTaskThreadMode(active);
 
         // A bound thread can move to another project (No project to a project) while
@@ -973,40 +1100,42 @@ export const layer = Layer.effect(
 
         // Capture defects and interrupts too so dispatch failures still reach markCompleted.
         const result =
-          active.threadId === null
-            ? yield* Effect.exit(
-                threadLaunch
-                  .launch({
-                    commandId,
-                    projectId: active.projectId,
-                    title: active.title,
-                    modelSelection: active.modelSelection,
-                    runtimeMode: active.runtimeMode,
-                    interactionMode: active.interactionMode,
-                    workspaceStrategy: active.workspaceStrategy,
-                    initialMessage: {
-                      messageId,
-                      scheduledTaskId: active.id,
-                      text: prompt,
-                      attachments: [],
-                    },
-                    createdBy: active.createdBy,
-                    creationSource: active.creationSource,
-                  })
-                  .pipe(
-                    Effect.map((launched) => launched.threadId),
-                    Effect.tap((threadId) =>
-                      threadMode === "new_thread" ? Effect.void : bindThread(active, threadId),
+          scriptFailure !== null
+            ? Exit.fail(taskError(scriptFailure, { taskId: active.id }))
+            : active.threadId === null
+              ? yield* Effect.exit(
+                  threadLaunch
+                    .launch({
+                      commandId,
+                      projectId: active.projectId,
+                      title: active.title,
+                      modelSelection: active.modelSelection,
+                      runtimeMode: active.runtimeMode,
+                      interactionMode: active.interactionMode,
+                      workspaceStrategy: active.workspaceStrategy,
+                      initialMessage: {
+                        messageId,
+                        scheduledTaskId: active.id,
+                        text: prompt,
+                        attachments: [],
+                      },
+                      createdBy: active.createdBy,
+                      creationSource: active.creationSource,
+                    })
+                    .pipe(
+                      Effect.map((launched) => launched.threadId),
+                      Effect.tap((threadId) =>
+                        threadMode === "new_thread" ? Effect.void : bindThread(active, threadId),
+                      ),
                     ),
+                )
+              : yield* Effect.exit(
+                  // The stored selection only seeds fresh threads. A bound run
+                  // follows the thread's current provider, so it passes none.
+                  sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
+                    Effect.as(ThreadId.make(active.threadId)),
                   ),
-              )
-            : yield* Effect.exit(
-                // The stored selection only seeds fresh threads. A bound run
-                // follows the thread's current provider, so it passes none.
-                sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
-                  Effect.as(ThreadId.make(active.threadId)),
-                ),
-              );
+                );
 
         const runSucceeded = result._tag === "Success";
         if (webhook !== undefined && runSucceeded) yield* Ref.set(webhook.dispatched, true);
@@ -1027,10 +1156,15 @@ export const layer = Layer.effect(
             updatedAt: iso(completedAt),
             lastRunAt: startedAtIso,
             // A manual run that starts before a one-time run must not use it up.
-            nextRunAt: nextRunAt(
-              scheduleSource,
-              scheduleSource.schedule.type === "once" ? startedAt : completedAt,
-            ),
+            nextRunAt:
+              scriptNextRunAt !== null &&
+              scheduleSource.enabled &&
+              isSameSchedule(scheduleSource.schedule, active.schedule)
+                ? scriptNextRunAt
+                : nextRunAt(
+                    scheduleSource,
+                    scheduleSource.schedule.type === "once" ? startedAt : completedAt,
+                  ),
             lastRunStatus,
             lastRunError,
             runCount: scheduleSource.runCount + 1,
@@ -1456,12 +1590,32 @@ export const layer = Layer.effect(
         lastRunError: existingTask?.lastRunError ?? null,
         runCount: existingTask?.runCount ?? 0,
       };
-      yield* saveTask(
-        task,
-        input.requireExisting === true,
-        scheduleUnchanged ? existingTask.schedule : null,
-        webhook,
-      );
+      // Fork: one transaction, so a failed script write cannot leave the task running unchecked.
+      yield* sql
+        .withTransaction(
+          saveTask(
+            task,
+            input.requireExisting === true,
+            scheduleUnchanged ? existingTask.schedule : null,
+            webhook,
+          ).pipe(
+            Effect.andThen(
+              scriptStore.save({
+                taskId: id,
+                script: input.script,
+                resetState: input.resetScriptState === true,
+                now: iso(now),
+              }),
+            ),
+          ),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            isScheduledTaskError(cause)
+              ? cause
+              : taskError("Could not save the task script.", { taskId: id, cause }),
+          ),
+        );
       yield* notifyChanged;
       return { task: (yield* findTask(id)) ?? task };
     });
@@ -1614,6 +1768,31 @@ export const layer = Layer.effect(
             : taskError("Could not run schedule task.", { taskId: input.id, cause }),
         ),
       );
+    });
+
+    const testScript: ScheduledTaskService["Service"]["testScript"] = Effect.fn(
+      "ScheduledTaskService.testScript",
+    )(function* (input) {
+      const task = input.id === undefined ? null : yield* loadTask(input.id);
+      const threadId = input.threadId === undefined ? (task?.threadId ?? null) : input.threadId;
+      const evaluation = yield* scripts.evaluate({
+        source: input.source,
+        trigger: "test",
+        task,
+        prompt: input.prompt ?? task?.prompt ?? "",
+        projectId: input.projectId ?? task?.projectId ?? null,
+        threadId: threadId === null ? null : ThreadId.make(threadId),
+        stateJson: task?.script?.state ?? null,
+        webhook: null,
+      });
+      return {
+        outcome: evaluation.outcome,
+        decision: TaskScripts.scriptDecisionForClient(evaluation),
+        error: evaluation.error,
+        logs: evaluation.logs,
+        durationMs: evaluation.durationMs,
+        context: evaluation.contextJson,
+      };
     });
 
     const rotateWebhookToken: ScheduledTaskService["Service"]["rotateWebhookToken"] = Effect.fn(
@@ -1922,6 +2101,7 @@ export const layer = Layer.effect(
       task: ScheduledTask,
       deliveryId: string,
       prompt: string,
+      request: WebhookRequest,
     ) {
       const runOutcome = (outcome: "started" | "skipped" | "failed") =>
         Effect.all([
@@ -1929,7 +2109,7 @@ export const layer = Layer.effect(
           Metrics.increment(Metrics.webhookRunsTotal, { outcome }),
         ]);
       const dispatched = yield* Ref.make(false);
-      return yield* runTask(task, "webhook", { deliveryId, prompt, dispatched }).pipe(
+      return yield* runTask(task, "webhook", { deliveryId, prompt, dispatched, request }).pipe(
         Effect.flatMap(({ dispatchFailed }) =>
           dispatchFailed
             ? runOutcome("failed").pipe(
@@ -2386,7 +2566,7 @@ export const layer = Layer.effect(
           }
           yield* observe("accepted");
           const permit = yield* webhookPermit(task.id);
-          yield* runWebhookDelivery(task, deliveryId, rendered.prompt).pipe(
+          yield* runWebhookDelivery(task, deliveryId, rendered.prompt, request).pipe(
             permit.withPermits(1),
             Effect.ensuring(release),
             Effect.forkIn(serviceScope),
@@ -2462,6 +2642,7 @@ export const layer = Layer.effect(
                 const frameId = Buffer.from(yield* random.randomBytes(6)).toString("hex");
                 return {
                   task,
+                  request,
                   taskJson: task === snapshot ? null : yield* encodePendingTask(task),
                   rendered: renderWebhookPrompt(task.prompt, request, frameId),
                 };
@@ -2477,7 +2658,7 @@ export const layer = Layer.effect(
                 yield* remove;
                 continue;
               }
-              const { task, taskJson, rendered } = prepared.value;
+              const { task, request, taskJson, rendered } = prepared.value;
               if (rendered.prompt.trim().length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
                 yield* markDeliveryFailed(entry.delivery_id, PROMPT_TOO_LONG);
                 yield* releaseFailedDelivery(entry.delivery_id);
@@ -2485,7 +2666,8 @@ export const layer = Layer.effect(
                 if (taskJson !== null)
                   yield* sql`UPDATE scheduled_task_webhook_pending SET task_json = ${taskJson} WHERE delivery_id = ${entry.delivery_id}`;
                 yield* sql`UPDATE scheduled_task_webhook_deliveries SET outcome = 'accepted', error = NULL, rendered_prompt = ${rendered.prompt.slice(0, WEBHOOK_DELIVERY_LOG_PROMPT_LIMIT)}, missing_fields_json = ${encodeMissingFieldsJson(rendered.missing)} WHERE delivery_id = ${entry.delivery_id}`;
-                if (!(yield* runWebhookDelivery(task, entry.delivery_id, rendered.prompt))) return;
+                if (!(yield* runWebhookDelivery(task, entry.delivery_id, rendered.prompt, request)))
+                  return;
               }
               yield* remove;
             }
@@ -2533,6 +2715,7 @@ export const layer = Layer.effect(
       deleteForThread,
       moveThreadTasks,
       runNow,
+      testScript,
       rotateWebhookToken,
       listWebhookDeliveries,
       getWebhookDelivery,

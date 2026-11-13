@@ -68,6 +68,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.scheduledTasksDelete]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksRunNow]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksRotateWebhookToken]: AuthOrchestrationOperateScope,
+  // Fork: a task script runs arbitrary code on the host, as a terminal does.
+  [WS_METHODS.scheduledTasksTestScript]: AuthTerminalOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,
   // Force stop kills agent processes, as Stop on a terminal does.
   [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: AuthOrchestrationOperateScope,
@@ -102,6 +104,14 @@ export function clientRpcRequiredScopes(
     )
       return [AuthSourceControlWriteScope, AuthOrchestrationReadScope];
   }
+  if (
+    method === WS_METHODS.scheduledTasksUpsert &&
+    typeof input === "object" &&
+    input !== null &&
+    (("script" in input && input.script !== undefined) ||
+      ("resetScriptState" in input && input.resetScriptState === true))
+  )
+    return [AuthOrchestrationOperateScope, AuthTerminalOperateScope];
   return Object.hasOwn(CLIENT_GUARDED_RPC_SCOPES, method)
     ? [CLIENT_GUARDED_RPC_SCOPES[method as ClientGuardedRpcTag]]
     : [];

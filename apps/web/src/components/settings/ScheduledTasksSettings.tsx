@@ -94,6 +94,11 @@ import { useSettingsScope } from "./SettingsScopeContext";
 import { EnvironmentRow, useEnvironmentTransportLabel } from "./EnvironmentRow";
 import { SettingsGroup } from "./SettingsGroup";
 import { ScheduledTaskTimeZoneField } from "./ScheduledTaskTimeZoneField";
+import { ScheduledTaskScriptSection } from "./ScheduledTaskScriptSection";
+import {
+  scheduledTaskScriptDraft,
+  scheduledTaskScriptUpsertFields,
+} from "@t3tools/client-runtime/scheduled-task-script";
 import { settingsScopeEnvironmentLabel, settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
 import {
   WEBHOOK_SIGNATURE_DEFAULTS,
@@ -818,6 +823,11 @@ function ScheduledTaskRow({
           {task.lastRunStatus !== "never" ? (
             <Badge variant={statusVariant(task.lastRunStatus)}>{task.lastRunStatus}</Badge>
           ) : null}
+          {task.script?.lastCheck?.outcome === "skip" ? (
+            <Badge variant="warning" title={task.script.lastCheck.message ?? undefined}>
+              skipped by script
+            </Badge>
+          ) : null}
           {task.threadId !== null && scheduledTaskThreadMode(task) !== "new_thread" ? (
             <ScheduledTaskThreadLink environmentId={environmentId} threadId={task.threadId} />
           ) : null}
@@ -1415,6 +1425,7 @@ function ScheduledTaskEditorForm({
           ),
         },
   );
+  const [scriptDraft, setScriptDraft] = useState(() => scheduledTaskScriptDraft(task));
   // Pinned first. The chosen project stays listed after it is archived.
   const projects = scopedProjects
     .filter(
@@ -1574,6 +1585,7 @@ function ScheduledTaskEditorForm({
         draft.runtimeMode,
       interactionMode: draft.interactionMode,
       creationSource: "web",
+      ...scheduledTaskScriptUpsertFields(scriptDraft),
     };
     // Keep successful creates locked until the form closes.
     const result = await upsertTask({ environmentId, input });
@@ -2176,6 +2188,20 @@ function ScheduledTaskEditorForm({
               onCheckedChange={(enabled) => setDraft((current) => ({ ...current, enabled }))}
             />
           </div>
+
+          <ScheduledTaskScriptSection
+            environmentId={environmentId}
+            taskId={draft.editingId as ScheduledTaskId | null}
+            script={liveTask?.script}
+            draft={scriptDraft}
+            onChange={setScriptDraft}
+            testTarget={{
+              prompt: draft.prompt,
+              projectId: (selectedProject?.id ?? null) as ProjectId | null,
+              threadId: draft.threadId ? (draft.threadId as ThreadId) : null,
+            }}
+            disabled={saving}
+          />
         </fieldset>
       </DialogPanel>
 

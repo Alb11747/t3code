@@ -1309,6 +1309,12 @@ function TaskForm({
               : "Time uses the server's local time zone, which may differ from your phone's."}
           </Text>
         ) : null}
+        {draft.task?.script ? (
+          <Text className="px-2 text-sm text-foreground-muted">
+            A check script runs before each run of this task. Edit it under Advanced in the desktop
+            or web app; saving here keeps it.
+          </Text>
+        ) : null}
       </View>
       <Button
         tone="primary"
