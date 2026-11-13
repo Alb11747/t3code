@@ -4,6 +4,7 @@ import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import { codexFailureRetryable, codexOverloadRetryDelayMs } from "./CodexRetryPolicy.ts";
+import { clampToProviderRetryWindow, providerRetryWindowExpired } from "./ProviderRetryWindow.ts";
 import {
   mcpToolPresentation,
   type McpToolPresentation,
@@ -5128,11 +5129,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const updatedAt = yield* DateTime.now;
             const previous = (yield* Ref.get(providerRetries)).get(context.providerTurnId);
             const progress = parseCodexRetryProgress(payload.error.message);
-            const retry: OrchestrationV2ProviderRetry = {
-              attempt: progress?.attempt ?? (previous?.retry.attempt ?? 0) + 1,
-              maxAttempts: progress?.maxAttempts ?? previous?.retry.maxAttempts ?? null,
-              retryDelayMs: null,
-            };
+            // Native reconnects inside a T3 overload retry keep its attempt count and unbounded identity.
+            const retry: OrchestrationV2ProviderRetry =
+              previous?.itemProviderTurnId !== undefined
+                ? { ...previous.retry, retryDelayMs: null }
+                : {
+                    attempt: progress?.attempt ?? (previous?.retry.attempt ?? 0) + 1,
+                    maxAttempts: progress?.maxAttempts ?? previous?.retry.maxAttempts ?? null,
+                    retryDelayMs: null,
+                  };
             const code = codexErrorInfoCode(payload.error.codexErrorInfo);
             const additionalDetails = payload.error.additionalDetails?.trim();
             const failure = withCodexManagedFailure(
@@ -6384,13 +6389,19 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           )
             return undefined;
           const notified = input.context.latestProviderFailure?.nativeErrorInfo;
+          const now = yield* DateTime.now;
           const retryable = codexFailureRetryable({
             errorInfo: input.failureErrorInfo ?? notified,
             notified,
             usageLimitResetAt: codexUsageLimitResetAt(yield* Ref.get(rateLimitSnapshot)),
-            nowMs: DateTime.toEpochMillis(yield* DateTime.now),
+            nowMs: DateTime.toEpochMillis(now),
           });
-          if (!retryable || (yield* Ref.get(interruptingNativeTurns)).has(input.nativeTurnId)) {
+          if (
+            !retryable ||
+            (input.providerRetry !== undefined &&
+              providerRetryWindowExpired(input.providerRetry.startedAt, now)) ||
+            (yield* Ref.get(interruptingNativeTurns)).has(input.nativeTurnId)
+          ) {
             return undefined;
           }
           return (overloadRetryAttempts.get(nativeThreadId) ?? 0) + 1;
@@ -6411,6 +6422,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           const nativeThreadId = context.providerThread.nativeThreadRef?.nativeId;
           if (nativeThreadId == null) return;
           overloadRetryAttempts.set(nativeThreadId, attempt);
+          const now = yield* DateTime.now;
+          const startedAt = input.providerRetry?.startedAt ?? now;
           const state: ActiveCodexProviderRetry = {
             nativeMessage: event.failure.message,
             nativeCode: event.failure.code,
@@ -6418,9 +6431,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             retry: {
               attempt,
               maxAttempts: null,
-              retryDelayMs: yield* codexOverloadRetryDelayMs(attempt),
+              retryDelayMs: clampToProviderRetryWindow(
+                yield* codexOverloadRetryDelayMs(attempt),
+                startedAt,
+                now,
+              ),
             },
-            startedAt: input.providerRetry?.startedAt ?? (yield* DateTime.now),
+            startedAt,
             itemOrdinal: input.providerRetry?.itemOrdinal ?? event.failureItemOrdinal,
             itemProviderTurnId: input.providerRetry?.itemProviderTurnId ?? context.providerTurnId,
           };
@@ -6493,11 +6510,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   });
                   if (!stillHeld() || hold.overloadRetry === undefined) return;
                   // Codex rejected the start before creating a turn, so the run keeps waiting.
-                  if (isCodexAppServerRequestError(cause) && cause.code === -32001) {
+                  const { state } = hold.overloadRetry;
+                  const now = yield* DateTime.now;
+                  if (
+                    isCodexAppServerRequestError(cause) &&
+                    cause.code === -32001 &&
+                    !providerRetryWindowExpired(state.startedAt, now)
+                  ) {
                     const attempt = (overloadRetryAttempts.get(nativeThreadId) ?? 0) + 1;
                     overloadRetryAttempts.set(nativeThreadId, attempt);
-                    const retryDelayMs = yield* codexOverloadRetryDelayMs(attempt);
-                    const { state } = hold.overloadRetry;
+                    const retryDelayMs = clampToProviderRetryWindow(
+                      yield* codexOverloadRetryDelayMs(attempt),
+                      state.startedAt,
+                      now,
+                    );
                     hold.overloadRetry.state = {
                       ...state,
                       retry: { ...state.retry, attempt, retryDelayMs },

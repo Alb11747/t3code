@@ -33,7 +33,9 @@ import { closeThreadFind, openThreadFind, useThreadFindOpen } from "./chat/threa
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
 import { keepWarmStallBannerItem } from "./chat/KeepWarmStallBanner";
+import { providerRetryBannerItem } from "./chat/ProviderRetryBanner";
 import { activeKeepWarmHold } from "@t3tools/client-runtime/state/claudeKeepWarm";
+import { activeProviderRetry } from "@t3tools/client-runtime/state/providerRetry";
 import { resolveDraftHeroState } from "./ChatView.logic";
 import { useQueuedRunEdit } from "./chat/useQueuedRunEdit";
 import { recallCheckoutIsRepo, rememberCheckoutIsRepo } from "./ChatView.logic";
@@ -2580,6 +2582,18 @@ export default function ChatView(props: ChatViewProps) {
           timestampFormat,
         })
       : null;
+  const providerRetry = activeProviderRetry(
+    serverProjection?.turnItems ?? EMPTY_TURN_ITEMS,
+    serverRuntime?.activeRunId ?? null,
+  );
+  const providerRetryBanner =
+    providerRetry !== null && activeThreadShell
+      ? providerRetryBannerItem({
+          threadId: activeThreadShell.id,
+          retry: providerRetry,
+          timestampFormat,
+        })
+      : null;
   const composerBannerItems = (() => {
     const fallbackSelection = draftFallback?.selection;
     const defaultSelection =
@@ -2626,7 +2640,7 @@ export default function ChatView(props: ChatViewProps) {
             }),
           ]
         : [];
-    const limitRecoveryItems = [limitRecoveryBanner, keepWarmBanner].filter(
+    const limitRecoveryItems = [limitRecoveryBanner, keepWarmBanner, providerRetryBanner].filter(
       (item) => item !== null,
     );
     const extensionStatusBanner = extensionStatusBannerItem(

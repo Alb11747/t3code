@@ -163,6 +163,10 @@
       "types": "./src/state/claudeKeepWarm.ts",
       "default": "./src/state/claudeKeepWarm.ts"
     },
+    "./state/providerRetry": {
+      "types": "./src/state/providerRetry.ts",
+      "default": "./src/state/providerRetry.ts"
+    },
     "./state/attachments": {
       "types": "./src/state/attachments.ts",
       "default": "./src/state/attachments.ts"

@@ -1794,6 +1794,32 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
       }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
     );
 
+    it.effect("fails the run once retries pass a day without progress", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* start(harness);
+        const failure = makeResultFrame({
+          uuid: "00000000-0000-4000-8000-000000000911",
+          result: "API Error: Request failed.",
+          apiErrorStatus: 529,
+          terminalReason: "api_error",
+          isError: true,
+        });
+        yield* harness.offerAndWait(failure);
+        yield* harness.until(() => retryItems(harness.events).length > 0);
+        yield* TestClock.adjust(7_500);
+        yield* harness.until(() => harness.offeredMessages.length === 2);
+        // The continuation stays silent for a day, then fails again.
+        yield* TestClock.adjust("24 hours");
+        yield* harness.offerAndWait(failure);
+        yield* harness.awaitTerminal(1);
+        const [terminal] = harness.terminalEvents();
+        assert.equal(terminal?.status, "failed");
+        assert.equal(terminal?.status === "failed" ? terminal.retry?.attempt : null, 1);
+        assert.lengthOf(harness.offeredMessages, 2);
+      }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
     it.effect("recovers a background-task wake without opening another T3 run", () =>
       Effect.gen(function* () {
         const harness = yield* makeWakeHarness;

@@ -12,6 +12,7 @@ import {
   claudeOverloadRetryDelayMs,
   claudeQueryErrorFailure,
 } from "./ClaudeFailurePolicy.ts";
+import { clampToProviderRetryWindow, providerRetryWindowExpired } from "./ProviderRetryWindow.ts";
 import {
   type ClaudePromptCaching,
   claudeCompactionPromptCaching,
@@ -8792,15 +8793,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               (context.overloadRetry !== null && Cause.hasInterruptsOnly(cause))
                 ? retry?.failure
                 : failure;
-            if (
+            const recoverable =
               !interrupted &&
               (cause === undefined || !Cause.hasDies(cause)) &&
               (context.overloadRetry !== null ||
                 (cause !== undefined && !Cause.hasInterrupts(cause)) ||
                 (cause === undefined && retry?.retry.maxAttempts === null)) &&
               retryFailure !== undefined &&
-              claudeFailureRecoverable(retryFailure)
-            ) {
+              claudeFailureRecoverable(retryFailure);
+            if (recoverable && (yield* overloadRetryWindowOpen(context))) {
               if (context.overloadRetry === null)
                 yield* holdForOverloadRetry(context, retryFailure);
             } else {
@@ -8808,7 +8809,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 context,
                 status: interrupted ? "interrupted" : "failed",
                 completedAt: yield* DateTime.now,
-                ...(interrupted ? {} : { failure }),
+                ...(interrupted ? {} : { failure: recoverable ? retryFailure : failure }),
               });
             }
           } else {
@@ -10622,7 +10623,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 message.terminal_reason === "api_error"
                   ? (yield* Ref.get(providerRetries)).get(context.providerTurnId)?.failure
                   : undefined,
-              )
+              ) &&
+              (yield* overloadRetryWindowOpen(context))
             ) {
               context.steeredSegmentUsage.push(message.usage);
               yield* holdForOverloadRetry(context, terminalFailure);
@@ -12142,6 +12144,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             );
         });
 
+        const overloadRetryWindowOpen = Effect.fnUntraced(function* (
+          context: ActiveClaudeTurnContext,
+        ) {
+          const previous = (yield* Ref.get(providerRetries)).get(context.providerTurnId);
+          return (
+            previous === undefined ||
+            !providerRetryWindowExpired(previous.startedAt, yield* DateTime.now)
+          );
+        });
+
         const holdForOverloadRetry = Effect.fn("ClaudeAdapterV2.holdForOverloadRetry")(function* (
           context: ActiveClaudeTurnContext,
           failure: OrchestrationV2ProviderFailure,
@@ -12149,12 +12161,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           yield* cancelOverloadRetry(context);
           const previous = (yield* Ref.get(providerRetries)).get(context.providerTurnId);
           const attempt = (previous?.retry.maxAttempts === null ? previous.retry.attempt : 0) + 1;
-          const retryDelayMs = yield* claudeOverloadRetryDelayMs(attempt);
           const updatedAt = yield* DateTime.now;
+          const startedAt = previous?.startedAt ?? updatedAt;
+          const retryDelayMs = clampToProviderRetryWindow(
+            yield* claudeOverloadRetryDelayMs(attempt),
+            startedAt,
+            updatedAt,
+          );
           const state: ActiveClaudeProviderRetry = {
             failure: { ...failure, retryable: true },
             retry: { attempt, maxAttempts: null, retryDelayMs },
-            startedAt: previous?.startedAt ?? updatedAt,
+            startedAt,
             itemOrdinal:
               previous?.itemOrdinal ??
               (yield* resolveItemOrdinal(context, `terminal-failure:${context.providerTurnId}`)),
@@ -12228,7 +12245,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     return;
                   context.overloadRetry = null;
                   const failure = providerFailureFromQueryError(cause, live?.receivedInit);
-                  if (claudeFailureRecoverable(failure)) {
+                  if (
+                    claudeFailureRecoverable(failure) &&
+                    (yield* overloadRetryWindowOpen(context))
+                  ) {
                     yield* holdForOverloadRetry(context, failure);
                     return;
                   }

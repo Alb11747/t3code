@@ -569,6 +569,70 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
           ids.derive.providerTurn({ driver: CodexAdapterV2.CODEX_DRIVER_KIND, nativeTurnId }),
         ),
       );
+    const retryTurn = (
+      retry: number,
+      outcome: "failed" | "progress" | "completed",
+    ): Array<CodexReplay.CodexAppServerReplayEntry> => {
+      const id = `turn-${retry + 1}`;
+      return [
+        {
+          type: "expect_outbound",
+          label: `retry ${retry} turn/start`,
+          frame: {
+            id: retry + 3,
+            method: "turn/start",
+            params: {
+              threadId: nativeThreadId,
+              input: [],
+              cwd: "/workspace",
+              model: "gpt-5.4",
+              approvalPolicy: "never",
+              approvalsReviewer: "user",
+              sandboxPolicy: { type: "dangerFullAccess" },
+              summary: "detailed",
+              collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+            },
+          },
+        },
+        {
+          type: "emit_inbound",
+          label: `retry ${retry} turn/start`,
+          frame: {
+            id: retry + 3,
+            result: { turn: makeCodexReplayTurn({ id, status: "inProgress" }) },
+          },
+        },
+        {
+          type: "emit_inbound",
+          label: `retry ${retry} turn/started`,
+          frame: {
+            method: "turn/started",
+            params: {
+              threadId: nativeThreadId,
+              turn: makeCodexReplayTurn({ id, status: "inProgress" }),
+            },
+          },
+        },
+        ...(outcome === "progress"
+          ? [
+              {
+                type: "emit_inbound" as const,
+                label: `retry ${retry} agent message`,
+                frame: {
+                  method: "item/agentMessage/delta",
+                  params: {
+                    threadId: nativeThreadId,
+                    turnId: id,
+                    itemId: `message-${id}`,
+                    delta: "Working",
+                  },
+                },
+              },
+            ]
+          : []),
+        turnCompleted(id, outcome === "completed" ? "completed" : "failed"),
+      ];
+    };
 
     it.effect.each([
       { source: "completion", draw: 0, delayMs: 10_000 },
@@ -642,6 +706,23 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
                   },
                 },
               },
+              ...(source === "notification"
+                ? [
+                    {
+                      type: "emit_inbound" as const,
+                      label: "native reconnect during the retry",
+                      frame: {
+                        method: "error",
+                        params: {
+                          threadId: nativeThreadId,
+                          turnId: "turn-2",
+                          willRetry: true,
+                          error: { message: "Reconnecting... 1/5" },
+                        },
+                      },
+                    },
+                  ]
+                : []),
               turnCompleted("turn-2", "completed"),
             ],
           });
@@ -660,8 +741,18 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
           assert.deepEqual(retryRows(harness.events), [
             ["running", 1, delayMs],
             ["running", 1, null],
+            ...(source === "notification" ? [["running", 1, null]] : []),
             ["completed", 1, null],
           ]);
+          // A native reconnect inside the retry keeps T3's unbounded retry identity.
+          assert.isTrue(
+            harness.events.every(
+              (event) =>
+                event.type !== "turn_item.updated" ||
+                event.turnItem.type !== "error" ||
+                event.turnItem.retry?.maxAttempts == null,
+            ),
+          );
         }).pipe(
           Effect.scoped,
           Effect.provide(
@@ -935,70 +1026,6 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
         // Thirty failed retries outlast the former one-hour, 24-attempt cap. The
         // next retry makes progress before failing, so its wait starts over.
         const failedRetries = 30;
-        const retryTurn = (
-          retry: number,
-          outcome: "failed" | "progress" | "completed",
-        ): Array<CodexReplay.CodexAppServerReplayEntry> => {
-          const id = `turn-${retry + 1}`;
-          return [
-            {
-              type: "expect_outbound",
-              label: `retry ${retry} turn/start`,
-              frame: {
-                id: retry + 3,
-                method: "turn/start",
-                params: {
-                  threadId: nativeThreadId,
-                  input: [],
-                  cwd: "/workspace",
-                  model: "gpt-5.4",
-                  approvalPolicy: "never",
-                  approvalsReviewer: "user",
-                  sandboxPolicy: { type: "dangerFullAccess" },
-                  summary: "detailed",
-                  collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
-                },
-              },
-            },
-            {
-              type: "emit_inbound",
-              label: `retry ${retry} turn/start`,
-              frame: {
-                id: retry + 3,
-                result: { turn: makeCodexReplayTurn({ id, status: "inProgress" }) },
-              },
-            },
-            {
-              type: "emit_inbound",
-              label: `retry ${retry} turn/started`,
-              frame: {
-                method: "turn/started",
-                params: {
-                  threadId: nativeThreadId,
-                  turn: makeCodexReplayTurn({ id, status: "inProgress" }),
-                },
-              },
-            },
-            ...(outcome === "progress"
-              ? [
-                  {
-                    type: "emit_inbound" as const,
-                    label: `retry ${retry} agent message`,
-                    frame: {
-                      method: "item/agentMessage/delta",
-                      params: {
-                        threadId: nativeThreadId,
-                        turnId: id,
-                        itemId: `message-${id}`,
-                        delta: "Working",
-                      },
-                    },
-                  },
-                ]
-              : []),
-            turnCompleted(id, outcome === "completed" ? "completed" : "failed"),
-          ];
-        };
         const transcript = makeCodexReplayTranscript({
           scenario: "overload-retry-persistent",
           entries: [
@@ -1043,6 +1070,61 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
         assert.deepEqual(
           harness.terminalEvents().map((event) => [event.providerTurnId, event.status]),
           [[yield* providerTurnId(`turn-${failedRetries + 3}`), "completed"]],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+            fullRetryDelays,
+          ),
+        ),
+      ),
+    );
+
+    it.effect("fails the run once retries pass a day without progress", () =>
+      Effect.gen(function* () {
+        // 10s, 20s, 40s, 80s and 160s, then 3-minute waits: the 484th retry
+        // fails just past 24 hours, so no 485th is scheduled.
+        const failedRetries = 484;
+        const transcript = makeCodexReplayTranscript({
+          scenario: "overload-retry-day-cap",
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId: "turn-1", prompt }),
+            turnCompleted("turn-1", "failed"),
+            ...Array.from({ length: failedRetries }, (_, index) =>
+              retryTurn(index + 1, "failed"),
+            ).flat(),
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+        yield* harness.runtime.startTurn(yield* runInput(harness));
+        const scheduled = () =>
+          harness.events.flatMap((event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "error" &&
+            event.turnItem.status === "running" &&
+            event.turnItem.retry?.retryDelayMs != null
+              ? [event.turnItem.retry.retryDelayMs]
+              : [],
+          );
+        for (let count = 1; count <= failedRetries; count++) {
+          yield* harness.until(() => scheduled().length >= count);
+          assert.lengthOf(harness.terminalEvents(), 0);
+          yield* TestClock.adjust(scheduled()[count - 1] ?? 0);
+        }
+        yield* harness.firstTerminal;
+
+        assert.lengthOf(scheduled(), failedRetries);
+        // The last wait is clamped so no attempt starts after the 24-hour mark.
+        assert.equal(scheduled().at(-1), 50_000);
+        assert.deepEqual(retryRows(harness.events).at(-1)?.slice(0, 2), ["failed", failedRetries]);
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => [event.providerTurnId, event.status]),
+          [[yield* providerTurnId(`turn-${failedRetries + 1}`), "failed"]],
         );
       }).pipe(
         Effect.scoped,

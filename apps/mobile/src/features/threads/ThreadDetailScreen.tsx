@@ -16,6 +16,7 @@ import { createThreadVisitTracker } from "@t3tools/client-runtime/state/thread-v
 import { useChildThreadInputs, useThreadReportedModelSelection } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
 import { KeepWarmStallCard } from "./KeepWarmStallCard";
+import { ProviderRetryCard } from "./ProviderRetryCard";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import {
   effectiveSnoozed,
@@ -1662,6 +1663,10 @@ function ThreadDetailBody(
                       thread={props.selectedThread}
                       threadRef={props.selectedThreadDetailRef}
                       environmentId={props.environmentId}
+                    />
+                    <ProviderRetryCard
+                      thread={props.selectedThread}
+                      threadRef={props.selectedThreadDetailRef}
                     />
                     <ChildThreadApprovals
                       threadRef={props.selectedThreadDetailRef}
