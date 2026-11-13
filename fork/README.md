@@ -282,16 +282,28 @@ the PR merges. Commits still on your task branch can be amended freely. To
 remove a change from `main`, `git revert` its commits and delete its
 `CHANGES.md` entry in the revert.
 
-Remove a change the same way when upstream already contains it through
-another PR: the patch conflicts with an equivalent upstream change, the merge
-leaves it a no-op or a duplicate, or its PR was closed as superseded. A PR
-closed without merging is not enough on its own; confirm the upstream change
-is present in the upstream commit being synced. During a sync, abort the merge
-(`git merge --abort`), revert the change's commits newest first with the entry
-deleted, name the replacing upstream PR in the revert message, and rerun the
-sync, so the merge takes upstream's version. When `main` already carries the
-merge, a revert can also remove upstream's equivalent code; compare the result
-with upstream before pushing it.
+Remove a change the same way once upstream no longer needs it, whether
+upstream took the change through another PR or fixed the same bug another way.
+Sync retires a commit only when its own `Upstream-PR` merges, and a clean merge
+prompts nobody to check. So when a patch's PR closes unmerged, or upstream lands
+a fix for its issue, check whether the bug still reproduces on `upstream/main`
+with a test that would fail there. If it doesn't, revert the patch rather than
+keep it as a fork-only behaviour difference, unless the user explicitly wants
+it kept; a closed PR alone does not settle it either way. During a sync, abort
+the merge (`git merge --abort`), revert the change's commits newest first with
+the entry deleted, name the replacing upstream PR in the revert message, and
+rerun the sync, so the merge takes upstream's version. When `main` already
+carries the merge, sync merges have often adapted the patch, so a plain revert
+may not apply and can also remove upstream's code; remove the patch's hunks
+and compare the files with the merge base
+(`git diff $(git merge-base HEAD upstream/main) -- <file>`) before pushing.
+
+When a fresh upstream PR replaces a closed one, the fork's commits still carry
+the old `Upstream-PR`, so sync won't retire them when the new PR merges. Link
+the new PR in the `CHANGES.md` entry, noting the one it replaces. Whoever
+resolves or reviews the sync that brings it in reverts the old commits; since
+that sync may merge cleanly with no review, the thread watching the new PR
+(_Fixing bugs_, step 5) also checks once it reaches `main`.
 
 ### Reducing conflict surface
 

@@ -67,7 +67,12 @@ minimal.
      or commit that replaces it. Then run
      `bash "$FORK_RESOLVER_HOME/tools/prepare-sync.sh" "$run_id" --continue`,
      which merges again. A PR closed without merging is not enough on its own:
-     confirm the upstream change is actually present.
+     confirm the upstream change is actually present. A `fork/CHANGES.md`
+     entry may name a PR that replaced its commits' `Upstream-PR`; when that
+     PR is in this merge, the change is present. When upstream instead fixed
+     the same bug another way, keep the patch (deciding that needs a test and
+     sometimes the user) and, in the summary, ask the reviewer to check
+     whether it is still needed.
 
    - **Revert (`REVERT_HEAD` exists):** upstream merged that patch's PR, and
      later fork commits touched the same lines. Remove the reverted patch's
