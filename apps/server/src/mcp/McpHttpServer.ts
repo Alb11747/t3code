@@ -70,6 +70,8 @@ import { WorktreeToolkit } from "./toolkits/worktree/tools.ts";
 import * as WorktreeMcpService from "./WorktreeMcpService.ts";
 import * as IssuesHandlers from "./toolkits/issues/handlers.ts";
 import { IssuesToolkit } from "./toolkits/issues/tools.ts";
+import * as StallHandlers from "./toolkits/stall/handlers.ts";
+import { StallToolkit } from "./toolkits/stall/tools.ts";
 import * as PullRequestsHandlers from "./toolkits/pullRequests/handlers.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import * as DeviceHandlers from "./toolkits/device/handlers.ts";
@@ -1250,6 +1252,7 @@ export const layerTools = Layer.mergeAll(
   layerWorktreeToolkitRegistration,
   layerPullRequestsToolkit,
   toolkitRegistration(IssuesToolkit, IssuesHandlers.layer),
+  toolkitRegistration(StallToolkit, StallHandlers.layer),
   layerDeviceToolkit,
   layerHtmlToolkit,
 );
