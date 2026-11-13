@@ -10,6 +10,8 @@ than the fork's fix. Keep each entry on a single line; the sync script deletes
 the line of a change whose upstream PR merged. Closing an issue alone does not
 revert a patch. See `fork/README.md` for how to add or drop an entry.
 
+- `fix(dev): dev runner ignores the live server's port and network env`: `vp run dev` started from an agent shell no longer picks up the parent T3 server's inherited `T3CODE_PORT`, `T3CODE_HOST` or `T3CODE_LAN`, so it keeps the worktree's derived port instead of colliding on 3773 and does not bind every interface; `--port` and `--host` still set them explicitly, and `T3CODE_PORT_OFFSET`/`T3CODE_DEV_INSTANCE` still select ports. Dev tooling only. Issue: https://github.com/pingdotgg/t3code/issues/35999. PR: none yet
+
 - `fix(server): a slow remote fetch no longer fails worktree creation at 30s`: the remote fetch before a start-from-origin worktree gets a five-minute bound instead of the 30-second Git default, so a slow but healthy fetch finishes and a hung one still fails clearly. Carries juliusmarminge's maintainer takeover of watson's fix. Issue: https://github.com/pingdotgg/t3code/issues/10916. PR: https://github.com/pingdotgg/t3code/pull/24604
 
 - `fix(web): reread cached files when explicitly opened`: reopening a file tab or clicking its chat link again reads current host text immediately, even inside the cache freshness window. Applies to web and desktop. Upstream's #29409 revalidates only remounts past the stale time, so this patch still covers explicit opens within it and repeat link clicks on an open tab. Related issue: https://github.com/pingdotgg/t3code/issues/29345. Related PR: https://github.com/pingdotgg/t3code/pull/29409

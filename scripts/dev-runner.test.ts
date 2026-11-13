@@ -17,10 +17,12 @@ import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
+import { Command } from "effect/cli";
 
 import {
   checkPortAvailabilityOnHosts,
   createDevRunnerEnv,
+  devRunnerCli,
   findFirstAvailableOffset,
   resolveModePortOffsets,
   runDevRunnerWithInput,
@@ -637,6 +639,44 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         assert.ok(!("cause" in error));
         assert.notProperty(error, "args");
         assert.notInclude(error.message, "secret-token-value");
+      });
+    });
+
+    it.effect("ignores the network config a parent T3 server passes to agent shells", () => {
+      const parentServerEnv = { T3CODE_HOST: "0.0.0.0", T3CODE_LAN: "true", T3CODE_PORT: "3773" };
+      let captured: Record<string, string | undefined> | undefined;
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) => {
+          captured = (
+            command as { readonly options?: { readonly env?: Record<string, string | undefined> } }
+          ).options?.env;
+          return Effect.succeed(mockProcess(0));
+        }),
+      );
+
+      return Effect.gen(function* () {
+        yield* Command.runWith(devRunnerCli, { version: "0.0.0" })([
+          "dev:server",
+          "--home-dir",
+          "/tmp/t3code-dev-runner",
+        ]).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              ConfigProvider.layer(
+                ConfigProvider.fromEnv({ env: { ...parentServerEnv, T3CODE_PORT_OFFSET: "0" } }),
+              ),
+              netServiceLayer,
+              spawnerLayer,
+            ),
+          ),
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.provideService(HostProcess.Environment, parentServerEnv),
+        );
+
+        assert.equal(captured?.T3CODE_PORT, "13773");
+        assert.equal(captured?.T3CODE_HOST, undefined);
+        assert.equal(captured?.T3CODE_LAN, undefined);
       });
     });
 
