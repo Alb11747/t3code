@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
-import { ProjectionStoreV2 } from "./ProjectionStore.ts";
+import { ProjectionStoreV2, threadShellFromProjection } from "./ProjectionStore.ts";
 
 export const verifyKeepWarmShell = Effect.fn("verifyKeepWarmShell")(function* (threadId: ThreadId) {
   const store = yield* ProjectionStoreV2;
@@ -50,8 +50,10 @@ export const verifyKeepWarmShell = Effect.fn("verifyKeepWarmShell")(function* (t
     });
   const assertStalled = Effect.fnUntraced(function* (expected: boolean) {
     const listed = (yield* store.getShellSnapshot()).threads.find((shell) => shell.id === threadId);
-    for (const shell of [yield* store.getThreadShell(threadId), listed]) {
+    const direct = threadShellFromProjection(yield* store.getThreadProjection(threadId));
+    for (const shell of [yield* store.getThreadShell(threadId), listed, direct]) {
       assert.equal(shell?.keepWarmStalled ?? false, expected);
+      assert.deepEqual(shell?.keepWarmHold ?? null, expected ? notice.keepWarm : null);
     }
   });
   yield* assertStalled(false);

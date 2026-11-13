@@ -789,6 +789,16 @@ function threadSnooze(
   };
 }
 
+// Fork: the keep-warm hold behind the UI's Stalling status, so agents can tell it from a hung turn.
+function threadStall(
+  shell: Pick<OrchestrationV2ThreadShell, "keepWarmHold">,
+): Pick<OrchestratorMcpThreadListItem, "stalled"> {
+  const hold = shell.keepWarmHold;
+  return {
+    stalled: hold ? { kind: "keep_warm", resetAt: hold.resetAt, releaseAt: hold.releaseAt } : null,
+  };
+}
+
 function threadPullRequests(
   links: OrchestrationV2ThreadShell["pullRequests"],
 ): OrchestratorMcpThreadPullRequest[] {
@@ -824,6 +834,7 @@ function listItemFromShell(
     pullRequests: threadPullRequests(shell.pullRequests),
     ...threadSettlement(shell),
     ...threadSnooze(shell, nowMs),
+    ...threadStall(shell),
     parentThreadId: shell.lineage.parentThreadId,
     relationshipToParent: shell.lineage.relationshipToParent,
     itemCount: shell.visibleItemCount,
@@ -877,6 +888,7 @@ function threadDetail(
     archived: projection.thread.archivedAt !== null,
     ...threadSettlement(projection.thread),
     ...threadSnooze(shell, nowMs),
+    ...threadStall(shell),
     createdAt: DateTime.formatIso(projection.thread.createdAt),
     updatedAt: DateTime.formatIso(projection.thread.updatedAt),
   };

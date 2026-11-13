@@ -8,14 +8,38 @@ export const ClaudeKeepWarmHold = Schema.Struct({
   resetAt: IsoDateTime,
   /** When the proxy forwards the held request. */
   releaseAt: IsoDateTime,
+  /** The held account: its email, or the proxy's alias for it when the email is unknown. */
+  account: Schema.optionalKey(Schema.String),
+  /** Set on the ended notice of a hold the user released, while holds stay off (until `resetAt`). */
+  released: Schema.optionalKey(Schema.Boolean),
 });
 export type ClaudeKeepWarmHold = typeof ClaudeKeepWarmHold.Type;
 
 /**
- * `release`: stop holding this conversation until the reset. `compact`: stop the turn, compact on
- * the still-warm account, then continue. `pause`: end the turn as a usage-limit failure that resets at `resetAt`.
+ * What MCP thread summaries report while a running thread's requests are held: the turn is
+ * waiting on the provider's usage limit, not hung. About one model step still runs per hour.
  */
-export const ClaudeKeepWarmAction = Schema.Literals(["release", "compact", "pause"]);
+export const OrchestratorMcpThreadStall = Schema.Struct({
+  kind: Schema.Literal("keep_warm"),
+  /** When the usage limit resets and the thread runs at full speed again. */
+  resetAt: IsoDateTime,
+  /** When the next held request is sent. */
+  releaseAt: IsoDateTime,
+});
+
+/**
+ * `release`: stop holding this conversation until the reset; `restore` undoes it. `switch`: move
+ * the conversation to another account, rewriting its cache there. `compact`: stop the turn,
+ * compact on the still-warm account, then continue. `pause`: end the turn as a usage-limit
+ * failure that resets at `resetAt`.
+ */
+export const ClaudeKeepWarmAction = Schema.Literals([
+  "release",
+  "restore",
+  "switch",
+  "compact",
+  "pause",
+]);
 export type ClaudeKeepWarmAction = typeof ClaudeKeepWarmAction.Type;
 
 export const ClaudeKeepWarmActionInput = Schema.Struct({

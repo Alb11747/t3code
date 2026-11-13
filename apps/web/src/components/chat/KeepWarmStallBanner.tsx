@@ -7,7 +7,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
-import { SnowflakeIcon } from "lucide-react";
+import { EllipsisIcon, SnowflakeIcon } from "lucide-react";
 import { useState } from "react";
 
 import { useThreadActions } from "../../hooks/useThreadActions";
@@ -15,7 +15,10 @@ import { orchestrationEnvironment } from "../../state/orchestration";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
 import { Button } from "../ui/button";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { toastManager } from "../ui/toast";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { composerFloatingLayerProps } from "./composerEventScope";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 
 type StallProps = {
@@ -29,21 +32,34 @@ type StallProps = {
 /** Fork: the quota router holds this Claude turn's requests to keep its prompt cache warm. */
 export function keepWarmStallBannerItem(props: StallProps): ComposerBannerStackItem {
   const { hold, timestampFormat } = props;
+  const reset = formatUpcomingTimestamp(hold.resetAt, timestampFormat);
+  const id = `keep-warm-stall:${props.threadId}`;
+  const account = hold.account ? `Claude account ${hold.account}` : "Claude";
+  if (hold.released) {
+    return {
+      id,
+      variant: "info",
+      icon: <SnowflakeIcon />,
+      title: "No longer stalling to keep cache warm",
+      description: `${account} is nearly out of its 5-hour limit, which resets ${reset}. Requests run normally until then; reaching the limit first can let the prompt cache expire.`,
+      // Same key as the stall's actions: a release still in flight keeps them disabled.
+      actions: <StallActions key={hold.resetAt} {...props} />,
+    };
+  }
   return {
-    id: `keep-warm-stall:${props.threadId}`,
+    id,
     variant: "warning",
     icon: <SnowflakeIcon />,
     title: "Stalled to keep cache warm",
-    description: `Claude is nearly out of its 5-hour limit, which resets ${formatUpcomingTimestamp(
-      hold.resetAt,
-      timestampFormat,
-    )}. Next request ${formatUpcomingTimestamp(hold.releaseAt, timestampFormat)}.`,
+    description: `${account} is nearly out of its 5-hour limit, which resets ${reset}. Next request ${formatUpcomingTimestamp(hold.releaseAt, timestampFormat)}.`,
     actions: <StallActions key={hold.resetAt} {...props} />,
   };
 }
 
 const ACTION_FAILURES: Record<ClaudeKeepWarmAction, string> = {
   release: "Could not resume normal requests",
+  restore: "Could not turn stalling back on",
+  switch: "Could not switch accounts",
   compact: "Could not compact the thread",
   pause: "Could not pause the thread",
 };
@@ -91,20 +107,53 @@ function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProp
   }
 
   const disabled = pending || !permitted;
+  if (hold.released) {
+    return (
+      <Button size="xs" variant="ghost" disabled={disabled} onClick={() => void act("restore")}>
+        Stall again
+      </Button>
+    );
+  }
   return (
     <>
       <Button size="xs" variant="ghost" disabled={disabled} onClick={() => void act("release")}>
         Back to normal
       </Button>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={disabled}
+              onClick={() => void act("switch")}
+            >
+              Switch account
+            </Button>
+          }
+        />
+        <TooltipPopup side="top">
+          Continue on an account with quota. The whole conversation is written to that account's
+          cache once.
+        </TooltipPopup>
+      </Tooltip>
       <Button size="xs" variant="ghost" disabled={disabled} onClick={() => void act("compact")}>
         Compact
       </Button>
-      <Button size="xs" variant="ghost" disabled={disabled} onClick={() => void toggleSnooze()}>
-        {snoozed ? "Wake now" : "Snooze until reset"}
-      </Button>
-      <Button size="xs" variant="ghost" disabled={disabled} onClick={() => void act("pause")}>
-        Pause until reset
-      </Button>
+      <Menu>
+        <MenuTrigger
+          disabled={disabled}
+          render={<Button size="icon-xs" variant="ghost" aria-label="More stall actions" />}
+        >
+          <EllipsisIcon />
+        </MenuTrigger>
+        <MenuPopup {...composerFloatingLayerProps} side="top" align="end" width="content">
+          <MenuItem onClick={() => void toggleSnooze()}>
+            {snoozed ? "Wake now" : "Snooze until reset"}
+          </MenuItem>
+          <MenuItem onClick={() => void act("pause")}>Pause until reset</MenuItem>
+        </MenuPopup>
+      </Menu>
     </>
   );
 }

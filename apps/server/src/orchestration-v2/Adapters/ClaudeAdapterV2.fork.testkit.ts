@@ -806,6 +806,41 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
       const running = (yield* Queue.take(harness.systemNoticeReceipts)).turnItem;
       assert.deepInclude(running, { status: "running", keepWarm: hold });
 
+      // Releasing ends the notice with a mark that `restore` clears without moving its end.
+      yield* session.show(turn, { ...hold, released: true });
+      const released = (yield* Queue.take(harness.systemNoticeReceipts)).turnItem;
+      assert.deepInclude(released, {
+        id: running.id,
+        status: "completed",
+        keepWarm: { ...hold, released: true },
+      });
+      // A poll that still lists the released hold does not reopen it.
+      yield* session.show(turn, hold);
+      assert.deepEqual((yield* session.turn)?.hold, { ...hold, released: true });
+      yield* session.show(turn, null);
+      yield* TestClock.adjust("5 minutes");
+      yield* session.restore(turn);
+      const restored = (yield* Queue.take(harness.systemNoticeReceipts)).turnItem;
+      const unmarked = { ...released, keepWarm: hold };
+      assert.deepEqual({ ...restored, updatedAt: released.updatedAt }, unmarked);
+      assert.isNull((yield* session.turn)?.hold);
+      // A release that outlives its reset loses the mark on the next poll.
+      yield* session.show(turn, hold);
+      yield* Queue.take(harness.systemNoticeReceipts);
+      yield* session.show(turn, { ...hold, released: true });
+      yield* Queue.take(harness.systemNoticeReceipts);
+      yield* TestClock.adjust("3 hours");
+      yield* session.show(turn, null);
+      assert.deepInclude((yield* Queue.take(harness.systemNoticeReceipts)).turnItem, {
+        status: "completed",
+        keepWarm: hold,
+      });
+      yield* session.show(turn, hold);
+      assert.deepInclude((yield* Queue.take(harness.systemNoticeReceipts)).turnItem, {
+        status: "running",
+        keepWarm: hold,
+      });
+
       yield* session.pause({ ...turn, hold }, hold);
       const terminal = yield* Queue.take(harness.terminalReceipts);
       assert.equal(terminal.status, "failed");
@@ -819,7 +854,7 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
         harness.events.filter(
           (event) => event.type === "turn_item.updated" && event.turnItem.type === "system_notice",
         ),
-        2,
+        8,
       );
     }).pipe(
       Effect.provideService(ClaudeKeepWarm.ClaudeKeepWarm, {

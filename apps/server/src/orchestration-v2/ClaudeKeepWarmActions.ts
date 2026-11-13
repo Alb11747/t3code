@@ -20,17 +20,41 @@ export const make = Effect.gen(function* () {
     const failWith = (cause: { readonly message: string }) =>
       new ClaudeKeepWarmActionError({ threadId, detail: cause.message });
     const stalled = yield* keepWarm.find(threadId);
-    if (stalled === null) {
+    // A released hold only takes `restore`; a live one takes everything else.
+    if (
+      stalled === null ||
+      (stalled.turn.hold.released === true) !== (input.action === "restore")
+    ) {
       return yield* new ClaudeKeepWarmActionError({
         threadId,
-        detail: "This thread is no longer held to keep Claude's prompt cache warm.",
+        detail:
+          input.action === "restore"
+            ? "This thread's turn was not released from keep-warm holds."
+            : "This thread is no longer held to keep Claude's prompt cache warm.",
       });
     }
     const { session, turn } = stalled;
     switch (input.action) {
       case "release":
-        yield* keepWarm.release(turn.session, turn.hold.resetAt).pipe(Effect.mapError(failWith));
+        // Marked first: the released request's response can end the notice before the router
+        // answers, and an ended notice can no longer take the mark.
+        yield* session.show(turn, { ...turn.hold, released: true });
+        yield* keepWarm.release(turn.session, turn.hold.resetAt).pipe(
+          Effect.tapError(() =>
+            session.restore(turn).pipe(Effect.andThen(session.show(turn, turn.hold))),
+          ),
+          Effect.mapError(failWith),
+        );
+        return;
+      case "switch":
+        yield* keepWarm
+          .release(turn.session, turn.hold.resetAt, true)
+          .pipe(Effect.mapError(failWith));
         yield* session.show(turn, null);
+        return;
+      case "restore":
+        yield* keepWarm.release(turn.session, null).pipe(Effect.mapError(failWith));
+        yield* session.restore(turn);
         return;
       case "pause":
         yield* session.pause(turn, turn.hold).pipe(Effect.mapError(failWith));

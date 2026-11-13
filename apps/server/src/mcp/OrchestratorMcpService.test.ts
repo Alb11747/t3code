@@ -3792,10 +3792,14 @@ describe("OrchestratorMcpService thread list", () => {
     status: "completed" as const,
     snoozedUntil: snoozed ? DateTime.makeUnsafe("2099-01-01T00:00:00Z") : null,
   });
+  const stall = { resetAt: "2099-01-01T05:00:00.000Z", releaseAt: "2099-01-01T00:59:00.000Z" };
   const shells = [
     shell("thread:a-snoozed", "project:a", true),
     shell("thread:a-awake", "project:a", false),
-    shell("thread:b-snoozed", "project:b", true),
+    {
+      ...shell("thread:b-snoozed", "project:b", true),
+      keepWarmHold: { ...stall, account: "warm@example.com" },
+    },
   ];
   const service = layerOrchestratorService.pipe(
     Layer.provide(
@@ -3838,6 +3842,11 @@ describe("OrchestratorMcpService thread list", () => {
           ["thread:a-snoozed", "project:a"],
           ["thread:b-snoozed", "project:b"],
         ],
+      );
+      // A keep-warm hold is reported without the account it names.
+      assert.deepStrictEqual(
+        listed.threads.map((thread) => thread.stalled),
+        [null, { kind: "keep_warm", ...stall }],
       );
     }).pipe(Effect.provide(service)),
   );

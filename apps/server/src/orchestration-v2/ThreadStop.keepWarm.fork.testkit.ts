@@ -86,6 +86,7 @@ export const verifyKeepWarmCompaction = Effect.fn("verifyKeepWarmCompaction")(fu
   const session: ClaudeKeepWarm.ClaudeKeepWarmSession = {
     turn: Effect.succeed(turn),
     show: () => Effect.void,
+    restore: () => Effect.void,
     pause: () => Effect.die("Compaction must not pause until reset"),
   };
   const actions = yield* ClaudeKeepWarmActions.make.pipe(

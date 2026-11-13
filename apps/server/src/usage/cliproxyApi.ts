@@ -123,6 +123,7 @@ const Control = Schema.Struct({
       Schema.Array(
         Schema.Struct({
           session: Schema.String,
+          account: Schema.optional(Schema.String),
           release_at: Schema.String,
           reset_at: Schema.optional(Schema.NullOr(Schema.String)),
           kind: Schema.optional(Schema.String),
@@ -439,6 +440,8 @@ export const makeCliproxyApi = Effect.gen(function* () {
     hub: CliproxyHub,
     path: string,
     body?: unknown,
+    // `conflict` replaces the generic text for an HTTP 409, whose body stays unread like any other.
+    options: { readonly method?: "DELETE"; readonly conflict?: string } = {},
   ) {
     const url = yield* Effect.try({
       try: () => {
@@ -450,7 +453,9 @@ export const makeCliproxyApi = Effect.gen(function* () {
       catch: () => new UsageLimitSourceError({ detail: "The hub URL is not valid." }),
     });
     const request = (
-      body === undefined ? HttpClientRequest.get(url) : HttpClientRequest.post(url)
+      body === undefined
+        ? HttpClientRequest.get(url)
+        : HttpClientRequest.make(options.method ?? "POST")(url)
     ).pipe(HttpClientRequest.setHeader("Authorization", `Bearer ${hub.managementKey}`));
     const response = yield* client
       .execute(body === undefined ? request : request.pipe(HttpClientRequest.bodyJsonUnsafe(body)))
@@ -459,7 +464,16 @@ export const makeCliproxyApi = Effect.gen(function* () {
         Effect.flatMap((response) => response.json),
         Effect.timeout("15 seconds"),
         Effect.mapError(
-          (error) => new UsageLimitSourceError({ detail: describeManagementFailure(error) }),
+          (error) =>
+            new UsageLimitSourceError({
+              detail:
+                options.conflict !== undefined &&
+                HttpClientError.isHttpClientError(error) &&
+                error.reason._tag === "StatusCodeError" &&
+                error.reason.response.status === 409
+                  ? options.conflict
+                  : describeManagementFailure(error),
+            }),
         ),
       );
     return response;
@@ -603,18 +617,37 @@ export const makeCliproxyApi = Effect.gen(function* () {
       const releaseAt = iso(held.release_at);
       const resetAt = iso(held.reset_at);
       return held.kind === "keep_warm" && releaseAt !== null && resetAt !== null
-        ? [{ session: held.session, releaseAt, resetAt }]
+        ? [{ session: held.session, account: held.account, releaseAt, resetAt }]
         : [];
     });
   });
 
-  // Forwards the sessions' held requests now and stops holding them until `expiresAt`.
+  /**
+   * Forwards the sessions' held requests now and stops holding them until `expiresAt`. With
+   * `switchAccount` (quota router 0.23.0) the router instead moves each conversation's held
+   * requests to another account once one can take them, or answers 409 when the conversation has
+   * no hold it may move; older routers treat it as a plain release.
+   */
   const releaseKeepWarm = Effect.fn("CliproxyApi.releaseKeepWarm")(function* (
     config: CliproxyHub,
     sessions: ReadonlyArray<string>,
     expiresAt: string,
+    switchAccount = false,
   ) {
-    yield* management(config, "control/keep-warm", { sessions, expires_at: expiresAt });
+    yield* management(
+      config,
+      "control/keep-warm",
+      { sessions, expires_at: expiresAt, ...(switchAccount ? { switch: true } : {}) },
+      { conflict: "This conversation cannot switch accounts right now." },
+    );
+  });
+
+  // Undoes `releaseKeepWarm`: the sessions' later requests can be held again.
+  const restoreKeepWarm = Effect.fn("CliproxyApi.restoreKeepWarm")(function* (
+    config: CliproxyHub,
+    sessions: ReadonlyArray<string>,
+  ) {
+    yield* management(config, "control/keep-warm", { sessions }, { method: "DELETE" });
   });
 
   /**
@@ -647,5 +680,13 @@ export const makeCliproxyApi = Effect.gen(function* () {
     return { resetsAt };
   });
 
-  return { readAccounts, consume, keepWarmHolds, releaseKeepWarm, nextPickReset };
+  return {
+    readAccounts,
+    consume,
+    authFiles,
+    keepWarmHolds,
+    releaseKeepWarm,
+    restoreKeepWarm,
+    nextPickReset,
+  };
 });

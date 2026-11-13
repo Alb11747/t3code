@@ -4590,6 +4590,13 @@ interface ActiveClaudeTurnContext {
       readonly startedAt: DateTime.Utc;
       readonly hold: ClaudeKeepWarmHold;
     } | null;
+    // The ended notice of a hold the user released, until holds are restored or a new one opens.
+    released: {
+      readonly nativeItemId: string;
+      readonly startedAt: DateTime.Utc;
+      readonly hold: ClaudeKeepWarmHold;
+      readonly completedAt: DateTime.Utc;
+    } | null;
     pause: ClaudeKeepWarmHold | null;
     ended: boolean;
   };
@@ -8202,15 +8209,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           context: ActiveClaudeTurnContext,
           notice: NonNullable<NonNullable<ActiveClaudeTurnContext["keepWarm"]>["notice"]>,
           status: "running" | "completed",
+          // Set to re-emit an ended notice without moving its end.
+          endedAt?: DateTime.Utc,
         ) {
           const now = yield* DateTime.now;
-          const nowMs = DateTime.toEpochMillis(now);
+          const completedAt = endedAt ?? now;
           const message =
             status === "running"
               ? ClaudeKeepWarm.describeKeepWarmHold()
               : ClaudeKeepWarm.describeKeepWarmHoldEnd(
                   DateTime.toEpochMillis(notice.startedAt),
-                  nowMs,
+                  DateTime.toEpochMillis(completedAt),
                 );
           yield* emitProviderEvent({
             type: "turn_item.updated",
@@ -8238,28 +8247,61 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               message,
               keepWarm: notice.hold,
               startedAt: notice.startedAt,
-              completedAt: status === "completed" ? now : null,
+              completedAt: status === "completed" ? completedAt : null,
               updatedAt: now,
             },
           });
+          return completedAt;
+        });
+
+        // Re-emits a released hold's ended notice without its mark.
+        const clearKeepWarmRelease = Effect.fnUntraced(function* (
+          context: ActiveClaudeTurnContext,
+        ) {
+          const released = context.keepWarm?.released;
+          if (!context.keepWarm || !released) return;
+          context.keepWarm.released = null;
+          const { released: _mark, ...hold } = released.hold;
+          yield* emitKeepWarmNotice(
+            context,
+            { ...released, hold },
+            "completed",
+            released.completedAt,
+          );
         });
 
         const showKeepWarmHold = Effect.fnUntraced(function* (
           context: ActiveClaudeTurnContext,
           hold: ClaudeKeepWarmHold | null,
         ) {
-          const state = (context.keepWarm ??= { notice: null, pause: null, ended: false });
+          const state = (context.keepWarm ??= {
+            notice: null,
+            released: null,
+            pause: null,
+            ended: false,
+          });
           const notice = state.notice;
           if (state.ended) return;
-          if (hold === null) {
-            if (notice === null) return;
+          if (hold === null || hold.released) {
+            if (notice === null) {
+              // A release ends with the reset; each poll passes here, so clients need no clock.
+              const until = state.released?.hold.resetAt;
+              if (until !== undefined && Date.parse(until) <= (yield* Clock.currentTimeMillis)) {
+                yield* clearKeepWarmRelease(context);
+              }
+              return;
+            }
             state.notice = null;
-            yield* emitKeepWarmNotice(context, notice, "completed");
+            const ended = { ...notice, hold: hold ?? notice.hold };
+            const completedAt = yield* emitKeepWarmNotice(context, ended, "completed");
+            if (hold !== null) state.released = { ...ended, completedAt };
             return;
           }
-          if (notice?.hold.releaseAt === hold.releaseAt && notice.hold.resetAt === hold.resetAt) {
-            return;
-          }
+          // The second case is a poll that read the router before a release took effect.
+          const shown = notice?.hold ?? state.released?.hold;
+          if (shown?.releaseAt === hold.releaseAt && shown.resetAt === hold.resetAt) return;
+          // Clients read the newest notice, so the older one's mark needs no rewrite.
+          state.released = null;
           state.notice = {
             nativeItemId:
               notice?.nativeItemId ?? `keep-warm:${context.providerTurnId}:${hold.releaseAt}`,
@@ -8274,7 +8316,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           context: ActiveClaudeTurnContext,
           status: OrchestrationV2ProviderTurn["status"],
         ) {
-          const state = (context.keepWarm ??= { notice: null, pause: null, ended: false });
+          const state = (context.keepWarm ??= {
+            notice: null,
+            released: null,
+            pause: null,
+            ended: false,
+          });
           if (state.ended) return null;
           yield* showKeepWarmHold(context, null);
           // A poll that read the hold before this turn ended must not reopen its notice.
@@ -12759,7 +12806,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     runId: context.input.runId,
                     providerTurnId: context.providerTurnId,
                     session: context.nativeThreadId,
-                    hold: context.keepWarm?.notice?.hold ?? null,
+                    hold:
+                      context.keepWarm?.notice?.hold ?? context.keepWarm?.released?.hold ?? null,
                   },
             ),
           ),
@@ -12767,6 +12815,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             keepWarmContext(turn).pipe(
               Effect.flatMap((context) =>
                 context === null ? Effect.void : showKeepWarmHold(context, hold),
+              ),
+            ),
+          restore: (turn) =>
+            keepWarmContext(turn).pipe(
+              Effect.flatMap((context) =>
+                context === null ? Effect.void : clearKeepWarmRelease(context),
               ),
             ),
           pause: Effect.fn("ClaudeAdapterV2.pauseKeepWarm")(function* (turn, hold) {

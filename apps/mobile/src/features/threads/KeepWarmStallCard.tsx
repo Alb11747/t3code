@@ -38,6 +38,7 @@ export function KeepWarmStallCard({
   const unsnooze = useAtomCommand(threadEnvironment.unsnooze, { reportFailure: false });
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showMore, setShowMore] = useState(false);
   const hold = activeKeepWarmHold(
     structure?.projection.turnItems ?? [],
     thread.runtime?.activeRunId ?? null,
@@ -73,11 +74,36 @@ export function KeepWarmStallCard({
       snoozed ? "Could not wake the thread." : "Could not snooze the thread.",
     );
   const disabled = pending || !permitted;
+  const limit = hold.account ? `The 5-hour limit of ${hold.account}` : "The 5-hour limit";
+  const failure = error ? (
+    <Text accessibilityRole="alert" className="text-sm text-destructive">
+      {error}
+    </Text>
+  ) : null;
+
+  if (hold.released) {
+    return (
+      <View className="mx-3 mb-2 gap-2 rounded-xl border border-border bg-screen p-3">
+        <Text className="text-sm">
+          {`No longer stalling to keep Claude's cache warm. ${limit} resets ${formatTime(hold.resetAt)}. Requests run normally until then; reaching the limit first can let the prompt cache expire.`}
+        </Text>
+        <View className="flex-row flex-wrap gap-2">
+          <Button
+            label="Stall again"
+            tone="secondary"
+            disabled={disabled}
+            onPress={() => void act("restore")}
+          />
+        </View>
+        {failure}
+      </View>
+    );
+  }
 
   return (
     <View className="mx-3 mb-2 gap-2 rounded-xl border border-warning-foreground/25 bg-screen p-3">
       <Text className="text-sm text-warning-foreground">
-        {`Stalled to keep Claude's cache warm. The 5-hour limit resets ${formatTime(hold.resetAt)}; next request ${formatTime(hold.releaseAt)}.`}
+        {`Stalled to keep Claude's cache warm. ${limit} resets ${formatTime(hold.resetAt)}; next request ${formatTime(hold.releaseAt)}.`}
       </Text>
       <View className="flex-row flex-wrap gap-2">
         <Button
@@ -87,29 +113,37 @@ export function KeepWarmStallCard({
           onPress={() => void act("release")}
         />
         <Button
+          label="Switch account"
+          tone="secondary"
+          disabled={disabled}
+          onPress={() => void act("switch")}
+        />
+        <Button
           label="Compact"
           tone="secondary"
           disabled={disabled}
           onPress={() => void act("compact")}
         />
-        <Button
-          label={snoozed ? "Wake now" : "Snooze until reset"}
-          tone="secondary"
-          disabled={disabled}
-          onPress={() => void toggleSnooze()}
-        />
-        <Button
-          label="Pause until reset"
-          tone="secondary"
-          disabled={disabled}
-          onPress={() => void act("pause")}
-        />
+        {showMore ? (
+          <>
+            <Button
+              label={snoozed ? "Wake now" : "Snooze until reset"}
+              tone="secondary"
+              disabled={disabled}
+              onPress={() => void toggleSnooze()}
+            />
+            <Button
+              label="Pause until reset"
+              tone="secondary"
+              disabled={disabled}
+              onPress={() => void act("pause")}
+            />
+          </>
+        ) : (
+          <Button label="More" tone="secondary" onPress={() => setShowMore(true)} />
+        )}
       </View>
-      {error ? (
-        <Text accessibilityRole="alert" className="text-sm text-destructive">
-          {error}
-        </Text>
-      ) : null}
+      {failure}
     </View>
   );
 }

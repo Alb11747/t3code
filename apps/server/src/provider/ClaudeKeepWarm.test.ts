@@ -14,7 +14,9 @@ import {
 } from "@t3tools/contracts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Result from "effect/Result";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
@@ -25,6 +27,8 @@ import * as ClaudeKeepWarm from "./ClaudeKeepWarm.ts";
 
 const threadId = ThreadId.make("thread-keep-warm");
 const hold = { resetAt: "2026-11-03T15:00:00.000Z", releaseAt: "2026-11-03T13:59:00.000Z" };
+// The fixture hub's account whose router alias is HMAC-SHA256("key", '["claude","7"]').
+const WARM = "warm@example.com";
 
 it("allows keep-warm holds without replacing an explicit stream idle timeout", () => {
   const environment = { ANTHROPIC_CUSTOM_HEADERS: "X-Existing: 1" };
@@ -40,7 +44,7 @@ it("allows keep-warm holds without replacing an explicit stream idle timeout", (
 });
 
 function fixture(
-  control: { status: number; body: unknown },
+  control: { status: number; body: unknown; conflict?: boolean; failDelete?: boolean },
   managementKey: SettingsSecretValue = "key",
 ) {
   const requests: Array<{ method: string; path: string; body: unknown }> = [];
@@ -51,12 +55,18 @@ function fixture(
         request.body._tag === "Uint8Array"
           ? JSON.parse(new TextDecoder().decode(request.body.body))
           : undefined;
-      requests.push({ method: request.method, path: new URL(request.url).pathname, body });
+      const path = new URL(request.url).pathname;
+      requests.push({ method: request.method, path, body });
+      const accounts = { files: [{ id: "a", auth_index: "7", provider: "claude", email: WARM }] };
       return HttpClientResponse.fromWeb(
         request,
-        request.method === "GET"
-          ? Response.json(control.body, { status: control.status })
-          : Response.json({}),
+        request.method === "DELETE" && control.failDelete
+          ? Response.json({}, { status: 500 })
+          : request.method !== "GET"
+            ? Response.json({}, { status: control.conflict ? 409 : 200 })
+            : path.endsWith("/auth-files")
+              ? Response.json(accounts)
+              : Response.json(control.body, { status: control.status }),
       );
     }),
   );
@@ -105,6 +115,7 @@ function fakeSession(session: string, index: number) {
           hold = next;
           shown.push(next);
         }),
+      restore: () => Effect.sync(() => void (hold = null)),
       pause: (_turn, next) => Effect.sync(() => void paused.push(next)),
     } satisfies ClaudeKeepWarm.ClaudeKeepWarmSession,
   };
@@ -128,6 +139,7 @@ it.effect("shows only keep-warm holds of the session, with one control read per 
           },
           {
             session: "root",
+            account: "account-d35f1b129b54c235",
             kind: "keep_warm",
             release_at: "2026-11-03T13:59:00+00:00",
             reset_at: "2026-11-03T15:00:00Z",
@@ -150,14 +162,15 @@ it.effect("shows only keep-warm holds of the session, with one control read per 
     yield* keepWarm.register(first.session);
     yield* keepWarm.register(second.session);
     yield* TestClock.adjust("30 seconds");
-    assert.deepEqual(first.shown, [hold]);
+    // The hold names its account by email, read once from the hub's account list.
+    assert.deepEqual(first.shown, [{ ...hold, account: WARM }]);
     assert.deepEqual(second.shown, [null]);
     assert.deepEqual(
       requests.map((request) => request.path),
-      ["/v0/management/control"],
+      ["/v0/management/control", "/v0/management/auth-files"],
     );
     const found = yield* keepWarm.find(ThreadId.make(`${threadId}-1`));
-    assert.deepEqual(found?.turn.hold, hold);
+    assert.deepEqual(found?.turn.hold, { ...hold, account: WARM });
     yield* keepWarm.release("root", hold.resetAt);
     assert.deepInclude(requests.at(-1), {
       method: "POST",
@@ -178,7 +191,7 @@ it.effect("treats a router without the control endpoint as holding nothing", () 
 });
 
 it.effect("runs keep-warm actions against the stalled turn", () => {
-  const { requests, layer } = fixture({
+  const control: Parameters<typeof fixture>[0] = {
     status: 200,
     body: {
       held: [
@@ -190,7 +203,8 @@ it.effect("runs keep-warm actions against the stalled turn", () => {
         },
       ],
     },
-  });
+  };
+  const { requests, layer } = fixture(control);
   const dispatched: Array<OrchestrationV2ServerCommand> = [];
   return Effect.gen(function* () {
     const keepWarm = yield* ClaudeKeepWarm.ClaudeKeepWarm;
@@ -225,7 +239,71 @@ it.effect("runs keep-warm actions against the stalled turn", () => {
       path: "/v0/management/control/keep-warm",
       body: { sessions: ["root"], expires_at: hold.resetAt },
     });
+    assert.deepEqual(stalled.shown.at(-1), { ...hold, released: true });
+
+    // A released turn takes only `restore`, which lets the proxy hold it again.
+    const moved = yield* Effect.flip(actions.run({ threadId: stalledThread, action: "switch" }));
+    assert.instanceOf(moved, ClaudeKeepWarmActionError);
+    const released = yield* Effect.flip(actions.run({ threadId: stalledThread, action: "pause" }));
+    assert.instanceOf(released, ClaudeKeepWarmActionError);
+    yield* actions.run({ threadId: stalledThread, action: "restore" });
+    assert.deepInclude(requests.at(-1), {
+      method: "DELETE",
+      path: "/v0/management/control/keep-warm",
+      body: { sessions: ["root"] },
+    });
+    assert.isNull(yield* keepWarm.find(stalledThread));
+    yield* TestClock.adjust("30 seconds");
+    const restored = yield* Effect.flip(
+      actions.run({ threadId: stalledThread, action: "restore" }),
+    );
+    assert.instanceOf(restored, ClaudeKeepWarmActionError);
+
+    // A switch succeeds once the router no longer holds the conversation.
+    const switchAccount = Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(
+        Effect.result(actions.run({ threadId: stalledThread, action: "switch" })),
+      );
+      yield* TestClock.adjust("1 second");
+      return yield* Fiber.join(fiber);
+    });
+    const held = control.body;
+    control.body = { held: [] };
+    assert.isTrue(Result.isSuccess(yield* switchAccount));
+    assert.deepInclude(requests.at(-2), {
+      method: "POST",
+      body: { sessions: ["root"], expires_at: hold.resetAt, switch: true },
+    });
     assert.deepEqual(stalled.shown.at(-1), null);
+
+    // Still held afterwards: no account could take it, so the switch is withdrawn.
+    control.body = held;
+    yield* TestClock.adjust("30 seconds");
+    const full = yield* switchAccount;
+    assert.equal(
+      Result.isFailure(full) && full.failure.detail,
+      "No other Claude account can take this conversation right now.",
+    );
+    assert.deepInclude(requests.at(-1), { method: "DELETE", body: { sessions: ["root"] } });
+    assert.deepEqual(stalled.shown.at(-1), hold);
+
+    // A switch the router cannot confirm or cancel says so instead of reporting success.
+    control.status = 500;
+    control.failDelete = true;
+    const unconfirmed = yield* switchAccount;
+    assert.equal(
+      Result.isFailure(unconfirmed) && unconfirmed.failure.detail,
+      "Could not confirm that the conversation switched accounts. The switch could not be cancelled, so the conversation may still move later.",
+    );
+    control.status = 200;
+
+    // The router's 409: the conversation has no hold it may move.
+    control.conflict = true;
+    const refused = yield* Effect.flip(actions.run({ threadId: stalledThread, action: "switch" }));
+    assert.equal(refused.detail, "This conversation cannot switch accounts right now.");
+    // A release the router refuses reopens the stall instead of leaving it marked released.
+    yield* Effect.flip(actions.run({ threadId: stalledThread, action: "release" }));
+    assert.deepEqual(stalled.shown.slice(-2), [{ ...hold, released: true }, hold]);
   }).pipe(
     Effect.provide(
       Layer.merge(

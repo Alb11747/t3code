@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { AuthMcpClientAccess } from "./auth.ts";
+import { OrchestratorMcpThreadStall } from "./claudeKeepWarm.ts";
 import {
   ContextTransferId,
   EnvironmentId,
@@ -387,6 +388,7 @@ export const OrchestratorMcpThreadListItem = Schema.Struct({
   settledAt: Schema.NullOr(IsoDateTime),
   snoozed: Schema.Boolean,
   snoozedUntil: Schema.NullOr(IsoDateTime),
+  stalled: Schema.optional(Schema.NullOr(OrchestratorMcpThreadStall)),
   parentThreadId: Schema.NullOr(ThreadId),
   relationshipToParent: Schema.NullOr(Schema.Literals(["fork", "subagent"])),
   itemCount: NonNegativeInt,
@@ -471,6 +473,7 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
   settledAt: Schema.NullOr(IsoDateTime),
   snoozed: Schema.Boolean,
   snoozedUntil: Schema.NullOr(IsoDateTime),
+  stalled: Schema.optional(Schema.NullOr(OrchestratorMcpThreadStall)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

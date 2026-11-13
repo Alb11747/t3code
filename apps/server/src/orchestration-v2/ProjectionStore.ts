@@ -12,7 +12,7 @@ import type {
   OrchestrationV2SearchThreadResult,
   OrchestrationV2ThreadHistoryPage,
 } from "@t3tools/contracts";
-import { deriveKeepWarmStalled } from "./claudeKeepWarmShell.ts";
+import { deriveKeepWarmHold, keepWarmShellFields } from "./claudeKeepWarmShell.ts";
 import {
   latestRootProviderFailure,
   latestUnheldRun,
@@ -1696,7 +1696,7 @@ export function threadShellFromProjection(
       latestRun != null && isBackgroundWakeRunForShell(latestRun, projection),
     activeRunId: activeRun?.id ?? null,
     blockedOnThreadWait: deriveBlockedOnThreadWait({ activeRun, turnItems: projection.turnItems }),
-    keepWarmStalled: deriveKeepWarmStalled(activeRun?.id ?? null, projection.turnItems),
+    ...keepWarmShellFields(activeRun?.id ?? null, projection.turnItems),
     activityRunStatus: activityRun?.status ?? null,
     activityRunStartedAt:
       activityRun === null ? null : orchestrationV2RunWorkStartedAt(activityRun),
@@ -1834,7 +1834,7 @@ type ShellThreadState = {
   readonly latestRunBackgroundWake: boolean;
   readonly activeRunId: RunId | null;
   readonly blockedOnThreadWait: boolean;
-  readonly keepWarmStalled: boolean;
+  readonly keepWarmHold: NonNullable<OrchestrationV2ThreadShell["keepWarmHold"]> | null;
   readonly activityRunStatus: ShellActivityRunStatus | null;
   readonly activityRunStartedAt: DateTime.Utc | null;
   readonly lastError: string | null;
@@ -1999,7 +1999,8 @@ function shellFromState(input: {
     latestRunBackgroundWake: input.state.latestRunBackgroundWake,
     activeRunId: input.state.activeRunId,
     blockedOnThreadWait: input.state.blockedOnThreadWait,
-    keepWarmStalled: input.state.keepWarmStalled,
+    keepWarmStalled: input.state.keepWarmHold !== null,
+    keepWarmHold: input.state.keepWarmHold,
     activityRunStatus: input.state.activityRunStatus,
     activityRunStartedAt: input.state.activityRunStartedAt,
     status: input.state.latestRunStatus,
@@ -7190,7 +7191,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           latestRunStopRequested,
           latestRunBackgroundWake,
           activeRunId: row.active_run_id === null ? null : RunId.make(row.active_run_id),
-          keepWarmStalled: deriveKeepWarmStalled(
+          keepWarmHold: deriveKeepWarmHold(
             row.active_run_id === null ? null : RunId.make(row.active_run_id),
             pendingTurnItemsByThreadId.get(thread.id) ?? [],
           ),

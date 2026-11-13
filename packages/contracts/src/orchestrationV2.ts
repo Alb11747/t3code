@@ -2191,6 +2191,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   ),
   blockedOnThreadWait: Schema.optional(Schema.Boolean),
   keepWarmStalled: Schema.optional(Schema.Boolean),
+  keepWarmHold: Schema.optional(Schema.NullOr(ClaudeKeepWarmHold)),
   status: OrchestrationV2ShellThreadStatus,
   lastError: Schema.optional(Schema.NullOr(Schema.String)),
   lastErrorClass: Schema.optional(Schema.NullOr(OrchestrationV2ProviderFailureClass)),
