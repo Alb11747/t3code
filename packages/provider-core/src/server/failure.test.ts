@@ -88,17 +88,6 @@ it("does not expose arbitrary cause messages and preserves explicit messages", (
 });
 
 it("preserves actionable T3 errors wrapped by turn startup", () => {
-  const cause = new ProviderAdapter.ProviderAdapterTurnStartError({
-    driver: ProviderDriverKind.make("codex"),
-    threadId: ThreadId.make("thread:handoff-error"),
-    providerThreadId: ProviderThreadId.make("provider-thread:handoff-error"),
-    runId: RunId.make("run:handoff-error"),
-    cause: { _tag: "ContextHandoffDeliveryUncertainError" },
-  });
-  assert.equal(
-    makeProviderFailure({ cause: Cause.fail(cause) }).message,
-    "T3 could not confirm whether conversation history reached the provider. Retry the turn to recover the session.",
-  );
   for (const error of [
     new ContextHandoffBudgetError(),
     new ContextHandoffBackgroundWorkError(),

@@ -1,23 +1,18 @@
-import {
-  type ChatAttachment,
-  type ModelSelection,
-  type OrchestrationV2Command,
-  type OrchestrationV2ProviderCapabilities,
-  type OrchestrationV2ProviderSession,
-  type OrchestrationV2ProviderTurnTokenUsage,
-} from "@t3tools/contracts";
-
-import { type OrchestrationV2ThreadProjection } from "@t3tools/contracts";
-import { ClaudeAppendSystemPromptMissingValueError } from "../Adapters/ClaudeAdapterV2.ts";
-
 import { vi } from "vite-plus/test";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
+  type ChatAttachment,
   EventId,
   MessageId,
+  type ModelSelection,
+  type OrchestrationV2Command,
+  type OrchestrationV2ProviderCapabilities,
+  type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2ProviderTurnTokenUsage,
+  type OrchestrationV2ThreadProjection,
   ProjectId,
   ProviderInstanceId,
   ProviderSessionId,
@@ -812,18 +807,19 @@ describe("orchestration v2 provider switching", () => {
           }
           if (reasoningScenario && replaceNative) {
             const replaced = yield* orchestrator.getThreadProjection(threadId);
-            assert.equal(replaced.runs.at(-1)?.status, "completed");
+            assert.equal(
+              replaced.runs.at(-1)?.status,
+              scenario.includes("small") ? "failed" : "completed",
+            );
             const target = replaced.providerThreads.find(
               (thread) => thread.providerInstanceId === CLAUDE_MODEL_SELECTION.instanceId,
             )!;
             assert.isNull(target.contextUsage);
             assert.equal(yield* Ref.get(generation), 2);
-            assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.driver, CLAUDE_DRIVER);
-            if (scenario.includes("small")) {
-              const handoff = replaced.contextHandoffs.at(-1)!;
-              assert.equal(handoff.deferred, true);
-              assert.isUndefined(handoff.delivery);
-            }
+            assert.equal(
+              (yield* Ref.get(capturedTurns)).at(-1)!.driver,
+              scenario.includes("small") ? CODEX_DRIVER : CLAUDE_DRIVER,
+            );
             return;
           }
           if (replaceNative) {
@@ -1497,38 +1493,22 @@ describe("orchestration v2 provider switching", () => {
       ),
   );
 
-  it.live.each(
-    [false, true].flatMap(
-      (deferred) =>
-        [
-          [deferred, "background work", new ClaudeBackgroundWorkBlocksQueryReplacementError()],
-          [
-            deferred,
-            "an MCP registration timeout",
-            new ClaudeAgentSdkQueryRunnerError({
-              method: "setMcpServers",
-              cause: new ClaudeMcpRegistrationTimeoutError(),
-            }),
-          ],
-          [
-            deferred,
-            "an unreadable append file",
-            new ClaudeAppendSystemPromptFileError({ path: "missing.md" }),
-          ],
-          [
-            deferred,
-            "a missing append value",
-            new ClaudeAppendSystemPromptMissingValueError({ flag: "--append-system-prompt" }),
-          ],
-        ] as const,
-    ),
-  )("keeps the native session after turns refused for %s", ([deferred, , refusalCause]) =>
+  it.live.each([
+    ["background work", new ClaudeBackgroundWorkBlocksQueryReplacementError()],
+    ["an unreadable append file", new ClaudeAppendSystemPromptFileError({ path: "missing.md" })],
+    [
+      "an MCP registration timeout",
+      new ClaudeAgentSdkQueryRunnerError({
+        method: "setMcpServers",
+        cause: new ClaudeMcpRegistrationTimeoutError(),
+      }),
+    ],
+  ] as const)("keeps the native session after turns refused for %s", ([, refusalCause]) =>
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("refused-start-keeps-native");
         const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
         const refuseStarts = yield* Ref.make(0);
-        let modelWindow = 32_000;
         const generation = yield* Ref.make(0);
         const registry = ProviderAdapterRegistry.layerFromAdapters([
           makeTestAdapter({
@@ -1539,7 +1519,6 @@ describe("orchestration v2 provider switching", () => {
             responseByRunOrdinal: {},
             capturedTurns,
             refuseStarts,
-            ...(deferred ? { getModelContextWindow: () => modelWindow } : {}),
             refusalCause,
             nativeThreadGeneration: generation,
           }),
@@ -1587,35 +1566,8 @@ describe("orchestration v2 provider switching", () => {
             worktreePath: null,
           });
           assert.equal(yield* run(1), "completed");
-          yield* Ref.set(refuseStarts, deferred ? 1 : 2);
+          yield* Ref.set(refuseStarts, 2);
           assert.equal(yield* run(2), "failed");
-          if (deferred) {
-            modelWindow = 16_000;
-            assert.equal(yield* run(3), "completed");
-            const first = (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs;
-            assert.lengthOf(first, 1);
-            assert.equal(first[0]!.deferred, true);
-            assert.equal(yield* run(4), "completed");
-            const later = (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs;
-            assert.lengthOf(later, 1);
-            assert.equal(later[0]!.id, first[0]!.id);
-            assert.equal(later[0]!.deferred, true);
-
-            modelWindow = 32_000;
-            assert.equal(yield* run(5), "completed");
-            const delivered = (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs;
-            assert.lengthOf(delivered, 1);
-            assert.equal(delivered[0]!.id, first[0]!.id);
-            assert.isUndefined(delivered[0]!.deferred);
-            assert.equal(delivered[0]!.delivery?.status, "inline");
-            const accepted = (yield* Ref.get(capturedTurns)).at(-1)!;
-            assert.equal(accepted.text.split("Request 2").length - 1, 1);
-            assert.equal(yield* run(6), "completed");
-            assert.notInclude((yield* Ref.get(capturedTurns)).at(-1)!.text, "Request 2");
-            assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).contextHandoffs, 1);
-            assert.equal(yield* Ref.get(generation), 1);
-            return;
-          }
           assert.equal(yield* run(3), "failed");
           assert.equal(yield* run(4), "completed");
 

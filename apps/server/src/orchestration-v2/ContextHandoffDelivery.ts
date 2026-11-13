@@ -3,9 +3,9 @@ import type {
   OrchestrationV2ProviderThread,
 } from "@t3tools/contracts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import { ContextHandoffBudgetError } from "@t3tools/provider-core/server/failure";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { ContextHandoffBudgetError } from "@t3tools/provider-core/server/failure";
 import {
   historyCost,
   renderHistory,
@@ -23,7 +23,6 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly budget: number | Effect.Effect<number, BudgetError>;
     readonly deferInline?: boolean;
-    readonly rejectOversized?: boolean;
     readonly alreadyDeliveredItemIds: ReadonlySet<string>;
     readonly inject?: (
       history: ProviderAdapter.ProviderAdapterV2HistoricalContext,
@@ -77,20 +76,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     });
     if (historyCost(selected.messages, selected.context) > budget) {
       if (input.deferInline) return { context: "", delivered: Effect.void, unsent: Effect.void };
-      // Recovery probes reject new history; deferred history never forces session replacement.
-      if (input.rejectOversized && pending.some((handoff) => handoff.deferred !== true))
-        return yield* new ContextHandoffBudgetError();
-      yield* Effect.forEach(
-        pending.filter((handoff) => handoff.deferred !== true),
-        (handoff) => input.persist({ ...handoff, deferred: true }),
-        { discard: true },
-      );
-      yield* Effect.logDebug("Deferring context handoffs that exceed the delivery budget", {
-        providerThreadId: input.providerThread.id,
-        handoffCount: pending.length,
-        budget,
-      });
-      return { context: "", delivered: Effect.void, unsent: Effect.void };
+      return yield* new ContextHandoffBudgetError();
     }
     const omittedItemIds = new Set(selected.omittedItemIds);
     const persist = (status: "pending" | "injected" | "inline") =>
@@ -99,9 +85,6 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
         (handoff) =>
           input.persist({
             ...handoff,
-            // Keep retries selectable until delivery settles, including after
-            // an ambiguous send forces replacement of the native thread.
-            ...(status === "pending" ? {} : { deferred: undefined }),
             ...(nativeThreadId === undefined
               ? {}
               : {

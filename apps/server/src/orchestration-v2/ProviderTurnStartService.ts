@@ -52,7 +52,6 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
   ContextHandoffBackgroundWorkError,
-  ContextHandoffBudgetError,
   knownProviderFailureMessage,
   makeProviderFailure,
 } from "@t3tools/provider-core/server/failure";
@@ -374,7 +373,6 @@ export const layer: Layer.Layer<
       const isPendingForRun = (handoff: OrchestrationV2ContextHandoff, anyProviderThread = false) =>
         handoff.status === "ready" &&
         (handoff.targetRunId === run.id ||
-          (handoff.deferred === true && handoff.toProviderThreadId === run.providerThreadId) ||
           ((anyProviderThread || handoff.toProviderThreadId === run.providerThreadId) &&
             projection.runs.some(
               (source) =>
@@ -1051,16 +1049,6 @@ export const layer: Layer.Layer<
       const prepareRetryHandoff = Effect.fn("ProviderTurnStartService.prepareRetryHandoff")(
         function* (context: ReturnType<typeof handoffContextForThread>) {
           const { missedRunIds, coveredItemIds, missedRuns } = context;
-          const deferredItemIds = new Set(
-            effectiveHandoffs.flatMap((handoff) =>
-              handoff.deferred === true
-                ? [
-                    ...(handoff.history?.messages.map((message) => message.itemId) ?? []),
-                    ...(handoff.history?.omittedItemIds ?? []),
-                  ]
-                : [],
-            ),
-          );
           const missedItems =
             missedRunIds.size === 0
               ? []
@@ -1071,7 +1059,6 @@ export const layer: Layer.Layer<
                     item.runId !== null &&
                     missedRunIds.has(item.runId) &&
                     !coveredItemIds.has(item.id) &&
-                    !deferredItemIds.has(item.id) &&
                     historicalMessage(item) !== null,
                 );
           const retryHandoff =
@@ -1324,7 +1311,6 @@ export const layer: Layer.Layer<
           resumedHandoffContext = context;
           resumedRetryHandoff = yield* prepareRetryHandoff(context);
           const fits = yield* deliverContextHandoffs({
-            rejectOversized: true,
             handoffs: [...handoffs, ...resumedRetryHandoff],
             providerThread: { ...resumed.success, id: providerThread.id },
             budget: context.budget,
@@ -1340,7 +1326,6 @@ export const layer: Layer.Layer<
           const freshContext = handoffContextForThread(freshThread);
           const { handoff } = yield* recoveryHandoff;
           const fitsFresh = yield* deliverContextHandoffs({
-            rejectOversized: true,
             handoffs: withRecoveryHandoff(handoff),
             providerThread: freshThread,
             budget: freshContext.budget,
@@ -1350,30 +1335,7 @@ export const layer: Layer.Layer<
             Effect.as(true),
             Effect.catchTags({ ContextHandoffBudgetError: () => Effect.succeed(false) }),
           );
-          if (!fitsFresh) {
-            // Recovery cannot drop incoming provider history; missed native input stays deferrable.
-            if (
-              !handoffs.some(
-                (handoff) =>
-                  handoff.fromProviderThreadIds.some((id) => id !== providerThread.id) &&
-                  (resumed.success.nativeThreadRef === null ||
-                    handoff.delivery?.nativeThreadId !== resumed.success.nativeThreadRef.nativeId ||
-                    handoff.delivery?.status === "pending"),
-              )
-            )
-              return resumed.success;
-            return yield* loadFromProvider(
-              Effect.fail(
-                new ProviderAdapter.ProviderAdapterTurnStartError({
-                  driver: session.driver,
-                  threadId: projection.thread.id,
-                  providerThreadId: providerThread.id,
-                  runId,
-                  cause: new ContextHandoffBudgetError(),
-                }),
-              ),
-            );
-          }
+          if (!fitsFresh) return resumed.success;
           const hasPendingWork = yield* (
             session.hasPendingBackgroundWorkForThread?.(resumed.success, {
               includeSubagents: true,

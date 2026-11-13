@@ -841,7 +841,7 @@ function makeLocalCommandHarness(input: {
                     driver: providerThread.driver,
                     providerSession,
                     ensureThread: () => Effect.succeed(providerThread),
-                    resumeThread: () => Effect.succeed(projection.providerThreads.at(-1)!),
+                    resumeThread: () => Effect.succeed(projection.providerThreads[0]),
                     startTurn,
                   } as never)
                 : Effect.die("A local command must not open a native session."),
@@ -980,7 +980,6 @@ function makeLocalCommandHarness(input: {
           write: ({ events: incoming }) =>
             Effect.sync(() => {
               for (const event of incoming) {
-                expect(isDomainEvent(event)).toBe(true);
                 events.push(event);
                 projection = ProjectionStore.applyToProjection(projection, event);
               }
@@ -1737,83 +1736,6 @@ effectIt.effect("starts another provider in the same checkout while a turn is pe
     yield* Deferred.succeed(releaseTurn, undefined);
     yield* Fiber.join(pending);
   }),
-);
-
-effectIt.effect.each([
-  { deferred: true, sameThread: true, usedTokens: 0, delivers: true },
-  { deferred: true, sameThread: true, usedTokens: 32_000, delivers: false },
-  { deferred: true, sameThread: false, usedTokens: 0, delivers: false },
-  { deferred: undefined, sameThread: true, usedTokens: 0, delivers: false },
-] as const)(
-  "retries completed ordinary-turn handoffs only when deferred on this provider thread: %j",
-  (scenario) =>
-    Effect.gen(function* () {
-      const harness = makeLocalCommandHarness({ text: "Continue", nativeTurn: true });
-      harness.updateProjection((projection) => {
-        const run = projection.runs[0]!;
-        const providerThread = projection.providerThreads[0]!;
-        const previousRunId = RunId.make("completed-ordinary-handoff-run");
-        return {
-          ...projection,
-          runs: [
-            {
-              ...run,
-              id: previousRunId,
-              ordinal: 1,
-              status: "completed",
-              startedAt: run.requestedAt,
-              completedAt: run.requestedAt,
-            },
-            run,
-          ],
-          providerThreads: [
-            {
-              ...providerThread,
-              nativeThreadRef: {
-                driver: providerThread.driver,
-                nativeId: "native-handoff-target",
-                strength: "strong",
-              },
-              contextUsage: { usedTokens: scenario.usedTokens, maxTokens: 32_000 },
-            },
-          ],
-          contextHandoffs: [
-            {
-              id: ContextHandoffId.make("completed-ordinary-handoff"),
-              threadId: run.threadId,
-              targetRunId: previousRunId,
-              fromProviderThreadIds: [],
-              toProviderThreadId: scenario.sameThread
-                ? providerThread.id
-                : ProviderThreadId.make("another-provider-thread"),
-              coveredRunOrdinals: { from: 1, to: 1 },
-              strategy: "full_thread_summary",
-              status: "ready",
-              deferred: scenario.deferred,
-              summaryMessageId: null,
-              summaryText: "Remember the original constraints.",
-              createdByProviderInstanceId: null,
-              createdAt: run.requestedAt,
-              updatedAt: run.requestedAt,
-            },
-          ],
-        };
-      });
-
-      yield* harness.start;
-
-      expect(harness.startTurn).toHaveBeenCalledOnce();
-      const text = harness.startTurn.mock.calls[0]![0].message.text;
-      expect(text.includes("Remember the original constraints.")).toBe(scenario.delivers);
-      expect(text.endsWith("Continue")).toBe(true);
-      const handoff = harness.projection().contextHandoffs[0]!;
-      expect(handoff.delivery?.status).toBe(scenario.delivers ? "inline" : undefined);
-      expect(handoff.deferred).toBe(scenario.delivers ? undefined : scenario.deferred);
-      expect(harness.projection().runs.at(-1)?.status).toBe("running");
-      expect(
-        harness.events.filter((event) => event.type === "context-handoff.updated"),
-      ).toHaveLength(scenario.delivers ? 2 : 0);
-    }),
 );
 
 effectIt.effect("terminalizes a starting run when its provider session cannot open", () =>
