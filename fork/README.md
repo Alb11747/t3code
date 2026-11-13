@@ -319,6 +319,10 @@ behaviour-preserving `refactor` commit; it is not a fork change, so it needs no 
   `Related-PR` trailer is kept, not reverted, so its code may move. This includes tests a later fork commit renamed and
   fork-only follow-ups tangled into that code. Find a block's origin with
   `git log -S'<distinctive text>' --no-merges --format='%h %s | %(trailers:key=Upstream-PR,valueonly)' <base>..HEAD`.
+  A PR closed without merging still counts, because it can be reopened and
+  merged. When one will clearly never merge, such as someone else's abandoned
+  PR, make the patch fork-only first: add `Related-PR: <PR URL>` to the move
+  commit and note it in the patch's `CHANGES.md` entry.
 - **Restore incidental upstream text where you can.** Re-indentation,
   reordering, and older comments brought back by a merge are pure conflict
   surface.
