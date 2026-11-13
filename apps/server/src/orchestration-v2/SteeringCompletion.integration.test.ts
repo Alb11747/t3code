@@ -1274,6 +1274,81 @@ it.effect("starts a steer that missed the turn on the saved next-turn selection"
   ),
 );
 
+it.effect("a steer that missed its turn stays pending and starts ahead of the queue", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { events, started, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+        "steering-follow-up-pending",
+      );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const threadId = yield* startFirstTurn;
+        const first = started[0]!;
+        const send = (id: "steer" | "queued") =>
+          orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(id),
+            threadId,
+            messageId: MessageId.make(`message:${id}`),
+            text: id,
+            attachments: [],
+            dispatchMode:
+              id === "steer"
+                ? { type: "steer_active", targetRunId: first.runId }
+                : { type: "queue_after_active" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+        yield* send("steer");
+        yield* send("queued");
+        const settled = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "run.updated" &&
+              event.payload.id === first.runId &&
+              event.payload.status === "waiting",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        const turn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
+        yield* Queue.offer(events, {
+          type: "provider_turn.updated",
+          driver,
+          providerTurn: { ...turn, status: "completed", completedAt: yield* DateTime.now },
+        });
+        yield* Queue.offer(events, {
+          type: "turn.terminal",
+          driver,
+          providerThreadId: turn.providerThreadId,
+          providerTurnId: turn.id,
+          runOrdinal: first.runOrdinal,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        });
+        yield* Fiber.join(settled);
+        yield* worker.drain();
+        yield* orchestrator.resumeQueuedRuns;
+        yield* worker.drain();
+
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(
+          started.map((turn) => turn.message.text),
+          ["first", "steer"],
+        );
+        assert.equal(
+          projection.runs.find((run) => run.userMessageId === MessageId.make("message:queued"))
+            ?.status,
+          "queued",
+        );
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
 // regression: #26695 cancelling a Copilot prompt to steer it kills its background agents
 it.effect("queues a steer until the turn ends when the provider cannot steer it", () =>
   Effect.scoped(

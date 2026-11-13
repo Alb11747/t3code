@@ -6561,10 +6561,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const providerThread = projection.providerThreads.find(
         (row) => row.id === active?.providerThreadId,
       );
-      // Questions keep a next-turn wake if safe steering is unavailable, not a hook offer.
-      atToolBoundary =
-        (!commandNotice || providerThread?.goal?.status === "active") &&
-        !command.messageId.startsWith("message:delegated-task-question:");
+      atToolBoundary = !commandNotice || providerThread?.goal?.status === "active";
       const activeTurn = projection.providerTurns.find(
         (turn) => turn.runAttemptId === active?.activeAttemptId && turn.status === "running",
       );
@@ -6781,6 +6778,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       activeRun !== undefined &&
       startupDeliveryIntent !== undefined &&
       (startupDeliveryIntent === "steer" || command.createdBy === "agent") &&
+      // A steer redelivered after its turn ended has no sender left to refuse; it queues.
+      !projection.messages.some((message) => message.id === command.messageId) &&
       (yield* stopReachedRun(command, command.threadId, activeRun.id))
     ) {
       return yield* new OrchestratorDispatchError({
@@ -6802,7 +6801,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         !waitsForFreshContext &&
         modelSelection.instanceId === activeRun?.providerInstanceId &&
         command.afterCompactionMessageId === undefined &&
-        !command.messageId.startsWith("message:delegated-task-question:") &&
         goalCommand === null &&
         !isNativeMaintenanceCommand(command) &&
         command.scheduledTaskId === undefined &&

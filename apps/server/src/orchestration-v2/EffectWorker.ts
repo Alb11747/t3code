@@ -306,6 +306,8 @@ export const layerExecutor: Layer.Layer<
                         dispatchMode: {
                           type: queued ? "queue_after_active" : "start_immediately",
                         },
+                        // Behind a run that is already active, the steer stays pending and joins it.
+                        ...(queued ? {} : { deliveryIntent: "auto" as const }),
                         createdBy: message.createdBy,
                         creationSource: message.creationSource,
                         ...(message.delegatedCompletion === undefined
