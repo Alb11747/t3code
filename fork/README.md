@@ -22,7 +22,7 @@ If a fetch fails, it's best to stop and report it rather than work from stale re
 
 | Path                                   | Purpose                                                       |
 | -------------------------------------- | ------------------------------------------------------------- |
-| `fork/CHANGES.md`                      | One line per fork change: what, why, upstream issues and PRs. |
+| `fork/CHANGES.md`                      | One line per feature: what, why, upstream issues and PRs.     |
 | `fork/scripts/sync-upstream.sh`        | Merges upstream; first reverts patches whose PR merged.       |
 | `fork/scripts/check-sync-request.sh`   | Blocks a fork push while a sync request is open.              |
 | `fork/scripts/t3-resolver/`            | Claims, prepares, publishes, or reports failed T3 requests.   |
@@ -178,6 +178,16 @@ attempt at the previous one.
    different PR and closes ours as superseded; sync cannot tell, so whoever
    resolves or reviews the sync removes the patch (see below).
 
+   An entry describes a feature, not a commit. Before adding a line, look for
+   the entry the change belongs to. A follow-up that fixes, extends or
+   finishes a fork change, brings it to another provider or surface, or only
+   supports it (a test fixture, a lint registration) rewrites that entry into
+   one current description, keeping the first commit's subject. The exception
+   is a fork-only follow-up to a change with an `Upstream-PR:` trailer: when
+   that PR merges, sync reverts only the trailer's commits but deletes every
+   line naming the PR. Give such a follow-up its own line directly below,
+   naming the PR only as `Related PR:`, which sync leaves in place.
+
 5. Validate locally as `AGENTS.md` describes: focused regression tests,
    `vp run check:changed`, and a real-client pass when the behavior needs one.
    For changes confined to fork tooling and workflows, run the relevant Node
@@ -266,10 +276,11 @@ attempt at the previous one.
    again to retry.
 
 To change or fix a fork change already on `main`, add a commit with the same
-`Upstream-PR:` trailer (if it has one) and update its `CHANGES.md` entry; sync
-reverts every commit carrying the trailer when the PR merges. Commits still on
-your task branch can be amended freely. To remove a change from `main`,
-`git revert` its commits and delete its `CHANGES.md` entry in the revert.
+`Upstream-PR:` trailer (if it has one) and rewrite its `CHANGES.md` entry to
+cover the result (step 4); sync reverts every commit carrying the trailer when
+the PR merges. Commits still on your task branch can be amended freely. To
+remove a change from `main`, `git revert` its commits and delete its
+`CHANGES.md` entry in the revert.
 
 Remove a change the same way when upstream already contains it through
 another PR: the patch conflicts with an equivalent upstream change, the merge

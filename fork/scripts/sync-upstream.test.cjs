@@ -124,8 +124,21 @@ test("merges the pinned nightly and keeps a PR's patch merged after it", (t) => 
 });
 
 test("reverts a merged PR's patch and entry before merging", (t) => {
-  const { git, fork, sync, forkCommits, parents, subjects, changes, files, entry, nightly2 } =
-    fixture(t);
+  const {
+    git,
+    fork,
+    commit,
+    sync,
+    forkCommits,
+    parents,
+    subjects,
+    changes,
+    files,
+    entry,
+    nightly2,
+  } = fixture(t);
+  const followUp = "- Fork-only follow-up. Related PR: https://github.com/pingdotgg/t3code/pull/1";
+  commit(fork, "fork/CHANGES.md", `${entry(1)}\n${followUp}\n${entry(2)}\n`, "fix: follow-up");
 
   const result = sync("--onto", nightly2);
 
@@ -138,7 +151,7 @@ test("reverts a merged PR's patch and entry before merging", (t) => {
     git(fork, "log", "-1", "--format=%B", "HEAD^1"),
     new RegExp(`This reverts commit ${forkCommits[0]}`),
   );
-  assert.deepEqual(changes(), [entry(2)]);
+  assert.deepEqual(changes(), [followUp, entry(2)]);
   assert.ok(!files().includes("fork-1.txt"));
   assert.ok(files().includes("feature-1.txt"));
 });

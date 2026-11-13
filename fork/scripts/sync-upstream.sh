@@ -110,9 +110,10 @@ for entry in "${retire[@]}"; do
   # The change list is not reverted with the patch: older commits for the same
   # PR edit its entry too, and undoing those edits one by one conflicts.
   # Keep the current list (or its absence) and just delete the PR's entry.
+  # A fork-only follow-up names the PR as `Related PR:` and outlives it.
   if git cat-file -e "HEAD:$changes" 2>/dev/null; then
     git checkout -q HEAD -- "$changes"
-    sed -i "\#/pull/${pr}\b#d" "$changes"
+    sed -i "\#Related PR: [^ ]*/pull/${pr}\b#!{\#/pull/${pr}\b#d}" "$changes"
     git add -- "$changes"
   else
     git rm -q -f --ignore-unmatch -- "$changes"
