@@ -1,17 +1,22 @@
 /**
  * Fork: check scripts for scheduled tasks. A script is the body of an async JavaScript function
- * that receives `ctx` (usage, the bound thread, persisted state) and decides whether a run goes
- * ahead. It runs in a child Node process, so a hung or crashing script cannot stall the server.
+ * that receives `ctx` (usage, providers, the bound thread, persisted state) and decides whether a
+ * run goes ahead and on which model. It runs in a child Node process, so a hung or crashing script
+ * cannot stall the server.
  */
 import {
   MAX_SCHEDULED_TASK_SCRIPT_STATE_CHARS,
+  type ModelSelection,
   type ProjectId,
   type ScheduledTask,
   ScheduledTaskScriptCheck,
   type ScheduledTaskScript,
   type ScheduledTaskScriptDecision,
+  type ServerProvider,
   type ThreadId,
+  type UsageLimitSourceSnapshot,
 } from "@t3tools/contracts";
+import { modelFamilyName, resolveLatestFamilyModel } from "@t3tools/shared/latestModel";
 import * as NodeOS from "node:os";
 import * as NodeURL from "node:url";
 import * as Context from "effect/Context";
@@ -29,7 +34,9 @@ import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { behindHub, hubSourceOf } from "../usage/ThreadAccountService.ts";
 import * as UsageLimitSources from "../usage/UsageLimitSources.ts";
+import { withOfferedOptions } from "./latestModel.ts";
 
 export type ScriptTrigger = "scheduled" | "manual" | "webhook" | "test";
 
@@ -47,6 +54,8 @@ export interface ScriptEvaluation {
     readonly nextRunAtMs: number | null;
     readonly reason: string | null;
     readonly stateJson: string | null;
+    /** The script's model for this run only, checked against `ScriptModels`. */
+    readonly modelSelection: ModelSelection | null;
   } | null;
   readonly error: string | null;
   readonly logs: string;
@@ -63,6 +72,15 @@ export interface ScriptEvaluateInput {
   readonly threadId: ThreadId | null;
   readonly stateJson: string | null;
   readonly webhook: ScriptWebhookRequest | null;
+  /** The task's model, or the editor's for a test; a bound thread's own model takes its place. */
+  readonly modelSelection: ModelSelection | null;
+}
+
+/** What a script's `model` is resolved and checked against. */
+export interface ScriptModels {
+  /** The model the run uses unless the script picks one; a bare slug stays on its instance. */
+  readonly current: ModelSelection | null;
+  readonly providers: ReadonlyArray<ServerProvider>;
 }
 
 export interface ScriptWebhookRequest {
@@ -87,6 +105,7 @@ export function scriptDecisionForClient(
         : DateTime.formatIso(DateTime.makeUnsafe(decision.nextRunAtMs)),
     reason: decision.reason,
     state: decision.stateJson,
+    ...(decision.modelSelection === null ? {} : { modelSelection: decision.modelSelection }),
   };
 }
 
@@ -143,8 +162,62 @@ function parseNextRunAt(value: unknown, nowMs: number): number | string {
   return Math.max(Math.ceil(ms), nowMs + MIN_NEXT_RUN_DELAY_MS);
 }
 
+const isOptionValue = (value: unknown): value is string | boolean =>
+  typeof value === "boolean" || (typeof value === "string" && value.trim() !== "");
+
+function parseOptions(value: unknown): ModelSelection["options"] | string {
+  const invalid = "`model.options` must be an object such as { effort: 'low' }.";
+  if (Array.isArray(value)) {
+    const options = value.map((entry: unknown) => {
+      const { id, value: choice } = (entry ?? {}) as Record<string, unknown>;
+      return typeof id === "string" && id.trim() !== "" && isOptionValue(choice)
+        ? { id: id.trim(), value: choice }
+        : null;
+    });
+    return options.every((option) => option !== null) ? options : invalid;
+  }
+  if (typeof value !== "object" || value === null) return invalid;
+  const entries = Object.entries(value);
+  return entries.every(([id, choice]) => id.trim() !== "" && isOptionValue(choice))
+    ? entries.map(([id, choice]) => ({ id: id.trim(), value: choice as string | boolean }))
+    : invalid;
+}
+
+/** A slug on the current instance, or `{ instanceId?, model, options? }`; checked, never trusted. */
+function resolveScriptModel(value: unknown, models: ScriptModels): ModelSelection | string {
+  const choice = typeof value === "string" ? { model: value } : value;
+  if (typeof choice !== "object" || choice === null || Array.isArray(choice))
+    return "`model` must be a model slug or { instanceId, model, options }.";
+  const fields = choice as Record<string, unknown>;
+  if (typeof fields.model !== "string" || fields.model.trim() === "")
+    return "`model` needs a model slug from ctx.providers.";
+  if (fields.instanceId != null && typeof fields.instanceId !== "string")
+    return "`model.instanceId` must be text.";
+  const instanceId = fields.instanceId ?? models.current?.instanceId;
+  if (instanceId === undefined)
+    return "No provider instance to run on; return { instanceId, model }.";
+  const enabled = models.providers.filter((provider) => provider.enabled);
+  const provider = enabled.find((candidate) => candidate.instanceId === instanceId);
+  if (provider === undefined)
+    return `No enabled provider instance "${instanceId}". Choose one of: ${enabled.map((candidate) => candidate.instanceId).join(", ") || "none"}.`;
+  const slug = fields.model.trim();
+  if (!provider.models.some((model) => model.slug === slug))
+    return `${provider.instanceId} does not list the model "${slug}". See ctx.providers.`;
+  const options = fields.options == null ? undefined : parseOptions(fields.options);
+  if (typeof options === "string") return options;
+  // Unless the script names options, the current ones carry over where the new model offers them.
+  const carried =
+    options ??
+    (models.current?.instanceId === provider.instanceId ? models.current.options : undefined);
+  return withOfferedOptions(provider.instanceId, slug, carried, provider.models);
+}
+
 /** Turns what the script returned into a decision; anything ambiguous fails closed. */
-export function decideScriptResult(payload: RunnerPayload, nowMs: number): Decided {
+export function decideScriptResult(
+  payload: RunnerPayload,
+  nowMs: number,
+  models: ScriptModels,
+): Decided {
   if (!payload.ok) return failed(payload.error);
   // An untouched `ctx.state` starts as {}, which is the same as none.
   const stateJson = payload.state === "null" || payload.state === "{}" ? null : payload.state;
@@ -157,6 +230,7 @@ export function decideScriptResult(payload: RunnerPayload, nowMs: number): Decid
     readonly prompt?: string | null;
     readonly nextRunAtMs?: number | null;
     readonly reason?: string | null;
+    readonly modelSelection?: ModelSelection | null;
   }): Decided => ({
     outcome: input.run ? "run" : "skip",
     decision: {
@@ -165,6 +239,7 @@ export function decideScriptResult(payload: RunnerPayload, nowMs: number): Decid
       nextRunAtMs: input.nextRunAtMs ?? null,
       reason: input.reason ?? null,
       stateJson,
+      modelSelection: input.modelSelection ?? null,
     },
     error: null,
   });
@@ -186,6 +261,12 @@ export function decideScriptResult(payload: RunnerPayload, nowMs: number): Decid
     if (typeof parsed === "string") return failed(parsed);
     nextRunAtMs = parsed;
   }
+  let modelSelection: ModelSelection | null = null;
+  if (fields.model != null) {
+    const resolved = resolveScriptModel(fields.model, models);
+    if (typeof resolved === "string") return failed(resolved);
+    modelSelection = resolved;
+  }
   const reason =
     typeof fields.reason === "string" && fields.reason.trim() !== ""
       ? fields.reason.trim().slice(0, REASON_LIMIT_CHARS)
@@ -195,6 +276,7 @@ export function decideScriptResult(payload: RunnerPayload, nowMs: number): Decid
     prompt: typeof fields.prompt === "string" ? fields.prompt.trim() : null,
     nextRunAtMs,
     reason,
+    modelSelection,
   });
 }
 
@@ -217,6 +299,7 @@ export const runScript = Effect.fn("ScheduledTaskScript.run")(function* (input: 
   readonly context: unknown;
   readonly cwd: string;
   readonly taskId: string | null;
+  readonly models: ScriptModels;
   readonly timeoutMs?: number;
 }) {
   const runner = yield* ProcessRunner.ProcessRunner;
@@ -281,7 +364,7 @@ export const runScript = Effect.fn("ScheduledTaskScript.run")(function* (input: 
     };
   }
   return {
-    ...decideScriptResult(payload.value, nowMs),
+    ...decideScriptResult(payload.value, nowMs, input.models),
     logs: truncate(
       [payload.value.logs.trimEnd(), stray].filter(Boolean).join("\n"),
       LOG_LIMIT_CHARS,
@@ -322,12 +405,18 @@ export const layer = Layer.effect(
     const processRunner = yield* ProcessRunner.ProcessRunner;
     const random = yield* SecureRandom.SecureRandom;
 
-    const usageAccounts = Effect.gen(function* () {
-      const native = (yield* providers.getProviders).flatMap((provider) =>
-        provider.enabled && provider.usageLimits
+    // A provider behind a hub reports the windows of whichever hub account served its last turn,
+    // so it is left out here; its accounts are listed under the hub, as `t3_usage` does.
+    const usageAccounts = (
+      providerList: ReadonlyArray<ServerProvider>,
+      snapshots: ReadonlyArray<UsageLimitSourceSnapshot>,
+    ) => {
+      const native = providerList.flatMap((provider) =>
+        provider.enabled && provider.usageLimits && !behindHub(provider)
           ? [
               {
                 source: "native" as const,
+                sourceId: null,
                 sourceLabel: provider.displayName ?? provider.instanceId,
                 instanceId: provider.instanceId,
                 driver: provider.driver,
@@ -339,9 +428,10 @@ export const layer = Layer.effect(
             ]
           : [],
       );
-      const hubs = (yield* sources.current).flatMap((source) =>
+      const hubs = snapshots.flatMap((source) =>
         source.accounts.map((account) => ({
           source: "cliproxy" as const,
+          sourceId: source.id,
           sourceLabel: source.label,
           instanceId: null,
           driver: account.driver,
@@ -352,7 +442,45 @@ export const layer = Layer.effect(
         })),
       );
       return [...native, ...hubs];
-    });
+    };
+
+    // Small on purpose: what a script needs to pick a model, joined to usage by `hub.sourceId`.
+    const providerContext = (
+      providerList: ReadonlyArray<ServerProvider>,
+      snapshots: ReadonlyArray<UsageLimitSourceSnapshot>,
+    ) =>
+      providerList
+        .filter((provider) => provider.enabled)
+        .map((provider) => {
+          const hub = hubSourceOf(provider, snapshots);
+          return {
+            instanceId: provider.instanceId,
+            driver: provider.driver,
+            name: provider.displayName ?? provider.instanceId,
+            hub: hub === null ? null : { sourceId: hub.id, label: hub.label },
+            models: provider.models.map((model) => {
+              const family = modelFamilyName(model.slug);
+              const options = Object.fromEntries(
+                (model.capabilities?.optionDescriptors ?? []).map((descriptor) => [
+                  descriptor.id,
+                  descriptor.type === "select"
+                    ? descriptor.options.map((option) => option.id)
+                    : [true, false],
+                ]),
+              );
+              return {
+                slug: model.slug,
+                name: model.name,
+                ...(family === null ? {} : { family }),
+                ...(family !== null &&
+                resolveLatestFamilyModel(model.slug, provider.models) === model.slug
+                  ? { latest: true }
+                  : {}),
+                ...(Object.keys(options).length === 0 ? {} : { options }),
+              };
+            }),
+          };
+        });
 
     const threadContext = Effect.fn("ScheduledTaskScripts.threadContext")(function* (
       threadId: ThreadId,
@@ -374,6 +502,7 @@ export const layer = Layer.effect(
         .map((turn) => turn.tokenUsage!)
         .toSorted((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
       return {
+        modelSelection: shell.modelSelection,
         id: shell.id,
         title: shell.title,
         projectId: shell.projectId,
@@ -448,20 +577,33 @@ export const layer = Layer.effect(
                 ),
               ),
             );
-      const accounts = yield* usageAccounts.pipe(
+      const providerList = yield* providers.getProviders.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Task script could not read providers.", { cause }).pipe(Effect.as([])),
+        ),
+      );
+      const snapshots = yield* sources.current.pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("Task script could not read usage.", { cause }).pipe(Effect.as([])),
         ),
       );
       const { script: _script, webhook: _endpoint, ...task } = input.task ?? {};
+      // A bound thread runs on its own model, so that is what a script's choice replaces.
+      const models: ScriptModels = {
+        current: thread?.modelSelection ?? input.modelSelection,
+        providers: providerList,
+      };
+      const { modelSelection: _threadModel, ...threadFields } = thread ?? {};
       const context = {
         now: DateTime.formatIso(now),
         trigger: input.trigger,
         task: input.task === null ? null : task,
         prompt: input.prompt,
+        model: models.current,
+        providers: providerContext(providerList, snapshots),
         state: parseState(input.stateJson),
-        usage: { accounts },
-        thread,
+        usage: { accounts: usageAccounts(providerList, snapshots) },
+        thread: thread === null ? null : threadFields,
         webhook: input.webhook,
       };
       const cwd = yield* resolveCwd(input.projectId, thread?.worktreePath ?? null);
@@ -470,6 +612,7 @@ export const layer = Layer.effect(
         context,
         cwd,
         taskId: input.task?.id ?? null,
+        models,
       }).pipe(
         Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
         Effect.provideService(SecureRandom.SecureRandom, random),

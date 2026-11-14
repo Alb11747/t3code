@@ -66,6 +66,39 @@ return true;
 `,
   },
   {
+    id: "cheaper-model",
+    label: "Switch to a cheaper model near the limit",
+    description:
+      "Runs on the newest Haiku or Luna model while every account has a 5-hour or weekly window above 90%.",
+    source: `// ctx.model is what this run uses unless you return one; ctx.providers lists each
+// provider's models, and its \`hub\` names the CLI Proxy usage source its accounts are under.
+const provider = ctx.providers.find((entry) => entry.instanceId === ctx.model?.instanceId);
+if (!provider) return true;
+const accounts = ctx.usage.accounts.filter((account) =>
+  provider.hub
+    ? account.sourceId === provider.hub.sourceId && account.driver === provider.driver
+    : account.instanceId === provider.instanceId,
+);
+const nearlyOut = (account) =>
+  account.windows.some(
+    (w) => (w.kind === "session" || w.kind === "weekly") && w.usedPercent >= 90,
+  );
+if (accounts.length === 0 || !accounts.every(nearlyOut)) {
+  // A thread the task posts in keeps a model it was moved to, so move it back.
+  const restore = ctx.state.restore;
+  delete ctx.state.restore;
+  return restore ? { model: restore } : true;
+}
+const cheaper = provider.models.find(
+  (model) => model.latest && (model.family === "Haiku" || model.family === "Luna"),
+);
+if (!cheaper) return { run: false, reason: "Usage is nearly used up" };
+ctx.state.restore ??= ctx.model;
+// Return { instanceId, model } instead to switch to another provider.
+return { model: cheaper.slug, reason: \`Usage is nearly used up; using \${cheaper.name}\` };
+`,
+  },
+  {
     id: "keep-warm",
     label: "Keep a Claude cache warm",
     description:

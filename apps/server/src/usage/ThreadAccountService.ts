@@ -31,6 +31,7 @@ import {
   type UsageLimitSourceConfig,
   UsageLimitSourceError,
   type UsageLimitSourceId,
+  type UsageLimitSourceSnapshot,
   type UsageResetSnooze,
   threadAccountChoiceFor,
 } from "@t3tools/contracts";
@@ -119,9 +120,22 @@ const bareSession = (session: string) => session.replace(/^(claude|codex):/, "")
 // Claude marks a gateway as a custom endpoint; Codex marks native usage unsupported for custom
 // providers (not for direct API keys). Such a provider's own windows describe whichever hub
 // account served its last turn.
-const behindHub = (provider: ServerProvider) =>
+export const behindHub = (provider: ServerProvider) =>
   provider.auth.type === "customEndpoint" ||
   (provider.usageLimits?.unavailable?.reason === "unsupported" && provider.auth.type !== "apiKey");
+
+// Hub settings do not name the endpoint they serve, so only a single hub holding the provider's
+// accounts identifies where its requests go, as for "Snooze until usage resets".
+export const hubSourceOf = (
+  provider: ServerProvider,
+  sources: ReadonlyArray<UsageLimitSourceSnapshot>,
+): UsageLimitSourceSnapshot | null => {
+  if (!behindHub(provider)) return null;
+  const hubs = sources.filter((source) =>
+    source.accounts.some((account) => account.driver === provider.driver),
+  );
+  return hubs.length === 1 ? hubs[0]! : null;
+};
 
 const usageSummary = (limits: ServerProviderUsageLimits) => ({
   checkedAt: limits.checkedAt,
@@ -210,8 +224,6 @@ export const make = Effect.gen(function* () {
   const usageResetSnooze = yield* UsageResetSnoozeService.make;
   const api = sources;
 
-  // Hub settings do not name the endpoint they serve, so only a single hub holding the provider's
-  // accounts identifies where its requests go, as for "Snooze until usage resets".
   const resolveTarget = Effect.fn("ThreadAccounts.resolveTarget")(function* (
     instanceId: ProviderInstanceId,
   ) {
@@ -219,11 +231,8 @@ export const make = Effect.gen(function* () {
       (candidate) => candidate.instanceId === instanceId,
     );
     const routerProvider = provider ? routerProviderOf(provider.driver) : undefined;
-    if (!provider || !routerProvider || !behindHub(provider)) return null;
-    const hubs = (yield* sources.current).filter((source) =>
-      source.accounts.some((account) => account.driver === provider.driver),
-    );
-    const source = hubs.length === 1 ? hubs[0]! : undefined;
+    if (!provider || !routerProvider) return null;
+    const source = hubSourceOf(provider, yield* sources.current);
     const accounts =
       source?.accounts.filter(
         (account) => account.driver === provider.driver && account.routerAlias !== undefined,

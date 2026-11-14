@@ -44,13 +44,23 @@ export function latestModelSelection(
     providers.find((provider) => provider.instanceId === selection.instanceId)?.models ?? [];
   const model = resolveLatestFamilyModel(selection.model, models);
   if (model === selection.model) return selection;
+  return withOfferedOptions(selection.instanceId, model, selection.options, models);
+}
+
+/** The selection with only the choices `model` offers, so the others fall back to its default. */
+export function withOfferedOptions(
+  instanceId: ModelSelection["instanceId"],
+  model: string,
+  selections: ModelSelection["options"],
+  models: ServerProvider["models"],
+): ModelSelection {
   const descriptors = models.find((entry) => entry.slug === model)?.capabilities?.optionDescriptors;
-  const options = selection.options?.filter((option) => {
+  const options = selections?.filter((option) => {
     const descriptor = descriptors?.find((entry) => entry.id === option.id);
     return descriptor?.type !== "select" || descriptor.options.some((o) => o.id === option.value);
   });
   return {
-    instanceId: selection.instanceId,
+    instanceId,
     model,
     ...(options === undefined || options.length === 0 ? {} : { options }),
   };

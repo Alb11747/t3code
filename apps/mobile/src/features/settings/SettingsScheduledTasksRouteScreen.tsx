@@ -869,7 +869,7 @@ function TaskForm({
           footer={
             draft.threadId === null
               ? undefined
-              : "Runs use the thread's current model, so this one applies only if the task starts a new thread."
+              : "Runs use the thread's current model, so this one applies only if the task starts a new thread. A check script can choose a model per run."
           }
         >
           <SelectRow

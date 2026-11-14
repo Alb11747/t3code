@@ -959,6 +959,7 @@ export const layer = Layer.effect(
                 projectId: active.projectId,
                 threadId: active.threadId === null ? null : ThreadId.make(active.threadId),
                 stateJson: scriptState.stateJson,
+                modelSelection: active.modelSelection,
                 webhook:
                   webhook === undefined
                     ? null
@@ -1044,6 +1045,8 @@ export const layer = Layer.effect(
           evaluation?.outcome === "error"
             ? `The task script failed: ${evaluation.error ?? "unknown error"}`
             : null;
+        // Fork: the script's model is for this run only; following still moves the stored one.
+        const scriptModel = evaluation?.decision?.modelSelection ?? null;
 
         // Fork: move a following task to its family's newest model before it dispatches.
         const followed =
@@ -1066,7 +1069,10 @@ export const layer = Layer.effect(
           );
         }
         const boundThreadSelection =
-          active.followLatestModel && scriptFailure === null && active.threadId !== null
+          active.followLatestModel &&
+          scriptFailure === null &&
+          scriptModel === null &&
+          active.threadId !== null
             ? (yield* threadManagement
                 .getThreadShell(ThreadId.make(active.threadId))
                 .pipe(Effect.orElseSucceed(() => null)))?.modelSelection
@@ -1121,9 +1127,11 @@ export const layer = Layer.effect(
               attachments: [],
               mode: "queue",
               ...(threadMode === "fresh_session" ? { freshContext: true } : {}),
-              ...(boundFollowed === undefined || boundFollowed === boundThreadSelection
-                ? {}
-                : { modelSelection: boundFollowed }),
+              ...(scriptModel !== null
+                ? { modelSelection: scriptModel }
+                : boundFollowed === undefined || boundFollowed === boundThreadSelection
+                  ? {}
+                  : { modelSelection: boundFollowed }),
               createdBy: active.createdBy,
               creationSource: active.creationSource,
             })
@@ -1154,7 +1162,7 @@ export const layer = Layer.effect(
                       commandId,
                       projectId: active.projectId,
                       title: active.title,
-                      modelSelection: followed,
+                      modelSelection: scriptModel ?? followed,
                       runtimeMode: active.runtimeMode,
                       interactionMode: active.interactionMode,
                       workspaceStrategy: active.workspaceStrategy,
@@ -1176,7 +1184,8 @@ export const layer = Layer.effect(
                 )
               : yield* Effect.exit(
                   // The stored selection only seeds fresh threads. A bound run follows the
-                  // thread's current provider, so it passes none unless following a newer model.
+                  // thread's current provider, so it passes none unless following a newer model
+                  // or the script chose one, which moves the thread as a composer switch would.
                   sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
                     Effect.as(ThreadId.make(active.threadId)),
                   ),
@@ -1833,6 +1842,7 @@ export const layer = Layer.effect(
         threadId: threadId === null ? null : ThreadId.make(threadId),
         stateJson: task?.script?.state ?? null,
         webhook: null,
+        modelSelection: input.modelSelection ?? task?.modelSelection ?? null,
       });
       return {
         outcome: evaluation.outcome,

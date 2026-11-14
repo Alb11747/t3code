@@ -1,6 +1,6 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
-import { ScheduledTaskUpsertInput } from "@t3tools/contracts";
+import { type ModelSelection, ScheduledTaskUpsertInput } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -57,6 +57,7 @@ const evaluation = (
           nextRunAtMs: decision.nextRunAtMs ?? null,
           reason: decision.reason ?? null,
           stateJson: decision.stateJson ?? null,
+          modelSelection: decision.modelSelection ?? null,
         },
         error: null,
         logs: "checked\n",
@@ -66,6 +67,7 @@ const evaluation = (
 
 const harness = Effect.gen(function* () {
   const launches = yield* Ref.make<ReadonlyArray<string>>([]);
+  const models = yield* Ref.make<ReadonlyArray<ModelSelection | undefined>>([]);
   const next = yield* Ref.make<TaskScripts.ScriptEvaluation>(evaluation({}));
   const seen = yield* Ref.make<ReadonlyArray<TaskScripts.ScriptEvaluateInput>>([]);
   const sql = yield* SqlClient.SqlClient;
@@ -80,6 +82,7 @@ const harness = Effect.gen(function* () {
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({
           launch: (launch) =>
             Ref.update(launches, (all) => [...all, launch.initialMessage?.text ?? ""]).pipe(
+              Effect.andThen(Ref.update(models, (all) => [...all, launch.modelSelection])),
               Effect.as({ threadId: "thread-script", resumed: false } as never),
             ),
         }),
@@ -87,7 +90,17 @@ const harness = Effect.gen(function* () {
           namedProjectsRoot: "/projects",
           isScratchProject: () => Effect.succeed(false),
         }),
-        Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadShell: () =>
+            Effect.succeed({
+              projectId: "project-script",
+              archivedAt: null,
+              deletedAt: null,
+              modelSelection: input.modelSelection,
+            } as never),
+          sendToThread: (send) =>
+            Ref.update(models, (all) => [...all, send.modelSelection]).pipe(Effect.as({} as never)),
+        }),
         Layer.mock(ProviderRegistry.ProviderRegistry)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.succeed(TaskScripts.ScheduledTaskScripts, {
@@ -103,7 +116,7 @@ const harness = Effect.gen(function* () {
       ),
     ),
   );
-  return { launches, next, seen, during, layer };
+  return { launches, models, next, seen, during, layer };
 });
 
 const run = <A, E>(
@@ -164,6 +177,28 @@ it.effect("a running script can replace the prompt and the next run time", () =>
         runCount: 1,
         nextRunAt: DateTime.formatIso(DateTime.makeUnsafe(later)),
       });
+    }),
+  ),
+);
+
+it.effect("a script's model runs this run only and leaves the stored model", () =>
+  run((service, { models, next, seen }) =>
+    Effect.gen(function* () {
+      const codex: ModelSelection = { instanceId: "codex" as never, model: "gpt-6-luna" };
+      yield* Ref.set(next, evaluation({ modelSelection: codex }));
+      const created = yield* service.upsert(yield* decodeInput(input));
+      const result = yield* service.runNow({ id: created.task.id });
+      expect(result.task.modelSelection).toEqual(input.modelSelection);
+      expect((yield* Ref.get(seen))[0]?.modelSelection).toEqual(input.modelSelection);
+
+      // A bound thread takes the script's model the way it takes a composer switch.
+      const bound = yield* service.upsert(
+        yield* decodeInput({ ...input, commandId: "script-bound", threadId: "thread-bound" }),
+      );
+      yield* service.runNow({ id: bound.task.id });
+      yield* Ref.set(next, evaluation({}));
+      yield* service.runNow({ id: bound.task.id });
+      expect(yield* Ref.get(models)).toEqual([codex, codex, undefined]);
     }),
   ),
 );

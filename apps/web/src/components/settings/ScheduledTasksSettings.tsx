@@ -1891,7 +1891,7 @@ function ScheduledTaskEditorForm({
             {draft.threadId ? (
               <p className="text-xs text-muted-foreground">
                 Runs use this thread&apos;s current model, so this one applies only if the task
-                starts a new thread.
+                starts a new thread. A check script can choose a model per run.
               </p>
             ) : null}
             <label className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -2249,6 +2249,7 @@ function ScheduledTaskEditorForm({
               prompt: draft.prompt,
               projectId: (selectedProject?.id ?? null) as ProjectId | null,
               threadId: draft.threadId ? (draft.threadId as ThreadId) : null,
+              modelSelection,
             }}
             disabled={saving}
           />
