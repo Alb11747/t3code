@@ -479,6 +479,10 @@ describe("ThreadAccountService.preview", () => {
       yield* TestClock.adjust("5 seconds");
       yield* service.preview(next);
       expect(picks).toHaveLength(4);
+      // A pick or steer moves the route, so the chip's next read asks the router again.
+      yield* service.steer({ instanceId: "claude" as never, account: OTHER as never });
+      yield* service.preview(next);
+      expect(picks).toHaveLength(5);
       expect(picks[0]).toEqual({
         provider: "claude",
         model: "claude-sonnet-5-5",

@@ -88,14 +88,19 @@ function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProp
     modelSelection: shell?.modelSelection ?? null,
   }).data;
   const chooseAccount = () => openThreadAccountPicker(scopedThreadKey(threadRef));
-  const compactionNote = useCompactionAccountNote(scopedThreadKey(threadRef));
+  // The chip's target uses the composer's model, which is the thread's unless changed unsent.
+  const accountTarget = shell
+    ? { environmentId, threadId, modelSelection: shell.modelSelection }
+    : null;
+  const compactionNote = useCompactionAccountNote(accountTarget);
 
   async function act(action: ClaudeKeepWarmAction) {
     setPending(true);
     // Compacting continues the thread on whichever account the router places it.
     if (
       action === "compact" &&
-      !(await confirmAccountForSend(scopedThreadKey(threadRef), "compaction"))
+      accountTarget !== null &&
+      !(await confirmAccountForSend(scopedThreadKey(threadRef), accountTarget, "compaction"))
     ) {
       setPending(false);
       return;

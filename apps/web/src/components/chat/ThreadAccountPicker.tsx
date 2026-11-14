@@ -14,7 +14,7 @@ import {
   threadAccountChoiceFor,
 } from "@t3tools/contracts";
 import { ArrowRightIcon, CheckIcon, ChevronDownIcon } from "lucide-react";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 
 import { useComposerDraftAccountChoice, useComposerDraftStore } from "../../composerDraftStore";
 import { usePrimarySettings } from "../../hooks/useSettings";
@@ -52,14 +52,14 @@ import {
   accountWindows,
   exhaustedWindow,
   openThreadAccountPicker,
-  shortAccountLabel,
   useThreadAccountPickerOpen,
 } from "./threadAccountChoice";
 import {
   accountSendGuard,
   compactionAccountNote,
-  publishShownAccounts,
   threadAccountAttentionAtom,
+  threadAccountPreviewAtom,
+  threadAccountStateAtom,
 } from "./threadAccountSendGuard";
 
 const PROVIDER_NAMES: Record<string, string> = { claudeAgent: "Claude", codex: "Codex" };
@@ -87,10 +87,7 @@ export function useThreadAccountState(input: {
   return useEnvironmentQuery<ThreadAccountState, unknown>(
     input.modelSelection === null
       ? null
-      : serverEnvironment.threadAccountState({
-          environmentId: input.environmentId,
-          input: { threadId: input.threadId, modelSelection: input.modelSelection },
-        }),
+      : threadAccountStateAtom({ ...input, modelSelection: input.modelSelection }),
   );
 }
 
@@ -107,14 +104,8 @@ export function ThreadAccountPicker(props: PickerProps) {
 
 /** Where the next request and a compaction would go, kept fresh while the window is in front. */
 function useAccountPreviews(props: PickerProps) {
-  const { environmentId, threadId, modelSelection } = props;
-  const atomFor = (kind: "next" | "compaction") =>
-    serverEnvironment.threadAccountPreview({
-      environmentId,
-      input: { threadId, modelSelection, kind },
-    });
-  const nextAtom = atomFor("next");
-  const compactionAtom = atomFor("compaction");
+  const nextAtom = threadAccountPreviewAtom(props, "next");
+  const compactionAtom = threadAccountPreviewAtom(props, "compaction");
   const next = useEnvironmentQuery<ThreadAccountPreview, unknown>(nextAtom).data;
   const compaction = useEnvironmentQuery<ThreadAccountPreview, unknown>(compactionAtom).data;
   const refresh = () => refreshPreviews(nextAtom, compactionAtom);
@@ -138,19 +129,9 @@ function useAccountPreviews(props: PickerProps) {
     };
   }, []);
 
-  // The router's small-context switch can change the pick once the context crosses its threshold.
-  const threshold = next?.switchBelowContextTokens ?? null;
-  const below =
-    threshold === null || props.contextTokens === null ? null : props.contextTokens < threshold;
-  const belowRef = useRef(below);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- re-reads the router when the context crosses its switch threshold
-  useEffect(() => {
-    if (belowRef.current === below) return;
-    belowRef.current = below;
-    if (below !== null) refreshNow();
-  }, [below]);
-
-  return { next, compaction, refresh, nextAtom, compactionAtom };
+  // A context crossing the router's small-context threshold can move the pick too; the 20-second
+  // refresh catches it and the check before each send reads the router fresh.
+  return { next, compaction, refresh };
 }
 
 function refreshPreviews(...atoms: ReadonlyArray<Parameters<typeof appAtomRegistry.refresh>[0]>) {
@@ -196,36 +177,14 @@ function ThreadAccountPickerChip(
     next: nextAlias,
     compaction: compactionAlias,
   });
-  const { nextAtom, compactionAtom } = previews;
-  const { modelSelection } = props;
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- shares what the chip shows with send handlers and Compact controls outside this tree
-  useEffect(
-    () =>
-      publishShownAccounts(threadKey, {
-        environmentId,
-        input: { threadId, modelSelection },
-        accounts: state.accounts,
-        current,
-        next: nextAlias,
-        compaction: compactionAlias,
-        refresh: () => refreshPreviews(nextAtom, compactionAtom),
-      }),
-    [
-      threadKey,
-      environmentId,
-      threadId,
-      modelSelection,
-      state.accounts,
-      current,
-      nextAlias,
-      compactionAlias,
-      nextAtom,
-      compactionAtom,
-    ],
-  );
-  // A pinned thread whose account is out spills elsewhere; show where.
+  // A pinned thread whose account is out spills elsewhere; show where. Without a session the
+  // router answers as for a new thread, which the first turn's pin overrides.
   const deviates =
-    chosen !== undefined && next !== undefined && next.routerAlias !== chosen.routerAlias;
+    !isDraft &&
+    shell?.activeProviderThreadId != null &&
+    chosen !== undefined &&
+    next !== undefined &&
+    next.routerAlias !== chosen.routerAlias;
   const provider = providerName(state);
   const contextNote =
     props.contextTokens !== null && props.contextTokens > 0
@@ -344,12 +303,12 @@ function ThreadAccountPickerChip(
             {chosen ? (
               deviates && next ? (
                 <>
-                  {shortAccountLabel(chosen)}
+                  {accountShortLabel(chosen)}
                   <ArrowRightIcon aria-hidden className="size-3" />
                   {accountShortLabel(next)}
                 </>
               ) : (
-                shortAccountLabel(chosen)
+                accountShortLabel(chosen)
               )
             ) : next ? (
               `Auto · ${accountShortLabel(next)}`
@@ -376,7 +335,7 @@ function ThreadAccountPickerChip(
               disabled={busy || (!isDraft && !permitted)}
               title="Automatic"
               detail={
-                next ? `Router picks · would use ${shortAccountLabel(next)} next` : "Router picks"
+                next ? `Router picks · would use ${accountShortLabel(next)} next` : "Router picks"
               }
               onSelect={() => pick(null)}
             />
@@ -416,7 +375,7 @@ function ThreadAccountPickerChip(
               </label>
               {deviates && chosen && next ? (
                 <p className="text-xs text-warning-foreground">
-                  {shortAccountLabel(chosen)} cannot take the next request, so it goes to{" "}
+                  {accountShortLabel(chosen)} cannot take the next request, so it goes to{" "}
                   {accountShortLabel(next)}. Turn on Wait when it runs out to wait instead.
                 </p>
               ) : null}
@@ -440,7 +399,7 @@ function ThreadAccountPickerChip(
                   disabled={busy || !permitted}
                   onClick={() => void steer(null)}
                 >
-                  Stop sending new {provider} threads to {shortAccountLabel(steered)}
+                  Stop sending new {provider} threads to {accountShortLabel(steered)}
                 </Button>
               ) : null}
             </div>

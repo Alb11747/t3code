@@ -5,9 +5,11 @@ import {
   globalIdleCompaction,
   IDLE_COMPACTION_MODES,
   type IdleCompactionMode,
+  type ProviderInstanceId,
   idleCompactionPatch,
   isNullableProjectSettingsOverride,
   readsIdleCompactionModes,
+  resolveIdleCompaction,
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   type ProjectId,
   type ProjectScopedServerSettingKey,
@@ -185,15 +187,29 @@ export function scopedIdleCompaction(targets: readonly Pick<ScopedSettingsTarget
     idleCompactionChoice(candidate.settings, smartAvailable),
   );
   const mixed = choices.some((choice) => choice !== choices[0]);
+  const beforeCacheExpires = targets.some(({ settings }) =>
+    [
+      globalIdleCompaction(settings),
+      ...Object.entries(settings.providerInstances)
+        .filter(([, instance]) => instance?.driver === "claudeAgent")
+        .map(([id]) => resolveIdleCompaction(settings, id as ProviderInstanceId)),
+    ].includes("beforeCacheExpires"),
+  );
   return {
     /** Null when targets differ in mode or in Smart. */
     choice: mixed ? null : (choices[0] ?? null),
     neverAvailable: targets.every((candidate) => readsIdleCompactionModes(candidate.settings)),
     smartAvailable,
-    /** Whether any target compacts before its cache expires, which is when snoozed threads matter. */
-    beforeCacheExpires: targets.some(
-      (candidate) => globalIdleCompaction(candidate.settings) === "beforeCacheExpires",
-    ),
+    /**
+     * Whether any target, or any of its Claude providers' overrides, compacts before the cache
+     * expires: then which threads (Smart) and snoozed threads matter.
+     */
+    beforeCacheExpires,
+    /** Smart applies through a provider override the dropdown's global choice cannot show. */
+    smartSwitch:
+      smartAvailable &&
+      beforeCacheExpires &&
+      choices.every((choice) => choice !== "waiting" && choice !== "all"),
   };
 }
 

@@ -643,6 +643,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "smart-idle-compaction",
+    title: "Only compact waiting threads",
+    to: "/settings/providers",
+    scope: "environment-defaults",
+    searchTerms: ["smart claude compaction provider override cache expires waiting"],
+  },
+  {
     id: "compact-snoozed-threads",
     title: "Compact snoozed threads",
     to: "/settings/providers",

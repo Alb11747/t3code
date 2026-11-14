@@ -1500,6 +1500,26 @@ function ScopedCompactIdleThreadsRow() {
   return (
     <>
       <IdleCompactionModeRow idleCompaction={idleCompaction} />
+      {/* A Claude provider override can compact before the cache expires while the global
+          choice does not, so the dropdown cannot carry Smart for it. */}
+      {idleCompaction.smartSwitch ? (
+        <SettingsRow
+          serverScoped
+          {...searchableSetting("smart-idle-compaction")}
+          description="For providers that compact before the cache expires: only threads a watched PR or issue, subagent, background work, or scheduled task will wake."
+          settingKeys={["smartIdleCompaction"]}
+          control={
+            <ScopedSwitch
+              settingKeys={["smartIdleCompaction"]}
+              checked={settings.smartIdleCompaction ?? false}
+              onCheckedChange={(checked) =>
+                updateSettings({ smartIdleCompaction: Boolean(checked) })
+              }
+              aria-label="Only compact waiting threads"
+            />
+          }
+        />
+      ) : null}
       {/* Older servers omit this and compact every idle thread; a default here would lie. */}
       {settings.compactSnoozedThreads === undefined || !idleCompaction.beforeCacheExpires ? null : (
         <SettingsRow

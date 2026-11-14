@@ -17,38 +17,56 @@ const preview = (account: RouterAccountAlias, approximate = false): ThreadAccoun
 function setup() {
   let now = 0;
   let expire = () => {};
+  let reads = 0;
   const guard = createAccountSendGuard({
     now: () => now,
     // The budget elapses only when the test says so.
     sleep: () => new Promise<void>((resolve) => (expire = resolve)),
   });
-  const check = (shown: RouterAccountAlias | null, fresh: ThreadAccountPreview | null) =>
-    guard.check({ threadKey: "t", kind: "next", shown, readFresh: async () => fresh });
-  return { guard, check, advance: (ms: number) => (now += ms), expire: () => expire() };
+  const check = (
+    shown: RouterAccountAlias | null | "current",
+    fresh: ThreadAccountPreview | null,
+  ) =>
+    guard.check({
+      threadKey: "t",
+      kind: "next",
+      shown,
+      readFresh: async () => {
+        reads += 1;
+        return fresh;
+      },
+    });
+  return {
+    guard,
+    check,
+    advance: (ms: number) => (now += ms),
+    expire: () => expire(),
+    reads: () => reads,
+  };
 }
 
 describe("createAccountSendGuard", () => {
-  it("stops one send when the account changed, then lets the next press through", async () => {
-    const { check } = setup();
+  it("stops one send when the account changed; a press soon after sends whatever the router says", async () => {
+    const { check, advance } = setup();
     expect(await check(MAX, preview(MAX))).toEqual({ send: true });
     expect(await check(MAX, preview(PRO))).toEqual({ send: false, from: MAX, to: PRO });
-    // The chip may not have refreshed yet; the warning already showed the new account.
-    expect(await check(MAX, preview(PRO))).toEqual({ send: true });
+    // The router went back, or keeps alternating: the confirming press still sends.
+    expect(await check(MAX, preview(MAX))).toEqual({ send: true });
+    expect(await check(PRO, preview(MAX))).toEqual({ send: true });
+    advance(30_000);
     expect(await check(PRO, preview(MAX))).toEqual({ send: false, from: PRO, to: MAX });
   });
 
   it("compares with the conversation's current account where no chip shows a pick", async () => {
-    const { guard } = setup();
-    const check = (fresh: ThreadAccountPreview) =>
-      guard.check({ threadKey: "t", kind: "next", shown: "current", readFresh: async () => fresh });
-    expect(await check(preview(MAX))).toEqual({ send: true });
-    expect(await check(preview(PRO))).toEqual({ send: false, from: MAX, to: PRO });
-    expect(await check(preview(PRO))).toEqual({ send: true });
+    const { check } = setup();
+    expect(await check("current", preview(MAX))).toEqual({ send: true });
+    expect(await check("current", preview(PRO))).toEqual({ send: false, from: MAX, to: PRO });
   });
 
-  it("sends when nothing was shown, the router cannot tell, or answered for another kind", async () => {
-    const { check } = setup();
+  it("sends without asking the router when the chip showed no account", async () => {
+    const { check, reads } = setup();
     expect(await check(null, preview(PRO))).toEqual({ send: true });
+    expect(reads()).toBe(0);
     expect(await check(MAX, null)).toEqual({ send: true });
     expect(await check(MAX, preview(PRO, true))).toEqual({ send: true });
   });

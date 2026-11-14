@@ -888,8 +888,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     lockedInstanceId:
       activeThread?.runtime?.providerInstanceId ?? activeThreadModelSelection?.instanceId,
   });
-  // Fork: the account chip's note when compacting would move the thread to another account.
-  const compactAccountNote = useCompactionAccountNote(scopedThreadKey(routeThreadRef));
   const resumeCompactionTokens = resumeCompactionTokensForSelection({
     resumeCompaction: props.resumeCompaction,
     selectedProvider,
@@ -957,6 +955,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selectedModel,
     selectedModelOptionsForDispatch,
   );
+  // Fork: the account chip's note when compacting would move the thread to another account.
+  const compactAccountNote = useCompactionAccountNote({
+    environmentId: routeThreadRef.environmentId,
+    threadId: routeThreadRef.threadId,
+    modelSelection: selectedModelSelection,
+  });
   const selectedModelForPicker = selectedModel;
   const modelOptionsByInstance = new Map<ProviderInstanceId, ReadonlyArray<AppModelOption>>();
   for (const entry of providerInstanceEntries) {

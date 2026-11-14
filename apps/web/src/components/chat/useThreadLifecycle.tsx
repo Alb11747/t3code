@@ -516,6 +516,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     sendInFlightRef.current = true;
     const proceed = await confirmAccountForSend(
       scopedThreadKey(scopeThreadRef(environmentId, activeThread.id)),
+      { environmentId, threadId: activeThread.id, modelSelection: context.selectedModelSelection },
       accountRequestKind({ text, compactsFirst: false }),
     );
     sendInFlightRef.current = false;

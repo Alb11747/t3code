@@ -52,6 +52,13 @@ const make = Effect.gen(function* () {
           (input) =>
             Effect.gen(function* () {
               if (input.action === "redeem") {
+                // Plan mode makes no lasting changes, and a redeemed reset cannot be undone.
+                if ((yield* readCaller()).limits.interactionMode === "plan") {
+                  return yield* new OrchestratorMcpFailure({
+                    code: "interaction_mode_escalation_denied",
+                    message: "A plan-mode thread cannot redeem reset credits.",
+                  });
+                }
                 const credit = input.creditId === undefined ? {} : { creditId: input.creditId };
                 if (input.instanceId !== undefined) {
                   return yield* accounts.redeem({ instanceId: input.instanceId, ...credit });

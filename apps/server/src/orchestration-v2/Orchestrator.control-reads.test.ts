@@ -681,6 +681,73 @@ it.effect("a one-shot compaction mark lasts until a run starts after it", () =>
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("a one-shot compaction mark ends when an earlier queued run starts after a steer", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:compact-once-order");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-compact-once-order"),
+      threadId,
+      projectId: ProjectId.make("project:compact-once"),
+      title: "Compact once order",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    for (const step of ["queued", "steer"]) {
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`compact-once-order-${step}`),
+        threadId,
+        messageId: MessageId.make(`compact-once-order-${step}`),
+        text: step,
+        attachments: [],
+        dispatchMode: { type: "defer_start" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
+    const start = (index: number, step: string) =>
+      Effect.gen(function* () {
+        const run = (yield* projections.getThreadProjection(threadId)).runs[index]!;
+        const now = yield* DateTime.now;
+        yield* projections.apply({
+          id: EventId.make(`compact-once-order-start-${step}`),
+          type: "run.updated",
+          threadId,
+          runId: run.id,
+          occurredAt: now,
+          payload: { ...run, status: "running", startedAt: now },
+        });
+      });
+    // The later run (by ordinal) starts first, before the mark.
+    yield* start(1, "steer");
+    yield* TestClock.adjust("1 second");
+    yield* orchestrator.dispatch({
+      type: "thread.metadata.update",
+      commandId: CommandId.make("compact-once-order-mark"),
+      threadId,
+      compactBeforeCacheExpires: "once",
+    });
+    assert.equal((yield* projections.getThreadShell(threadId))?.compactOnce, true);
+    yield* TestClock.adjust("1 second");
+    yield* start(0, "queued");
+    const shell = yield* projections.getThreadShell(threadId);
+    assert.equal(shell?.compactOnce, false);
+    assert.equal(
+      ProjectionStore.threadShellFromProjection(yield* projections.getThreadProjection(threadId))
+        .compactOnce,
+      false,
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("mark unread leaves a future snooze untouched", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;

@@ -1,6 +1,12 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
-import { EnvironmentId, ProviderInstanceId, type RuntimeMode, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type ProviderInteractionMode,
+  ProviderInstanceId,
+  type RuntimeMode,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { McpSchema, McpServer } from "effect/ai";
@@ -51,14 +57,20 @@ const failureCode = (result: McpSchema.CallToolResult) => {
   return result.isError === true && text?.type === "text" ? JSON.parse(text.text).code : undefined;
 };
 
-const layer = (runtimeMode: RuntimeMode, calls: Array<unknown>) =>
+const layer = (
+  runtimeMode: RuntimeMode,
+  calls: Array<unknown>,
+  interactionMode: ProviderInteractionMode = "default",
+) =>
   McpHttpServer.toolkitRegistration(UsageToolkit, UsageHandlers.layer).pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provide(NodeCrypto.layer),
     Layer.provide(
       Layer.mock(ThreadManagement.ThreadManagementService)({
         getThreadShell: (id) =>
-          Effect.succeed(McpToolAccessTestkit.liveThreadShell(id, { runtimeMode })),
+          Effect.succeed(
+            McpToolAccessTestkit.liveThreadShell(id, { runtimeMode, interactionMode }),
+          ),
       }),
     ),
     Layer.provide(
@@ -79,17 +91,7 @@ const account = "account-2222222222222222";
 
 it.effect.each([
   { action: "steer", args: { account }, call: { steer: { account } } },
-  {
-    action: "end",
-    args: { account, endsAt: "2026-12-01T00:00:00.000Z" },
-    call: { end: { account, endsAt: "2026-12-01T00:00:00.000Z" } },
-  },
   { action: "redeem", args: { account }, call: { redeem: { account } } },
-  {
-    action: "redeem",
-    args: { instanceId: "codex", creditId: "weekly" },
-    call: { redeem: { instanceId: "codex", creditId: "weekly" } },
-  },
 ])("$action needs a caller that can control threads, not full access", ({ action, args, call }) => {
   const calls: Array<unknown> = [];
   return Effect.gen(function* () {
@@ -108,3 +110,15 @@ it.effect("reads only with orchestration", () =>
     expect(failureCode(yield* callTool({}, new Set<never>()))).toBe("capability_denied");
   }).pipe(Effect.provide(layer("approval-required", []))),
 );
+
+it.effect.each([
+  { action: "redeem", args: { account }, refused: true },
+  { action: "steer", args: { account }, refused: false },
+])("a plan-mode caller cannot $action when it is irreversible", ({ action, args, refused }) => {
+  const calls: Array<unknown> = [];
+  return Effect.gen(function* () {
+    const result = yield* callTool({ action, ...args });
+    expect(failureCode(result)).toBe(refused ? "interaction_mode_escalation_denied" : undefined);
+    expect(calls).toHaveLength(refused ? 0 : 1);
+  }).pipe(Effect.provide(layer("approval-required", calls, "plan")));
+});

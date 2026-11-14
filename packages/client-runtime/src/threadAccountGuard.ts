@@ -93,32 +93,25 @@ function accountSendDecision(
     : { send: false, from: shown, to };
 }
 
-// The user's own pick changes the route before the chip's preview catches up.
-const OWN_CHANGE_GRACE_MS = 30_000;
+// The user's own pick changes the route before the chip's preview catches up, and a press soon
+// after a warning is the confirmation it asked for, whatever the router answers meanwhile.
+const CONFIRM_GRACE_MS = 30_000;
 // Sending is never held on the router for longer than this.
 const ACCOUNT_CHECK_BUDGET_MS = 1_500;
 
-/**
- * Remembers, per thread, a change the user made and the account a warning moved the chip to, so
- * neither blocks the next press while the chip's own preview is still refreshing.
- */
 export function createAccountSendGuard(options: {
   readonly now: () => number;
   /** Resolves after `ms`; the check gives up on the router then and lets the send through. */
   readonly sleep: (ms: number) => Promise<void>;
 }) {
   const ownChangeAt = new Map<string, number>();
-  const warned = new Map<
-    string,
-    { readonly from: RouterAccountAlias; readonly to: RouterAccountAlias }
-  >();
-  const key = (threadKey: string, kind: ThreadAccountRequestKind) => `${threadKey}\n${kind}`;
+  const warnedAt = new Map<string, number>();
+  const recent = (at: number | undefined) =>
+    at !== undefined && options.now() - at < CONFIRM_GRACE_MS;
   return {
     /** The user picked an account (or Automatic) for the thread. */
     noteOwnChange(threadKey: string) {
       ownChangeAt.set(threadKey, options.now());
-      warned.delete(key(threadKey, "next"));
-      warned.delete(key(threadKey, "compaction"));
     },
     async check(input: {
       readonly threadKey: string;
@@ -131,22 +124,23 @@ export function createAccountSendGuard(options: {
       /** A fresh preview; any failure counts as unknown. */
       readonly readFresh: () => Promise<ThreadAccountPreview | null | undefined>;
     }): Promise<AccountSendCheck> {
-      const changedAt = ownChangeAt.get(input.threadKey);
-      if (changedAt !== undefined && options.now() - changedAt < OWN_CHANGE_GRACE_MS) {
+      const slot = `${input.threadKey}\n${input.kind}`;
+      if (
+        input.shown === null ||
+        recent(ownChangeAt.get(input.threadKey)) ||
+        recent(warnedAt.get(slot))
+      ) {
         return { send: true };
       }
-      const slot = key(input.threadKey, input.kind);
       const fresh = await Promise.race([
         input.readFresh().catch(() => undefined),
         options.sleep(ACCOUNT_CHECK_BUDGET_MS).then(() => undefined),
       ]);
-      // Until the chip refreshes, it still shows the account the last warning moved away from.
-      const seen = input.shown === "current" ? (fresh?.current ?? null) : input.shown;
-      const last = warned.get(slot);
-      const shown = last !== undefined && last.from === seen ? last.to : seen;
-      const decision = accountSendDecision(shown, fresh);
-      if (decision.send) warned.delete(slot);
-      else warned.set(slot, { from: decision.from, to: decision.to });
+      const decision = accountSendDecision(
+        input.shown === "current" ? (fresh?.current ?? null) : input.shown,
+        fresh,
+      );
+      if (!decision.send) warnedAt.set(slot, options.now());
       return decision;
     },
   };

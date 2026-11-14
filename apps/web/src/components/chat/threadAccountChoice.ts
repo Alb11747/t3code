@@ -21,15 +21,6 @@ export function accountLabel(
   return account.email ?? account.routerAlias ?? account.id;
 }
 
-/** The chip's short name: an email's local part, so "work@example.com" reads "work@…". */
-export function shortAccountLabel(
-  account: Pick<UsageLimitSourceAccount, "email" | "routerAlias" | "id">,
-) {
-  const label = accountLabel(account);
-  const at = label.indexOf("@");
-  return at > 0 ? `${label.slice(0, at)}@…` : label;
-}
-
 export function accountWindows(account: UsageLimitSourceAccount): {
   readonly session: ServerProviderUsageWindow | undefined;
   readonly weekly: ServerProviderUsageWindow | undefined;

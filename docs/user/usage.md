@@ -200,7 +200,7 @@ thread whose chosen account has run out shows where it falls back to (**work →
 router can move a thread when it compacts or while its context is small, so when a compaction
 would continue on another account, the chip's menu and tooltip and the **Compact** controls say
 so. If the account changes between what the chip showed and your send, T3 Code keeps your message,
-names both accounts, and sends when you press again; a change you made yourself does not stop the
+names both accounts, and sends when you press again within half a minute; a change you made yourself does not stop the
 send, and neither does a hub that does not answer within a second and a half. On mobile, a send
 that would move the conversation to another account asks the same way, and the thread's settings
 sheet shows where its next request and a compaction would go. Showing where a compaction goes

@@ -235,6 +235,23 @@ describe("scoped settings writes", () => {
       choice: "beforeCacheExpires",
       smartAvailable: false,
     });
+    // A Claude provider override keeps Smart and snoozed threads relevant under "When you return".
+    const overridden = {
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        idleCompaction: "onReturn" as const,
+        smartIdleCompaction: true,
+        providerInstances: {
+          claude: { driver: "claudeAgent", config: { idleCompaction: "beforeCacheExpires" } },
+        },
+      } as unknown as ServerSettings,
+    };
+    expect(scopedIdleCompaction([overridden])).toMatchObject({
+      choice: "onReturn",
+      beforeCacheExpires: true,
+      smartSwitch: true,
+    });
+    expect(scopedIdleCompaction([target(true)])).toMatchObject({ smartSwitch: false });
     expect(idleCompactionChoicePatch("all")).toEqual({
       idleCompaction: "beforeCacheExpires",
       smartIdleCompaction: false,

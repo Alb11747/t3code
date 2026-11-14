@@ -851,17 +851,28 @@ export function useComposerSend(input: ComposerSendInput) {
     sendInFlightRef.current = true;
     // Fork: stop once if the CLI Proxy account the chip showed changed. A message that steers a
     // running turn joins requests the turn makes anyway, so only new turns are checked.
-    const { compactBeforeSend: compactsFirst } = readTurnPlan();
-    if (
-      multipleModelSelections === null &&
-      (phase !== "running" || shouldQueueBehindActiveRun) &&
-      !(await confirmAccountForSend(
+    if (multipleModelSelections === null && (phase !== "running" || shouldQueueBehindActiveRun)) {
+      const { compactBeforeSend: compactsFirst } = readTurnPlan();
+      const attachmentIds = (images: ReadonlyArray<{ readonly id: string }>) =>
+        images.map((attachment) => attachment.id).join("\n");
+      const attachmentsAtSend = attachmentIds([...sendContextImages, ...composerFiles]);
+      const proceed = await confirmAccountForSend(
         routeThreadKey,
+        { environmentId, threadId: threadIdForSend, modelSelection: ctxSelectedModelSelection },
         accountRequestKind({ text: messageTextForSend, compactsFirst }),
-      ))
-    ) {
-      sendInFlightRef.current = false;
-      return;
+      );
+      // The send below clears the whole draft; one edited during the check is not what was sent.
+      const sendContext = composerRef.current?.getSendContext();
+      // A direct annotation writes its image and reference into the draft as it sends.
+      const draftChanged =
+        !directAnnotation &&
+        ((promptRef.current !== promptAtSend && promptRef.current !== promptForSend) ||
+          (sendContext !== undefined &&
+            attachmentIds([...sendContext.images, ...sendContext.files]) !== attachmentsAtSend));
+      if (!proceed || draftChanged) {
+        sendInFlightRef.current = false;
+        return;
+      }
     }
     const sendGeneration = ++composerSendGenerationRef.current;
     const attachmentCapabilitiesBeforeUpload = readLiveAttachmentCapabilities();

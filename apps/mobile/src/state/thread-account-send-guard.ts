@@ -2,10 +2,12 @@ import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import {
   accountChangeMessage,
   createAccountSendGuard,
+  mayRouteThroughHub,
 } from "@t3tools/client-runtime/thread-account-guard";
 import type {
   EnvironmentId,
   ModelSelection,
+  ServerProvider,
   ThreadAccountRequestKind,
   ThreadId,
 } from "@t3tools/contracts";
@@ -33,11 +35,12 @@ export async function confirmThreadAccountForSend(input: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly modelSelection: ModelSelection;
-  /** Whether the provider can route through a hub; other threads skip the round trip. */
-  readonly routed: boolean;
+  /** Whether the thread routes through a hub, else judged from its provider; others skip the check. */
+  readonly routed?: boolean;
+  readonly provider?: ServerProvider;
   readonly kind: ThreadAccountRequestKind;
 }): Promise<boolean> {
-  if (!input.routed) return true;
+  if (!(input.routed ?? mayRouteThroughHub(input.provider))) return true;
   const target = { threadId: input.threadId, modelSelection: input.modelSelection };
   const decision = await guard.check({
     threadKey: scopedThreadKey(input.environmentId, input.threadId),

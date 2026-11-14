@@ -350,7 +350,10 @@ export interface ProjectionRecordFilter {
   readonly runIds?: ReadonlyArray<RunId>;
   /** Without `includeLatestRun`, reads through a status index and sorts the matches, so keep it to statuses few runs hold. */
   readonly runStatuses?: ReadonlyArray<OrchestrationV2Run["status"]>;
-  /** Keeps the thread's highest-ordinal run even when `runStatuses` excludes it. */
+  /**
+   * Keeps the thread's highest-ordinal run even when `runStatuses` excludes it, and its latest
+   * started run, which decides whether a one-shot compaction mark still applies.
+   */
   readonly includeLatestRun?: true;
   readonly providerTurnThreadIds?: ReadonlyArray<ProviderThreadId>;
   /** Only the provider turn whose token usage was updated last. */
@@ -2069,6 +2072,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
   ProjectionStoreV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    // Fork: a steer can start ahead of an earlier queued run, so ordinals do not order starts.
+    const latestStartedRunId = (threadId: ThreadId) => sql`(
+      SELECT run_id FROM orchestration_v2_projection_runs
+      WHERE thread_id = ${threadId}
+        AND json_extract(payload_json, '$.startedAt') IS NOT NULL
+      ORDER BY json_extract(payload_json, '$.startedAt') DESC
+      LIMIT 1
+    )`;
 
     const inlineWorkOutput = sql`item.type = 'dynamic_tool' AND (
       item.payload_json LIKE '%htmlRender%' OR item.payload_json LIKE ${`%${MCP_APP_OUTPUT_KEY}%`}
@@ -3393,7 +3404,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               WHERE thread_id = ${threadId} AND (
                 status IN ('pending','starting','running','waiting')
                 OR run_id IN (SELECT value FROM json_each(${cohortRunIds}))
-                OR run_id = ${window.requiredRunId ?? null})
+                OR run_id = ${window.requiredRunId ?? null}
+                OR run_id = ${latestStartedRunId(threadId)})
               UNION
               SELECT json_extract(payload_json, '$.rootNodeId') FROM orchestration_v2_projection_runs
               WHERE thread_id = ${threadId} AND (
@@ -3523,7 +3535,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                         AND (status <> 'cancelled' OR json_extract(payload_json, '$.startedAt') IS NOT NULL)
                       ORDER BY ordinal DESC
                       LIMIT 1
-                    ))
+                    )
+                    OR run_id = ${latestStartedRunId(threadId)})
                     ORDER BY ordinal ASC`
               }
           `
@@ -6599,13 +6612,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   AND plan.status = 'active'
               ) AS has_actionable_proposed_plan,
               CASE WHEN json_extract(t.payload_json, '$.compactOnceRequestedAt') IS NULL THEN NULL ELSE (
-                -- Runs start in ordinal order, so the newest started run decides compactOnceApplies.
-                SELECT json_extract(r.payload_json, '$.startedAt')
+                -- A steer can start ahead of an earlier queued run, so take the latest start.
+                SELECT MAX(json_extract(r.payload_json, '$.startedAt'))
                 FROM orchestration_v2_projection_runs r
                 WHERE r.thread_id = t.thread_id
-                  AND json_extract(r.payload_json, '$.startedAt') IS NOT NULL
-                ORDER BY r.ordinal DESC
-                LIMIT 1
               ) END AS compact_once_latest_started_at
             FROM orchestration_v2_projection_threads t
             LEFT JOIN orchestration_v2_projection_runs active ON active.run_id = (

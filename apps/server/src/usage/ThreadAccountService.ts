@@ -261,13 +261,15 @@ export const make = Effect.gen(function* () {
         .pipe(
           Effect.timeout(PREVIEW_TIMEOUT),
           Effect.catchCause((cause) =>
-            Effect.logDebug("quota router pick preview timed out", { cause }).pipe(Effect.as(null)),
+            Effect.logDebug("quota router pick preview failed", { cause }).pipe(Effect.as(null)),
           ),
         ),
     );
     pickReads.set(key, { at: now, read });
     return yield* read;
   });
+
+  const forgetPicks = Effect.sync(() => pickReads.clear());
 
   const aliasIn = (target: Target) => {
     const known = new Set(target.accounts.map((account) => account.routerAlias));
@@ -835,11 +837,15 @@ export const make = Effect.gen(function* () {
   return {
     state: (input: ThreadAccountStateInput) => asThreadAccountError(state(input)),
     preview: (input: ThreadAccountPreviewInput) => asThreadAccountError(preview(input)),
-    set: (input: ThreadAccountSetInput) => asThreadAccountError(set(input)),
-    steer: (input: ThreadAccountSteerInput) => asThreadAccountError(steer(input)),
+    // Pins, steers and margins change the pick, so the next preview reads the router again.
+    set: (input: ThreadAccountSetInput) =>
+      asThreadAccountError(set(input)).pipe(Effect.ensuring(forgetPicks)),
+    steer: (input: ThreadAccountSteerInput) =>
+      asThreadAccountError(steer(input)).pipe(Effect.ensuring(forgetPicks)),
     routing: (input: ThreadAccountRoutingInput) => asThreadAccountError(routing(input)),
     usage: (input: ThreadAccountUsageInput) => asThreadAccountError(usage(input)),
-    margin: (input: ThreadAccountMarginInput) => asThreadAccountError(margin(input)),
+    margin: (input: ThreadAccountMarginInput) =>
+      asThreadAccountError(margin(input)).pipe(Effect.ensuring(forgetPicks)),
     end: (input: ThreadAccountEndInput) => asThreadAccountError(end(input)),
     consumeResetCredit,
     redeem: (input: ThreadAccountRedeemInput) => asThreadAccountError(redeem(input)),
