@@ -1411,6 +1411,26 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:resolve-usage-reset-snooze",
       tag: WS_METHODS.providerResolveUsageResetSnooze,
     }),
+    // Fork: the thread's CLI Proxy account; refreshed on open, since the router's pick moves.
+    threadAccountState: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:thread-account-state",
+      tag: WS_METHODS.threadAccountState,
+      staleTimeMs: 30_000,
+    }),
+    setThreadAccount: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:set-thread-account",
+      tag: WS_METHODS.threadAccountSet,
+    }),
+    steerThreadAccount: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:steer-thread-account",
+      tag: WS_METHODS.threadAccountSteer,
+    }),
+    // Fork: a hub's steers and pins, for the Usage page; refreshed after Clear and Remove.
+    threadAccountRouting: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:thread-account-routing",
+      tag: WS_METHODS.threadAccountRouting,
+      staleTimeMs: 30_000,
+    }),
     refreshProviders: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:refresh-providers",
       tag: WS_METHODS.serverRefreshProviders,

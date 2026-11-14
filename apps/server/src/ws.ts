@@ -4,6 +4,7 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as ClaudeKeepWarmActions from "./orchestration-v2/ClaudeKeepWarmActions.ts";
 import * as UsageResetSnoozeService from "./usage/UsageResetSnoozeService.ts";
+import * as ThreadAccountService from "./usage/ThreadAccountService.ts";
 import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
 
@@ -1482,6 +1483,7 @@ export const layerWsRpc = (
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const keepWarmActions = yield* ClaudeKeepWarmActions.make;
       const usageResetSnooze = yield* UsageResetSnoozeService.make;
+      const threadAccounts = yield* ThreadAccountService.ThreadAccounts;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
         yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
@@ -2264,6 +2266,9 @@ export const layerWsRpc = (
                     runtimeMode: input.runtimeMode,
                     interactionMode: input.interactionMode,
                     workspaceStrategy: input.workspaceStrategy,
+                    ...(input.accountChoice === undefined
+                      ? {}
+                      : { accountChoice: input.accountChoice }),
                     ...(input.initialMessage === undefined
                       ? {}
                       : {
@@ -2637,6 +2642,10 @@ export const layerWsRpc = (
           providerMaintenanceRunner.updateProvider(input),
         [WS_METHODS.claudeKeepWarmAction]: (input) => keepWarmActions.run(input),
         [WS_METHODS.providerResolveUsageResetSnooze]: (input) => usageResetSnooze.resolve(input),
+        [WS_METHODS.threadAccountState]: (input) => threadAccounts.state(input),
+        [WS_METHODS.threadAccountSet]: (input) => threadAccounts.set(input),
+        [WS_METHODS.threadAccountSteer]: (input) => threadAccounts.steer(input),
+        [WS_METHODS.threadAccountRouting]: (input) => threadAccounts.routing(input),
         [WS_METHODS.providerConsumeResetCredit]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(function* (input) {

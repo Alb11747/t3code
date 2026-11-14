@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   ClaudeKeepWarmAction,
@@ -11,6 +12,7 @@ import { EllipsisIcon, SnowflakeIcon } from "lucide-react";
 import { useState } from "react";
 
 import { useThreadActions } from "../../hooks/useThreadActions";
+import { useQuietThreadShell } from "../../state/entities";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
@@ -20,6 +22,8 @@ import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { composerFloatingLayerProps } from "./composerEventScope";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
+import { openThreadAccountPicker } from "./threadAccountChoice";
+import { useThreadAccountState } from "./ThreadAccountPicker";
 
 type StallProps = {
   environmentId: EnvironmentId;
@@ -74,6 +78,15 @@ function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProp
   const { snoozeThread, unsnoozeThread } = useThreadActions();
   const [pending, setPending] = useState(false);
   const snoozed = snoozedUntil !== null && Date.parse(snoozedUntil) === Date.parse(hold.resetAt);
+  // Fork: the composer's account picker, which a bound conversation needs to move at all.
+  const threadRef = scopeThreadRef(environmentId, threadId);
+  const shell = useQuietThreadShell(threadRef);
+  const accounts = useThreadAccountState({
+    environmentId,
+    threadId,
+    modelSelection: shell?.modelSelection ?? null,
+  }).data;
+  const chooseAccount = () => openThreadAccountPicker(scopedThreadKey(threadRef));
 
   async function act(action: ClaudeKeepWarmAction) {
     setPending(true);
@@ -126,20 +139,17 @@ function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProp
               size="xs"
               variant="ghost"
               disabled={disabled}
-              onClick={() => void act("switch")}
+              onClick={() => (accounts?.owner ? chooseAccount() : void act("switch"))}
             >
               Switch account
             </Button>
           }
         />
         <TooltipPopup side="top">
-          Continue on an account with quota. The whole conversation is written to that account's
-          cache once.
+          Moves this thread to another account. Its context is written to that account's cache once
+          (cold cache write). A conversation bound to its account also drops its earlier thinking.
         </TooltipPopup>
       </Tooltip>
-      <Button size="xs" variant="ghost" disabled={disabled} onClick={() => void act("compact")}>
-        Compact
-      </Button>
       <Menu>
         <MenuTrigger
           disabled={disabled}
@@ -148,6 +158,8 @@ function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProp
           <EllipsisIcon />
         </MenuTrigger>
         <MenuPopup {...composerFloatingLayerProps} side="top" align="end" width="content">
+          {accounts ? <MenuItem onClick={chooseAccount}>Choose account…</MenuItem> : null}
+          <MenuItem onClick={() => void act("compact")}>Compact</MenuItem>
           <MenuItem onClick={() => void toggleSnooze()}>
             {snoozed ? "Wake now" : "Snooze until reset"}
           </MenuItem>

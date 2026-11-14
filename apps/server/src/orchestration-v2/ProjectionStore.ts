@@ -572,6 +572,17 @@ export interface ProjectionStoreV2Shape {
     ReadonlyArray<Pick<OrchestrationV2AppThread, "id" | "issueWatches">>,
     ProjectionStoreV2Error
   >;
+  /** Fork: unarchived threads whose account choice names this hub. */
+  readonly getThreadsWithAccountChoices: (
+    sourceId: string,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationV2AppThread>, ProjectionStoreV2Error>;
+  /** Fork: threads whose provider threads carry these native session ids, archived ones included. */
+  readonly getThreadsByNativeIds: (
+    nativeIds: ReadonlyArray<string>,
+  ) => Effect.Effect<
+    ReadonlyArray<{ readonly nativeId: string; readonly id: ThreadId; readonly title: string }>,
+    ProjectionStoreV2Error
+  >;
   /** Titles of the given threads that exist, archived ones included. */
   readonly getThreadLinkMetadata: (
     threadIds: ReadonlyArray<ThreadId>,
@@ -1656,6 +1667,7 @@ export function threadShellFromProjection(
     title: projection.thread.title,
     contextNote: projection.thread.contextNote ?? null,
     compactBeforeCacheExpires: projection.thread.compactBeforeCacheExpires ?? null,
+    ...(projection.thread.accountChoice ? { accountChoice: projection.thread.accountChoice } : {}),
     providerInstanceId: projection.thread.providerInstanceId,
     modelSelection: projection.thread.modelSelection,
     runtimeMode: projection.thread.runtimeMode,
@@ -1965,6 +1977,9 @@ function shellFromState(input: {
     title: input.state.thread.title,
     contextNote: input.state.thread.contextNote ?? null,
     compactBeforeCacheExpires: input.state.thread.compactBeforeCacheExpires ?? null,
+    ...(input.state.thread.accountChoice
+      ? { accountChoice: input.state.thread.accountChoice }
+      : {}),
     providerInstanceId: input.state.thread.providerInstanceId,
     modelSelection: input.state.thread.modelSelection,
     runtimeMode: input.state.thread.runtimeMode,
@@ -7035,6 +7050,47 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
+    const getThreadsWithAccountChoices = Effect.fn("ProjectionStore.getThreadsWithAccountChoices")(
+      function* (sourceId: string) {
+        const rows = yield* sql<PayloadRow>`
+          SELECT payload_json FROM orchestration_v2_projection_threads
+          WHERE deleted_at IS NULL AND archived_at IS NULL
+            AND json_extract(payload_json, '$.accountChoice.sourceId') = ${sourceId}
+          ORDER BY thread_id ASC
+        `;
+        return yield* Effect.forEach(rows, (row) => decodeThreadPayload(row.payload_json));
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
+    // No index on the native id; only explicit routing reads ask, for the few sessions a hub lists.
+    const getThreadsByNativeIds = Effect.fn("ProjectionStore.getThreadsByNativeIds")(
+      function* (nativeIds: ReadonlyArray<string>) {
+        if (nativeIds.length === 0) return [];
+        const rows = yield* sql<{
+          readonly native_id: string;
+          readonly thread_id: string;
+          readonly title: string;
+        }>`
+          SELECT DISTINCT
+            json_extract(provider.payload_json, '$.nativeThreadRef.nativeId') AS native_id,
+            thread.thread_id AS thread_id,
+            thread.title AS title
+          FROM orchestration_v2_projection_provider_threads AS provider
+          JOIN orchestration_v2_projection_threads AS thread
+            ON thread.thread_id = provider.thread_id
+          WHERE thread.deleted_at IS NULL
+            AND json_extract(provider.payload_json, '$.nativeThreadRef.nativeId') IN ${sql.in(nativeIds)}
+        `;
+        return rows.map((row) => ({
+          nativeId: row.native_id,
+          id: ThreadId.make(row.thread_id),
+          title: row.title,
+        }));
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
     const getThreadWorktreePaths: ProjectionStoreV2Shape["getThreadWorktreePaths"] = (options) =>
       sql<{ readonly thread_id: string; readonly worktree_path: string }>`
         SELECT thread_id, json_extract(payload_json, '$.worktreePath') AS worktree_path
@@ -7794,6 +7850,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getSettlementCandidates: readOnReader(getSettlementCandidates),
       getThreadsWithPullRequests: readOnReader(getThreadsWithPullRequests),
       getThreadsWithIssueWatches: readOnReader(getThreadsWithIssueWatches),
+      getThreadsWithAccountChoices: readOnReader(getThreadsWithAccountChoices),
+      getThreadsByNativeIds: readOnReader(getThreadsByNativeIds),
       getThreadTitles: readOnReader(getThreadTitles),
       getThreadLinkMetadata: readOnReader(getThreadLinkMetadata),
       getThreadWorktreePaths: readOnReader(getThreadWorktreePaths),

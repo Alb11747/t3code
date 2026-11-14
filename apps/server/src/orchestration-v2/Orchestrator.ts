@@ -602,6 +602,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.pull-request-watch.sync":
     case "thread.issue-watch.wake":
     case "thread.issue-watch.sync":
+    case "thread.account-choice.set":
     case "thread.pull-request.sync":
     case "thread.title.regeneration.complete":
     case "thread.project.adopt-folder":
@@ -14449,6 +14450,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             effects,
           );
         }
+        break;
+      }
+      case "thread.account-choice.set": {
+        const thread = yield* projectionStore
+          .getThread(command.threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+            ),
+          );
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: thread.id,
+          providerInstanceId: thread.providerInstanceId,
+          occurredAt: yield* DateTime.now,
+          payload: {
+            ...thread,
+            accountChoice: command.accountChoice,
+            ...(command.accountMovedAt === undefined
+              ? {}
+              : { accountMovedAt: command.accountMovedAt }),
+          },
+        });
         break;
       }
       case "thread.guest-share.open":

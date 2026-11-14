@@ -508,6 +508,8 @@ export interface ProviderAdapterV2EnsureThreadInput {
 
 export interface ProviderAdapterV2TurnInput {
   readonly recovery?: "drop_thinking";
+  /** Fork: the conversation moved accounts; drop thinking blocks bound to the old one. */
+  readonly dropMismatchedThinking?: boolean;
   readonly appThread: OrchestrationV2AppThread;
   readonly threadId: ThreadId;
   readonly runId: RunId;

@@ -30,6 +30,7 @@ import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
+import * as ThreadAccountRouting from "../provider/ThreadAccountRouting.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
 import * as EventSink from "./EventSink.ts";
@@ -161,6 +162,7 @@ export const layer: Layer.Layer<
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
+    const threadAccountRouting = yield* ThreadAccountRouting.ThreadAccountRouting;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
 
@@ -1715,6 +1717,14 @@ export const layer: Layer.Layer<
         reportedCacheExpiry === undefined
           ? undefined
           : Option.getOrUndefined(DateTime.make(reportedCacheExpiry));
+      // Fork: pins expire, so each turn re-applies the thread's chosen router account.
+      const dropMismatchedThinking = yield* threadAccountRouting.prepareTurn({
+        appThread: projection.thread,
+        providerThread: runningProviderThread,
+        loadCompactions: projectionStore
+          .getThreadRecords(projection.thread.id, ["turnItems"], { turnItemTypes: ["compaction"] })
+          .pipe(Effect.map((records) => records.turnItems)),
+      });
       return runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,
@@ -1746,6 +1756,7 @@ export const layer: Layer.Layer<
             sameNativeThread &&
             !acceptedAttempts.some((source) => source.nativeThreadId !== undefined)),
         ...(promptCacheExpiresAt === undefined ? {} : { promptCacheExpiresAt }),
+        ...(dropMismatchedThinking ? { dropMismatchedThinking } : {}),
         shouldStartProviderTurn: runControls.shouldStartProviderTurn,
         shouldFinalizeRun: runControls.shouldFinalizeRun,
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,

@@ -12,6 +12,7 @@ import {
   ProviderInteractionMode as ProviderInteractionModeSchema,
   ProviderOptionSelection as ProviderOptionSelectionSchema,
   RuntimeMode as RuntimeModeSchema,
+  ThreadAccountChoice,
   type EnvironmentId,
   type ModelSelection,
   type ProjectId,
@@ -408,6 +409,8 @@ export interface ComposerDraft {
   readonly freshContext?: boolean;
   readonly workspaceSelection?: ComposerDraftWorkspaceSelection;
   readonly project?: ComposerDraftProject;
+  /** Fork: a new task's CLI Proxy account, sent when its first message creates the thread. */
+  readonly accountChoice?: ThreadAccountChoice;
 }
 
 export interface ComposerDraftProject {
@@ -445,6 +448,7 @@ export type ComposerDraftSettingsUpdate = Pick<
   | "freshContext"
   | "workspaceSelection"
   | "project"
+  | "accountChoice"
 >;
 
 const ComposerDraftWorkspaceSelectionSchema = Schema.Struct({
@@ -479,6 +483,7 @@ const ComposerDraftSchema = Schema.Struct({
   freshContext: Schema.optional(Schema.Boolean),
   workspaceSelection: Schema.optional(ComposerDraftWorkspaceSelectionSchema),
   project: Schema.optional(ComposerDraftProjectSchema),
+  accountChoice: Schema.optional(ThreadAccountChoice),
 });
 
 const PersistedComposerDraftsSchema = Schema.Struct({
@@ -657,7 +662,8 @@ function isEmptyDraft(draft: ComposerDraft): boolean {
     draft.runtimeMode === undefined &&
     draft.interactionMode === undefined &&
     draft.freshContext !== true &&
-    draft.workspaceSelection === undefined
+    draft.workspaceSelection === undefined &&
+    draft.accountChoice === undefined
   );
 }
 
@@ -1649,6 +1655,8 @@ export function clearComposerDraftContentState(
     modelSelection,
     workspaceSelection,
     project: _project,
+    // The thread the first message creates owns the account choice from then on.
+    accountChoice: _accountChoice,
     ...retained
   } = existing;
   const draft = {
@@ -1814,7 +1822,8 @@ export function sameComposerDraftState(a: ComposerDraft, b: ComposerDraft): bool
     a.runtimeMode === b.runtimeMode &&
     a.interactionMode === b.interactionMode &&
     a.freshContext === b.freshContext &&
-    a.workspaceSelection === b.workspaceSelection
+    a.workspaceSelection === b.workspaceSelection &&
+    a.accountChoice === b.accountChoice
   );
 }
 
@@ -1844,7 +1853,8 @@ export function undoComposerDraftMergeState(
       | "runtimeMode"
       | "interactionMode"
       | "freshContext"
-      | "workspaceSelection",
+      | "workspaceSelection"
+      | "accountChoice",
   >(
     key: K,
   ): ComposerDraft[K] => (existing[key] === merged[key] ? snapshot[key] : existing[key]);
@@ -1866,6 +1876,7 @@ export function undoComposerDraftMergeState(
     interactionMode: undoSetting("interactionMode"),
     freshContext: undoSetting("freshContext"),
     workspaceSelection: undoSetting("workspaceSelection"),
+    accountChoice: undoSetting("accountChoice"),
   };
   return withComposerDraft(current, draftKey, draft);
 }
@@ -2097,7 +2108,7 @@ export const composerDraftUploadSourcesAtom = Atom.make((get): ComposerDraftUplo
 
 type ComposerDraftSettings = Pick<
   ComposerDraft,
-  "modelSelection" | "runtimeMode" | "interactionMode" | "freshContext"
+  "modelSelection" | "runtimeMode" | "interactionMode" | "freshContext" | "accountChoice"
 >;
 const EMPTY_DRAFT_SETTINGS: ComposerDraftSettings = {};
 const composerDraftSettingsAtom = Atom.family((draftKey: string) =>
@@ -2108,6 +2119,7 @@ const composerDraftSettingsAtom = Atom.family((draftKey: string) =>
       runtimeMode: draft.runtimeMode,
       interactionMode: draft.interactionMode,
       freshContext: draft.freshContext,
+      accountChoice: draft.accountChoice,
     };
   }).pipe(
     Atom.withEquality(
@@ -2115,7 +2127,8 @@ const composerDraftSettingsAtom = Atom.family((draftKey: string) =>
         a.modelSelection === b.modelSelection &&
         a.runtimeMode === b.runtimeMode &&
         a.interactionMode === b.interactionMode &&
-        a.freshContext === b.freshContext,
+        a.freshContext === b.freshContext &&
+        a.accountChoice === b.accountChoice,
     ),
   ),
 );

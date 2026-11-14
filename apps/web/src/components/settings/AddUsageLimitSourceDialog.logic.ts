@@ -1,4 +1,8 @@
-import { type UnifiedSettings, UsageLimitSourceId } from "@t3tools/contracts";
+import {
+  type UnifiedSettings,
+  type UsageLimitSourceConfig,
+  UsageLimitSourceId,
+} from "@t3tools/contracts";
 
 export function sourceIdFromUrl(
   url: string,
@@ -21,4 +25,15 @@ export function sourceIdFromUrl(
     id = `${base}-${suffix}`;
   }
   return UsageLimitSourceId.make(id);
+}
+
+/**
+ * Fork: saving a hub replaces its whole entry, so re-adding a saved URL keeps the quota-router
+ * steers T3 renews for it.
+ */
+export function withSavedSteers(
+  entry: UsageLimitSourceConfig,
+  saved: UsageLimitSourceConfig | undefined,
+): UsageLimitSourceConfig {
+  return saved?.steers ? { ...entry, steers: saved.steers } : entry;
 }

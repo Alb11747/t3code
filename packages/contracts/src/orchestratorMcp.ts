@@ -4,6 +4,7 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { AuthMcpClientAccess } from "./auth.ts";
 import { OrchestratorMcpThreadStall } from "./claudeKeepWarm.ts";
+import { RouterAccountAlias } from "./providerUsageLimits.ts";
 import {
   ContextTransferId,
   EnvironmentId,
@@ -474,6 +475,10 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
   snoozed: Schema.Boolean,
   snoozedUntil: Schema.NullOr(IsoDateTime),
   stalled: Schema.optional(Schema.NullOr(OrchestratorMcpThreadStall)),
+  /** Fork: the CLI Proxy account chosen for the thread's requests; absent or null is automatic. */
+  account: Schema.optional(
+    Schema.NullOr(Schema.Struct({ account: RouterAccountAlias, waitWhenOut: Schema.Boolean })),
+  ),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

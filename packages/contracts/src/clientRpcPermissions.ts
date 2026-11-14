@@ -75,6 +75,9 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: AuthOrchestrationOperateScope,
   // Releases, stops or compacts a running turn, as Stop and /compact do.
   [WS_METHODS.claudeKeepWarmAction]: AuthOrchestrationOperateScope,
+  // Pins a thread or steers new threads to a quota-router account, like a model switch.
+  [WS_METHODS.threadAccountSet]: AuthOrchestrationOperateScope,
+  [WS_METHODS.threadAccountSteer]: AuthOrchestrationOperateScope,
   // A guest link hands thread access to someone outside, like a pairing link.
   [WS_METHODS.guestShareCreate]: AuthAccessWriteScope,
   [WS_METHODS.peerLinksLink]: AuthAccessWriteScope,

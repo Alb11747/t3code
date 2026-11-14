@@ -72,6 +72,8 @@ import * as IssuesHandlers from "./toolkits/issues/handlers.ts";
 import { IssuesToolkit } from "./toolkits/issues/tools.ts";
 import * as StallHandlers from "./toolkits/stall/handlers.ts";
 import { StallToolkit } from "./toolkits/stall/tools.ts";
+import * as UsageHandlers from "./toolkits/usage/handlers.ts";
+import { UsageToolkit } from "./toolkits/usage/tools.ts";
 import * as PullRequestsHandlers from "./toolkits/pullRequests/handlers.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import * as DeviceHandlers from "./toolkits/device/handlers.ts";
@@ -1253,6 +1255,7 @@ export const layerTools = Layer.mergeAll(
   layerPullRequestsToolkit,
   toolkitRegistration(IssuesToolkit, IssuesHandlers.layer),
   toolkitRegistration(StallToolkit, StallHandlers.layer),
+  toolkitRegistration(UsageToolkit, UsageHandlers.layer),
   layerDeviceToolkit,
   layerHtmlToolkit,
 );

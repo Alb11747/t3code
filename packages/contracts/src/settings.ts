@@ -1,4 +1,5 @@
 import { EasDeviceHostConfigs, SimlockDeviceHostConfigs, SshDeviceHostConfigs } from "./device.ts";
+import { RouterAccountAlias } from "./providerUsageLimits.ts";
 import {
   AuthOrchestrationOperateScope,
   AuthSettingsWriteScope,
@@ -930,6 +931,13 @@ export const UsageLimitSourceConfig = Schema.Struct({
     secretSetting,
   ),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /** Fork: the quota-router account new threads of each provider prefer; T3 renews the steer. */
+  steers: Schema.optional(
+    Schema.Struct({
+      claude: Schema.optional(RouterAccountAlias),
+      codex: Schema.optional(RouterAccountAlias),
+    }),
+  ),
 });
 export type UsageLimitSourceConfig = typeof UsageLimitSourceConfig.Type;
 

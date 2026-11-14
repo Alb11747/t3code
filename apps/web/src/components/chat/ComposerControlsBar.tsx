@@ -30,6 +30,7 @@ import {
 } from "./ComposerModelEffort";
 import type { useComposerProviderModel } from "./useComposerProviderModel";
 import { resolveComposerControlsOwnership } from "./composerControlsOwnership";
+import { ThreadAccountPicker } from "./ThreadAccountPicker";
 
 /**
  * The composer footer controls: the model picker (which also holds effort, speed and
@@ -41,6 +42,7 @@ const MODEL_TRIGGER_STATES = "data-popup-open:bg-accent data-popup-open:text-for
 
 export function ComposerControlsBar(props: {
   environmentId: EnvironmentId;
+  contextTokens: number | null;
   routeKind: ChatComposerProps["routeKind"];
   routeThreadRef: ChatComposerProps["routeThreadRef"];
   draftId: ChatComposerProps["draftId"];
@@ -261,6 +263,15 @@ export function ComposerControlsBar(props: {
   ) : (
     <>
       {composerModelPicker}
+      {/* Fork: the CLI Proxy account; absent unless a hub routes this provider. */}
+      <ThreadAccountPicker
+        environmentId={environmentId}
+        threadId={routeThreadRef.threadId}
+        isDraft={routeKind === "draft"}
+        modelSelection={selectedModelSelection}
+        contextTokens={props.contextTokens}
+        size={controlSize}
+      />
 
       <>
         {restingBlockDefs.map((def, index) => {

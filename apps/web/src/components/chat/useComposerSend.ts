@@ -1220,6 +1220,9 @@ export function useComposerSend(input: ComposerSendInput) {
     let backgroundDraftOpened = false;
     let turnStartSucceeded = false;
     if (failure === null && turnAttachmentsResult._tag === "Success") {
+      const draftAccountChoice = isLocalDraftThread
+        ? useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.accountChoice
+        : undefined;
       const bootstrap =
         isLocalDraftThread || baseBranchForWorktree
           ? {
@@ -1234,6 +1237,7 @@ export function useComposerSend(input: ComposerSendInput) {
                       branch: activeThreadBranch,
                       worktreePath: activeThread.worktreePath,
                       createdAt: activeThread.createdAt,
+                      ...(draftAccountChoice ? { accountChoice: draftAccountChoice } : {}),
                     },
                   }
                 : {}),
@@ -1307,6 +1311,9 @@ export function useComposerSend(input: ComposerSendInput) {
         failure = startResult;
       } else {
         turnStartSucceeded = true;
+        if (draftAccountChoice) {
+          useComposerDraftStore.getState().setAccountChoice(composerDraftTarget, null);
+        }
         setKeepFullHistory(routeThreadKey, false);
         if (freshArm !== undefined) disarmFreshSession(routeThreadKey, freshArm);
         clearUsageLimitsFor(routeThreadKey);

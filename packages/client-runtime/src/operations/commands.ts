@@ -10,6 +10,7 @@ import {
   type ChatAttachment,
   MessageId,
   type ModelSelection,
+  type ThreadAccountChoice,
   type NodeId,
   type OrchestrationV2Command,
   type OrchestrationV2CreationSource,
@@ -158,6 +159,8 @@ interface StartThreadBootstrap {
     readonly branch: string | null;
     readonly worktreePath: string | null;
     readonly createdAt: string;
+    /** Fork: the draft's CLI Proxy account, pinned before its first message runs. */
+    readonly accountChoice?: ThreadAccountChoice;
   };
   readonly prepareWorktree?: {
     readonly requireWorktree?: boolean;
@@ -751,6 +754,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
       runtimeMode: input.runtimeMode,
       interactionMode: input.interactionMode,
       workspaceStrategy,
+      ...(bootstrap?.accountChoice ? { accountChoice: bootstrap.accountChoice } : {}),
       initialMessage: {
         messageId: input.message.messageId,
         text: input.message.text,

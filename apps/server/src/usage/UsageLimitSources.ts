@@ -26,7 +26,7 @@ import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretReso
 import * as SecretResolverLayer from "../secrets/SecretResolver.ts";
 import { resolveSettingsSecrets } from "../secrets/settingsSecretValue.ts";
 import * as Settings from "../serverSettings.ts";
-import { makeCliproxyApi } from "./cliproxyApi.ts";
+import { type CliproxyApi, type CliproxyHub, makeCliproxyApi } from "./cliproxyApi.ts";
 
 export class UsageLimitSources extends Context.Service<
   UsageLimitSources,
@@ -44,7 +44,12 @@ export class UsageLimitSources extends Context.Service<
       readonly session?: string;
       readonly model?: string;
     }) => Effect.Effect<{ readonly resetsAt: string | null } | null>;
-  }
+    /** Fork: the enabled source's hub with its management key, or null. */
+    readonly hub: (sourceId: UsageLimitSourceId) => Effect.Effect<CliproxyHub | null>;
+  } & Pick<
+    CliproxyApi,
+    "nextPick" | "control" | "pin" | "unpin" | "steer" | "unsteer" | "margin" | "subscriptionEnd"
+  >
 >()("t3/usage/UsageLimitSources") {}
 
 function sourceLabel(id: string, config: UsageLimitSourceConfig): string {
@@ -155,18 +160,24 @@ export const make = Effect.gen(function* () {
     return result;
   }, refreshLock.withPermits(1));
 
-  const nextPickReset = Effect.fn("UsageLimitSources.nextPickReset")(function* (
-    input: Parameters<UsageLimitSources["Service"]["nextPickReset"]>[0],
-  ) {
+  const hub = Effect.fn("UsageLimitSources.hub")(function* (sourceId: UsageLimitSourceId) {
     const settings = yield* settingsService.getSettings.pipe(
       Effect.orElseSucceed((): ServerSettings | null => null),
     );
-    const config = settings?.usageLimitSources[input.sourceId];
+    const config = settings?.usageLimitSources[sourceId];
     if (!config?.enabled) return null;
     const managementKey = yield* readManagementKey(config).pipe(Effect.orElseSucceed(() => ""));
     if (managementKey.length === 0) return null;
+    return { url: config.url, managementKey };
+  });
+
+  const nextPickReset = Effect.fn("UsageLimitSources.nextPickReset")(function* (
+    input: Parameters<UsageLimitSources["Service"]["nextPickReset"]>[0],
+  ) {
+    const config = yield* hub(input.sourceId);
+    if (config === null) return null;
     const { sourceId: _, ...pick } = input;
-    return yield* api.nextPickReset({ url: config.url, managementKey }, pick);
+    return yield* api.nextPickReset(config, pick);
   });
 
   yield* settingsService.streamChanges.pipe(
@@ -202,6 +213,16 @@ export const make = Effect.gen(function* () {
     current: Ref.get(stateRef),
     consumeResetCredit,
     nextPickReset,
+    hub,
+    // Fork: the quota router's controls.
+    nextPick: api.nextPick,
+    control: api.control,
+    pin: api.pin,
+    unpin: api.unpin,
+    steer: api.steer,
+    unsteer: api.unsteer,
+    margin: api.margin,
+    subscriptionEnd: api.subscriptionEnd,
     refresh,
     get streamChanges() {
       return Stream.unwrap(

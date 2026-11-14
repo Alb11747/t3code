@@ -30,6 +30,7 @@ import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { environmentPresentations } from "../../state/presentation";
 import { ResetCredits } from "./UsageLimitsSection";
 import { usageProviderKind, useProviderColors } from "./usageProviders";
+import { routesThreads, UsageRouting } from "./UsageRouting";
 
 const PACE_LABEL = { ahead: "Ahead of pace", on: "On pace", under: "Under pace" } as const;
 
@@ -481,6 +482,22 @@ export function UsageLimitsSection({
           </Pressable>
         </View>
       ))}
+      {[...selected].flatMap(([environmentId, presentation]) =>
+        (presentation.serverConfig?.usageLimitSources ?? [])
+          .filter(routesThreads)
+          .map((source) => (
+            <UsageRouting
+              key={`${environmentId}:${source.id}`}
+              environmentId={environmentId}
+              source={source}
+              label={
+                selected.size > 1
+                  ? `${presentation.entry.target.label} · ${source.label}`
+                  : source.label
+              }
+            />
+          )),
+      )}
       {notices.length > 0 || failedLabels.length > 0 ? (
         <View
           accessible

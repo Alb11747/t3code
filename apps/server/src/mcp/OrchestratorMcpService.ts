@@ -66,6 +66,7 @@ import {
   latestProviderTurnForAttempt,
   resolveProjectProviderInstanceEnabled,
   SECRET_REQUEST_UNSAVED_NOTE,
+  threadAccountChoiceFor,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -799,6 +800,12 @@ function threadStall(
   };
 }
 
+// Fork: a choice made for another provider instance no longer applies.
+function accountOf(thread: OrchestrationV2ThreadProjection["thread"]) {
+  const choice = threadAccountChoiceFor(thread.accountChoice, thread.modelSelection.instanceId);
+  return choice ? { account: { account: choice.account, waitWhenOut: choice.stall } } : {};
+}
+
 function threadPullRequests(
   links: OrchestrationV2ThreadShell["pullRequests"],
 ): OrchestratorMcpThreadPullRequest[] {
@@ -889,6 +896,7 @@ function threadDetail(
     ...threadSettlement(projection.thread),
     ...threadSnooze(shell, nowMs),
     ...threadStall(shell),
+    ...accountOf(projection.thread),
     createdAt: DateTime.formatIso(projection.thread.createdAt),
     updatedAt: DateTime.formatIso(projection.thread.updatedAt),
   };

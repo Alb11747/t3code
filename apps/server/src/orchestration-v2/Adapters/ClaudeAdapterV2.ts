@@ -4132,6 +4132,10 @@ function isClaudeActiveSteeringAbortResult(message: SDKResultMessage): boolean {
   );
 }
 
+// Fork: after an account move, every request drops thinking bound to the old account until the
+// conversation compacts, so the process keeps the drop settings across turns.
+const DROP_MISMATCHED_THINKING_KEY = ":drop-mismatched-thinking";
+
 function isClaudeProviderContinuationTurn(
   input: ProviderAdapter.ProviderAdapterV2TurnInput,
 ): boolean {
@@ -11576,7 +11580,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const queryPolicyKey =
             claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides) +
             (promptCaching === "disabled" ? ":prompt-caching-disabled" : "") +
-            (turnInput.recovery === "drop_thinking" ? `:drop-thinking:${turnInput.attemptId}` : "");
+            (turnInput.recovery === "drop_thinking"
+              ? `:drop-thinking:${turnInput.attemptId}`
+              : "") +
+            (turnInput.dropMismatchedThinking ? DROP_MISMATCHED_THINKING_KEY : "");
           const compiledSelection = compileClaudeModelSelection(
             turnInput.modelSelection,
             modelCatalog,
@@ -11592,6 +11599,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             existing.nativeThreadId === nativeThreadId &&
             !existing.stopping &&
             !existing.queryPolicyKey.includes(":drop-thinking:") &&
+            existing.queryPolicyKey.endsWith(DROP_MISMATCHED_THINKING_KEY) ===
+              (turnInput.dropMismatchedThinking === true) &&
             isClaudeProviderContinuationTurn(turnInput)
           ) {
             return existing;
@@ -11923,7 +11932,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(appendSystemPromptFileText === undefined ? {} : { appendSystemPromptFileText }),
             ...(toolSearchOverride === undefined ? {} : { toolSearchOverride }),
           });
-          if (turnInput.recovery === "drop_thinking") {
+          if (turnInput.recovery === "drop_thinking" || turnInput.dropMismatchedThinking) {
             const sourcesArg = queryOptions.extraArgs?.["setting-sources"];
             const settingSources = yield* decodeClaudeRecoverySettingSources(
               sourcesArg === undefined

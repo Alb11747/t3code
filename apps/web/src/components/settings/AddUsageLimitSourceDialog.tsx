@@ -13,7 +13,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
-import { sourceIdFromUrl } from "./AddUsageLimitSourceDialog.logic";
+import { sourceIdFromUrl, withSavedSteers } from "./AddUsageLimitSourceDialog.logic";
 import { SecretSourceInput, useSecretSources } from "./SecretSourceInput";
 import { Label } from "../ui/label";
 
@@ -53,13 +53,16 @@ export function AddUsageLimitSourceDialog({
     const id = sourceIdFromUrl(trimmedUrl, sources);
     updateSettings({
       usageLimitSources: {
-        [id]: {
-          kind: "cliproxy",
-          ...(label.trim() ? { label: label.trim() } : {}),
-          url: trimmedUrl,
-          managementKey,
-          enabled: true,
-        },
+        [id]: withSavedSteers(
+          {
+            kind: "cliproxy",
+            ...(label.trim() ? { label: label.trim() } : {}),
+            url: trimmedUrl,
+            managementKey,
+            enabled: true,
+          },
+          sources[id],
+        ),
       },
     });
     reset();

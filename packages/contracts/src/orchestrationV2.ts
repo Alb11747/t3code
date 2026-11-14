@@ -44,6 +44,7 @@ import {
 import { AuthMcpClientAccess } from "./auth.ts";
 import { ChatAttachment } from "./chatAttachment.ts";
 import { ClaudeKeepWarmHold } from "./claudeKeepWarm.ts";
+import { ThreadAccountChoice } from "./threadAccount.ts";
 import { ThreadGuestShare } from "./guestShare.ts";
 import { ThreadContextNote, ThreadContextNoteUpdate } from "./threadContextNote.ts";
 import { StoredThreadTags, ThreadTag } from "./threadTags.ts";
@@ -465,6 +466,10 @@ export const OrchestrationV2AppThread = Schema.Struct({
   contextNote: Schema.optional(Schema.NullOr(ThreadContextNote)),
   /** Overrides the idle compaction setting for this thread; null follows it. */
   compactBeforeCacheExpires: Schema.optional(Schema.NullOr(Schema.Boolean)),
+  /** Fork: the quota-router account the thread's requests go to; null routes automatically. */
+  accountChoice: Schema.optional(Schema.NullOr(ThreadAccountChoice)),
+  /** Fork: an owned conversation moved accounts; turns drop its old thinking until it compacts. */
+  accountMovedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
@@ -2162,6 +2167,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   title: Schema.String,
   contextNote: Schema.optional(Schema.NullOr(ThreadContextNote)),
   compactBeforeCacheExpires: Schema.optional(Schema.NullOr(Schema.Boolean)),
+  accountChoice: Schema.optional(Schema.NullOr(ThreadAccountChoice)),
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -3541,6 +3547,14 @@ const OrchestrationV2InternalCommand = Schema.Union([
     text: Schema.String,
     notification: OrchestrationV2Notification,
   }),
+  /** Fork: server-only; clients go through the thread account RPC, which applies the router pin. */
+  Schema.Struct({
+    type: Schema.Literal("thread.account-choice.set"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    accountChoice: Schema.NullOr(ThreadAccountChoice),
+    accountMovedAt: Schema.optional(IsoDateTime),
+  }),
   // Guest share commands the server issues after checking T3 Connect and the guest token.
   Schema.Struct({
     type: Schema.Literal("thread.guest-share.open"),
@@ -3822,6 +3836,8 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
+  /** Fork: a draft's account choice, stored before its first message starts. */
+  accountChoice: Schema.optional(ThreadAccountChoice),
   initialMessage: Schema.optional(
     Schema.Struct({
       messageId: Schema.optional(MessageId),
