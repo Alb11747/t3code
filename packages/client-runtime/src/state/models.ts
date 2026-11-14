@@ -161,6 +161,8 @@ export interface EnvironmentThreadShell {
   readonly runtime: ThreadRuntimeSummary | null;
   readonly blockedOnThreadWait?: boolean;
   readonly keepWarmStalled?: boolean;
+  /** The router hold behind `keepWarmStalled`, for saying which account a pin hold waits for. */
+  readonly keepWarmHold?: OrchestrationV2ThreadShell["keepWarmHold"];
   /** Direct subagents held by a keep-warm stall, or with a held subagent below them. */
   readonly stalledSubagentThreadIds?: ReadonlyArray<ThreadId>;
   readonly latestUserMessageAt: string | null;
@@ -330,6 +332,7 @@ export function presentThreadShell(
     runtime,
     blockedOnThreadWait: thread.blockedOnThreadWait ?? false,
     keepWarmStalled: thread.keepWarmStalled ?? false,
+    keepWarmHold: thread.keepWarmHold ?? null,
     stalledSubagentThreadIds,
     latestUserMessageAt: nullableIso(thread.latestUserMessageAt),
     ...(thread.latestUserAuthoredMessageAt === undefined

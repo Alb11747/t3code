@@ -17,7 +17,7 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           yield* readCaller();
           if (input.action === "switch" && input.account !== undefined) {
-            // Stops the held turn and continues it on that account.
+            // A keep-warm hold's turn stops and continues there; a pin hold's request just moves.
             yield* threadAccounts.set({
               threadId: input.threadId,
               account: input.account,

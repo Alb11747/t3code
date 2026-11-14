@@ -8,18 +8,30 @@ import {
 import * as Effect from "effect/Effect";
 
 import * as ClaudeKeepWarm from "../provider/ClaudeKeepWarm.ts";
+import * as ThreadAccountService from "../usage/ThreadAccountService.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 
-/** Fork: the composer actions for a turn the quota router holds to keep Claude's cache warm. */
+/**
+ * Fork: the composer actions for a turn the quota router holds, to keep Claude's cache warm or
+ * because the thread's pin waits for its account.
+ */
 export const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const keepWarm = yield* ClaudeKeepWarm.ClaudeKeepWarm;
+  const threadAccounts = yield* ThreadAccountService.ThreadAccounts;
 
   const run = Effect.fn("ClaudeKeepWarmActions.run")(function* (input: ClaudeKeepWarmActionInput) {
     const { threadId } = input;
     const failWith = (cause: { readonly message: string }) =>
       new ClaudeKeepWarmActionError({ threadId, detail: cause.message });
     const stalled = yield* keepWarm.find(threadId);
+    if (stalled?.turn.hold.kind === "pin") return yield* runPinHold(input, stalled, failWith);
+    if (input.action === "stop_waiting") {
+      return yield* new ClaudeKeepWarmActionError({
+        threadId,
+        detail: "This thread is not waiting for its chosen account.",
+      });
+    }
     // A released hold only takes `restore`; a live one takes everything else.
     if (
       stalled === null ||
@@ -103,6 +115,60 @@ export const make = Effect.gen(function* () {
           { discard: true },
         );
       }
+    }
+  });
+
+  // The router re-places a held request as soon as its pin changes, so nothing here stops the turn.
+  const runPinHold = Effect.fn("ClaudeKeepWarmActions.runPinHold")(function* (
+    input: ClaudeKeepWarmActionInput,
+    stalled: NonNullable<Effect.Success<ReturnType<typeof keepWarm.find>>>,
+    failWith: (cause: { readonly message: string }) => ClaudeKeepWarmActionError,
+  ) {
+    const { threadId } = input;
+    const { session, turn } = stalled;
+    const refuse = (detail: string) =>
+      Effect.fail(new ClaudeKeepWarmActionError({ threadId, detail }));
+    switch (input.action) {
+      case "release":
+      case "stop_waiting": {
+        // Keeps the held account, so the thread still prefers it; for a pin T3 did not set, T3
+        // now stores that account as its own thread's choice.
+        const stored =
+          turn.hold.account === undefined
+            ? yield* orchestrator.getThreadRecords(threadId, []).pipe(
+                Effect.map((records) => records.thread.accountChoice ?? null),
+                Effect.mapError(failWith),
+              )
+            : null;
+        const account =
+          turn.hold.account ??
+          (stored ? (yield* threadAccounts.describeChoice(stored)).account : undefined);
+        if (account === undefined) {
+          return yield* refuse("The router did not say which account this thread waits for.");
+        }
+        yield* threadAccounts
+          .set({ threadId, account, stall: false })
+          .pipe(Effect.mapError(failWith));
+        return;
+      }
+      case "pause":
+        if (turn.hold.resetUnknown === true) {
+          return yield* refuse(
+            "The router does not know when this account resets. Switch accounts or stop waiting instead.",
+          );
+        }
+        yield* session.pause(turn, turn.hold).pipe(Effect.mapError(failWith));
+        return;
+      case "switch":
+        return yield* refuse(
+          "Choose the account to switch to: pick one in the account picker, or pass `account`.",
+        );
+      case "restore":
+        return yield* refuse("This thread waits for its chosen account; it was not released.");
+      case "compact":
+        return yield* refuse(
+          "This thread waits for its chosen account, which is out, so a compaction would wait too. Switch accounts or stop waiting instead.",
+        );
     }
   });
 

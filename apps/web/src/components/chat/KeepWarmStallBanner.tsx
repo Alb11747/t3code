@@ -8,7 +8,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
-import { EllipsisIcon, SnowflakeIcon } from "lucide-react";
+import { EllipsisIcon, HourglassIcon, SnowflakeIcon } from "lucide-react";
 import { useState } from "react";
 
 import { useThreadActions } from "../../hooks/useThreadActions";
@@ -34,11 +34,27 @@ type StallProps = {
   timestampFormat: TimestampFormat;
 };
 
-/** Fork: the quota router holds this Claude turn's requests to keep its prompt cache warm. */
+/**
+ * Fork: the quota router holds this Claude turn's requests, to keep its prompt cache warm or
+ * because the thread's pin waits for its account.
+ */
 export function keepWarmStallBannerItem(props: StallProps): ComposerBannerStackItem {
   const { hold, timestampFormat } = props;
   const reset = formatUpcomingTimestamp(hold.resetAt, timestampFormat);
   const id = `keep-warm-stall:${props.threadId}`;
+  if (hold.kind === "pin") {
+    const pinned = hold.account ?? "the chosen account";
+    return {
+      id,
+      variant: "warning",
+      icon: <HourglassIcon />,
+      title: `Waiting for ${pinned}`,
+      description: hold.resetUnknown
+        ? `This thread waits for ${pinned} when it runs out, and the hub cannot use it right now. It checks again ${formatUpcomingTimestamp(hold.releaseAt, timestampFormat)}.`
+        : `This thread waits for ${pinned} when it runs out. It has quota again ${reset}.`,
+      actions: <StallActions key={hold.resetAt} {...props} />,
+    };
+  }
   const account = hold.account ? `Claude account ${hold.account}` : "Claude";
   if (hold.released) {
     return {
@@ -67,6 +83,7 @@ const ACTION_FAILURES: Record<ClaudeKeepWarmAction, string> = {
   switch: "Could not switch accounts",
   compact: "Could not compact the thread",
   pause: "Could not pause the thread",
+  stop_waiting: "Could not stop waiting",
 };
 
 function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProps) {
@@ -135,6 +152,50 @@ function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProp
   }
 
   const disabled = pending || !permitted;
+  // Fork: a pin that waits for its account. Changing the pin moves the held request at once.
+  if (hold.kind === "pin") {
+    return (
+      <>
+        <Button size="xs" variant="ghost" disabled={disabled} onClick={chooseAccount}>
+          Switch account…
+        </Button>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                size="xs"
+                variant="ghost"
+                disabled={disabled}
+                onClick={() => void act("stop_waiting")}
+              >
+                Stop waiting
+              </Button>
+            }
+          />
+          <TooltipPopup side="top">
+            Keeps this account but turns off Wait when it runs out, so the request goes to another
+            account now (cold cache write).
+          </TooltipPopup>
+        </Tooltip>
+        {hold.resetUnknown ? null : (
+          <Menu>
+            <MenuTrigger
+              disabled={disabled}
+              render={<Button size="icon-xs" variant="ghost" aria-label="More stall actions" />}
+            >
+              <EllipsisIcon />
+            </MenuTrigger>
+            <MenuPopup {...composerFloatingLayerProps} side="top" align="end" width="content">
+              <MenuItem onClick={() => void toggleSnooze()}>
+                {snoozed ? "Wake now" : "Snooze until reset"}
+              </MenuItem>
+              <MenuItem onClick={() => void act("pause")}>Pause until reset</MenuItem>
+            </MenuPopup>
+          </Menu>
+        )}
+      </>
+    );
+  }
   if (hold.released) {
     return (
       <Button size="xs" variant="ghost" disabled={disabled} onClick={() => void act("restore")}>

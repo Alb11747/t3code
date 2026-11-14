@@ -8974,8 +8974,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const completedAt = endedAt ?? now;
           const message =
             status === "running"
-              ? ClaudeKeepWarm.describeKeepWarmHold()
+              ? ClaudeKeepWarm.describeKeepWarmHold(notice.hold)
               : ClaudeKeepWarm.describeKeepWarmHoldEnd(
+                  notice.hold,
                   DateTime.toEpochMillis(notice.startedAt),
                   DateTime.toEpochMillis(completedAt),
                 );
@@ -9057,7 +9058,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
           // The second case is a poll that read the router before a release took effect.
           const shown = notice?.hold ?? state.released?.hold;
-          if (shown?.releaseAt === hold.releaseAt && shown.resetAt === hold.resetAt) return;
+          if (
+            shown?.releaseAt === hold.releaseAt &&
+            shown.resetAt === hold.resetAt &&
+            shown.kind === hold.kind &&
+            shown.account === hold.account
+          ) {
+            return;
+          }
           // Clients read the newest notice, so the older one's mark needs no rewrite.
           state.released = null;
           state.notice = {
@@ -9092,7 +9100,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             failure: makeProviderFailure({
               class: "usage_limit",
               code: "keep_warm_paused",
-              message: "Paused to keep Claude's prompt cache warm until its 5-hour limit resets.",
+              message:
+                hold.kind === "pin"
+                  ? `Paused until ${hold.account ?? "the chosen account"} has quota again.`
+                  : "Paused to keep Claude's prompt cache warm until its 5-hour limit resets.",
               retryable: true,
               resetAt: hold.resetAt,
             }),

@@ -517,9 +517,10 @@ export const make = Effect.gen(function* () {
       ...(moved ? { accountMovedAt: DateTime.formatIso(now) } : {}),
     });
     // A keep-warm hold forwards its request to the account it is held on, so stop the turn (the
-    // request never reached the provider) and continue it, which the new pin routes.
+    // request never reached the provider) and continue it, which the new pin routes. A pin hold
+    // needs neither: the router re-places held requests when their pin changes.
     const held = yield* keepWarm.find(input.threadId);
-    if (held === null || held.turn.hold.released === true) return;
+    if (held === null || held.turn.hold.released === true || held.turn.hold.kind === "pin") return;
     const continueId = `thread-account-continue:${held.turn.runId}`;
     yield* Effect.forEach(
       [

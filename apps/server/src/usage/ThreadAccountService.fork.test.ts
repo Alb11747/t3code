@@ -65,6 +65,7 @@ const modelSelection = { instanceId: "claude", model: "claude-sonnet-5-5" };
 function testLayer(input: {
   readonly owner?: string | null;
   readonly heldRunId?: string;
+  readonly heldByPin?: boolean;
   readonly pins?: Array<Parameters<UsageLimitSources.UsageLimitSources["Service"]["pin"]>[1]>;
   readonly commands?: OrchestrationV2ServerCommand[];
   readonly control?: Effect.Success<
@@ -182,7 +183,9 @@ function testLayer(input: {
         Effect.succeed(
           input.heldRunId === undefined
             ? null
-            : ({ turn: { runId: input.heldRunId, hold: {} } } as never),
+            : ({
+                turn: { runId: input.heldRunId, hold: input.heldByPin ? { kind: "pin" } : {} },
+              } as never),
         ),
     }),
   );
@@ -194,6 +197,7 @@ function setAccount(input: {
   readonly stall?: boolean | undefined;
   readonly dropThinking?: boolean;
   readonly heldRunId?: string;
+  readonly heldByPin?: boolean;
   readonly accountChoice?: unknown;
   readonly renamed?: Record<string, string>;
 }) {
@@ -251,6 +255,11 @@ describe("ThreadAccountService.set", () => {
       expect(commands.slice(1)).toMatchObject([
         { type: "message.dispatch", text: "Continue where you left off." },
         { type: "run.interrupt", runId: "run-7" },
+      ]);
+      // The router re-places a request a pin holds once the pin changes, so that turn runs on.
+      const pinHeld = yield* setAccount({ owner: null, heldRunId: "run-8", heldByPin: true });
+      expect(pinHeld.commands.map((command) => command.type)).toEqual([
+        "thread.account-choice.set",
       ]);
     }),
   );

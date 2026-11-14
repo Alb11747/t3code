@@ -206,6 +206,14 @@ that would move the conversation to another account asks the same way, and the t
 sheet shows where its next request and a compaction would go. Showing where a compaction goes
 needs a quota router newer than 0.24.0.
 
+While a Claude thread with **Wait when it runs out** is waiting for its account, it shows
+**Stalling** and a banner (on mobile, a card) naming the account and when it has quota again.
+**Switch account…** opens the picker; picking another account or **Automatic** sends the waiting
+request there at once. **Stop waiting** keeps the account but turns the wait off, so the request
+goes elsewhere now. **Snooze until reset** and **Pause until reset** wait out the reset instead.
+This also appears when another tool set the wait, and the actions then change the thread's
+choice in T3 Code.
+
 Switching an existing thread re-sends its context to the new account as a cold cache write.
 Some conversations stay bound to the account they started on; moving one asks first, because its
 earlier thinking is dropped (messages, tool results and files stay). The thread then drops that

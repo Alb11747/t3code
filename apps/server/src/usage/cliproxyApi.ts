@@ -128,6 +128,16 @@ const CreditList = Schema.Struct({
   ),
 });
 
+/** A held request from `GET control`; pin holds without a known reset repeat `releaseAt`. */
+interface RouterHold {
+  readonly kind?: "pin";
+  readonly session: string;
+  readonly account: string | undefined;
+  readonly releaseAt: string;
+  readonly resetAt: string;
+  readonly resetUnknown?: boolean;
+}
+
 const Control = Schema.Struct({
   pins: Schema.optional(
     Schema.NullOr(
@@ -164,6 +174,8 @@ const Control = Schema.Struct({
           reset_at: Schema.optional(Schema.NullOr(Schema.String)),
           window: Schema.optional(Schema.String),
           kind: Schema.optional(Schema.String),
+          // 0.27.0: "steer" marks a hold bound by the provider's stall steer instead of a pin.
+          control: Schema.optional(Schema.String),
           reason: Schema.optional(Schema.String),
         }),
       ),
@@ -781,19 +793,34 @@ export const makeCliproxyApi = Effect.gen(function* () {
       ),
     );
   });
-  // Quota-router control: `held` also lists stall pins (kind "pin", or no kind from older routers).
-  // `listing` comes from the same read, to name the holds' accounts.
+  // Quota-router control: keep-warm holds, and stall-pin holds (kind "pin", or no kind from older
+  // routers; a pin's hold reports the session of the pin it follows, a parent's for a subagent).
+  // Stall-steer holds are left out. `listing` comes from the same read, to name the accounts.
   const keepWarmHolds = Effect.fn("CliproxyApi.keepWarmHolds")(function* (config: CliproxyHub) {
     const control = yield* management(config, "control").pipe(Effect.flatMap(decodeControl));
     // Go writes RFC3339 with nanoseconds or offsets; clients compare ISO strings.
     const iso = (value: string | null | undefined) =>
       value ? Option.getOrNull(Option.map(DateTime.make(value), DateTime.formatIso)) : null;
-    const holds = (control.held ?? []).flatMap((held) => {
+    const holds = (control.held ?? []).flatMap((held): ReadonlyArray<RouterHold> => {
       const releaseAt = iso(held.release_at);
       const resetAt = iso(held.reset_at);
-      return held.kind === "keep_warm" && releaseAt !== null && resetAt !== null
-        ? [{ session: held.session, account: held.account, releaseAt, resetAt }]
-        : [];
+      if (releaseAt === null) return [];
+      if (held.kind === "keep_warm") {
+        return resetAt === null
+          ? []
+          : [{ session: held.session, account: held.account, releaseAt, resetAt }];
+      }
+      if (held.control === "steer" || (held.kind !== undefined && held.kind !== "pin")) return [];
+      return [
+        {
+          kind: "pin" as const,
+          session: held.session,
+          account: held.account,
+          releaseAt,
+          resetAt: resetAt ?? releaseAt,
+          ...(resetAt === null ? { resetUnknown: true } : {}),
+        },
+      ];
     });
     return { holds, listing: control.accounts };
   });

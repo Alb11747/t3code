@@ -191,10 +191,15 @@ export const make = Effect.gen(function* () {
     yield* Effect.forEach(
       active,
       ({ session, turn }) => {
-        // A subagent's hold reports its root session; the earliest release is the next send.
+        // A subagent's hold reports its root session (its pin's, for an inherited pin). A pin hold
+        // blocks the turn outright, so it shows first; else the earliest release is the next send.
+        const pinFirst = (candidate: ClaudeKeepWarmHold) => (candidate.kind === "pin" ? 0 : 1);
         const held = holds
           .filter((candidate) => candidate.session === turn.session)
-          .toSorted((left, right) => left.releaseAt.localeCompare(right.releaseAt))[0];
+          .toSorted(
+            (left, right) =>
+              pinFirst(left) - pinFirst(right) || left.releaseAt.localeCompare(right.releaseAt),
+          )[0];
         if (held === undefined) return session.show(turn, null);
         const { session: _session, ...hold } = held;
         return session.show(turn, hold);
@@ -258,7 +263,9 @@ export const make = Effect.gen(function* () {
       concurrency: "unbounded",
     }).pipe(
       Effect.map((perSource) =>
-        perSource.some(({ holds }) => holds.some((hold) => hold.session === session)),
+        perSource.some(({ holds }) =>
+          holds.some((hold) => hold.session === session && hold.kind !== "pin"),
+        ),
       ),
       Effect.result,
     );
@@ -298,10 +305,19 @@ function formatWait(ms: number): string {
 }
 
 // Timeline text stays true while the hold lasts; the banner shows its times.
-export function describeKeepWarmHold(): string {
+export function describeKeepWarmHold(hold: ClaudeKeepWarmHold): string {
+  if (hold.kind === "pin") {
+    return `Waiting for ${hold.account ?? "the chosen account"}, which this thread waits for when it runs out.`;
+  }
   return "Claude is nearly out of its 5-hour limit. Holding requests about once an hour to keep the prompt cache warm until the limit resets.";
 }
 
-export function describeKeepWarmHoldEnd(startedAtMs: number, nowMs: number): string {
-  return `Held Claude's requests for ${formatWait(nowMs - startedAtMs)} to keep the prompt cache warm.`;
+export function describeKeepWarmHoldEnd(
+  hold: ClaudeKeepWarmHold,
+  startedAtMs: number,
+  nowMs: number,
+): string {
+  const waited = formatWait(nowMs - startedAtMs);
+  if (hold.kind === "pin") return `Waited ${waited} for ${hold.account ?? "the chosen account"}.`;
+  return `Held Claude's requests for ${waited} to keep the prompt cache warm.`;
 }

@@ -834,11 +834,21 @@ function threadSnooze(
   };
 }
 
-// Fork: the keep-warm hold behind the UI's Stalling status, so agents can tell it from a hung turn.
+// Fork: the router hold behind the UI's Stalling status, so agents can tell it from a hung turn.
 function threadStall(
   shell: Pick<OrchestrationV2ThreadShell, "keepWarmHold">,
-): Pick<OrchestratorMcpThreadListItem, "stalled"> {
+): Pick<OrchestratorMcpThreadListItem, "stalled" | "accountHold"> {
   const hold = shell.keepWarmHold;
+  if (hold?.kind === "pin") {
+    return {
+      stalled: null,
+      accountHold: {
+        account: hold.account ?? "unknown",
+        resetAt: hold.resetUnknown ? null : hold.resetAt,
+        releaseAt: hold.releaseAt,
+      },
+    };
+  }
   return {
     stalled: hold ? { kind: "keep_warm", resetAt: hold.resetAt, releaseAt: hold.releaseAt } : null,
   };

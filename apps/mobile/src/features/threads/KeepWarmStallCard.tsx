@@ -28,7 +28,10 @@ import type { ExistingThreadSettingsRouteParams } from "./ThreadSettingsSheet";
 
 const formatTime = (iso: string) => DateTime.toDateUtc(DateTime.makeUnsafe(iso)).toLocaleString();
 
-/** Fork: the quota router holds this Claude turn's requests to keep its prompt cache warm. */
+/**
+ * Fork: the quota router holds this Claude turn's requests, to keep its prompt cache warm or
+ * because the thread's pin waits for its account.
+ */
 export function KeepWarmStallCard({
   thread,
   threadRef,
@@ -121,6 +124,57 @@ export function KeepWarmStallCard({
       {error}
     </Text>
   ) : null;
+
+  // Fork: a pin that waits for its account. Changing the pin moves the held request at once.
+  if (hold.kind === "pin") {
+    const pinned = hold.account ?? "the chosen account";
+    return (
+      <View className="mx-3 mb-2 gap-2 rounded-xl border border-warning-foreground/25 bg-screen p-3">
+        <Text className="text-sm text-warning-foreground">
+          {hold.resetUnknown
+            ? `Waiting for ${pinned}, which this thread waits for when it runs out. The hub cannot use it right now; it checks again ${formatTime(hold.releaseAt)}.`
+            : `Waiting for ${pinned}, which this thread waits for when it runs out. It has quota again ${formatTime(hold.resetAt)}.`}
+        </Text>
+        <View className="flex-row flex-wrap gap-2">
+          <Button
+            label="Switch account…"
+            tone="secondary"
+            disabled={disabled}
+            onPress={chooseAccount}
+          />
+          <Button
+            label="Stop waiting"
+            tone="secondary"
+            disabled={disabled}
+            onPress={() => void act("stop_waiting")}
+          />
+          {hold.resetUnknown ? null : showMore ? (
+            <>
+              <Button
+                label={snoozed ? "Wake now" : "Snooze until reset"}
+                tone="secondary"
+                disabled={disabled}
+                onPress={() => void toggleSnooze()}
+              />
+              <Button
+                label="Pause until reset"
+                tone="secondary"
+                disabled={disabled}
+                onPress={() => void act("pause")}
+              />
+            </>
+          ) : (
+            <Button label="More" tone="secondary" onPress={() => setShowMore(true)} />
+          )}
+        </View>
+        <Text className="text-xs text-foreground-muted">
+          Stop waiting keeps this account but lets the request go to another one now, writing the
+          context to its cache once (cold cache write).
+        </Text>
+        {failure}
+      </View>
+    );
+  }
 
   if (hold.released) {
     return (

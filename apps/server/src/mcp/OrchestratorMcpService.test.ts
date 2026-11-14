@@ -4371,7 +4371,17 @@ describe("OrchestratorMcpService thread list", () => {
   });
   const stall = { resetAt: "2099-01-01T05:00:00.000Z", releaseAt: "2099-01-01T00:59:00.000Z" };
   const shells = [
-    shell("thread:a-snoozed", "project:a", true),
+    {
+      ...shell("thread:a-snoozed", "project:a", true),
+      // A pin hold whose account the hub cannot use now: the router knows no reset.
+      keepWarmHold: {
+        kind: "pin" as const,
+        account: "spare@example.com",
+        releaseAt: stall.releaseAt,
+        resetAt: stall.releaseAt,
+        resetUnknown: true,
+      },
+    },
     shell("thread:a-awake", "project:a", false),
     {
       ...shell("thread:b-snoozed", "project:b", true, true),
@@ -4449,10 +4459,14 @@ describe("OrchestratorMcpService thread list", () => {
           ["thread:b-snoozed", "project:b"],
         ],
       );
-      // A keep-warm hold is reported without the account it names.
+      // A keep-warm hold is reported without the account it names; a pin hold beside `stalled`,
+      // which linked environments on older versions decode as keep-warm only.
       assert.deepStrictEqual(
-        listed.threads.map((thread) => thread.stalled),
-        [null, { kind: "keep_warm", ...stall }],
+        listed.threads.map((thread) => [thread.stalled, thread.accountHold]),
+        [
+          [null, { account: "spare@example.com", resetAt: null, releaseAt: stall.releaseAt }],
+          [{ kind: "keep_warm", ...stall }, undefined],
+        ],
       );
       assert.deepStrictEqual(
         listed.threads.map((thread) => [thread.blockedOnThreadWait, thread.pendingBackgroundTasks]),

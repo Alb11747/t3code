@@ -23,6 +23,7 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ClaudeKeepWarmActions from "../orchestration-v2/ClaudeKeepWarmActions.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ThreadAccountService from "../usage/ThreadAccountService.ts";
 import * as ClaudeKeepWarm from "./ClaudeKeepWarm.ts";
 
 const threadId = ThreadId.make("thread-keep-warm");
@@ -121,15 +122,21 @@ function fakeSession(session: string, index: number) {
   };
 }
 
-it.effect("shows only keep-warm holds of the session, with one control read per interval", () => {
+it.effect("shows the session's earliest keep-warm hold, with one control read per interval", () => {
   const { requests, layer } = fixture(
     {
       status: 200,
       body: {
         pins: [],
         held: [
-          { session: "root", kind: "pin", release_at: "2026-11-03T13:00:00Z", window: "5h" },
-          { session: "root", release_at: "2026-11-03T13:00:00Z", window: "5h" },
+          // A provider stall steer's hold is not the thread's choice, and that steer is going away.
+          {
+            session: "root",
+            kind: "pin",
+            control: "steer",
+            release_at: "2026-11-03T13:00:00Z",
+            window: "5h",
+          },
           {
             session: "root",
             kind: "keep_warm",
@@ -176,6 +183,65 @@ it.effect("shows only keep-warm holds of the session, with one control read per 
       method: "POST",
       path: "/v0/management/control/keep-warm",
     });
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
+it.effect("shows a stall pin's hold as a pin hold, ahead of the session's keep-warm hold", () => {
+  const { layer } = fixture({
+    status: 200,
+    body: {
+      held: [
+        {
+          session: "root",
+          kind: "keep_warm",
+          release_at: "2026-11-03T13:30:00Z",
+          reset_at: "2026-11-03T15:00:00Z",
+        },
+        // A native subagent's request held under its parent's pin reports the parent's session.
+        {
+          session: "root",
+          account: "account-d35f1b129b54c235",
+          kind: "pin",
+          since: "2026-11-03T13:00:00Z",
+          release_at: "2026-11-03T13:59:00Z",
+          reset_at: "2026-11-03T15:00:20Z",
+          window: "5h",
+        },
+        // Routers before 0.27.0 list pin holds without a kind; an excluded account has no reset.
+        {
+          session: "excluded",
+          account: "account-d35f1b129b54c235",
+          release_at: "2026-11-03T13:40:00Z",
+          window: "unknown",
+          reason: "excluded",
+        },
+      ],
+    },
+  });
+  return Effect.gen(function* () {
+    const keepWarm = yield* ClaudeKeepWarm.ClaudeKeepWarm;
+    const pinned = fakeSession("root", 1);
+    const excluded = fakeSession("excluded", 2);
+    yield* keepWarm.register(pinned.session);
+    yield* keepWarm.register(excluded.session);
+    yield* TestClock.adjust("30 seconds");
+    assert.deepEqual(pinned.shown, [
+      {
+        kind: "pin",
+        account: WARM,
+        releaseAt: "2026-11-03T13:59:00.000Z",
+        resetAt: "2026-11-03T15:00:20.000Z",
+      },
+    ]);
+    assert.deepEqual(excluded.shown, [
+      {
+        kind: "pin",
+        account: WARM,
+        releaseAt: "2026-11-03T13:40:00.000Z",
+        resetAt: "2026-11-03T13:40:00.000Z",
+        resetUnknown: true,
+      },
+    ]);
   }).pipe(Effect.provide(layer), Effect.scoped);
 });
 
@@ -252,6 +318,10 @@ it.effect("runs keep-warm actions against the stalled turn", () => {
     assert.instanceOf(idle, ClaudeKeepWarmActionError);
 
     yield* TestClock.adjust("30 seconds");
+    const notWaiting = yield* Effect.flip(
+      actions.run({ threadId: stalledThread, action: "stop_waiting" }),
+    );
+    assert.equal(notWaiting.detail, "This thread is not waiting for its chosen account.");
     yield* actions.run({ threadId: stalledThread, action: "pause" });
     assert.deepEqual(stalled.paused, [hold]);
 
@@ -349,6 +419,63 @@ it.effect("runs keep-warm actions against the stalled turn", () => {
               dispatched.push(command);
               return {} as never;
             }),
+        }),
+      ),
+    ),
+    Effect.scoped,
+  );
+});
+
+it.effect.each([
+  { action: "stop_waiting", set: { account: WARM, stall: false } },
+  // What older clients' Back to normal sends; it means the same for a pin hold.
+  { action: "release", set: { account: WARM, stall: false } },
+  { action: "pause", paused: true },
+  { action: "switch", error: "Choose the account to switch to" },
+  { action: "compact", error: "a compaction would wait too" },
+  { action: "pause", resetUnknown: true, error: "does not know when this account resets" },
+] as const)("maps $action on a pin hold", (row) => {
+  const { requests, layer } = fixture({
+    status: 200,
+    body: {
+      held: [
+        {
+          session: "root",
+          account: "account-d35f1b129b54c235",
+          kind: "pin",
+          release_at: hold.releaseAt,
+          ...("resetUnknown" in row ? {} : { reset_at: hold.resetAt }),
+        },
+      ],
+    },
+  });
+  const sets: Array<unknown> = [];
+  return Effect.gen(function* () {
+    const keepWarm = yield* ClaudeKeepWarm.ClaudeKeepWarm;
+    const stalled = fakeSession("root", 1);
+    yield* keepWarm.register(stalled.session);
+    yield* TestClock.adjust("30 seconds");
+    const actions = yield* ClaudeKeepWarmActions.make;
+    const result = yield* Effect.result(
+      actions.run({ threadId: ThreadId.make(`${threadId}-1`), action: row.action }),
+    );
+    if ("error" in row) {
+      assert.include(Result.isFailure(result) ? result.failure.detail : "", row.error);
+    } else {
+      assert.isTrue(Result.isSuccess(result));
+    }
+    assert.deepEqual(sets, "set" in row ? [{ threadId: `${threadId}-1`, ...row.set }] : []);
+    assert.equal(stalled.paused.length, "paused" in row ? 1 : 0);
+    // A pin hold is never released or switched through the keep-warm control.
+    assert.isFalse(requests.some((request) => request.method !== "GET"));
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        layer,
+        Layer.mock(Orchestrator.OrchestratorV2)({}),
+        Layer.succeed(ThreadAccountService.ThreadAccounts, {
+          ...ThreadAccountService.ThreadAccounts.defaultValue(),
+          set: (input) => Effect.sync(() => void sets.push(input)),
         }),
       ),
     ),

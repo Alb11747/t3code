@@ -287,7 +287,13 @@ function SidebarThreadTooltip({
           ) : null
         }
       >
-        {thread.keepWarmStalled ? (
+        {thread.keepWarmHold?.kind === "pin" ? (
+          <div className="text-warning-foreground">
+            {thread.keepWarmHold.resetUnknown
+              ? `Waiting for ${thread.keepWarmHold.account ?? "its chosen account"}, which the hub cannot use right now.`
+              : `Waiting for ${thread.keepWarmHold.account ?? "its chosen account"} until its usage resets.`}
+          </div>
+        ) : thread.keepWarmStalled ? (
           <div className="text-warning-foreground">
             Stalled to keep cache warm until the usage reset.
           </div>
