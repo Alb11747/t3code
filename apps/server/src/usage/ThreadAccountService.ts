@@ -27,6 +27,7 @@ import {
   type ThreadAccountUsage,
   type ThreadAccountUsageInput,
   type ThreadId,
+  type UsageLimitSourceAccount,
   type UsageLimitSourceConfig,
   UsageLimitSourceError,
   type UsageLimitSourceId,
@@ -68,11 +69,47 @@ const PREVIEW_TIMEOUT = "3 seconds";
 const REDEEM_OFF =
   "The user has not let agents redeem reset credits. They can turn on Settings → Threads → Usage limits → Let agents redeem reset credits.";
 
-/** An agent's redemption: a native instance, or a hub account by its router alias. */
+/** An agent's redemption: a native instance, or a hub account by its name (see `named`). */
 export type ThreadAccountRedeemInput = (
   | { readonly instanceId: ProviderInstanceId }
   | { readonly account: RouterAccountAlias }
 ) & { readonly creditId?: string };
+
+// Agents name an account by router alias, email (any case) or the part before the `@` when only
+// one account has it; the router itself only ever sees the alias.
+const named = <T>(
+  candidates: ReadonlyArray<T>,
+  name: string,
+  accountOf: (candidate: T) => UsageLimitSourceAccount,
+  where: string,
+): Effect.Effect<T, ThreadAccountError> => {
+  const lower = name.toLowerCase();
+  const exact = candidates.filter((candidate) => accountOf(candidate).routerAlias === name);
+  const byEmail = candidates.filter(
+    (candidate) => accountOf(candidate).email?.toLowerCase() === lower,
+  );
+  const matches =
+    exact.length > 0
+      ? exact
+      : byEmail.length > 0
+        ? byEmail
+        : candidates.filter(
+            (candidate) => accountOf(candidate).email?.toLowerCase().split("@")[0] === lower,
+          );
+  if (matches.length === 1) return Effect.succeed(matches[0]!);
+  const list = (entries: ReadonlyArray<T>) =>
+    entries
+      .map((entry) => {
+        const account = accountOf(entry);
+        return account.email ? `${account.email} (${account.routerAlias})` : account.routerAlias;
+      })
+      .join(", ");
+  return Effect.fail(
+    matches.length === 0
+      ? fail(`No account ${where} is named "${name}". Choose one of: ${list(candidates)}.`)
+      : fail(`"${name}" matches several accounts: ${list(matches)}. Use the email or alias.`),
+  );
+};
 
 const isoOf = (value: string | null | undefined) =>
   value ? Option.getOrUndefined(Option.map(DateTime.make(value), DateTime.formatIso)) : undefined;
@@ -141,6 +178,8 @@ export class ThreadAccounts extends Context.Reference<{
   readonly usageResetAt: (
     threadId: ThreadId,
   ) => Effect.Effect<UsageResetSnooze, ThreadAccountError>;
+  /** The email of a hub account, for agent-facing replies that name it by alias. */
+  readonly emailOf: (alias: RouterAccountAlias) => Effect.Effect<string | undefined>;
 }>("t3/usage/ThreadAccounts", {
   defaultValue: () => ({
     state: () => Effect.succeed(null),
@@ -155,6 +194,7 @@ export class ThreadAccounts extends Context.Reference<{
       Effect.fail(new UsageLimitSourceError({ detail: "Reset credits are unavailable." })),
     redeem: () => Effect.fail(fail("Reset credits are unavailable.")),
     usageResetAt: () => Effect.fail(fail("Usage resets are unavailable.")),
+    emailOf: () => Effect.undefined,
   }),
 }) {}
 
@@ -201,21 +241,28 @@ export const make = Effect.gen(function* () {
 
   // An account alias names its hub, unless two hubs share a management key.
   const locate = Effect.fn("ThreadAccounts.locate")(function* (
-    alias: RouterAccountAlias,
+    name: string,
     sourceId?: UsageLimitSourceId,
+    provider?: RouterProvider,
   ) {
-    const found = (yield* sources.current).flatMap((source) =>
+    const candidates = (yield* sources.current).flatMap((source) =>
       sourceId !== undefined && source.id !== sourceId
         ? []
         : source.accounts
-            .filter((account) => account.routerAlias === alias)
+            .filter(
+              (account) =>
+                account.routerAlias !== undefined &&
+                (provider === undefined || routerProviderOf(account.driver) === provider),
+            )
             .map((account) => ({ source, account })),
     );
-    if (found.length === 0) return yield* fail("No CLI Proxy hub lists that account.");
-    if (found.length > 1) return yield* fail("Several CLI Proxy hubs list that account.");
-    const hub = yield* sources.hub(found[0]!.source.id);
+    if (candidates.filter((entry) => entry.account.routerAlias === name).length > 1) {
+      return yield* fail("Several CLI Proxy hubs list that account.");
+    }
+    const found = yield* named(candidates, name, (entry) => entry.account, "on a CLI Proxy hub");
+    const hub = yield* sources.hub(found.source.id);
     if (hub === null) return yield* fail("That CLI Proxy hub is disabled or has no key.");
-    return { ...found[0]!, hub };
+    return { ...found, alias: found.account.routerAlias as RouterAccountAlias, hub };
   });
 
   const sessionOf = (threadId: ThreadId, modelSelection: ModelSelection) =>
@@ -375,12 +422,15 @@ export const make = Effect.gen(function* () {
       return;
     }
     if (target === null) return yield* fail(NOT_ROUTED);
-    if (!target.accounts.some((account) => account.routerAlias === input.account)) {
-      return yield* fail("That account is not on this thread's CLI Proxy hub.");
-    }
+    const account = (yield* named(
+      target.accounts,
+      input.account,
+      (entry) => entry,
+      "on this thread's CLI Proxy hub",
+    )).routerAlias as RouterAccountAlias;
     // Changing only the account keeps the stored wait-when-out setting.
     const current = threadAccountChoiceFor(thread.accountChoice, target.instanceId);
-    const stall = input.stall ?? (current?.account === input.account ? current.stall : false);
+    const stall = input.stall ?? (current?.account === account ? current.stall : false);
     let moved = false;
     if (session) {
       const pick = yield* api.nextPick(target.hub, {
@@ -388,7 +438,7 @@ export const make = Effect.gen(function* () {
         session,
         model: thread.modelSelection.model,
       });
-      moved = !!pick?.owner && pick.owner !== input.account;
+      moved = !!pick?.owner && pick.owner !== account;
       if (moved && input.dropThinking !== true) {
         return yield* new ThreadAccountError({
           detail: `${THREAD_ACCOUNT_MOVE_WARNING} Confirm with dropThinking: true to switch.`,
@@ -397,7 +447,7 @@ export const make = Effect.gen(function* () {
       }
       yield* api.pin(target.hub, {
         sessions: [session],
-        account: input.account,
+        account,
         stall,
         expiresAt: controlExpiry(now),
         move: moved,
@@ -409,7 +459,7 @@ export const make = Effect.gen(function* () {
       threadId: input.threadId,
       accountChoice: {
         sourceId: target.source.id,
-        account: input.account,
+        account,
         stall,
         instanceId: target.instanceId,
       },
@@ -466,15 +516,13 @@ export const make = Effect.gen(function* () {
   const steer = Effect.fn("ThreadAccounts.steer")(function* (input: ThreadAccountSteerInput) {
     if (!("instanceId" in input)) {
       if (input.account !== null) {
-        const located = yield* locate(input.account, input.sourceId);
+        const located = yield* locate(input.account, input.sourceId, input.provider);
         const provider = routerProviderOf(located.account.driver);
-        if (provider === undefined || (input.provider && input.provider !== provider)) {
-          return yield* fail(
-            `That account is not a ${input.provider ?? "Claude or Codex"} account.`,
-          );
+        if (provider === undefined) {
+          return yield* fail("That account is not a Claude or Codex account.");
         }
-        yield* api.steer(located.hub, input.account, controlExpiry(yield* DateTime.now));
-        return yield* saveSteer(located.source.id, provider, input.account);
+        yield* api.steer(located.hub, located.alias, controlExpiry(yield* DateTime.now));
+        return yield* saveSteer(located.source.id, provider, located.alias);
       }
       const provider = input.provider;
       if (provider === undefined) return yield* fail("Name the provider whose steer to clear.");
@@ -503,18 +551,21 @@ export const make = Effect.gen(function* () {
     }
     const target = yield* resolveTarget(input.instanceId);
     if (target === null) return yield* fail(NOT_ROUTED);
-    if (
-      input.account !== null &&
-      !target.accounts.some((account) => account.routerAlias === input.account)
-    ) {
-      return yield* fail("That account is not on this provider's CLI Proxy hub.");
-    }
-    if (input.account === null) {
+    const account =
+      input.account === null
+        ? null
+        : ((yield* named(
+            target.accounts,
+            input.account,
+            (entry) => entry,
+            "on this provider's CLI Proxy hub",
+          )).routerAlias as RouterAccountAlias);
+    if (account === null) {
       yield* api.unsteer(target.hub, target.routerProvider);
     } else {
-      yield* api.steer(target.hub, input.account, controlExpiry(yield* DateTime.now));
+      yield* api.steer(target.hub, account, controlExpiry(yield* DateTime.now));
     }
-    yield* saveSteer(target.source.id, target.routerProvider, input.account);
+    yield* saveSteer(target.source.id, target.routerProvider, account);
   });
 
   // The router's list is the truth; T3's stored choices join it by native session id and fill in
@@ -762,7 +813,7 @@ export const make = Effect.gen(function* () {
       return yield* fail("`endsAt` must be an ISO date and time.");
     }
     const located = yield* locate(input.account);
-    yield* api.subscriptionEnd(located.hub, input.account, endsAt);
+    yield* api.subscriptionEnd(located.hub, located.alias, endsAt);
   });
 
   const consumeResetCredit = Effect.fn("ThreadAccounts.consumeResetCredit")(function* (
@@ -850,6 +901,15 @@ export const make = Effect.gen(function* () {
     consumeResetCredit,
     redeem: (input: ThreadAccountRedeemInput) => asThreadAccountError(redeem(input)),
     usageResetAt: (threadId: ThreadId) => asThreadAccountError(usageResetAt(threadId)),
+    emailOf: (alias: RouterAccountAlias) =>
+      sources.current.pipe(
+        Effect.map(
+          (snapshots) =>
+            snapshots
+              .flatMap((source) => source.accounts)
+              .find((account) => account.routerAlias === alias)?.email,
+        ),
+      ),
   } satisfies (typeof ThreadAccounts)["Service"];
 });
 

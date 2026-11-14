@@ -477,7 +477,13 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
   stalled: Schema.optional(Schema.NullOr(OrchestratorMcpThreadStall)),
   /** Fork: the CLI Proxy account chosen for the thread's requests; absent or null is automatic. */
   account: Schema.optional(
-    Schema.NullOr(Schema.Struct({ account: RouterAccountAlias, waitWhenOut: Schema.Boolean })),
+    Schema.NullOr(
+      Schema.Struct({
+        account: RouterAccountAlias,
+        email: Schema.optional(Schema.String),
+        waitWhenOut: Schema.Boolean,
+      }),
+    ),
   ),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

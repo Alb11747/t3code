@@ -182,13 +182,13 @@ const CompactBeforeCacheExpires = CompactBeforeCacheExpiresValue.annotate({
 const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   ...commandTool,
   description:
-    "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`, or `compactBeforeCacheExpires`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`. Behind a CLI Proxy hub, the read lists `accounts`; `account` sends the thread's requests to one (null: automatic), and `waitWhenOut` waits for it instead of falling back. Switching rewrites the context cache once. Moving off an `owner` account drops the conversation's earlier thinking and needs `dropThinking: true`; tell the user and get their yes first.",
+    "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`, or `compactBeforeCacheExpires`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`. Behind a CLI Proxy hub, the read lists `accounts`; `account` (email or alias) sends the thread's requests to one (null: automatic), and `waitWhenOut` waits for it instead of falling back. Switching rewrites the context cache once. Moving off an `owner` account drops the conversation's earlier thinking and needs `dropThinking: true`; tell the user and get their yes first.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
     modelSelection: Schema.optional(ModelSelection),
     compactBeforeCacheExpires: Schema.optional(CompactBeforeCacheExpires),
-    account: Schema.optional(Schema.NullOr(RouterAccountAlias)),
+    account: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
     waitWhenOut: Schema.optional(Schema.Boolean),
     dropThinking: Schema.optional(Schema.Boolean),
   }),

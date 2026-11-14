@@ -20,6 +20,7 @@ import * as UsageLimitSources from "./UsageLimitSources.ts";
 
 const OWNER = "account-1111111111111111";
 const OTHER = "account-2222222222222222";
+const ELSEWHERE = "account-3333333333333333";
 const NOW = Date.parse("2026-11-14T12:00:00.000Z");
 const threadId = "thread-1" as never;
 
@@ -28,10 +29,11 @@ const provider = {
   driver: "claudeAgent",
   auth: { status: "authenticated", type: "customEndpoint" },
 } as unknown as ServerProvider;
-const hubAccount = (routerAlias: string) => ({
+const hubAccount = (routerAlias: string, email: string) => ({
   id: `${routerAlias}.json`,
   driver: "claudeAgent",
   routerAlias,
+  email,
   usageLimits: {
     checkedAt: "2026-11-14T12:00:00.000Z",
     windows: [],
@@ -44,7 +46,11 @@ const snapshots = [
     kind: "cliproxy",
     label: "Hub",
     checkedAt: "2026-11-14T12:00:00.000Z",
-    accounts: [hubAccount(OWNER), hubAccount(OTHER)],
+    accounts: [
+      hubAccount(OWNER, "work@example.com"),
+      hubAccount(OTHER, "spare@example.com"),
+      hubAccount(ELSEWHERE, "work@elsewhere.test"),
+    ],
   },
 ] as unknown as ReadonlyArray<UsageLimitSourceSnapshot>;
 
@@ -246,6 +252,35 @@ describe("ThreadAccountService.set", () => {
     }),
   );
 
+  it.effect.each([
+    { name: "an alias", account: OTHER, pinned: OTHER },
+    { name: "an email in any case", account: "Spare@Example.COM", pinned: OTHER },
+    { name: "a unique local part", account: "spare", pinned: OTHER },
+    { name: "a full email whose local part is shared", account: "work@example.com", pinned: OWNER },
+    {
+      name: "a shared local part",
+      account: "work",
+      error:
+        '"work" matches several accounts: work@example.com (account-1111111111111111), work@elsewhere.test (account-3333333333333333). Use the email or alias.',
+    },
+    {
+      name: "an unknown name",
+      account: "nobody",
+      error:
+        'No account on this thread\'s CLI Proxy hub is named "nobody". Choose one of: work@example.com (account-1111111111111111), spare@example.com (account-2222222222222222), work@elsewhere.test (account-3333333333333333).',
+    },
+  ])("resolves $name to an account", ({ account, pinned, error }) =>
+    Effect.gen(function* () {
+      const { result, pins } = yield* setAccount({ owner: null, account });
+      if (error === undefined) {
+        expect(pins).toMatchObject([{ account: pinned }]);
+      } else {
+        expect(Result.isFailure(result) && result.failure.detail).toBe(error);
+        expect(pins).toEqual([]);
+      }
+    }),
+  );
+
   it.effect("clears a choice by unpinning every session the thread has had", () =>
     Effect.gen(function* () {
       const { controls, commands } = yield* setAccount({
@@ -381,10 +416,15 @@ describe("ThreadAccountService agent controls", () => {
       yield* TestClock.setTime(NOW);
       const service = yield* ThreadAccountService.make;
       yield* service.steer({ account: OTHER });
-      expect(controls).toEqual([{ steer: OTHER, expiresAt: "2026-11-21T11:00:00.000Z" }]);
-      expect(settingsPatches).toEqual([
-        { usageLimitSources: { hub: { url: "http://hub.test", steers: { claude: OTHER } } } },
+      // Across hubs, an agent can name the account the same ways as for one thread.
+      yield* service.steer({ account: "SPARE" });
+      expect(controls).toEqual([
+        { steer: OTHER, expiresAt: "2026-11-21T11:00:00.000Z" },
+        { steer: OTHER, expiresAt: "2026-11-21T11:00:00.000Z" },
       ]);
+      expect(settingsPatches[0]).toEqual({
+        usageLimitSources: { hub: { url: "http://hub.test", steers: { claude: OTHER } } },
+      });
     }).pipe(
       Effect.provide(
         testLayer({

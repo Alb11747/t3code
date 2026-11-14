@@ -112,6 +112,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ThreadAccountService from "../usage/ThreadAccountService.ts";
 import {
   clientModeCeiling,
   type McpInvocationScope,
@@ -802,9 +803,17 @@ function threadStall(
 }
 
 // Fork: a choice made for another provider instance no longer applies.
-function accountOf(thread: OrchestrationV2ThreadProjection["thread"]) {
+function accountOf(thread: OrchestrationV2ThreadProjection["thread"], email: string | undefined) {
   const choice = threadAccountChoiceFor(thread.accountChoice, thread.modelSelection.instanceId);
-  return choice ? { account: { account: choice.account, waitWhenOut: choice.stall } } : {};
+  return choice
+    ? {
+        account: {
+          account: choice.account,
+          ...(email === undefined ? {} : { email }),
+          waitWhenOut: choice.stall,
+        },
+      }
+    : {};
 }
 
 function threadPullRequests(
@@ -857,6 +866,7 @@ function threadDetail(
   itemCount: number,
   shell: OrchestrationV2ThreadShell,
   nowMs: number,
+  accountEmail: string | undefined,
 ): OrchestratorMcpThreadDetail {
   const latest = ThreadManagementService.latestRun(projection);
   const active = ThreadManagementService.latestActiveRun(projection);
@@ -897,7 +907,7 @@ function threadDetail(
     ...threadSettlement(projection.thread),
     ...threadSnooze(shell, nowMs),
     ...threadStall(shell),
-    ...accountOf(projection.thread),
+    ...accountOf(projection.thread, accountEmail),
     createdAt: DateTime.formatIso(projection.thread.createdAt),
     updatedAt: DateTime.formatIso(projection.thread.updatedAt),
   };
@@ -1065,6 +1075,7 @@ const make = Effect.gen(function* () {
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
+  const threadAccounts = yield* ThreadAccountService.ThreadAccounts;
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -3156,6 +3167,9 @@ const make = Effect.gen(function* () {
           timeline.totalItems,
           shell,
           yield* Clock.currentTimeMillis,
+          target.thread.accountChoice
+            ? yield* threadAccounts.emailOf(target.thread.accountChoice.account)
+            : undefined,
         ),
         recentRuns: target.runs
           .toSorted((left, right) => right.ordinal - left.ordinal)

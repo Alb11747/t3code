@@ -144,17 +144,18 @@ it("matches shellMust, not shellMustNot, against a command's argv lists as a com
   assert.deepEqual(failed({ shellMustNot: ["\\bplaywright\\s+test\\b"] }, run), []);
 });
 
-it("accepts any tool listed as an alternative", () => {
-  const expect = { calls: [{ tool: "link_pull_request|watch_pull_request" }] };
-  const run = (tool: string): SampleRun => ({
-    calls: [{ step: 0, tool, input: {} }],
+it("accepts any tool or substring listed as an alternative", () => {
+  const expect = {
+    calls: [{ tool: "link_pull_request|watch_pull_request", args: { url: "~/1|/2" } }],
+  };
+  const run = (tool: string, url = "https://x.test/pull/2"): SampleRun => ({
+    calls: [{ step: 0, tool, input: { url } }],
     text: "",
     stopReason: "end_turn",
   });
   assert.deepEqual(failed(expect, run("watch_pull_request")), []);
-  assert.deepEqual(failed(expect, run("list_thread_pull_requests")), [
-    "calls link_pull_request|watch_pull_request",
-  ]);
+  assert.lengthOf(failed(expect, run("watch_pull_request", "https://x.test/pull/3")), 1);
+  assert.lengthOf(failed(expect, run("list_thread_pull_requests")), 1);
 });
 
 it("counts the new threads an agent asks for, one brief per thread, over both creation tools", () => {
