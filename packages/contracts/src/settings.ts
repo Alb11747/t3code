@@ -1566,6 +1566,11 @@ export const ServerSettings = Schema.Struct({
   usageLimitSources: Schema.Record(UsageLimitSourceId, UsageLimitSourceConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  /**
+   * Fork: lets agents redeem banked rate-limit resets. Absent on servers without it, so clients
+   * can hide the switch; read through `agentsCanRedeemResetCreditsOf`.
+   */
+  agentsCanRedeemResetCredits: Schema.optionalKey(Schema.Boolean),
   textGenerators: Schema.Record(ProviderInstanceId, TextGeneratorConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
@@ -1685,6 +1690,17 @@ export const withSmartIdleCompaction = <S extends ServerSettings>(settings: S): 
   ...settings,
   smartIdleCompaction: smartIdleCompactionOf(settings),
   compactSnoozedThreads: compactSnoozedThreadsOf(settings),
+});
+
+/** Fork: off unless the user turns it on. */
+export const agentsCanRedeemResetCreditsOf = (
+  settings: Pick<ServerSettings, "agentsCanRedeemResetCredits">,
+) => settings.agentsCanRedeemResetCredits ?? false;
+
+/** Fork: fills the switch in, which tells clients this server has it. */
+export const withAgentResetCreditRedemption = <S extends ServerSettings>(settings: S): S => ({
+  ...settings,
+  agentsCanRedeemResetCredits: agentsCanRedeemResetCreditsOf(settings),
 });
 
 /** Sets the mode, and the legacy switch shipped clients still read alongside it. */
@@ -1960,6 +1976,7 @@ export const ServerSettingsPatch = Schema.Struct({
   usageLimitSources: Schema.optionalKey(
     Schema.Record(UsageLimitSourceId, Schema.NullOr(UsageLimitSourceConfig)),
   ),
+  agentsCanRedeemResetCredits: Schema.optionalKey(Schema.Boolean),
   // Merge per entry like usageLimitSources; null removes an entry.
   textGenerators: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, Schema.NullOr(TextGeneratorConfig)),
@@ -1989,6 +2006,8 @@ export function requiredScopesForServerSettingsPatch(
       key === "providers" ||
       key === "providerInstances" ||
       key === "usageLimitSources" ||
+      // Fork: as redeeming a reset yourself does.
+      key === "agentsCanRedeemResetCredits" ||
       key === "textGenerators" ||
       key === "secretProviders"
     ) {

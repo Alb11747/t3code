@@ -1759,6 +1759,25 @@ export function ThreadsSettingsPanel() {
             />
           }
         />
+        {/* Older servers omit this and cannot redeem for agents, so there is nothing to switch. */}
+        {isProjectScope || settings.agentsCanRedeemResetCredits === undefined ? null : (
+          <SettingsRow
+            serverScoped
+            {...searchableSetting("agents-redeem-reset-credits")}
+            description="Agents can use a banked rate-limit reset when you ask them to or their instructions allow it. A redeemed reset cannot be taken back."
+            settingKeys={["agentsCanRedeemResetCredits"]}
+            control={
+              <ScopedSwitch
+                settingKeys={["agentsCanRedeemResetCredits"]}
+                checked={settings.agentsCanRedeemResetCredits}
+                onCheckedChange={(checked) =>
+                  updateSettings({ agentsCanRedeemResetCredits: Boolean(checked) })
+                }
+                aria-label="Let agents redeem reset credits"
+              />
+            }
+          />
+        )}
       </SettingsSection>
 
       {hasServerTargets ? (

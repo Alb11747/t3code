@@ -456,6 +456,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["usage quota rate limit reset recover continue"],
   },
   {
+    id: "agents-redeem-reset-credits",
+    title: "Let agents redeem reset credits",
+    to: "/settings/threads",
+    scope: "environment-defaults",
+    searchTerms: ["usage quota rate limit reset credit redeem agent mcp"],
+  },
+  {
     id: "working-shelf",
     title: "Working section",
     to: "/settings/general",

@@ -1,11 +1,15 @@
 import {
   type AccountUsageSummary,
+  agentsCanRedeemResetCreditsOf,
   CommandId,
   MessageId,
   THREAD_ACCOUNT_MOVE_WARNING,
   ThreadAccountError,
   type ModelSelection,
+  type ProviderConsumeResetCreditInput,
+  type ProviderConsumeResetCreditResult,
   type ProviderInstanceId,
+  ProviderSetupError,
   RouterAccountAlias,
   RouterProvider,
   type ServerProvider,
@@ -22,6 +26,7 @@ import {
   type ThreadAccountUsageInput,
   type ThreadId,
   type UsageLimitSourceConfig,
+  UsageLimitSourceError,
   type UsageLimitSourceId,
   type UsageResetSnooze,
   threadAccountChoiceFor,
@@ -36,6 +41,7 @@ import * as Schema from "effect/Schema";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ClaudeKeepWarm from "../provider/ClaudeKeepWarm.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { controlExpiry } from "../provider/ThreadAccountRouting.ts";
 import * as Settings from "../serverSettings.ts";
@@ -51,6 +57,14 @@ const NOT_ROUTED =
   "This thread's provider does not route through one CLI Proxy quota router with several accounts.";
 const MARGIN_ACTOR = "T3 Code";
 const MAX_CONTROL_MS = 7 * 24 * 60 * 60 * 1000;
+const REDEEM_OFF =
+  "The user has not let agents redeem reset credits. They can turn on Settings → Threads → Usage limits → Let agents redeem reset credits.";
+
+/** An agent's redemption: a native instance, or a hub account by its router alias. */
+export type ThreadAccountRedeemInput = (
+  | { readonly instanceId: ProviderInstanceId }
+  | { readonly account: RouterAccountAlias }
+) & { readonly creditId?: string };
 
 const isoOf = (value: string | null | undefined) =>
   value ? Option.getOrUndefined(Option.map(DateTime.make(value), DateTime.formatIso)) : undefined;
@@ -73,6 +87,15 @@ const usageSummary = (limits: ServerProviderUsageLimits) => ({
   })),
   ...(limits.usageCredits ? { usageCredits: limits.usageCredits } : {}),
   ...(limits.resetCredits ? { resetCredits: limits.resetCredits.availableCount } : {}),
+  ...(limits.resetCredits?.options?.length
+    ? {
+        resetCreditOptions: limits.resetCredits.options.map((option) => ({
+          creditId: option.creditId,
+          label: option.label,
+          availableCount: option.availableCount,
+        })),
+      }
+    : {}),
   ...(limits.unavailable
     ? { unavailable: limits.unavailable.message ?? limits.unavailable.reason }
     : {}),
@@ -94,6 +117,14 @@ export class ThreadAccounts extends Context.Reference<{
   ) => Effect.Effect<ThreadAccountUsage, ThreadAccountError>;
   readonly margin: (input: ThreadAccountMarginInput) => Effect.Effect<void, ThreadAccountError>;
   readonly end: (input: ThreadAccountEndInput) => Effect.Effect<void, ThreadAccountError>;
+  /** Redeems a banked reset for the user, as the Usage page does. */
+  readonly consumeResetCredit: (
+    input: ProviderConsumeResetCreditInput,
+  ) => Effect.Effect<ProviderConsumeResetCreditResult, ProviderSetupError | UsageLimitSourceError>;
+  /** An agent's redemption, refused unless the user turned it on in settings. */
+  readonly redeem: (
+    input: ThreadAccountRedeemInput,
+  ) => Effect.Effect<ProviderConsumeResetCreditResult, ThreadAccountError>;
   /** When the account the thread's next message would use gets quota back. */
   readonly usageResetAt: (
     threadId: ThreadId,
@@ -102,11 +133,14 @@ export class ThreadAccounts extends Context.Reference<{
   defaultValue: () => ({
     state: () => Effect.succeed(null),
     routing: () => Effect.succeed(null),
-    usage: () => Effect.succeed({ native: [], hubs: [] }),
+    usage: () => Effect.succeed({ agentsCanRedeemResetCredits: false, native: [], hubs: [] }),
     set: () => Effect.fail(fail("Account choice is unavailable.")),
     steer: () => Effect.fail(fail("Account choice is unavailable.")),
     margin: () => Effect.fail(fail("Account choice is unavailable.")),
     end: () => Effect.fail(fail("Account choice is unavailable.")),
+    consumeResetCredit: () =>
+      Effect.fail(new UsageLimitSourceError({ detail: "Reset credits are unavailable." })),
+    redeem: () => Effect.fail(fail("Reset credits are unavailable.")),
     usageResetAt: () => Effect.fail(fail("Usage resets are unavailable.")),
   }),
 }) {}
@@ -114,6 +148,7 @@ export class ThreadAccounts extends Context.Reference<{
 /** @public */
 export const make = Effect.gen(function* () {
   const providers = yield* ProviderRegistry.ProviderRegistry;
+  const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const sources = yield* UsageLimitSources.UsageLimitSources;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const keepWarm = yield* ClaudeKeepWarm.ClaudeKeepWarm;
@@ -528,8 +563,17 @@ export const make = Effect.gen(function* () {
     return result;
   });
 
+  const agentsCanRedeem = settingsService.getSettings.pipe(
+    Effect.map(agentsCanRedeemResetCreditsOf),
+    Effect.mapError(() => fail("Could not read settings.")),
+  );
+
   const usage = Effect.fn("ThreadAccounts.usage")(function* (input: ThreadAccountUsageInput) {
-    const [providerList, snapshots] = yield* Effect.all([providers.getProviders, sources.current]);
+    const [providerList, snapshots, agentsCanRedeemResetCredits] = yield* Effect.all([
+      providers.getProviders,
+      sources.current,
+      agentsCanRedeem,
+    ]);
     const native = providerList.flatMap((provider) =>
       provider.enabled && provider.usageLimits && !behindHub(provider)
         ? [
@@ -567,11 +611,12 @@ export const make = Effect.gen(function* () {
         ),
       { concurrency: "unbounded" },
     );
-    if (input.threadId === undefined) return { native, hubs };
+    if (input.threadId === undefined) return { agentsCanRedeemResetCredits, native, hubs };
     const thread = yield* threadOf(input.threadId);
     const picked = yield* state({ threadId: thread.id, modelSelection: thread.modelSelection });
     const chosen = threadAccountChoiceFor(thread.accountChoice, thread.modelSelection.instanceId);
     return {
+      agentsCanRedeemResetCredits,
       native,
       hubs,
       thread: {
@@ -624,6 +669,63 @@ export const make = Effect.gen(function* () {
     yield* api.subscriptionEnd(located.hub, input.account, endsAt);
   });
 
+  const consumeResetCredit = Effect.fn("ThreadAccounts.consumeResetCredit")(function* (
+    input: ProviderConsumeResetCreditInput,
+  ) {
+    if ("sourceId" in input) return yield* sources.consumeResetCredit(input);
+    const instance = yield* providerInstances.getInstance(input.instanceId);
+    if (instance === undefined || !instance.enabled) {
+      return yield* new ProviderSetupError({
+        instanceId: input.instanceId,
+        operation: "consume-reset-credit",
+        detail: instance ? "This provider is disabled." : "Provider instance not found.",
+      });
+    }
+    if (instance.consumeResetCredit === undefined) {
+      return yield* new ProviderSetupError({
+        instanceId: input.instanceId,
+        operation: "consume-reset-credit",
+        detail: "This provider does not bank reset credits.",
+      });
+    }
+    const outcome = yield* instance.consumeResetCredit(input.creditId).pipe(
+      Effect.mapError(
+        (error) =>
+          new ProviderSetupError({
+            instanceId: input.instanceId,
+            operation: "consume-reset-credit",
+            detail: error.detail,
+            cause: error,
+          }),
+      ),
+    );
+    return { outcome };
+  });
+
+  const redeem = Effect.fn("ThreadAccounts.redeem")(function* (input: ThreadAccountRedeemInput) {
+    if (!(yield* agentsCanRedeem)) return yield* fail(REDEEM_OFF);
+    if ("instanceId" in input) {
+      const provider = (yield* providers.getProviders).find(
+        (candidate) => candidate.instanceId === input.instanceId,
+      );
+      const options = provider?.usageLimits?.resetCredits?.options ?? [];
+      if (input.creditId === undefined && options.length > 0) {
+        return yield* fail(
+          `Pass \`creditId\`, one of: ${options.map((option) => option.creditId).join(", ")}.`,
+        );
+      }
+      return yield* consumeResetCredit(input);
+    }
+    const located = yield* locate(input.account);
+    const creditId = input.creditId ?? located.account.usageLimits.resetCredits?.nextCreditId;
+    if (creditId === undefined) return yield* fail("That account has no reset credit to redeem.");
+    return yield* consumeResetCredit({
+      sourceId: located.source.id,
+      accountId: located.account.id,
+      creditId,
+    });
+  });
+
   const usageResetAt = Effect.fn("ThreadAccounts.usageResetAt")(function* (threadId: ThreadId) {
     const thread = yield* threadOf(threadId);
     return yield* usageResetSnooze.resolve({ threadId, modelSelection: thread.modelSelection });
@@ -644,6 +746,8 @@ export const make = Effect.gen(function* () {
     usage: (input: ThreadAccountUsageInput) => asThreadAccountError(usage(input)),
     margin: (input: ThreadAccountMarginInput) => asThreadAccountError(margin(input)),
     end: (input: ThreadAccountEndInput) => asThreadAccountError(end(input)),
+    consumeResetCredit,
+    redeem: (input: ThreadAccountRedeemInput) => asThreadAccountError(redeem(input)),
     usageResetAt: (threadId: ThreadId) => asThreadAccountError(usageResetAt(threadId)),
   } satisfies (typeof ThreadAccounts)["Service"];
 });

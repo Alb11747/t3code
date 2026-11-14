@@ -12,6 +12,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ClaudeKeepWarm from "../provider/ClaudeKeepWarm.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ThreadAccountService from "./ThreadAccountService.ts";
@@ -31,7 +32,11 @@ const hubAccount = (routerAlias: string) => ({
   id: `${routerAlias}.json`,
   driver: "claudeAgent",
   routerAlias,
-  usageLimits: { checkedAt: "2026-11-14T12:00:00.000Z", windows: [] },
+  usageLimits: {
+    checkedAt: "2026-11-14T12:00:00.000Z",
+    windows: [],
+    resetCredits: { availableCount: 1, nextCreditId: `grant-${routerAlias}` },
+  },
 });
 const snapshots = [
   {
@@ -60,8 +65,20 @@ function testLayer(input: {
   readonly controls?: Array<unknown>;
   readonly settingsPatches?: Array<unknown>;
   readonly accountChoice?: unknown;
+  readonly redemptions?: Array<unknown>;
 }) {
   return Layer.mergeAll(
+    Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+      getInstance: () =>
+        Effect.succeed({
+          enabled: true,
+          consumeResetCredit: (creditId: string | undefined) =>
+            Effect.sync(() => {
+              input.redemptions?.push({ native: creditId });
+              return "reset" as const;
+            }),
+        } as never),
+    }),
     Layer.mock(ProviderRegistry.ProviderRegistry)({
       getProviders: Effect.succeed([provider]),
     }),
@@ -76,6 +93,11 @@ function testLayer(input: {
       steer: (_hub, account, expiresAt) =>
         Effect.sync(() => void input.controls?.push({ steer: account, expiresAt })),
       margin: (_hub, margin) => Effect.sync(() => void input.controls?.push({ margin })),
+      consumeResetCredit: (credit) =>
+        Effect.sync(() => {
+          input.redemptions?.push(credit);
+          return { outcome: "reset" as const };
+        }),
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
       getThreadRecords: () =>
@@ -382,4 +404,44 @@ describe("ThreadAccountService agent controls", () => {
       expect(Result.isFailure(late)).toBe(true);
     }).pipe(Effect.provide(testLayer({ controls })));
   });
+
+  it.effect.each([
+    { enabled: undefined, input: { account: OTHER }, redemptions: [] },
+    { enabled: false, input: { instanceId: "claude" }, redemptions: [] },
+    {
+      enabled: true,
+      input: { account: OTHER },
+      redemptions: [{ sourceId: "hub", accountId: `${OTHER}.json`, creditId: `grant-${OTHER}` }],
+    },
+    { enabled: true, input: { instanceId: "claude" }, redemptions: [{ native: undefined }] },
+  ])(
+    "redeems a reset for an agent only when the setting is on ($enabled)",
+    ({ enabled, input, redemptions }) => {
+      const redeemed: Array<unknown> = [];
+      return Effect.gen(function* () {
+        const service = yield* ThreadAccountService.make;
+        const result = yield* service.redeem(input as never).pipe(Effect.result);
+        expect(redeemed).toEqual(redemptions);
+        if (enabled) {
+          expect(result).toEqual(Result.succeed({ outcome: "reset" }));
+        } else {
+          expect(Result.isFailure(result) && result.failure.detail).toContain(
+            "Let agents redeem reset credits",
+          );
+        }
+        const usage = yield* service.usage({});
+        expect(usage.agentsCanRedeemResetCredits).toBe(enabled === true);
+      }).pipe(
+        Effect.provide(
+          testLayer({
+            redemptions: redeemed,
+            settings: {
+              usageLimitSources: {},
+              ...(enabled === undefined ? {} : { agentsCanRedeemResetCredits: enabled }),
+            },
+          }),
+        ),
+      );
+    },
+  );
 });

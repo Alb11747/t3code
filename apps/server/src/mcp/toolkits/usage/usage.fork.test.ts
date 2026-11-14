@@ -39,7 +39,7 @@ const client = McpSchema.McpServerClient.of({
   getClient: Effect.die("unused"),
 });
 
-const call = (args: object, capabilities = scope.capabilities) =>
+const callTool = (args: object, capabilities = scope.capabilities) =>
   McpServer.McpServer.pipe(
     Effect.flatMap((server) => server.callTool({ name: "t3_usage", arguments: args })),
     Effect.provideService(McpInvocationContext.McpInvocationContext, { ...scope, capabilities }),
@@ -51,7 +51,7 @@ const failureCode = (result: McpSchema.CallToolResult) => {
   return result.isError === true && text?.type === "text" ? JSON.parse(text.text).code : undefined;
 };
 
-const layer = (runtimeMode: RuntimeMode, steers: Array<unknown>) =>
+const layer = (runtimeMode: RuntimeMode, calls: Array<unknown>) =>
   McpHttpServer.toolkitRegistration(UsageToolkit, UsageHandlers.layer).pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provide(NodeCrypto.layer),
@@ -64,26 +64,47 @@ const layer = (runtimeMode: RuntimeMode, steers: Array<unknown>) =>
     Layer.provide(
       Layer.succeed(ThreadAccountService.ThreadAccounts, {
         ...ThreadAccountService.ThreadAccounts.defaultValue(),
-        steer: (input) => Effect.sync(() => void steers.push(input)),
+        steer: (input) => Effect.sync(() => void calls.push({ steer: input })),
+        end: (input) => Effect.sync(() => void calls.push({ end: input })),
+        redeem: (input) =>
+          Effect.sync(() => {
+            calls.push({ redeem: input });
+            return { outcome: "reset" as const };
+          }),
       }),
     ),
   );
 
-it.effect("steers only for a full-access caller and reads only with orchestration", () => {
-  const steers: Array<unknown> = [];
-  const account = "account-2222222222222222";
+const account = "account-2222222222222222";
+
+it.effect.each([
+  { action: "steer", args: { account }, call: { steer: { account } } },
+  {
+    action: "end",
+    args: { account, endsAt: "2026-12-01T00:00:00.000Z" },
+    call: { end: { account, endsAt: "2026-12-01T00:00:00.000Z" } },
+  },
+  { action: "redeem", args: { account }, call: { redeem: { account } } },
+  {
+    action: "redeem",
+    args: { instanceId: "codex", creditId: "weekly" },
+    call: { redeem: { instanceId: "codex", creditId: "weekly" } },
+  },
+])("$action needs a caller that can control threads, not full access", ({ action, args, call }) => {
+  const calls: Array<unknown> = [];
   return Effect.gen(function* () {
-    expect(failureCode(yield* call({}, new Set<never>()))).toBe("capability_denied");
-    const result = yield* call({ action: "steer", account });
+    expect(failureCode(yield* callTool({ action, ...args }, new Set<never>()))).toBe(
+      "capability_denied",
+    );
+    expect(calls).toEqual([]);
+    const result = yield* callTool({ action, ...args });
     expect(result.isError).not.toBe(true);
-    expect(steers).toEqual([{ account }]);
-  }).pipe(
-    Effect.provide(layer("full-access", steers)),
-    Effect.andThen(
-      Effect.gen(function* () {
-        expect(failureCode(yield* call({ action: "steer", account }))).toBe("capability_denied");
-        expect(steers).toHaveLength(1);
-      }).pipe(Effect.provide(layer("approval-required", steers))),
-    ),
-  );
+    expect(calls).toEqual([call]);
+  }).pipe(Effect.provide(layer("approval-required", calls)));
 });
+
+it.effect("reads only with orchestration", () =>
+  Effect.gen(function* () {
+    expect(failureCode(yield* callTool({}, new Set<never>()))).toBe("capability_denied");
+  }).pipe(Effect.provide(layer("approval-required", []))),
+);

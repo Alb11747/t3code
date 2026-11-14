@@ -147,8 +147,11 @@ export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A,
 export const writes = <P, A, E, R>(
   handle: (params: P) => Effect.Effect<A, E, R>,
   options?: {
-    /** Whether a linked caller may make it, as for uploads its own sends need. */
-    readonly linkedCallers?: "allowed";
+    /**
+     * Whether a linked caller may make it, as for uploads its own sends need, or what the
+     * refusal says it cannot do (default: change scheduled tasks).
+     */
+    readonly linkedCallers?: "allowed" | { readonly refused: string };
   },
 ) =>
   declare(
@@ -157,7 +160,10 @@ export const writes = <P, A, E, R>(
         Effect.tap((caller) =>
           options?.linkedCallers === "allowed"
             ? Effect.void
-            : assertNotLinked(caller, "change this environment's scheduled tasks"),
+            : assertNotLinked(
+                caller,
+                options?.linkedCallers?.refused ?? "change this environment's scheduled tasks",
+              ),
         ),
         Effect.flatMap(() => handle(params)),
       ),

@@ -215,7 +215,12 @@ Agents can manage the same routing: ask one which account has quota left, to mov
 another account (it asks you first when that drops the thread's earlier thinking), to send new
 threads to an account, to let a Claude thread use the router's spare safety margin for a while,
 to record the date an account's subscription ends, or to snooze a thread until its account has
-quota again. Steering new threads and recording subscription ends need an agent with full access.
+quota again.
+
+Agents can also redeem a banked reset credit for you, but only after you turn on **Settings** →
+**Threads** → **Usage limits** → **Let agents redeem reset credits**. It is off by default. An agent
+should redeem only when you ask it to or its instructions allow it, and a redeemed reset cannot be
+taken back.
 
 ## Subscription usage widget
 

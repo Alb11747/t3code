@@ -47,22 +47,37 @@ const make = Effect.gen(function* () {
               return done;
             }),
         ),
-        // Steers and subscription ends change routing for every thread on the hub.
-        McpToolAccess.writesEnvironment((input) =>
-          Effect.gen(function* () {
-            if (input.action === "end") {
-              if (!input.account) return yield* missing("account");
-              if (input.endsAt === undefined) return yield* missing("endsAt");
-              yield* accounts.end({ account: input.account, endsAt: input.endsAt });
+        // Steers, ends and redemptions act on accounts every thread shares, not on one thread.
+        McpToolAccess.writes(
+          (input) =>
+            Effect.gen(function* () {
+              if (input.action === "redeem") {
+                const credit = input.creditId === undefined ? {} : { creditId: input.creditId };
+                if (input.instanceId !== undefined) {
+                  return yield* accounts.redeem({ instanceId: input.instanceId, ...credit });
+                }
+                if (!input.account) {
+                  return yield* new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: "This action needs `instanceId` or `account`.",
+                  });
+                }
+                return yield* accounts.redeem({ account: input.account, ...credit });
+              }
+              if (input.action === "end") {
+                if (!input.account) return yield* missing("account");
+                if (input.endsAt === undefined) return yield* missing("endsAt");
+                yield* accounts.end({ account: input.account, endsAt: input.endsAt });
+                return done;
+              }
+              if (input.account === undefined) return yield* missing("account");
+              yield* accounts.steer({
+                account: input.account,
+                ...(input.provider === undefined ? {} : { provider: input.provider }),
+              });
               return done;
-            }
-            if (input.account === undefined) return yield* missing("account");
-            yield* accounts.steer({
-              account: input.account,
-              ...(input.provider === undefined ? {} : { provider: input.provider }),
-            });
-            return done;
-          }),
+            }),
+          { linkedCallers: { refused: "change this environment's accounts" } },
         ),
       ),
     ),

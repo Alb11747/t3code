@@ -194,6 +194,16 @@ export const AccountUsageSummary = Schema.Struct({
   usageCredits: ServerProviderUsageLimits.fields.usageCredits,
   /** Banked rate-limit resets the account could redeem. */
   resetCredits: Schema.optional(Schema.Number),
+  /** Present when resets differ in what they refill; redeem one by its `creditId`. */
+  resetCreditOptions: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        creditId: Schema.String,
+        label: Schema.String,
+        availableCount: Schema.Number,
+      }),
+    ),
+  ),
   unavailable: Schema.optional(Schema.String),
 });
 export type AccountUsageSummary = typeof AccountUsageSummary.Type;
@@ -203,6 +213,8 @@ export type ThreadAccountUsageInput = typeof ThreadAccountUsageInput.Type;
 
 /** Every account's usage and each hub's routing; `thread` only when one was asked about. */
 export const ThreadAccountUsage = Schema.Struct({
+  /** Whether the user lets agents redeem reset credits. */
+  agentsCanRedeemResetCredits: Schema.Boolean,
   native: Schema.Array(
     Schema.Struct({ instanceId: ProviderInstanceId, ...AccountUsageSummary.fields }),
   ),
