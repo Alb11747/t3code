@@ -69,6 +69,7 @@ import {
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import {
+  awaitedBackgroundWorkHolds,
   backgroundWorkHoldsCompletion,
   taskBackgroundWork,
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
@@ -1698,11 +1699,16 @@ const make = Effect.gen(function* () {
         ? progress.state
         : !isTerminalTaskStatus(taskStatusForRun(taskResultRun))
           ? "working"
-          : delegatedTaskAwaitsWork(followupRuns, childControls) ||
-              (task.notifyParent === "settled" &&
-                taskResultRun !== undefined &&
-                runOutcome(taskResultRun) === "completed" &&
-                progress.state !== "result_available")
+          : // As finalization holds it: under `settled` for any of the child's work, under
+            // `every_turn` only for work the child marked with t3_background_wait.
+            taskResultRun !== undefined &&
+              runOutcome(taskResultRun) === "completed" &&
+              ((task.notifyParent === "settled" &&
+                (delegatedTaskAwaitsWork(followupRuns, childControls) ||
+                  progress.state !== "result_available")) ||
+                childControls.providerThreads.some((thread) =>
+                  awaitedBackgroundWorkHolds(thread.pendingBackgroundTasks ?? []),
+                ))
             ? "waiting_for_children"
             : "result_available";
     const resultRunIds = [
@@ -2001,7 +2007,10 @@ const make = Effect.gen(function* () {
       status,
       workState: terminal ? "result_available" : "working",
       hasPendingChildRuns: false,
-      ...(task.backgroundWork === undefined ? {} : { backgroundWork: task.backgroundWork }),
+      // After a hand-off to its follow-up, the thread there's work is that task's to report.
+      ...(task.backgroundWork === undefined || task.remoteChild?.stoppedThere === true
+        ? {}
+        : { backgroundWork: task.backgroundWork }),
       providerInstanceId: task.providerInstanceId,
       model: task.model,
       executedModel: null,

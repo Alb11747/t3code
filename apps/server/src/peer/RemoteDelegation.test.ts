@@ -1494,12 +1494,11 @@ it.effect("a task whose thread there still runs background work reports its late
         ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
       >([]);
       const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const polls = yield* Queue.unbounded<void>();
+      const polls = yield* Queue.unbounded<number>();
       const nextPoll = yield* Queue.unbounded<void>();
       const a = yield* makeLaptop(database, offers).pipe(
-        Effect.provideService(
-          RemoteDelegation.LaterTurnPoll,
-          Queue.offer(polls, undefined).pipe(Effect.andThen(Queue.take(nextPoll))),
+        Effect.provideService(RemoteDelegation.LaterTurnPoll, (attempt) =>
+          Queue.offer(polls, attempt).pipe(Effect.andThen(Queue.take(nextPoll))),
         ),
       );
       yield* linkTo(a.links, b, "full-access");
@@ -1519,8 +1518,11 @@ it.effect("a task whose thread there still runs background work reports its late
         backgroundWork: [{ kind: "command", description: "vp run check:changed" }],
       });
 
+      // While the check runs there, each look waits longer than the last.
+      expect(yield* Queue.take(polls)).toBe(0);
+      yield* Queue.offer(nextPoll, undefined);
+      expect(yield* Queue.take(polls)).toBe(1);
       // The check's end wakes the thread there, and that later turn reaches the parent here.
-      yield* Queue.take(polls);
       yield* Ref.set(thread.backgroundWork, []);
       yield* Ref.set(thread.laterReply, "The check passed.");
       yield* Deferred.succeed(thread.laterFinished, undefined);

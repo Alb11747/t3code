@@ -303,6 +303,55 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
     }),
   );
 
+  it.effect("records no later turn for a task that owes a stop there", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const parent = yield* seedLiveParent("followup-after-stop");
+      yield* orchestrator.dispatch({
+        type: "delegated_task.remote.request",
+        commandId: CommandId.make("command:remote-delegate:followup-after-stop"),
+        parentThreadId: parent.threadId,
+        parentRunId: parent.runId,
+        parentNodeId: parent.rootNodeId,
+        task: "Run a check.",
+        driver: ProviderDriverKind.make("remote"),
+        modelSelection,
+        remoteChild,
+      });
+      const task = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents[0]!;
+      yield* orchestrator.dispatch({
+        type: "delegated_task.remote.complete",
+        commandId: CommandId.make("command:result:followup-after-stop"),
+        parentThreadId: parent.threadId,
+        taskId: task.id,
+        status: "completed",
+        result: "The check is still running.",
+        backgroundWork: [{ kind: "command", description: "vp run check:changed" }],
+      });
+      // A Stop here lands between the follower's look there and its follow-up.
+      yield* orchestrator.dispatch({
+        type: "delegated_task.remote.stop",
+        commandId: CommandId.make("command:stop:followup-after-stop"),
+        parentThreadId: parent.threadId,
+        taskId: task.id,
+      });
+      const refused = yield* orchestrator
+        .dispatch({
+          type: "delegated_task.remote.followup",
+          commandId: CommandId.make("command:followup:followup-after-stop"),
+          parentThreadId: parent.threadId,
+          taskId: task.id,
+          remoteRunId: RunId.make("run:on-the-box-later"),
+        })
+        .pipe(Effect.flip);
+      assert.equal(refused._tag, "OrchestratorDispatchError");
+      const projection = yield* orchestrator.getThreadProjection(parent.threadId);
+      assert.equal(projection.subagents.length, 1);
+      assert.equal(projection.subagents[0]?.remoteChild?.stoppedThere, false);
+      assert.equal(projection.subagents[0]?.remoteChild?.stopCount, 1);
+    }),
+  );
+
   it.effect("owes a stop there for a Stop here that loses the race to its result", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

@@ -191,7 +191,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   notifyParent: Schema.optional(
     Schema.Literals(["every_turn", "settled"]).annotate({
       description:
-        "'settled': its finished turns wake you only once it has no live child tasks or background work; failures, questions and its messages still do, so brief it to t3_thread_send you what cannot wait. Default 'every_turn'. Omitted: inherits your own task's.",
+        "'settled': its finished turns wake you only once it has no live child tasks or background work; failures, questions and its messages still do, so brief it to t3_thread_send you what cannot wait. Default 'every_turn': every finished turn, except while work it marked with t3_background_wait runs. Omitted: inherits your own task's.",
     }),
   ),
   timeoutMs: Schema.optional(Schema.Finite).annotate({

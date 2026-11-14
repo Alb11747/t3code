@@ -3552,6 +3552,151 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
       }),
     );
 
+    it.effect("releases an every_turn wake turn that ends on unmarked background work", () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const now = yield* DateTime.now;
+        const parentThreadId = ThreadId.make("thread:unmarked-wake-parent");
+        const projectId = ProjectId.make("project:unmarked-wake");
+        const parentRunId = RunId.make("run:unmarked-wake-parent");
+        const rootNodeId = NodeId.make("node:unmarked-wake-parent");
+        yield* seedParentWithTerminalTask({
+          threadId: parentThreadId,
+          projectId,
+          runId: parentRunId,
+          rootNodeId,
+          taskId: NodeId.make("node:unmarked-wake-seed"),
+          deliveryState: "acknowledged",
+          now,
+        });
+        const child = yield* seedRestartCancelledChild({
+          parentThreadId,
+          projectId,
+          parentRunId,
+          rootNodeId,
+          name: "unmarked-wake-child",
+          completionWake: "always",
+          continuationPending: false,
+          runStatus: "completed",
+          now,
+        });
+        yield* orchestrator.recoverDelegatedTasks;
+        yield* orchestrator.dispatch({
+          type: "delegated_task.completion-delivery.acknowledge",
+          commandId: CommandId.make("command:unmarked-wake-ack"),
+          parentThreadId,
+          taskId: child.taskId,
+          observedByRunId: parentRunId,
+        });
+        const providerThread = {
+          id: ProviderThreadId.make("provider-thread:unmarked-wake-child"),
+          driver,
+          providerInstanceId: modelSelection.instanceId,
+          providerSessionId: null,
+          appThreadId: child.childThreadId,
+          ownerNodeId: null,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+          status: "idle" as const,
+          firstRunOrdinal: 1,
+          lastRunOrdinal: 1,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        const wake = Effect.fn("wake")(function* (key: string) {
+          const messageId = MessageId.make(`message:unmarked-wake-${key}`);
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            createdBy: "agent",
+            creationSource: "provider",
+            commandId: CommandId.make(`command:unmarked-wake-${key}`),
+            threadId: child.childThreadId,
+            messageId,
+            text: "Background activity updated",
+            notification: {
+              source: { kind: "command" },
+              outcome: "completed",
+              summary: `Command "build ${key}" finished`,
+            },
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+          });
+          return (yield* orchestrator.getThreadProjection(child.childThreadId)).runs.find(
+            (row) => row.userMessageId === messageId,
+          )!;
+        });
+        const finish = (
+          run: OrchestrationV2Run,
+          text: string,
+          pendingBackgroundTasks: OrchestrationV2ProviderThread["pendingBackgroundTasks"],
+        ) =>
+          eventSink.write({
+            commandId: reconcileCommandId(`unmarked-wake-finished-${run.id}`),
+            events: [
+              {
+                id: EventId.make(`event:unmarked-wake-roster-${run.id}`),
+                type: "provider-thread.updated",
+                threadId: child.childThreadId,
+                driver,
+                providerInstanceId: modelSelection.instanceId,
+                occurredAt: now,
+                payload: { ...providerThread, pendingBackgroundTasks },
+              },
+              {
+                id: EventId.make(`event:unmarked-wake-result-${run.id}`),
+                type: "message.updated",
+                threadId: child.childThreadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: {
+                  id: MessageId.make(`message:unmarked-wake-result-${run.id}`),
+                  threadId: child.childThreadId,
+                  runId: run.id,
+                  nodeId: null,
+                  role: "assistant",
+                  text,
+                  attachments: [],
+                  streaming: false,
+                  createdBy: "agent",
+                  creationSource: "server",
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              },
+              {
+                id: EventId.make(`event:unmarked-wake-run-${run.id}`),
+                type: "run.updated",
+                threadId: child.childThreadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: { ...run, status: "completed", startedAt: now, completedAt: now },
+              },
+            ],
+          });
+        const followupOf = (run: OrchestrationV2Run) =>
+          orchestrator
+            .getThreadProjection(parentThreadId)
+            .pipe(
+              Effect.map((projection) =>
+                projection.subagents.find((task) => task.id === run.delegatedTaskId)!,
+              ),
+            );
+
+        // Background subagents and tasks hold only the first result under every_turn.
+        const first = yield* wake("first");
+        yield* finish(first, "Started the audit agent.", [
+          { taskId: "audit", kind: "subagent" },
+          { taskId: "index", kind: "background_task" },
+        ]);
+        yield* orchestrator.recoverDelegatedTasks;
+        const released = yield* followupOf(first);
+        assert.equal(released.result, "Started the audit agent.");
+      }),
+    );
+
     it.effect("holds a wake turn that ends on awaited work until the next wake finishes it", () =>
       Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -3695,9 +3840,34 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
         assert.isNull(held.result);
         assert.notEqual(held.completionDelivery?.state, "claimed");
 
-        // The wake the work's end starts joins the held follow-up instead of opening another.
+        // The parent asks the child something meanwhile; that follow-up is running.
+        const askedMessageId = MessageId.make("message:awaited-wake-asked");
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "agent",
+          creationSource: "mcp",
+          commandId: CommandId.make("command:awaited-wake-asked"),
+          threadId: child.childThreadId,
+          senderThreadId: parentThreadId,
+          messageId: askedMessageId,
+          text: "Which tests does the rebuild cover?",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+        });
+        const asked = (yield* orchestrator.getThreadProjection(child.childThreadId)).runs.find(
+          (row) => row.userMessageId === askedMessageId,
+        )!;
+        assert.isDefined(asked.delegatedTaskId);
+        assert.notEqual(asked.delegatedTaskId, first.delegatedTaskId);
+
+        // The wake the work's end starts continues the follow-up held on that work, not the
+        // newest or a running one, instead of opening another.
         const second = yield* wake("second");
         assert.equal(second.delegatedTaskId, first.delegatedTaskId);
+        // A wake behind a follow-up whose newest run has not finished never takes its answer.
+        const third = yield* wake("third");
+        assert.notEqual(third.delegatedTaskId, first.delegatedTaskId);
+        assert.notEqual(third.delegatedTaskId, asked.delegatedTaskId);
         // Work it leaves running unmarked does not hold the answer; the notice names it.
         yield* finish(second, "The rebuild passed.", [
           { taskId: "dev", kind: "command", description: "vp run dev" },

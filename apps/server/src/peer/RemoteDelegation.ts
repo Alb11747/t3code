@@ -70,13 +70,21 @@ export const FollowRetrySchedule = Context.Reference<Schedule.Schedule<unknown>>
   },
 );
 
+/** The longest wait between looks at a finished task's thread there. */
+const LATER_TURN_MAX_POLL = Duration.minutes(10);
 /**
- * How a follower waits between looks at a finished task's thread there that still runs only
- * work a wait there does not hold for, such as a dev server; tests step it by hand.
+ * How a follower waits before its `attempt`th next look at a finished task's thread there
+ * that still runs only work a wait there does not hold for, such as a dev server: 30 seconds,
+ * doubling to LATER_TURN_MAX_POLL. Tests step it by hand.
  */
-export const LaterTurnPoll = Context.Reference<Effect.Effect<void>>(
+export const LaterTurnPoll = Context.Reference<(attempt: number) => Effect.Effect<void>>(
   "t3/peer/RemoteDelegation/LaterTurnPoll",
-  { defaultValue: () => Effect.sleep(Duration.seconds(30)) },
+  {
+    defaultValue: () => (attempt) =>
+      Effect.sleep(
+        Duration.min(Duration.times(Duration.seconds(30), 2 ** attempt), LATER_TURN_MAX_POLL),
+      ),
+  },
 );
 /** A finished task's thread there is followed for later turns at most this long. */
 const LATER_TURN_FOLLOW_LIMIT = Duration.hours(24);
@@ -714,6 +722,17 @@ const make = Effect.gen(function* () {
             yield* complete(parentThreadId, taskId, "failed", reason, "stopped", stopCount);
           }),
         }),
+        // A parent gone here has nothing left to follow for; anything else is retried.
+        Effect.catch((error) =>
+          threads.getThreadShell(parentThreadId).pipe(
+            Effect.orElseSucceed(() => undefined),
+            Effect.flatMap((shell) =>
+              shell === null || (shell !== undefined && shell.deletedAt !== null)
+                ? Effect.void
+                : Effect.fail(error),
+            ),
+          ),
+        ),
         Effect.tapError(() => noDefect),
         Effect.tapDefect(() =>
           Effect.sync(() => {
@@ -794,6 +813,8 @@ const make = Effect.gen(function* () {
         task.status === "completed" &&
         (task.backgroundWork?.length ?? 0) > 0
       ) {
+        // Nobody reads later turns of an archived or deleted parent.
+        if (thread.archivedAt !== null || thread.deletedAt !== null) return true;
         return yield* followLaterTurn(parentThreadId, task, remote, scope, sequence);
       }
       return true;
@@ -891,6 +912,9 @@ const make = Effect.gen(function* () {
    * follow-up task, followed as its own; the task ends here once that thread has nothing
    * left that could wake it, or after LATER_TURN_FOLLOW_LIMIT.
    */
+  /** Looks so far at each finished task's thread there with nothing new, for the poll backoff. */
+  const laterTurnPolls = new Map<NodeId, number>();
+
   const followLaterTurn = Effect.fn("RemoteDelegation.followLaterTurn")(function* (
     parentThreadId: ThreadId,
     task: OrchestrationV2Subagent,
@@ -944,17 +968,29 @@ const make = Effect.gen(function* () {
     if ("endedHere" in waited || waited.timedOut) return false;
     const latest = waited.resultRun?.runId ?? waited.runId;
     if (latest === null || latest === remote.runId) {
-      if ((waited.backgroundWork ?? []).length === 0) return yield* done;
-      yield* laterTurnPoll;
+      if ((waited.backgroundWork ?? []).length === 0) {
+        laterTurnPolls.delete(task.id);
+        return yield* done;
+      }
+      const attempt = laterTurnPolls.get(task.id) ?? 0;
+      laterTurnPolls.set(task.id, attempt + 1);
+      yield* laterTurnPoll(attempt);
       return false;
     }
-    const recorded = yield* threads.dispatch({
-      type: "delegated_task.remote.followup",
-      commandId: CommandId.make(`command:remote-task-followup:${task.id}:${latest}`),
-      parentThreadId,
-      taskId: task.id,
-      remoteRunId: latest,
-    });
+    laterTurnPolls.delete(task.id);
+    const recorded = yield* threads
+      .dispatch({
+        type: "delegated_task.remote.followup",
+        commandId: CommandId.make(`command:remote-task-followup:${task.id}:${latest}`),
+        parentThreadId,
+        taskId: task.id,
+        remoteRunId: latest,
+      })
+      .pipe(
+        // Refused once a Stop or cancel here took the task: the next look settles that.
+        Effect.catchTags({ OrchestratorDispatchError: () => Effect.undefined }),
+      );
+    if (recorded === undefined) return false;
     const followup =
       recorded.storedEvents.find(
         (stored) =>

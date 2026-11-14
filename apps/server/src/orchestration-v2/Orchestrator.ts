@@ -88,6 +88,7 @@ import { claudeThinkingRecoveryTarget } from "@t3tools/shared/orchestrationV2Cla
 import { combinePullRequestWatchWakes, type PullRequestWatchWake } from "./pullRequestWatch.ts";
 import { recordThreadOpen } from "@t3tools/shared/paletteSearch";
 import {
+  awaitedBackgroundWorkHolds,
   backgroundWorkHoldsCompletion,
   derivePendingBackgroundWork,
   pendingBackgroundTurnItems,
@@ -9955,25 +9956,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (row) => row.id === message.runId,
       );
     if (run === undefined || run.delegatedTaskId !== undefined) return;
-    const sourceRun =
-      command.senderThreadId === child.id
-        ? latestExecutedRun((yield* projectionStore.getThreadRecords(child.id, ["runs"])).runs)
-        : null;
-    // A wake continues the latest follow-up while it is open, as it continues the original task.
-    const latestFollowupId =
-      command.notification === undefined
-        ? undefined
-        : (yield* projectionStore
-            .getThreadRecords(command.threadId, ["runs"])
+    const childRuns =
+      command.senderThreadId === child.id || command.notification !== undefined
+        ? (yield* projectionStore
+            .getThreadRecords(child.id, ["runs"])
             .pipe(mapDispatchError(command))).runs
-            .filter((row) => row.id !== run.id && row.delegatedTaskId !== undefined)
-            .toSorted((a, b) => b.ordinal - a.ordinal)[0]?.delegatedTaskId;
+        : [];
+    const sourceRun = command.senderThreadId === child.id ? latestExecutedRun(childRuns) : null;
+    // A wake continues a follow-up held open on work, as it continues the original task: one
+    // whose newest run completed, newest first. A queued or running follow-up keeps its answer.
+    const heldFollowupIds =
+      command.notification === undefined
+        ? []
+        : [
+            ...childRuns
+              .filter((row) => row.id !== run.id && row.delegatedTaskId !== undefined)
+              .toSorted((a, b) => b.ordinal - a.ordinal)
+              .reduce((newest, row) => {
+                if (!newest.has(row.delegatedTaskId!)) newest.set(row.delegatedTaskId!, row);
+                return newest;
+              }, new Map<NodeId, OrchestrationV2Run>()),
+          ].flatMap(([taskId, newest]) => (runOutcome(newest) === "completed" ? [taskId] : []));
     const parent = yield* projectionStore
       .getThreadRecords(parentThreadId, ["runs", "subagents", "providerTurns", "attempts"], {
         subagentIds: [
           ...(child.forkedFrom?.type === "node" ? [child.forkedFrom.nodeId] : []),
           ...(sourceRun?.delegatedTaskId === undefined ? [] : [sourceRun.delegatedTaskId]),
-          ...(latestFollowupId === undefined ? [] : [latestFollowupId]),
+          ...heldFollowupIds,
         ],
       })
       .pipe(mapDispatchError(command));
@@ -9990,14 +9999,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
     if (command.senderThreadId === child.id && sourceTask?.completionDelivery?.state === "disposed")
       return;
-    const openFollowup = parent.subagents.find(
-      (task) =>
-        task.id === latestFollowupId &&
-        task.origin === "app_owned" &&
-        task.childThreadId === child.id &&
-        task.cancelledRunId === undefined &&
-        task.result === null,
-    );
+    const openFollowup = heldFollowupIds
+      .map((taskId) => parent.subagents.find((task) => task.id === taskId))
+      .find(
+        (task) =>
+          task !== undefined &&
+          task.origin === "app_owned" &&
+          task.childThreadId === child.id &&
+          task.cancelledRunId === undefined &&
+          task.result === null,
+      );
     if (openFollowup !== undefined) {
       yield* emit(
         events,
@@ -10502,7 +10513,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Delegated task ${command.taskId} is not a finished remote task of thread ${command.parentThreadId}.`,
       });
     }
-    if (source.remoteChild.stoppedThere === true) return;
+    // Ended there, owing a stop there, or stopped here: nothing later wakes the parent.
+    if (
+      source.remoteChild.stoppedThere !== undefined ||
+      source.status === "cancelled" ||
+      source.status === "interrupted"
+    )
+      return;
     const now = yield* DateTime.now;
     const taskId = idAllocator.derive.delegatedTaskNode({ commandId: command.commandId });
     const { backgroundWork: _sourceWork, ...sourceTask } = source;
@@ -10547,6 +10564,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         runId: owner.id,
         parentNodeId: owner.rootNodeId,
         remoteChild,
+        prompt: `A later turn of the thread in ${remote.label}.`,
         completionWake: "always",
         completionDelivery: { state: "pending", observedByRunId: null },
         status: "running",
@@ -10581,7 +10599,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerInstanceId: source.providerInstanceId,
         childThreadId: null,
         remoteChild,
-        prompt: source.prompt,
+        prompt: `A later turn of the thread in ${remote.label}.`,
         result: null,
       },
     });
@@ -15072,12 +15090,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
       // A follow-up ends with the work it awaits, as the original task does; an `every_turn`
-      // one only with background work. A cancelled task does not wait for the background
-      // work its cancel is stopping.
-      const awaitsBackgroundWork =
+      // one only with work the child marked with t3_background_wait. A cancelled task does not
+      // wait for the background work its cancel is stopping.
+      const awaitsMarkedWork =
         options.task.cancelledRunId === undefined &&
         childControls.providerThreads.some((thread) =>
-          backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []),
+          awaitedBackgroundWorkHolds(thread.pendingBackgroundTasks ?? []),
         );
       if (
         outcome === "completed" &&
@@ -15088,7 +15106,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ? childControls
               : { subagents: childControls.subagents, providerThreads: [] },
           )) ||
-          awaitsBackgroundWork)
+          awaitsMarkedWork)
       )
         return;
       if (
@@ -15166,9 +15184,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (candidate) => candidate.type === "subagent" && candidate.subagentId === task.id,
       );
       const { backgroundWork: _earlierWork, ...unfinished } = task;
-      const backgroundWork = taskBackgroundWork(
-        (yield* projectionStore.getThreadShell(childThreadId))?.pendingBackgroundTasks ?? [],
-      );
+      // The shell also derives work no roster lists (a Codex command), but none while a run is active.
+      const shellWork =
+        (yield* projectionStore.getThreadShell(childThreadId))?.pendingBackgroundTasks ?? [];
+      const backgroundWork = taskBackgroundWork([
+        ...shellWork,
+        ...childControls.providerThreads
+          .flatMap((thread) => thread.pendingBackgroundTasks ?? [])
+          .filter((task) => !shellWork.some((listed) => listed.taskId === task.taskId)),
+      ]);
       const updatedTask: OrchestrationV2Subagent = {
         ...unfinished,
         providerThreadId: childRun.providerThreadId,

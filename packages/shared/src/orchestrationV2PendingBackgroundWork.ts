@@ -97,6 +97,13 @@ export function backgroundWorkHoldsCompletion(
   );
 }
 
+/** Work the agent marked with t3_background_wait, which holds even an `every_turn` follow-up. */
+export function awaitedBackgroundWorkHolds(
+  tasks: ReadonlyArray<Pick<PendingBackgroundWorkTask, "awaited">>,
+): boolean {
+  return tasks.some((task) => task.awaited === true);
+}
+
 // Commands and monitors are as often a dev server or its watchdog as a wait, so they hold
 // only when the agent marks them awaited.
 function backgroundWorkKindHoldsCompletion(kind: PendingBackgroundWorkTask["kind"]): boolean {
