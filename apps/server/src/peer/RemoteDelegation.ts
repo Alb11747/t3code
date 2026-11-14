@@ -367,6 +367,11 @@ const make = Effect.gen(function* () {
           modelSelection: { instanceId, model, ...(options === undefined ? {} : { options }) },
           ...(runtimeMode === undefined ? {} : { runtimeMode }),
           ...(interactionMode === undefined ? {} : { interactionMode }),
+          // Fork: the environment it runs in resolves the account on its own hub.
+          ...(target.account ? { account: target.account } : {}),
+          ...(target.account && target.waitWhenOut !== undefined
+            ? { waitWhenOut: target.waitWhenOut }
+            : {}),
           message: task,
           clientRequestId: `delegate:${scope.thread.threadId}:${key}`,
           // The thread there shows it is this thread's subagent, with a way back.

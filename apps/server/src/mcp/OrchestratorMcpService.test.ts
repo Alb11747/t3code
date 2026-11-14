@@ -26,8 +26,11 @@ import {
   ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
+  RouterAccountAlias,
   RunId,
+  ThreadAccountError,
   ThreadId,
+  UsageLimitSourceId,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadProjection,
@@ -70,6 +73,7 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
+import * as ThreadAccountService from "../usage/ThreadAccountService.ts";
 import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import { resolveRuntimeMode } from "./delegatedTaskModes.ts";
@@ -2207,6 +2211,122 @@ describe("OrchestratorMcpService provider resolution", () => {
           modelSelection: { instanceId: string; model: string };
         };
         assert.equal(request.modelSelection.instanceId, altInstanceId);
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+    }),
+  );
+
+  it.effect("gives a delegated child its own account, refusing one its hub lacks first", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      const task = {
+        id: taskId,
+        threadId: parentThreadId,
+        runId: parentRunId,
+        parentNodeId,
+        origin: "app_owned",
+        createdBy: "agent",
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        providerThreadId: null,
+        childThreadId,
+        nativeTaskRef: null,
+        prompt: "Summarize the diff.",
+        title: null,
+        model: "gpt-5.4",
+        status: "running",
+        result: null,
+        startedAt: null,
+        completedAt: null,
+      };
+      const layerDependencies = Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
+          getThreadRecords: (threadId) =>
+            Effect.succeed(
+              threadId === parentThreadId ? parentProjection([task]) : childProjection,
+            ),
+          dispatch: (command) =>
+            Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+              Effect.as({
+                sequence: 1,
+                storedEvents: [
+                  {
+                    sequence: 1,
+                    commandId: null,
+                    event: { type: "subagent.updated", payload: task },
+                  },
+                ],
+              } as never),
+            ),
+        }),
+        providerRegistryLayer([
+          providerSnapshot({
+            instanceId: codexInstanceId,
+            driver: ProviderDriverKind.make("codex"),
+            model: "gpt-5.4",
+          }),
+        ]),
+        adapterRegistryLayer([codexInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        ServerSettings.layerTest(),
+        Layer.succeed(ThreadAccountService.ThreadAccounts, {
+          ...ThreadAccountService.ThreadAccounts.defaultValue(),
+          launchChoice: ({ instanceId, account, stall }) =>
+            account === "spare@example.com"
+              ? Effect.succeed({
+                  sourceId: UsageLimitSourceId.make("hub"),
+                  account: RouterAccountAlias.make("account-2222222222222222"),
+                  stall,
+                  instanceId,
+                })
+              : Effect.fail(
+                  new ThreadAccountError({
+                    detail: `No account on that hub is named "${account}".`,
+                  }),
+                ),
+        }),
+      );
+
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const refused = yield* service
+          .delegateTask(scope, {
+            task: "Summarize the diff.",
+            target: { account: "nobody@example.com" },
+            clientRequestId: "delegate-account-refused",
+          })
+          .pipe(Effect.flip);
+        assert.equal(refused.code, "invalid_request");
+        assert.equal(
+          refused.message,
+          'No account on that hub is named "nobody@example.com". Nothing was created.',
+        );
+        assert.deepEqual(yield* Ref.get(dispatched), []);
+
+        yield* service.delegateTask(scope, {
+          task: "Summarize the diff.",
+          target: { account: "spare@example.com", waitWhenOut: true },
+          clientRequestId: "delegate-account",
+        });
+        yield* service.delegateTask(scope, {
+          task: "Summarize the diff.",
+          clientRequestId: "delegate-inherits",
+        });
+        const [explicit, omitted] = (yield* Ref.get(dispatched)) as ReadonlyArray<{
+          readonly accountChoice?: unknown;
+        }>;
+        assert.deepEqual(explicit?.accountChoice, {
+          sourceId: "hub",
+          account: "account-2222222222222222",
+          stall: true,
+          instanceId: codexInstanceId,
+        });
+        assert.notProperty(omitted, "accountChoice");
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
     }),
   );

@@ -226,8 +226,10 @@ Agents can manage the same routing: ask one which account has quota left, to mov
 another account (it asks you first when that drops the thread's earlier thinking), to send new
 threads to an account, to let a Claude thread use the router's spare safety margin for a while,
 to record the date an account's subscription ends, or to snooze a thread until its account has
-quota again. Name accounts by email address, or by the part before the `@` when no other account
-shares it.
+quota again. An agent that starts a thread or a child task can also give it an account, and have
+it wait for that account when it runs out; only that thread waits, not your other threads. A child
+task given no account routes automatically. Name accounts by email address, or by the part before
+the `@` when no other account shares it.
 
 Agents can also redeem a banked reset credit for you, but only after you turn on **Settings** →
 **Threads** → **Usage limits** → **Let agents redeem reset credits**. It is off by default. An agent

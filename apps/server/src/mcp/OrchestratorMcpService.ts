@@ -36,6 +36,7 @@ import {
   type OrchestratorMcpUpdateScheduledTaskInput,
   type OrchestratorMcpListScheduledTasksInput,
   type ProjectId,
+  type ProviderInstanceId,
   type OrchestratorMcpThreadDetail,
   type OrchestratorMcpThreadInterruptInput,
   type OrchestratorMcpThreadInterruptResult,
@@ -1650,6 +1651,21 @@ const make = Effect.gen(function* () {
   const requestKey = (clientRequestId: string | undefined): Effect.Effect<string> =>
     clientRequestId === undefined ? random.uuidV4() : Effect.succeed(clientRequestId);
 
+  // Fork: a new thread's account, resolved on its instance's hub before anything is created.
+  const launchAccountChoice = Effect.fn("OrchestratorMcpService.launchAccountChoice")(function* (
+    instanceId: ProviderInstanceId,
+    target: OrchestratorMcpTarget | undefined,
+  ) {
+    if (!target?.account) return undefined;
+    return yield* threadAccounts
+      .launchChoice({ instanceId, account: target.account, stall: target.waitWhenOut === true })
+      .pipe(
+        Effect.mapError((error) =>
+          failure("invalid_request", `${error.detail} Nothing was created.`),
+        ),
+      );
+  });
+
   const readTask = Effect.fn("OrchestratorMcpService.readTask")(function* (
     scope: McpThreadInvocationScope,
     taskId: NodeId,
@@ -2731,6 +2747,10 @@ const make = Effect.gen(function* () {
         parent.thread.interactionMode,
         input.interactionMode,
       );
+      // An explicit account gives the child its own pin; omitted, the child has no stored choice.
+      const accountChoice = isRetryOfAcceptedDelegation
+        ? undefined
+        : yield* launchAccountChoice(target.modelSelection.instanceId, input.target);
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
       if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
         const project = yield* requireProject(parent.thread.projectId);
@@ -2779,6 +2799,7 @@ const make = Effect.gen(function* () {
           runtimeMode,
           interactionMode,
           ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+          ...(accountChoice === undefined ? {} : { accountChoice }),
           ...(input.notifyParent === undefined ? {} : { notifyParent: input.notifyParent }),
           // Async delegations wake the parent on every child terminal; wait
           // delegations deliver through the blocking tool call until `awaitTask`
@@ -3063,6 +3084,16 @@ const make = Effect.gen(function* () {
         const parentNodeId = parentRun.rootNodeId;
         const providers = yield* loadProviders;
         const key = yield* requestKey(input.clientRequestId);
+        // Fork: every named account resolves before the first thread is created.
+        const accountChoices = yield* Effect.forEach(input.threads, (request) =>
+          request.target?.account
+            ? resolveTargetRechecking({ parent, target: request.target, providers }).pipe(
+                Effect.flatMap((target) =>
+                  launchAccountChoice(target.modelSelection.instanceId, request.target),
+                ),
+              )
+            : Effect.undefined,
+        );
         const created = yield* Effect.forEach(
           input.threads,
           (request, index) =>
@@ -3138,6 +3169,29 @@ const make = Effect.gen(function* () {
                     ),
                   ),
                 );
+              const accountChoice = accountChoices[index];
+              if (accountChoice !== undefined) {
+                yield* threadManagement
+                  .dispatch({
+                    type: "thread.account-choice.set",
+                    commandId: stableCommandId({
+                      scope,
+                      requestKey: key,
+                      operation: "account-thread",
+                      index,
+                    }),
+                    threadId,
+                    accountChoice,
+                  })
+                  .pipe(
+                    Effect.mapError((error) =>
+                      failure(
+                        "orchestration_error",
+                        `Unable to set thread ${index + 1}'s account: ${errorMessage(error)}`,
+                      ),
+                    ),
+                  );
+              }
               // A receipt can appear after target resolution; use the committed thread's selection.
               const resolvedModelSelection = (yield* threadManagement
                 .getThreadRecords(threadId, [])

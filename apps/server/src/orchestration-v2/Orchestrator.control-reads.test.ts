@@ -15,10 +15,12 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
+  RouterAccountAlias,
   RunId,
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
+  UsageLimitSourceId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -1609,12 +1611,18 @@ it.effect("settles only the stopped run's background work, once", () =>
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("keeps child pull requests and issue watches independent of the parent", () =>
+it.effect("keeps child pull requests, issue watches and account independent of the parent", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const parentThreadId = ThreadId.make("thread:parent-pr");
     const projectId = ProjectId.make("project:parent-pr");
+    const childAccountChoice = {
+      sourceId: UsageLimitSourceId.make("hub"),
+      account: RouterAccountAlias.make("account-1111111111111111"),
+      stall: true,
+      instanceId,
+    };
     const parentPullRequest = {
       projectId,
       repository: "pingdotgg/t3code",
@@ -1683,6 +1691,7 @@ it.effect("keeps child pull requests and issue watches independent of the parent
       modelSelection,
       runtimeMode: "full-access",
       interactionMode: "default",
+      accountChoice: childAccountChoice,
       createdBy: "agent",
       creationSource: "mcp",
     });
@@ -1695,6 +1704,9 @@ it.effect("keeps child pull requests and issue watches independent of the parent
     assert.equal(child.thread.branch, parent.thread.branch);
     assert.equal(child.thread.worktreePath, parent.thread.worktreePath);
     assert.equal(child.thread.lineage.parentThreadId, parentThreadId);
+    // Stored with the child's creation, so its first turn pins it before any request.
+    assert.deepEqual(child.thread.accountChoice, childAccountChoice);
+    assert.isUndefined(parent.thread.accountChoice);
 
     const childPullRequest = {
       ...parentPullRequest,

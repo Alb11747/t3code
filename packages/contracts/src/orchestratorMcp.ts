@@ -99,6 +99,24 @@ export const OrchestratorMcpTargetOptions = Schema.Union([
 ]);
 export type OrchestratorMcpTargetOptions = typeof OrchestratorMcpTargetOptions.Type;
 
+/**
+ * Fork: the CLI Proxy hub account a new thread pins before its first request, resolved by the
+ * environment it runs in. Older environments ignore both.
+ */
+export const OrchestratorMcpLaunchAccountFields = {
+  account: Schema.optional(
+    Schema.NullOr(TrimmedNonEmptyString).annotate({
+      description:
+        "CLI Proxy hub account (email or alias; `t3_usage` lists them). Omit: automatic.",
+    }),
+  ),
+  waitWhenOut: Schema.optional(
+    Schema.Boolean.annotate({
+      description: "With `account`: wait while it is out instead of falling back.",
+    }),
+  ),
+};
+
 export const OrchestratorMcpTarget = Schema.Struct({
   providerInstanceId: Schema.optional(
     ProviderInstanceId.annotate({
@@ -129,6 +147,7 @@ export const OrchestratorMcpTarget = Schema.Struct({
         "With `environmentId`: its project to run in. Default: the one with this project's repository.",
     }),
   ),
+  ...OrchestratorMcpLaunchAccountFields,
 });
 export type OrchestratorMcpTarget = typeof OrchestratorMcpTarget.Type;
 

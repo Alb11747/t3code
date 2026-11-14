@@ -344,6 +344,40 @@ describe("ThreadAccountService.set", () => {
   );
 });
 
+describe("ThreadAccountService.launchChoice", () => {
+  it.effect.each([
+    {
+      name: "stores a named account on the instance's hub, waiting when asked",
+      instanceId: "claude",
+      account: "Spare@Example.com",
+      choice: { sourceId: "hub", account: OTHER, stall: true, instanceId: "claude" },
+    },
+    {
+      name: "refuses an account the instance's hub does not list",
+      instanceId: "claude",
+      account: "someone@other-hub.test",
+      error:
+        'No account on the CLI Proxy hub of claude is named "someone@other-hub.test". Choose one of: work@example.com (account-1111111111111111), spare@example.com (account-2222222222222222), work@elsewhere.test (account-3333333333333333).',
+    },
+    {
+      name: "refuses an instance that does not route through a hub",
+      instanceId: "codex",
+      account: OTHER,
+      error:
+        "Provider instance codex does not route through one CLI Proxy quota router with several accounts, so it takes no account.",
+    },
+  ])("$name", ({ instanceId, account, choice, error }) =>
+    Effect.gen(function* () {
+      const service = yield* ThreadAccountService.make;
+      const result = yield* service
+        .launchChoice({ instanceId: instanceId as never, account, stall: true })
+        .pipe(Effect.result);
+      if (error === undefined) expect(result).toEqual(Result.succeed(choice));
+      else expect(Result.isFailure(result) && result.failure.detail).toBe(error);
+    }).pipe(Effect.provide(testLayer({}))),
+  );
+});
+
 describe("ThreadAccountService.routing", () => {
   it.effect("joins router controls to threads by native session and keeps unlisted choices", () =>
     Effect.gen(function* () {

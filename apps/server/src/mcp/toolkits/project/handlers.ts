@@ -23,6 +23,7 @@ import * as Repositories from "../../../sourceControl/SourceControlRepositorySer
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
+import * as ThreadAccounts from "../../../usage/ThreadAccountService.ts";
 import * as DateTime from "effect/DateTime";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -239,6 +240,27 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             message:
               "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
           });
+        // Fork: resolved on this instance's hub before anything is created; a replay keeps its own.
+        const requestedAccount = input.account;
+        const accountChoice =
+          replaying || !requestedAccount
+            ? undefined
+            : yield* ThreadAccounts.ThreadAccounts.pipe(
+                Effect.flatMap((accounts) =>
+                  accounts.launchChoice({
+                    instanceId: modelSelection.instanceId,
+                    account: requestedAccount,
+                    stall: input.waitWhenOut === true,
+                  }),
+                ),
+                Effect.mapError(
+                  (error) =>
+                    new OrchestratorMcpFailure({
+                      code: "invalid_request",
+                      message: `${error.detail} No thread was created.`,
+                    }),
+                ),
+              );
         let startedRuntimeMode =
           projectDefaults !== undefined && input.runtimeMode === undefined
             ? yield* resolveRuntimeMode(runtimeMode, projectDefaults.defaultRuntimeMode).pipe(
@@ -263,6 +285,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           runtimeMode: startedRuntimeMode,
           interactionMode,
           workspaceStrategy: input.workspaceStrategy ?? { type: "root" },
+          ...(accountChoice === undefined ? {} : { accountChoice }),
           ...(input.message === undefined && attachments.length === 0
             ? {}
             : {

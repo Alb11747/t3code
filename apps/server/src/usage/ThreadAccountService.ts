@@ -173,6 +173,15 @@ export class ThreadAccounts extends Context.Reference<{
     input: ThreadAccountPreviewInput,
   ) => Effect.Effect<ThreadAccountPreview, ThreadAccountError>;
   readonly set: (input: ThreadAccountSetInput) => Effect.Effect<void, ThreadAccountError>;
+  /**
+   * The choice a new thread on `instanceId` stores at launch, its turn start pinning it; `account`
+   * is an email or alias on that instance's hub.
+   */
+  readonly launchChoice: (input: {
+    readonly instanceId: ProviderInstanceId;
+    readonly account: string;
+    readonly stall: boolean;
+  }) => Effect.Effect<ThreadAccountChoice, ThreadAccountError>;
   readonly steer: (input: ThreadAccountSteerInput) => Effect.Effect<void, ThreadAccountError>;
   readonly routing: (
     input: ThreadAccountRoutingInput,
@@ -206,6 +215,7 @@ export class ThreadAccounts extends Context.Reference<{
     routing: () => Effect.succeed(null),
     usage: () => Effect.succeed({ agentsCanRedeemResetCredits: false, native: [], hubs: [] }),
     set: () => Effect.fail(fail("Account choice is unavailable.")),
+    launchChoice: () => Effect.fail(fail("Account choice is unavailable.")),
     steer: () => Effect.fail(fail("Account choice is unavailable.")),
     margin: () => Effect.fail(fail("Account choice is unavailable.")),
     end: () => Effect.fail(fail("Account choice is unavailable.")),
@@ -536,6 +546,32 @@ export const make = Effect.gen(function* () {
       (command) => orchestrator.dispatch(command),
       { discard: true },
     );
+  });
+
+  const launchChoice = Effect.fn("ThreadAccounts.launchChoice")(function* (input: {
+    readonly instanceId: ProviderInstanceId;
+    readonly account: string;
+    readonly stall: boolean;
+  }) {
+    const target = yield* resolveTarget(input.instanceId);
+    if (target === null) {
+      return yield* fail(
+        `Provider instance ${input.instanceId} does not route through one CLI Proxy quota router with several accounts, so it takes no account.`,
+      );
+    }
+    const rename = yield* sources.routerAlias(target.source.id);
+    const account = (yield* named(
+      target.accounts,
+      rename(input.account),
+      (entry) => entry,
+      `on the CLI Proxy hub of ${input.instanceId}`,
+    )).routerAlias as RouterAccountAlias;
+    return {
+      sourceId: target.source.id,
+      account,
+      stall: input.stall,
+      instanceId: target.instanceId,
+    } satisfies ThreadAccountChoice;
   });
 
   const saveSteer = Effect.fn("ThreadAccounts.saveSteer")(function* (
@@ -1024,6 +1060,7 @@ export const make = Effect.gen(function* () {
     // Pins, steers and margins change the pick, so the next preview reads the router again.
     set: (input: ThreadAccountSetInput) =>
       asThreadAccountError(set(input)).pipe(Effect.ensuring(forgetPicks)),
+    launchChoice,
     steer: (input: ThreadAccountSteerInput) =>
       asThreadAccountError(steer(input)).pipe(Effect.ensuring(forgetPicks)),
     routing: (input: ThreadAccountRoutingInput) => asThreadAccountError(routing(input)),
