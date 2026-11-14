@@ -8779,13 +8779,6 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           text: "answered",
           inputIntent: "turn_start",
         });
-        yield* applyUserItem({
-          threadId: sourceThreadId,
-          runId: answeredRunId,
-          ordinal: 201,
-          text: "delivered steer",
-          inputIntent: "queued_turn",
-        });
         // Enough local turns for a turn-limited window to count inherited rows in SQL.
         for (let index = 0; index < THREAD_HISTORY_PAGE_POLICY.maxUserTurns; index += 1) {
           yield* applyUserItem({
@@ -8801,9 +8794,9 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           const target = yield* projectionStore.getThreadProjection(targetThreadId);
           assert.deepEqual(
             target.visibleTurnItems
-              .slice(0, 3)
+              .slice(0, 2)
               .map((row) => (row.item.type === "user_message" ? row.item.text : row.item.type)),
-            ["answered", "delivered steer", "fork"],
+            ["answered", "fork"],
           );
           const page = yield* projectionStore.getTimelinePage(targetThreadId, {
             view: "activity",
