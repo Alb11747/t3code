@@ -50,8 +50,8 @@ export function keepWarmStallBannerItem(props: StallProps): ComposerBannerStackI
       icon: <HourglassIcon />,
       title: `Waiting for ${pinned}`,
       description: hold.resetUnknown
-        ? `This thread waits for ${pinned} when it runs out, and the hub cannot use it right now. It checks again ${formatUpcomingTimestamp(hold.releaseAt, timestampFormat)}.`
-        : `This thread waits for ${pinned} when it runs out. It has quota again ${reset}.`,
+        ? `This thread is set to wait for ${pinned}, which the hub cannot use right now. It checks again ${formatUpcomingTimestamp(hold.releaseAt, timestampFormat)}.`
+        : `This thread is set to wait for ${pinned}, which resets ${reset}.`,
       actions: <StallActions key={hold.resetAt} {...props} />,
     };
   }

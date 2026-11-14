@@ -11,7 +11,10 @@ import {
   type ModelSelection,
   type RuntimeMode,
   type OrchestrationV2ThreadShell,
+  RouterAccountAlias,
+  ThreadAccountError,
   ThreadId,
+  UsageLimitSourceId,
 } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -42,6 +45,7 @@ import * as SourceControlProviderRegistry from "../../../sourceControl/SourceCon
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../../../vcs/VcsProcess.ts";
+import * as ThreadAccounts from "../../../usage/ThreadAccountService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as ProjectHandlers from "./handlers.ts";
@@ -60,6 +64,7 @@ const clientLaunchHarness = (input: {
   readonly hostedAppUrl?: string;
   /** The orchestrator refuses the new thread's mode, as under a managed ceiling. */
   readonly refusedByCeiling?: true;
+  readonly launchChoice?: (typeof ThreadAccounts.ThreadAccounts)["Service"]["launchChoice"];
 }) => {
   const projectId = ProjectId.make("project:client-target");
   const modelSelection = {
@@ -166,6 +171,10 @@ const clientLaunchHarness = (input: {
         ),
     }),
     Layer.mock(PeerForwarding.PeerForwarding)({}),
+    Layer.succeed(ThreadAccounts.ThreadAccounts, {
+      ...ThreadAccounts.ThreadAccounts.defaultValue(),
+      ...(input.launchChoice === undefined ? {} : { launchChoice: input.launchChoice }),
+    }),
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
     DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer)),
   ).pipe(
@@ -442,6 +451,67 @@ it.effect("a launch retried with the same clientRequestId replays the first one"
     expect(ids[2]).not.toEqual(ids[0]);
     // Without a key every launch is new.
     expect(ids[3]).not.toEqual(ids[4]);
+  }),
+);
+
+it.effect("a launch stores its account on the new thread, resolved once before it starts", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    // Flipped after the first launch: its replay must not resolve the account again.
+    const hub = { renamed: false };
+    const { projectId, dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "auto",
+      launched,
+      launchChoice: ({ instanceId, account, stall }) =>
+        Effect.suspend(() =>
+          hub.renamed || account !== "spare@example.com"
+            ? Effect.fail(new ThreadAccountError({ detail: `No account "${account}".` }))
+            : Effect.succeed({
+                sourceId: UsageLimitSourceId.make("hub"),
+                account: RouterAccountAlias.make("account-2222222222222222"),
+                stall,
+                instanceId,
+              }),
+        ),
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    const launch = (params: Record<string, unknown>) =>
+      toolkit
+        .handle("t3_thread_launch", { title: "Fix", projectId, message: "Fix it", ...params })
+        .pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.map((result) => result.at(-1)?.result),
+          Effect.provide(dependencies),
+        );
+
+    expect(yield* launch({ account: "nobody@example.com" })).toMatchObject({
+      code: "invalid_request",
+      message: 'No account "nobody@example.com". No thread was created.',
+    });
+    expect(yield* launch({ waitWhenOut: true })).toMatchObject({
+      message: "waitWhenOut needs an account. No thread was created.",
+    });
+    expect(launched).toHaveLength(0);
+
+    const asked = { account: "spare@example.com", waitWhenOut: true, clientRequestId: "acct" };
+    yield* launch(asked);
+    // ThreadLaunchService stores it before the first message, whose turn start pins it.
+    expect(launched[0]?.accountChoice).toEqual({
+      sourceId: "hub",
+      account: "account-2222222222222222",
+      stall: true,
+      instanceId: "claudeAgent",
+    });
+    hub.renamed = true;
+    yield* launch(asked);
+    expect(launched).toHaveLength(2);
+    expect(launched[1]?.threadId).toBe(launched[0]?.threadId);
+    expect(launched[1]).not.toHaveProperty("accountChoice");
   }),
 );
 

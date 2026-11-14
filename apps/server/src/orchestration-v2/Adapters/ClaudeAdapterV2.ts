@@ -9068,10 +9068,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
           // Clients read the newest notice, so the older one's mark needs no rewrite.
           state.released = null;
+          // A keep-warm hold turning into a pin hold is a new wait, so its duration starts again.
           state.notice = {
             nativeItemId:
               notice?.nativeItemId ?? `keep-warm:${context.providerTurnId}:${hold.releaseAt}`,
-            startedAt: notice?.startedAt ?? (yield* DateTime.now),
+            startedAt:
+              notice !== null && notice.hold.kind === hold.kind
+                ? notice.startedAt
+                : yield* DateTime.now,
             hold,
           };
           yield* emitKeepWarmNotice(context, state.notice, "running");
@@ -9094,7 +9098,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           state.ended = true;
           const hold = state.pause;
           if (hold === null || status !== "interrupted") return null;
-          context.rateLimitResetTimes.set("five_hour", hold.resetAt);
+          context.rateLimitResetTimes.set(
+            hold.kind === "pin" && hold.window === "7d" ? "seven_day" : "five_hour",
+            hold.resetAt,
+          );
           return {
             status: "failed" as const,
             failure: makeProviderFailure({

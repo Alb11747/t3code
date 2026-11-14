@@ -136,7 +136,15 @@ interface RouterHold {
   readonly releaseAt: string;
   readonly resetAt: string;
   readonly resetUnknown?: boolean;
+  readonly staysOnPinChange?: boolean;
+  readonly window?: "7d";
 }
+
+// Since 0.27.0 a pin change wakes held requests to be placed again.
+const movesHeldOnPinChange = (version: string | undefined) => {
+  const [major = 0, minor = 0] = (version ?? "").split(".").map((part) => Number.parseInt(part));
+  return major > 0 || minor >= 27;
+};
 
 const Control = Schema.Struct({
   pins: Schema.optional(
@@ -204,6 +212,10 @@ const Control = Schema.Struct({
         }),
       ),
     ),
+  ),
+  // Quota router 0.26.0: the plugin's version.
+  plugin: Schema.optional(
+    Schema.NullOr(Schema.Struct({ version: Schema.optional(Schema.String) })),
   ),
   // Quota router 0.28: its alias for each host auth slot; null until it has listed them.
   accounts: Schema.optional(
@@ -801,6 +813,11 @@ export const makeCliproxyApi = Effect.gen(function* () {
     // Go writes RFC3339 with nanoseconds or offsets; clients compare ISO strings.
     const iso = (value: string | null | undefined) =>
       value ? Option.getOrNull(Option.map(DateTime.make(value), DateTime.formatIso)) : null;
+    const movesHeld = movesHeldOnPinChange(control.plugin?.version ?? undefined);
+    const bare = (session: string) => session.replace(/^(claude|codex):/, "");
+    const stallPinned = new Set(
+      (control.pins ?? []).filter((pin) => pin.stall === true).map((pin) => bare(pin.session)),
+    );
     const holds = (control.held ?? []).flatMap((held): ReadonlyArray<RouterHold> => {
       const releaseAt = iso(held.release_at);
       const resetAt = iso(held.reset_at);
@@ -811,6 +828,8 @@ export const makeCliproxyApi = Effect.gen(function* () {
           : [{ session: held.session, account: held.account, releaseAt, resetAt }];
       }
       if (held.control === "steer" || (held.kind !== undefined && held.kind !== "pin")) return [];
+      // Routers before 0.27.0 do not mark stall-steer holds, so only a listed stall pin counts.
+      if (!movesHeld && !stallPinned.has(bare(held.session))) return [];
       return [
         {
           kind: "pin" as const,
@@ -819,6 +838,8 @@ export const makeCliproxyApi = Effect.gen(function* () {
           releaseAt,
           resetAt: resetAt ?? releaseAt,
           ...(resetAt === null ? { resetUnknown: true } : {}),
+          ...(movesHeld ? {} : { staysOnPinChange: true }),
+          ...(held.window === "7d" ? { window: "7d" as const } : {}),
         },
       ];
     });

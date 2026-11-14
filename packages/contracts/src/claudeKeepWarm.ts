@@ -13,6 +13,10 @@ export const ClaudeKeepWarmHold = Schema.Struct({
   resetAt: IsoDateTime,
   /** Set when the router knows no reset, such as for an account the hub cannot use right now. */
   resetUnknown: Schema.optionalKey(Schema.Boolean),
+  /** A pin hold's blocking window is the weekly one; absent means the 5-hour window. */
+  window: Schema.optionalKey(Schema.Literal("7d")),
+  /** A router before 0.27.0 keeps a held request on its old pin, so a change must restart it. */
+  staysOnPinChange: Schema.optionalKey(Schema.Boolean),
   /** When the proxy forwards the held request, or for a pin hold checks the account again. */
   releaseAt: IsoDateTime,
   /** The held account: its email, or the proxy's alias for it when the email is unknown. */
@@ -39,8 +43,8 @@ export const OrchestratorMcpThreadStall = Schema.Struct({
  * sibling of `stalled`, so linked environments on older versions still decode the summary.
  */
 export const OrchestratorMcpThreadAccountHold = Schema.Struct({
-  /** The account's email, or its alias when the email is unknown. */
-  account: Schema.String,
+  /** The account's email, or its alias when the email is unknown; absent when the router omits it. */
+  account: Schema.optional(Schema.String),
   /** When the account gets quota back; null when the router does not know. */
   resetAt: Schema.NullOr(IsoDateTime),
   /** When the router checks the account again. */

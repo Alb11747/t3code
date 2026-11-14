@@ -1,3 +1,4 @@
+import { threadAccountChoiceFor } from "@t3tools/contracts";
 import type {
   EventId,
   MessageId,
@@ -50,6 +51,16 @@ export function subagentThreadTitle(input: {
   return `${detail.slice(0, end)}...`;
 }
 
+function suggestedAccountChoice(
+  parent: OrchestrationV2AppThread,
+  providerInstanceId: ProviderInstanceId,
+): OrchestrationV2AppThread["accountChoice"] {
+  const choice = threadAccountChoiceFor(parent.accountChoice, providerInstanceId);
+  return choice === null
+    ? null
+    : { ...choice, stall: false, instanceId: choice.instanceId ?? providerInstanceId };
+}
+
 export function makeSubagentChildThread(input: {
   readonly parentThread: OrchestrationV2AppThread;
   readonly childThreadId: ThreadId;
@@ -76,6 +87,10 @@ export function makeSubagentChildThread(input: {
     providerInstanceId: input.providerInstanceId,
     modelSelection: input.modelSelection,
     activeProviderThreadId: input.activeProviderThreadId,
+    // Fork: the parent's account is only a suggestion here. Waiting for it belongs to threads
+    // that asked, and a new conversation has no moved thinking to drop.
+    accountChoice: suggestedAccountChoice(input.parentThread, input.providerInstanceId),
+    accountMovedAt: null,
     lineage: {
       parentThreadId: input.parentThread.id,
       relationshipToParent: "subagent",

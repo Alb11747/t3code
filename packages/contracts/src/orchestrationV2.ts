@@ -3614,8 +3614,8 @@ export const OrchestrationV2Command = Schema.Union([
     runtimeMode: RuntimeMode,
     interactionMode: ProviderInteractionMode,
     workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
-    /** Fork: the child's own account choice, which its first turn pins. */
-    accountChoice: Schema.optional(ThreadAccountChoice),
+    /** Fork: the child's own account choice, which its first turn pins; null routes automatically. */
+    accountChoice: Schema.optional(Schema.NullOr(ThreadAccountChoice)),
     // Defaults to settled_only; fire-and-forget wakes require always.
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
     // Absent inherits the parent thread's own delegation policy.

@@ -861,6 +861,7 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
         register: (session) => Effect.sync(() => void sessions.push(session)),
         find: () => Effect.succeed(null),
         release: () => Effect.void,
+        forget: Effect.void,
       }),
       Effect.provide(
         Layer.mergeAll(

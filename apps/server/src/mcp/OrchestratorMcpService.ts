@@ -123,6 +123,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ThreadAccountRouting from "../provider/ThreadAccountRouting.ts";
 import * as ThreadAccountService from "../usage/ThreadAccountService.ts";
 import {
   clientModeCeiling,
@@ -843,7 +844,7 @@ function threadStall(
     return {
       stalled: null,
       accountHold: {
-        account: hold.account ?? "unknown",
+        ...(hold.account === undefined ? {} : { account: hold.account }),
         resetAt: hold.resetUnknown ? null : hold.resetAt,
         releaseAt: hold.releaseAt,
       },
@@ -857,7 +858,9 @@ function threadStall(
 // Fork: a choice made for another provider instance no longer applies.
 function accountOf(
   thread: OrchestrationV2ThreadProjection["thread"],
-  described: { readonly account: string; readonly email?: string } | undefined,
+  described:
+    | { readonly account: string; readonly email?: string; readonly pinned?: false }
+    | undefined,
 ) {
   const choice = threadAccountChoiceFor(thread.accountChoice, thread.modelSelection.instanceId);
   return choice
@@ -866,6 +869,7 @@ function accountOf(
           account: described?.account ?? choice.account,
           ...(described?.email === undefined ? {} : { email: described.email }),
           waitWhenOut: choice.stall,
+          ...(described?.pinned === false ? { pinned: false as const } : {}),
         },
       }
     : {};
@@ -1261,6 +1265,7 @@ const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
   const threadAccounts = yield* ThreadAccountService.ThreadAccounts;
+  const threadAccountRouting = yield* ThreadAccountRouting.ThreadAccountRouting;
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -1662,10 +1667,18 @@ const make = Effect.gen(function* () {
     clientRequestId === undefined ? random.uuidV4() : Effect.succeed(clientRequestId);
 
   // Fork: a new thread's account, resolved on its instance's hub before anything is created.
+  // Undefined leaves the default (a child's parent account, as a suggestion); null is Automatic.
   const launchAccountChoice = Effect.fn("OrchestratorMcpService.launchAccountChoice")(function* (
     instanceId: ProviderInstanceId,
     target: OrchestratorMcpTarget | undefined,
   ) {
+    if (target?.waitWhenOut === true && !target.account) {
+      return yield* failure(
+        "invalid_request",
+        "waitWhenOut needs an account. Nothing was created.",
+      );
+    }
+    if (target?.account === null) return null;
     if (!target?.account) return undefined;
     return yield* threadAccounts
       .launchChoice({ instanceId, account: target.account, stall: target.waitWhenOut === true })
@@ -2691,6 +2704,7 @@ const make = Effect.gen(function* () {
           incrementalThreadRead: true,
           scheduledTasks: true,
           maxBatchThreads: 20,
+          launchAccount: true,
         },
       };
     }),
@@ -3094,15 +3108,25 @@ const make = Effect.gen(function* () {
         const parentNodeId = parentRun.rootNodeId;
         const providers = yield* loadProviders;
         const key = yield* requestKey(input.clientRequestId);
-        // Fork: every named account resolves before the first thread is created.
-        const accountChoices = yield* Effect.forEach(input.threads, (request) =>
-          request.target?.account
-            ? resolveTargetRechecking({ parent, target: request.target, providers }).pipe(
-                Effect.flatMap((target) =>
-                  launchAccountChoice(target.modelSelection.instanceId, request.target),
-                ),
-              )
-            : Effect.undefined,
+        const commandIdAt = (operation: string, index: number) =>
+          stableCommandId({ scope, requestKey: key, operation, index });
+        // Fork: every named account of a thread not yet created resolves before the first is.
+        // A retry resolves an accepted thread's account on its committed instance, below.
+        const accountChoices = yield* Effect.forEach(input.threads, (request, index) =>
+          Effect.gen(function* () {
+            if (request.target?.account === undefined && request.target?.waitWhenOut !== true) {
+              return undefined;
+            }
+            if (yield* threadManagement.hasReceipt(commandIdAt("create-thread", index))) {
+              return undefined;
+            }
+            const target = yield* resolveTargetRechecking({
+              parent,
+              target: request.target,
+              providers,
+            });
+            return yield* launchAccountChoice(target.modelSelection.instanceId, request.target);
+          }),
         );
         const created = yield* Effect.forEach(
           input.threads,
@@ -3179,17 +3203,19 @@ const make = Effect.gen(function* () {
                     ),
                   ),
                 );
-              const accountChoice = accountChoices[index];
-              if (accountChoice !== undefined) {
+              const accountCommandId = commandIdAt("account-thread", index);
+              const accountChoice =
+                accountChoices[index] ??
+                (isRetryOfAcceptedCreation &&
+                request.target?.account &&
+                !(yield* threadManagement.hasReceipt(accountCommandId))
+                  ? yield* launchAccountChoice(target.modelSelection.instanceId, request.target)
+                  : undefined);
+              if (accountChoice != null) {
                 yield* threadManagement
                   .dispatch({
                     type: "thread.account-choice.set",
-                    commandId: stableCommandId({
-                      scope,
-                      requestKey: key,
-                      operation: "account-thread",
-                      index,
-                    }),
+                    commandId: accountCommandId,
                     threadId,
                     accountChoice,
                   })
@@ -3425,7 +3451,12 @@ const make = Effect.gen(function* () {
           input.beforePosition === undefined &&
           input.itemId === undefined,
         target.thread.accountChoice
-          ? yield* threadAccounts.describeChoice(target.thread.accountChoice)
+          ? {
+              ...(yield* threadAccounts.describeChoice(target.thread.accountChoice)),
+              ...((yield* threadAccountRouting.pinFailed(target.thread.id))
+                ? { pinned: false as const }
+                : {}),
+            }
           : undefined,
       );
       const recentRuns = target.runs

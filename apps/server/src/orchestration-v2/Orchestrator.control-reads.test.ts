@@ -1611,18 +1611,12 @@ it.effect("settles only the stopped run's background work, once", () =>
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("keeps child pull requests, issue watches and account independent of the parent", () =>
+it.effect("keeps child pull requests and issue watches independent of the parent", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const parentThreadId = ThreadId.make("thread:parent-pr");
     const projectId = ProjectId.make("project:parent-pr");
-    const childAccountChoice = {
-      sourceId: UsageLimitSourceId.make("hub"),
-      account: RouterAccountAlias.make("account-1111111111111111"),
-      stall: true,
-      instanceId,
-    };
     const parentPullRequest = {
       projectId,
       repository: "pingdotgg/t3code",
@@ -1691,7 +1685,6 @@ it.effect("keeps child pull requests, issue watches and account independent of t
       modelSelection,
       runtimeMode: "full-access",
       interactionMode: "default",
-      accountChoice: childAccountChoice,
       createdBy: "agent",
       creationSource: "mcp",
     });
@@ -1704,9 +1697,6 @@ it.effect("keeps child pull requests, issue watches and account independent of t
     assert.equal(child.thread.branch, parent.thread.branch);
     assert.equal(child.thread.worktreePath, parent.thread.worktreePath);
     assert.equal(child.thread.lineage.parentThreadId, parentThreadId);
-    // Stored with the child's creation, so its first turn pins it before any request.
-    assert.deepEqual(child.thread.accountChoice, childAccountChoice);
-    assert.isUndefined(parent.thread.accountChoice);
 
     const childPullRequest = {
       ...parentPullRequest,
@@ -1729,6 +1719,83 @@ it.effect("keeps child pull requests, issue watches and account independent of t
     assert.deepEqual(parentAfterChildLink.thread.linkedPullRequest, parentPullRequest);
     assert.deepEqual(parentAfterChildLink.thread.pullRequests, parent.thread.pullRequests);
     assert.deepEqual(parentAfterChildLink.thread.issueWatches, [parentIssueWatch]);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("gives a delegated child its own account, never the parent's wait or move", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const parentThreadId = ThreadId.make("thread:account-parent");
+    const waiting = {
+      sourceId: UsageLimitSourceId.make("hub"),
+      account: RouterAccountAlias.make("account-1111111111111111"),
+      stall: true,
+      instanceId,
+    };
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-account-parent"),
+      threadId: parentThreadId,
+      projectId: ProjectId.make("project:account"),
+      title: "Parent waiting for its account",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.account-choice.set",
+      commandId: CommandId.make("account-parent-choice"),
+      threadId: parentThreadId,
+      accountChoice: waiting,
+      accountMovedAt: "2026-11-14T00:00:00.000Z",
+    });
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("start-account-parent"),
+      threadId: parentThreadId,
+      messageId: MessageId.make("message:account-parent"),
+      text: "Delegate three tasks",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const parentRun = (yield* projections.getThreadProjection(parentThreadId)).runs[0]!;
+    const own = { ...waiting, account: RouterAccountAlias.make("account-2222222222222222") };
+    const cases = [
+      { name: "none", expected: { ...waiting, stall: false } },
+      { name: "automatic", accountChoice: null, expected: null },
+      { name: "own", accountChoice: own, expected: own },
+    ] as const;
+    for (const entry of cases) {
+      yield* orchestrator.dispatch({
+        type: "delegated_task.request",
+        commandId: CommandId.make(`delegate-account-${entry.name}`),
+        parentThreadId,
+        parentRunId: parentRun.id,
+        parentNodeId: parentRun.rootNodeId!,
+        task: `Task ${entry.name}`,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        ...("accountChoice" in entry ? { accountChoice: entry.accountChoice } : {}),
+        createdBy: "agent",
+        creationSource: "mcp",
+      });
+    }
+    const { subagents } = yield* projections.getThreadProjection(parentThreadId);
+    for (const entry of cases) {
+      const task = subagents.find((subagent) => subagent.prompt === `Task ${entry.name}`)!;
+      const child = yield* projections.getThreadProjection(task.childThreadId!);
+      // Stored with the child's creation, so its first turn pins it before any request.
+      assert.deepEqual(child.thread.accountChoice ?? null, entry.expected, entry.name);
+      assert.isNull(child.thread.accountMovedAt ?? null, entry.name);
+    }
   }).pipe(Effect.provide(layerTest)),
 );
 

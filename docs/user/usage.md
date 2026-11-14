@@ -212,7 +212,8 @@ While a Claude thread with **Wait when it runs out** is waiting for its account,
 request there at once. **Stop waiting** keeps the account but turns the wait off, so the request
 goes elsewhere now. **Snooze until reset** and **Pause until reset** wait out the reset instead.
 This also appears when another tool set the wait, and the actions then change the thread's
-choice in T3 Code.
+choice in T3 Code. With a quota router older than 0.27.0, switching or stopping the wait
+restarts the thread's current step.
 
 Switching an existing thread re-sends its context to the new account as a cold cache write.
 Some conversations stay bound to the account they started on; moving one asks first, because its
@@ -236,7 +237,8 @@ threads to an account, to let a Claude thread use the router's spare safety marg
 to record the date an account's subscription ends, or to snooze a thread until its account has
 quota again. An agent that starts a thread or a child task can also give it an account, and have
 it wait for that account when it runs out; only that thread waits, not your other threads. A child
-task given no account routes automatically. Name accounts by email address, or by the part before
+task given no account prefers its parent's account but does not wait for it. Waiting is only
+for Claude threads. Name accounts by email address, or by the part before
 the `@` when no other account shares it.
 
 Agents can also redeem a banked reset credit for you, but only after you turn on **Settings** →

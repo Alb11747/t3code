@@ -2452,6 +2452,132 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
   );
 
+  it.effect("stores a created thread's account before its first message, once per batch", () =>
+    Effect.gen(function* () {
+      const driver = ProviderDriverKind.make("codex");
+      const cwd = yield* checkpointWorkspace("mcp-create-account");
+      const layerRegistry = ProviderAdapterRegistry.layerFromAdapters([
+        {
+          instanceId: codexInstanceId,
+          driver,
+          getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+          planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
+          openSession: () =>
+            Effect.die("These tests exercise committed commands before provider execution."),
+        },
+      ]);
+      const layerDatabase = SqlitePersistence.layerMemory;
+      const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
+        { name: "mcp-create-account", runtimePolicyOverride: { cwd } },
+        layerRegistry,
+        { databaseLayer: layerDatabase, runEffectWorker: false },
+      );
+      const layerSettings = ServerSettings.layerTest({
+        providerInstances: { [codexInstanceId]: { driver: "codex", enabled: true } },
+      });
+      const layerThreads = ThreadManagementService.layer.pipe(
+        Layer.provideMerge(layerOrchestrator),
+        Layer.provide(
+          LegacyV1ThreadImporter.layer.pipe(
+            Layer.provide(layerOrchestrator),
+            Layer.provide(layerDatabase),
+          ),
+        ),
+        Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
+        Layer.provideMerge(layerSettings),
+      );
+      // Flipped after the first batch: an accepted retry must not resolve its account again.
+      const hub = { renamed: false, resolved: 0 };
+      const choice = {
+        sourceId: UsageLimitSourceId.make("hub"),
+        account: RouterAccountAlias.make("account-2222222222222222"),
+        stall: false,
+        instanceId: codexInstanceId,
+      };
+      const layerTest = layerOrchestratorService.pipe(
+        Layer.provideMerge(layerThreads),
+        Layer.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            NodeCrypto.layer,
+            layerRegistry,
+            layerSettings,
+            providerRegistryLayer([
+              providerSnapshot({ instanceId: codexInstanceId, driver, model: "gpt-5.4" }),
+            ]),
+            Layer.mock(ProjectService.ProjectService)({}),
+            Layer.mock(SecretRequests.SecretRequests)({}),
+            Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+            Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+            Layer.succeed(ThreadAccountService.ThreadAccounts, {
+              ...ThreadAccountService.ThreadAccounts.defaultValue(),
+              launchChoice: () =>
+                Effect.suspend(() => {
+                  hub.resolved += 1;
+                  return hub.renamed
+                    ? Effect.fail(new ThreadAccountError({ detail: "No such account." }))
+                    : Effect.succeed(choice);
+                }),
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make("parent:create"),
+          threadId: parentThreadId,
+          projectId,
+          title: "MCP parent",
+          modelSelection: { instanceId: codexInstanceId, model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: cwd,
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make("parent:start"),
+          threadId: parentThreadId,
+          messageId: MessageId.make("parent:message"),
+          text: "Create threads.",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+        });
+        const request = {
+          threads: [
+            { target: { account: "spare@example.com" }, prompt: "Start work." },
+            { target: { account: null }, prompt: "Start other work." },
+          ],
+          clientRequestId: "create-account",
+        };
+        const first = yield* service.createThreads(scope, request);
+        const [chosen, automatic] = yield* Effect.forEach(first.threads, (thread) =>
+          orchestrator.getThreadProjection(thread.threadId),
+        );
+        assert.deepEqual(chosen?.thread.accountChoice, choice);
+        assert.equal(chosen?.messages.length, 1);
+        assert.isUndefined(automatic?.thread.accountChoice);
+        assert.equal(hub.resolved, 1);
+
+        hub.renamed = true;
+        assert.deepEqual(yield* service.createThreads(scope, request), first);
+        assert.equal(hub.resolved, 1);
+        // A new batch still resolves first, and creates nothing when its account is gone.
+        const refused = yield* service
+          .createThreads(scope, { ...request, clientRequestId: "create-account-2" })
+          .pipe(Effect.flip);
+        assert.equal(refused.message, "No such account. Nothing was created.");
+      }).pipe(Effect.provide(layerTest));
+    }),
+  );
+
   it.effect.each([
     { name: "parent instance", parentEnabled: true, model: "gpt-5.4" },
     { name: "alternate instance", parentEnabled: false, model: "gpt-5.5" },

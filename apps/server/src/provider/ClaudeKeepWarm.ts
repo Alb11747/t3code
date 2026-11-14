@@ -69,6 +69,8 @@ export class ClaudeKeepWarm extends Context.Reference<{
     readonly session: ClaudeKeepWarmSession;
     readonly turn: ClaudeKeepWarmTurn & { readonly hold: ClaudeKeepWarmHold };
   } | null>;
+  /** Makes the next poll read the router again, after a change the hold may not survive. */
+  readonly forget: Effect.Effect<void>;
   /**
    * Stops holding the session until `until`, or with `switchAccount` moves it to another account
    * instead, failing when none can take it; a null `until` lets the proxy hold it again.
@@ -82,6 +84,7 @@ export class ClaudeKeepWarm extends Context.Reference<{
   defaultValue: () => ({
     register: () => Effect.void,
     find: () => Effect.succeed(null),
+    forget: Effect.void,
     release: () =>
       Effect.fail(new UsageLimitSourceError({ detail: "Keep-warm control is unavailable." })),
   }),
@@ -289,7 +292,11 @@ export const make = Effect.gen(function* () {
     });
   });
 
-  return { register, find, release } satisfies (typeof ClaudeKeepWarm)["Service"];
+  const forget = Effect.sync(() => {
+    cached = null;
+  });
+
+  return { register, find, forget, release } satisfies (typeof ClaudeKeepWarm)["Service"];
 });
 
 export const layer = Layer.effect(ClaudeKeepWarm, make).pipe(
@@ -307,7 +314,7 @@ function formatWait(ms: number): string {
 // Timeline text stays true while the hold lasts; the banner shows its times.
 export function describeKeepWarmHold(hold: ClaudeKeepWarmHold): string {
   if (hold.kind === "pin") {
-    return `Waiting for ${hold.account ?? "the chosen account"}, which this thread waits for when it runs out.`;
+    return `Waiting for ${hold.account ?? "the chosen account"} to reset (this thread is set to wait for it).`;
   }
   return "Claude is nearly out of its 5-hour limit. Holding requests about once an hour to keep the prompt cache warm until the limit resets.";
 }

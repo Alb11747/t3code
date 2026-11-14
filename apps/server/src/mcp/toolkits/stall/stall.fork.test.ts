@@ -73,6 +73,7 @@ const layer = (held: boolean, released: Array<[string, string | null]>) =>
     Layer.provide(
       Layer.succeed(ClaudeKeepWarm.ClaudeKeepWarm, {
         register: () => Effect.void,
+        forget: Effect.void,
         find: () =>
           Effect.succeed(
             held

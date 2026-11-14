@@ -447,6 +447,52 @@ export const make = Effect.gen(function* () {
       ]),
     );
 
+  // Since quota router 0.27.0 a pin change re-places the requests it holds, so a pin hold's notice
+  // ends now and the next poll reads the router afresh. A keep-warm hold forwards its request to
+  // the account it is held on, as an older router's pin hold stays on its old pin, so that turn
+  // stops (the request never reached the provider) and continues, which the new pin routes.
+  const afterPinChange = Effect.fn("ThreadAccounts.afterPinChange")(function* (
+    threadId: ThreadId,
+    pinned: boolean,
+  ) {
+    const held = yield* keepWarm.find(threadId);
+    if (held === null || held.turn.hold.released === true) return;
+    const { hold } = held.turn;
+    if (hold.kind === "pin" && hold.staysOnPinChange !== true) {
+      yield* held.session.show(held.turn, null);
+      yield* keepWarm.forget;
+      return;
+    }
+    // Removing a pin leaves a keep-warm hold where it is.
+    if (!pinned && hold.kind !== "pin") return;
+    const continueId = `thread-account-continue:${held.turn.runId}`;
+    yield* Effect.forEach(
+      [
+        {
+          type: "message.dispatch",
+          commandId: CommandId.make(continueId),
+          messageId: MessageId.make(continueId),
+          threadId,
+          text: "Continue where you left off.",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "server",
+        },
+        {
+          type: "run.interrupt",
+          commandId: CommandId.make(`${continueId}:stop`),
+          threadId,
+          runId: held.turn.runId,
+          preserveDelegatedTasks: true,
+          reason: "Stopped to continue on the chosen account.",
+        },
+      ] as const,
+      (command) => orchestrator.dispatch(command),
+      { discard: true },
+    );
+  });
+
   const set = Effect.fn("ThreadAccounts.set")(function* (input: ThreadAccountSetInput) {
     const thread = yield* threadOf(input.threadId);
     const target = yield* resolveTarget(thread.modelSelection.instanceId);
@@ -468,6 +514,7 @@ export const make = Effect.gen(function* () {
         threadId: input.threadId,
         accountChoice: null,
       });
+      yield* afterPinChange(input.threadId, false);
       return;
     }
     if (target === null) return yield* fail(NOT_ROUTED);
@@ -516,37 +563,7 @@ export const make = Effect.gen(function* () {
       },
       ...(moved ? { accountMovedAt: DateTime.formatIso(now) } : {}),
     });
-    // A keep-warm hold forwards its request to the account it is held on, so stop the turn (the
-    // request never reached the provider) and continue it, which the new pin routes. A pin hold
-    // needs neither: the router re-places held requests when their pin changes.
-    const held = yield* keepWarm.find(input.threadId);
-    if (held === null || held.turn.hold.released === true || held.turn.hold.kind === "pin") return;
-    const continueId = `thread-account-continue:${held.turn.runId}`;
-    yield* Effect.forEach(
-      [
-        {
-          type: "message.dispatch",
-          commandId: CommandId.make(continueId),
-          messageId: MessageId.make(continueId),
-          threadId: input.threadId,
-          text: "Continue where you left off.",
-          attachments: [],
-          dispatchMode: { type: "queue_after_active" },
-          createdBy: "user",
-          creationSource: "server",
-        },
-        {
-          type: "run.interrupt",
-          commandId: CommandId.make(`${continueId}:stop`),
-          threadId: input.threadId,
-          runId: held.turn.runId,
-          preserveDelegatedTasks: true,
-          reason: "Stopped to continue on the chosen account.",
-        },
-      ] as const,
-      (command) => orchestrator.dispatch(command),
-      { discard: true },
-    );
+    yield* afterPinChange(input.threadId, true);
   });
 
   const launchChoice = Effect.fn("ThreadAccounts.launchChoice")(function* (input: {
@@ -558,6 +575,12 @@ export const make = Effect.gen(function* () {
     if (target === null) {
       return yield* fail(
         `Provider instance ${input.instanceId} does not route through one CLI Proxy quota router with several accounts, so it takes no account.`,
+      );
+    }
+    // Only Claude turns show the router's holds, so a waiting Codex thread would look hung.
+    if (input.stall && target.routerProvider !== "claude") {
+      return yield* fail(
+        `waitWhenOut works only for Claude threads; ${input.instanceId} would look hung while it waits. Omit waitWhenOut.`,
       );
     }
     const rename = yield* sources.routerAlias(target.source.id);

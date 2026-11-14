@@ -351,6 +351,13 @@ const make = Effect.gen(function* () {
         parent.thread.projectId,
         target.projectId,
       );
+      if (target.waitWhenOut === true && !target.account) {
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "waitWhenOut needs an account. Nothing was created.",
+        });
+      }
+      if (target.account) yield* forwarding.requireLaunchAccount(scope, target.environmentId);
       // One key for the launch there and the record here, so a retry finds both.
       // Both are scoped to the provider session, as every key a caller passes is:
       // the forwarder scopes the launch's, and the record's names it.

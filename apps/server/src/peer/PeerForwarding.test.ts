@@ -244,7 +244,11 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
       Layer.provide(
         Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
       ),
-      Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
+      Layer.provide(
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([]),
+        }),
+      ),
       Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
       Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
@@ -553,6 +557,17 @@ it.effect("launches in a linked environment with the caller's modes, retry-safe"
       expect(relaunched?.threadId).toBe(launched?.threadId);
       expect(retried.structuredContent).toEqual(first.structuredContent);
 
+      // The environment there says it takes `account`, then resolves it on its own hubs; it
+      // has none here, so it refuses before launching.
+      const withAccount = yield* launch("thread:laptop-plan", {
+        account: "spare@example.com",
+        clientRequestId: "launch-account",
+      });
+      expect(failureOf(withAccount)).toMatchObject({
+        code: "invalid_request",
+        message: "Account choice is unavailable. No thread was created.",
+      });
+      expect((yield* Ref.get(seen)).launches).toHaveLength(2);
       // An escalation past the caller's own modes is refused here.
       const escalated = yield* launch("thread:laptop-plan", { interactionMode: "default" });
       expect(failureOf(escalated)).toMatchObject({ code: "interaction_mode_escalation_denied" });

@@ -61,11 +61,27 @@ const snapshots = [
 ] as unknown as ReadonlyArray<UsageLimitSourceSnapshot>;
 
 const modelSelection = { instanceId: "claude", model: "claude-sonnet-5-5" };
+// A Codex instance behind the same hub, for launches that only Claude supports.
+const codexProvider = {
+  instanceId: "codex",
+  driver: "codex",
+  auth: { status: "authenticated", type: "customEndpoint" },
+} as unknown as ServerProvider;
+const withCodex = snapshots.map((source) => ({
+  ...source,
+  accounts: [
+    ...source.accounts,
+    { ...hubAccount("account-4444444444444444", "codex@example.com"), driver: "codex" },
+    { ...hubAccount("account-5555555555555555", "codex2@example.com"), driver: "codex" },
+  ],
+})) as unknown as ReadonlyArray<UsageLimitSourceSnapshot>;
 
 function testLayer(input: {
   readonly owner?: string | null;
   readonly heldRunId?: string;
-  readonly heldByPin?: boolean;
+  // A stall pin's hold, on a router that re-places held requests on a pin change or one before.
+  readonly heldByPin?: "moves" | "stays";
+  readonly shown?: Array<unknown>;
   readonly pins?: Array<Parameters<UsageLimitSources.UsageLimitSources["Service"]["pin"]>[1]>;
   readonly commands?: OrchestrationV2ServerCommand[];
   readonly control?: Effect.Success<
@@ -86,7 +102,9 @@ function testLayer(input: {
   readonly dispatched?: Deferred.Deferred<void>;
   // The stored choice per thread now, where it differs from `accountChoice`.
   readonly choices?: Record<string, unknown>;
+  readonly codex?: boolean;
 }) {
+  const current = input.codex ? withCodex : snapshots;
   return Layer.mergeAll(
     Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
       getInstance: () =>
@@ -100,11 +118,11 @@ function testLayer(input: {
         } as never),
     }),
     Layer.mock(ProviderRegistry.ProviderRegistry)({
-      getProviders: Effect.succeed([provider]),
+      getProviders: Effect.succeed(input.codex ? [provider, codexProvider] : [provider]),
     }),
     Layer.mock(UsageLimitSources.UsageLimitSources)({
-      current: Effect.succeed(snapshots),
-      streamChanges: Stream.make(snapshots),
+      current: Effect.succeed(current),
+      streamChanges: Stream.make(current),
       routerAlias: () => Effect.succeed((alias) => input.renamed?.[alias] ?? alias),
       removedEndAlias: (_sourceId, _hub, alias) => Effect.succeed(input.renamed?.[alias] ?? alias),
       hub: () => Effect.succeed({ url: "http://hub.test", managementKey: "key" }),
@@ -179,12 +197,26 @@ function testLayer(input: {
     Layer.succeed(ClaudeKeepWarm.ClaudeKeepWarm, {
       register: () => Effect.void,
       release: () => Effect.void,
+      forget: Effect.void,
       find: () =>
         Effect.succeed(
           input.heldRunId === undefined
             ? null
             : ({
-                turn: { runId: input.heldRunId, hold: input.heldByPin ? { kind: "pin" } : {} },
+                session: {
+                  show: (_turn: unknown, hold: unknown) =>
+                    Effect.sync(() => void input.shown?.push(hold)),
+                },
+                turn: {
+                  runId: input.heldRunId,
+                  hold:
+                    input.heldByPin === undefined
+                      ? {}
+                      : {
+                          kind: "pin",
+                          ...(input.heldByPin === "stays" ? { staysOnPinChange: true } : {}),
+                        },
+                },
               } as never),
         ),
     }),
@@ -197,13 +229,14 @@ function setAccount(input: {
   readonly stall?: boolean | undefined;
   readonly dropThinking?: boolean;
   readonly heldRunId?: string;
-  readonly heldByPin?: boolean;
+  readonly heldByPin?: "moves" | "stays";
   readonly accountChoice?: unknown;
   readonly renamed?: Record<string, string>;
 }) {
   const pins: Array<Parameters<UsageLimitSources.UsageLimitSources["Service"]["pin"]>[1]> = [];
   const commands: OrchestrationV2ServerCommand[] = [];
   const controls: Array<unknown> = [];
+  const shown: Array<unknown> = [];
   return Effect.gen(function* () {
     yield* TestClock.setTime(NOW);
     const service = yield* ThreadAccountService.make;
@@ -216,8 +249,8 @@ function setAccount(input: {
         ...(input.dropThinking === undefined ? {} : { dropThinking: input.dropThinking }),
       })
       .pipe(Effect.result);
-    return { result, pins, commands, controls };
-  }).pipe(Effect.provide(testLayer({ ...input, pins, commands, controls })));
+    return { result, pins, commands, controls, shown };
+  }).pipe(Effect.provide(testLayer({ ...input, pins, commands, controls, shown })));
 }
 
 describe("ThreadAccountService.set", () => {
@@ -256,10 +289,26 @@ describe("ThreadAccountService.set", () => {
         { type: "message.dispatch", text: "Continue where you left off." },
         { type: "run.interrupt", runId: "run-7" },
       ]);
-      // The router re-places a request a pin holds once the pin changes, so that turn runs on.
-      const pinHeld = yield* setAccount({ owner: null, heldRunId: "run-8", heldByPin: true });
-      expect(pinHeld.commands.map((command) => command.type)).toEqual([
+      // Quota router 0.27.0 re-places a request a pin holds once the pin changes, so that turn
+      // runs on and its notice ends at once; an older router needs the turn restarted.
+      for (const account of [OTHER, null]) {
+        const moves = yield* setAccount({
+          owner: null,
+          account,
+          heldRunId: "run-8",
+          heldByPin: "moves",
+          accountChoice: { sourceId: "hub", account: OWNER, stall: true },
+        });
+        expect(moves.commands.map((command) => command.type)).toEqual([
+          "thread.account-choice.set",
+        ]);
+        expect(moves.shown).toEqual([null]);
+      }
+      const stays = yield* setAccount({ owner: null, heldRunId: "run-9", heldByPin: "stays" });
+      expect(stays.commands.map((command) => command.type)).toEqual([
         "thread.account-choice.set",
+        "message.dispatch",
+        "run.interrupt",
       ]);
     }),
   );
@@ -375,15 +424,36 @@ describe("ThreadAccountService.launchChoice", () => {
       error:
         "Provider instance codex does not route through one CLI Proxy quota router with several accounts, so it takes no account.",
     },
-  ])("$name", ({ instanceId, account, choice, error }) =>
+    {
+      name: "refuses waiting on a Codex instance, whose holds T3 does not show",
+      instanceId: "codex",
+      codex: true,
+      account: "codex@example.com",
+      error:
+        "waitWhenOut works only for Claude threads; codex would look hung while it waits. Omit waitWhenOut.",
+    },
+    {
+      name: "stores a Codex account that falls back",
+      instanceId: "codex",
+      codex: true,
+      stall: false,
+      account: "codex@example.com",
+      choice: {
+        sourceId: "hub",
+        account: "account-4444444444444444",
+        stall: false,
+        instanceId: "codex",
+      },
+    },
+  ])("$name", ({ instanceId, account, choice, error, codex, stall }) =>
     Effect.gen(function* () {
       const service = yield* ThreadAccountService.make;
       const result = yield* service
-        .launchChoice({ instanceId: instanceId as never, account, stall: true })
+        .launchChoice({ instanceId: instanceId as never, account, stall: stall ?? true })
         .pipe(Effect.result);
       if (error === undefined) expect(result).toEqual(Result.succeed(choice));
       else expect(Result.isFailure(result) && result.failure.detail).toBe(error);
-    }).pipe(Effect.provide(testLayer({}))),
+    }).pipe(Effect.provide(testLayer({ codex: codex === true }))),
   );
 });
 

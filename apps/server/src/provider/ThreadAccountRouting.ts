@@ -3,6 +3,7 @@ import {
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2TurnItem,
+  type ThreadId,
   type UsageLimitSourceId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -54,14 +55,21 @@ interface PrepareTurnInput<E> {
 export class ThreadAccountRouting extends Context.Reference<{
   /** Pins the thread's chosen account; returns whether the turn must drop moved thinking. */
   readonly prepareTurn: <E>(input: PrepareTurnInput<E>) => Effect.Effect<boolean>;
+  /** Whether the latest turn could not pin a choice that waits for its account. */
+  readonly pinFailed: (threadId: ThreadId) => Effect.Effect<boolean>;
 }>("t3/provider/ThreadAccountRouting", {
-  defaultValue: () => ({ prepareTurn: () => Effect.succeed(false) }),
+  defaultValue: () => ({
+    prepareTurn: () => Effect.succeed(false),
+    pinFailed: () => Effect.succeed(false),
+  }),
 }) {}
 
 /** @public */
 export const make = Effect.gen(function* () {
   const sources = yield* UsageLimitSources.UsageLimitSources;
   const settingsService = yield* Settings.ServerSettingsService;
+  // In memory: a failed pin only matters until the next turn start pins again.
+  const failedWaitingPins = new Set<ThreadId>();
 
   const prepareTurn = Effect.fn("ThreadAccountRouting.prepareTurn")(function* <E>(
     input: PrepareTurnInput<E>,
@@ -78,10 +86,16 @@ export const make = Effect.gen(function* () {
       input.providerThread.providerInstanceId,
     );
     const session = input.providerThread.nativeThreadRef?.nativeId;
-    if (!choice || !session || !routerProviderOf(input.providerThread.driver)) return drops;
+    if (!choice || !session || !routerProviderOf(input.providerThread.driver)) {
+      failedWaitingPins.delete(input.appThread.id);
+      return drops;
+    }
     yield* Effect.gen(function* () {
       const hub = yield* sources.hub(choice.sourceId);
-      if (hub === null) return;
+      if (hub === null) {
+        if (choice.stall) failedWaitingPins.add(input.appThread.id);
+        return;
+      }
       yield* sources.pin(hub, {
         sessions: [session],
         account: (yield* sources.routerAlias(choice.sourceId))(choice.account),
@@ -90,17 +104,27 @@ export const make = Effect.gen(function* () {
         // Each pin replaces the last; a plain one would end the move that subagents still follow.
         move: drops,
       });
+      failedWaitingPins.delete(input.appThread.id);
     }).pipe(
       Effect.timeout(TURN_PIN_TIMEOUT),
       Effect.catchCause((cause) =>
         Effect.logWarning("Could not pin the thread's chosen account.", {
           threadId: input.appThread.id,
           cause,
-        }),
+        }).pipe(
+          // A waiting choice's exclusivity is broken for this turn, which agents need to see.
+          Effect.andThen(
+            Effect.sync(() => {
+              if (choice.stall) failedWaitingPins.add(input.appThread.id);
+            }),
+          ),
+        ),
       ),
     );
     return drops;
   });
+
+  const pinFailed = (threadId: ThreadId) => Effect.sync(() => failedWaitingPins.has(threadId));
 
   // Steers expire like pins, so T3 renews the ones saved in settings.
   const renewSteers = Effect.gen(function* () {
@@ -143,7 +167,7 @@ export const make = Effect.gen(function* () {
     Effect.forkScoped,
   );
 
-  return { prepareTurn } satisfies (typeof ThreadAccountRouting)["Service"];
+  return { prepareTurn, pinFailed } satisfies (typeof ThreadAccountRouting)["Service"];
 });
 
 export const layer = Layer.effect(ThreadAccountRouting, make);

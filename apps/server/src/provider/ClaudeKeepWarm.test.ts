@@ -190,6 +190,7 @@ it.effect("shows a stall pin's hold as a pin hold, ahead of the session's keep-w
   const { layer } = fixture({
     status: 200,
     body: {
+      plugin: { version: "0.28.0" },
       held: [
         {
           session: "root",
@@ -205,9 +206,10 @@ it.effect("shows a stall pin's hold as a pin hold, ahead of the session's keep-w
           since: "2026-11-03T13:00:00Z",
           release_at: "2026-11-03T13:59:00Z",
           reset_at: "2026-11-03T15:00:20Z",
-          window: "5h",
+          // Pausing records the weekly window this hold waits for, not the 5-hour one.
+          window: "7d",
         },
-        // Routers before 0.27.0 list pin holds without a kind; an excluded account has no reset.
+        // An excluded account has no reset.
         {
           session: "excluded",
           account: "account-d35f1b129b54c235",
@@ -231,6 +233,7 @@ it.effect("shows a stall pin's hold as a pin hold, ahead of the session's keep-w
         account: WARM,
         releaseAt: "2026-11-03T13:59:00.000Z",
         resetAt: "2026-11-03T15:00:20.000Z",
+        window: "7d",
       },
     ]);
     assert.deepEqual(excluded.shown, [
@@ -240,6 +243,43 @@ it.effect("shows a stall pin's hold as a pin hold, ahead of the session's keep-w
         releaseAt: "2026-11-03T13:40:00.000Z",
         resetAt: "2026-11-03T13:40:00.000Z",
         resetUnknown: true,
+      },
+    ]);
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
+it.effect("trusts an older router's unmarked hold only where it lists a stall pin", () => {
+  const { layer } = fixture({
+    status: 200,
+    body: {
+      plugin: { version: "0.26.0" },
+      pins: [{ session: "claude:pinned", account: "account-d35f1b129b54c235", stall: true }],
+      held: [
+        // Before 0.27.0 a stall steer's hold looks the same, so an unpinned session's is one.
+        {
+          session: "steered",
+          release_at: "2026-11-03T13:40:00Z",
+          reset_at: "2026-11-03T15:00:00Z",
+        },
+        { session: "pinned", release_at: "2026-11-03T13:40:00Z", reset_at: "2026-11-03T15:00:00Z" },
+      ],
+    },
+  });
+  return Effect.gen(function* () {
+    const keepWarm = yield* ClaudeKeepWarm.ClaudeKeepWarm;
+    const steered = fakeSession("steered", 1);
+    const pinned = fakeSession("pinned", 2);
+    yield* keepWarm.register(steered.session);
+    yield* keepWarm.register(pinned.session);
+    yield* TestClock.adjust("30 seconds");
+    assert.deepEqual(steered.shown, [null]);
+    // Such a router keeps a held request on its old pin, so a change must restart the turn.
+    assert.deepEqual(pinned.shown, [
+      {
+        kind: "pin",
+        releaseAt: "2026-11-03T13:40:00.000Z",
+        resetAt: "2026-11-03T15:00:00.000Z",
+        staysOnPinChange: true,
       },
     ]);
   }).pipe(Effect.provide(layer), Effect.scoped);
@@ -438,6 +478,7 @@ it.effect.each([
   const { requests, layer } = fixture({
     status: 200,
     body: {
+      plugin: { version: "0.27.0" },
       held: [
         {
           session: "root",

@@ -132,8 +132,8 @@ export function KeepWarmStallCard({
       <View className="mx-3 mb-2 gap-2 rounded-xl border border-warning-foreground/25 bg-screen p-3">
         <Text className="text-sm text-warning-foreground">
           {hold.resetUnknown
-            ? `Waiting for ${pinned}, which this thread waits for when it runs out. The hub cannot use it right now; it checks again ${formatTime(hold.releaseAt)}.`
-            : `Waiting for ${pinned}, which this thread waits for when it runs out. It has quota again ${formatTime(hold.resetAt)}.`}
+            ? `Waiting for ${pinned} (this thread is set to wait for it). The hub cannot use it right now; it checks again ${formatTime(hold.releaseAt)}.`
+            : `Waiting for ${pinned} to reset at ${formatTime(hold.resetAt)} (this thread is set to wait for it).`}
         </Text>
         <View className="flex-row flex-wrap gap-2">
           <Button

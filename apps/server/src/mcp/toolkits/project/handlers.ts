@@ -242,6 +242,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           });
         // Fork: resolved on this instance's hub before anything is created; a replay keeps its own.
         const requestedAccount = input.account;
+        if (input.waitWhenOut === true && !requestedAccount)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "waitWhenOut needs an account. No thread was created.",
+          });
         const accountChoice =
           replaying || !requestedAccount
             ? undefined

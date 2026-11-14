@@ -148,6 +148,12 @@ export const OrchestratorMcpTarget = Schema.Struct({
     }),
   ),
   ...OrchestratorMcpLaunchAccountFields,
+  account: Schema.optional(
+    Schema.NullOr(TrimmedNonEmptyString).annotate({
+      description:
+        "CLI Proxy hub account (email or alias; `t3_usage` lists them). Omit: automatic; a child gets the parent's account, without waiting. null: automatic.",
+    }),
+  ),
 });
 export type OrchestratorMcpTarget = typeof OrchestratorMcpTarget.Type;
 
@@ -534,6 +540,11 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
         account: RouterAccountAlias,
         email: Schema.optional(Schema.String),
         waitWhenOut: Schema.Boolean,
+        pinned: Schema.optional(
+          Schema.Literal(false).annotate({
+            description: "The last turn could not pin it; that turn's requests may go elsewhere.",
+          }),
+        ),
       }),
     ),
   ),
@@ -761,6 +772,8 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
     incrementalThreadRead: Schema.Boolean,
     scheduledTasks: Schema.Boolean,
     maxBatchThreads: Schema.Number,
+    /** Fork: launches take `account`; absent from environments that would ignore it. */
+    launchAccount: Schema.optional(Schema.Boolean),
   }),
 });
 export type OrchestratorMcpCapabilitiesResult = typeof OrchestratorMcpCapabilitiesResult.Type;

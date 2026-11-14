@@ -1,5 +1,7 @@
 import {
   type EnvironmentId,
+  OrchestratorMcpCapabilitiesInput,
+  OrchestratorMcpCapabilitiesResult,
   OrchestratorMcpFailure,
   type OrchestratorMcpEnvironmentLinksResult,
   OrchestratorMcpThreadInterruptInput,
@@ -73,6 +75,11 @@ export class PeerForwarding extends Context.Service<
       environmentId: EnvironmentId,
       input: OrchestratorMcpThreadWaitInput,
     ) => Effect.Effect<OrchestratorMcpThreadWaitResult, OrchestratorMcpFailure>;
+    /** Fork: refuses a launch with `account` there when that environment would ignore it. */
+    readonly requireLaunchAccount: (
+      scope: Scope,
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
     /** The environments this one links to, as an agent sees them. */
     readonly links: (
       scope: Scope,
@@ -272,8 +279,38 @@ const make = Effect.gen(function* () {
     },
   );
 
+  // Older environments drop `account` silently, so a launch there would run on Automatic.
+  const requireLaunchAccount: PeerForwarding["Service"]["requireLaunchAccount"] = (
+    scope,
+    environmentId,
+  ) =>
+    requireEnabled.pipe(
+      Effect.andThen(
+        forward<OrchestratorMcpCapabilitiesResult>(
+          scope,
+          "orchestrator_capabilities",
+          OrchestratorMcpCapabilitiesInput,
+          OrchestratorMcpCapabilitiesResult,
+          environmentId,
+          {},
+        ),
+      ),
+      Effect.flatMap((capabilities) =>
+        capabilities.features.launchAccount === true
+          ? Effect.void
+          : Effect.fail(
+              new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message:
+                  "That linked environment runs an older T3 Code that would ignore `account`. Nothing was created. Update it, or launch without `account`.",
+              }),
+            ),
+      ),
+    );
+
   return PeerForwarding.of({
     call,
+    requireLaunchAccount,
     readThread,
     interruptThread,
     waitForThread,

@@ -470,6 +470,10 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
         if (scope.linkedEnvironments === false) return yield* PeerForwarding.linkedEnvironmentsOff;
         yield* (remote as RemoteCheck<typeof params>)(params);
         if (Option.isNone(forwarding)) return yield* linksUnavailable;
+        // Fork: the only forwarded launch field an older environment would silently drop.
+        if (tool.name === "t3_thread_launch" && (params as { account?: unknown }).account) {
+          yield* forwarding.value.requireLaunchAccount(scope, target);
+        }
         const result = yield* forwarding.value.call(scope, tool, target, {
           ...params,
           environmentId,

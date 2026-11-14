@@ -82,7 +82,11 @@ function prepareTurn(input: {
       .pipe(Effect.forkChild);
     // The turn-start pin gives up after three seconds.
     yield* TestClock.adjust("3 seconds");
-    return { drops: yield* Fiber.join(fiber), pins };
+    return {
+      drops: yield* Fiber.join(fiber),
+      pins,
+      pinFailed: yield* routing.pinFailed("thread-1" as never),
+    };
   }).pipe(
     Effect.scoped,
     Effect.provide(
@@ -131,9 +135,19 @@ describe("ThreadAccountRouting.prepareTurn", () => {
       drops: false,
     },
     {
-      name: "starts the turn when the pin fails",
+      name: "starts the turn when the pin fails, marking a waiting choice unpinned",
       input: {
         accountChoice: CHOICE,
+        pin: Effect.fail(new UsageLimitSourceError({ detail: "503" })),
+      },
+      pins: [expect.objectContaining({ account: CHOICE.account })],
+      drops: false,
+      pinFailed: true,
+    },
+    {
+      name: "does not mark a choice that falls back anyway",
+      input: {
+        accountChoice: { ...CHOICE, stall: false },
         pin: Effect.fail(new UsageLimitSourceError({ detail: "503" })),
       },
       pins: [expect.objectContaining({ account: CHOICE.account })],
@@ -148,12 +162,14 @@ describe("ThreadAccountRouting.prepareTurn", () => {
       },
       pins: [expect.objectContaining({ account: CHOICE.account })],
       drops: true,
+      pinFailed: true,
     },
-  ])("$name", ({ input, pins, drops }) =>
+  ])("$name", ({ input, pins, drops, pinFailed }) =>
     Effect.gen(function* () {
       const result = yield* prepareTurn(input);
       expect(result.pins).toEqual(pins);
       expect(result.drops).toBe(drops);
+      expect(result.pinFailed).toBe(pinFailed === true);
     }),
   );
 });

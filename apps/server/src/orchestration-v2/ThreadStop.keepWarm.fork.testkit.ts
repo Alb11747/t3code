@@ -94,6 +94,7 @@ export const verifyKeepWarmCompaction = Effect.fn("verifyKeepWarmCompaction")(fu
       register: () => Effect.void,
       find: () => Effect.succeed({ session, turn }),
       release: () => Effect.die("Compaction must read the warm account"),
+      forget: Effect.void,
     }),
   );
   yield* actions.run({ threadId: parentThreadId, action: "compact" });
