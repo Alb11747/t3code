@@ -1,6 +1,10 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
-import { type ModelSelection, ScheduledTaskUpsertInput } from "@t3tools/contracts";
+import {
+  type ModelSelection,
+  ScheduledTaskUpsertInput,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -101,7 +105,17 @@ const harness = Effect.gen(function* () {
           sendToThread: (send) =>
             Ref.update(models, (all) => [...all, send.modelSelection]).pipe(Effect.as({} as never)),
         }),
-        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed([
+            {
+              instanceId: "claudeAgent",
+              models: [
+                { slug: "claude-haiku-5-5", capabilities: null },
+                { slug: "claude-haiku-5-6", capabilities: null },
+              ],
+            },
+          ] as unknown as ReadonlyArray<ServerProvider>),
+        }),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.succeed(TaskScripts.ScheduledTaskScripts, {
           evaluate: (scriptInput) =>
@@ -199,6 +213,24 @@ it.effect("a script's model runs this run only and leaves the stored model", () 
       yield* Ref.set(next, evaluation({}));
       yield* service.runNow({ id: bound.task.id });
       expect(yield* Ref.get(models)).toEqual([codex, codex, undefined]);
+    }),
+  ),
+);
+
+it.effect("a script's model wins the run while following still moves the stored model", () =>
+  run((service, { models, next }) =>
+    Effect.gen(function* () {
+      const codex: ModelSelection = { instanceId: "codex" as never, model: "gpt-6-luna" };
+      yield* Ref.set(next, evaluation({ modelSelection: codex }));
+      const created = yield* service.upsert(
+        yield* decodeInput({ ...input, followLatestModel: true }),
+      );
+      const result = yield* service.runNow({ id: created.task.id });
+      expect(yield* Ref.get(models)).toEqual([codex]);
+      expect(result.task.modelSelection).toEqual({
+        instanceId: "claudeAgent",
+        model: "claude-haiku-5-6",
+      });
     }),
   ),
 );

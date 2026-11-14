@@ -710,7 +710,7 @@ export type OrchestratorMcpCapabilitiesResult = typeof OrchestratorMcpCapabiliti
 const OrchestratorMcpScheduledTaskModel = Schema.optional(
   Schema.NullOr(ModelSelection).annotate({
     description:
-      "From `orchestrator_capabilities`. Default: your thread's model; null: the project's. A bound thread runs on its own model.",
+      "From `orchestrator_capabilities`. Omitted: your thread's model on create, unchanged on update. null: the project's default. A bound thread runs on its own model.",
   }),
 );
 

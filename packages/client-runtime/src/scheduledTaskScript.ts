@@ -84,10 +84,15 @@ const nearlyOut = (account) =>
     (w) => (w.kind === "session" || w.kind === "weekly") && w.usedPercent >= 90,
   );
 if (accounts.length === 0 || !accounts.every(nearlyOut)) {
-  // A thread the task posts in keeps a model it was moved to, so move it back.
+  // A thread the task posts in keeps a model it was moved to, so move it back while it is listed.
   const restore = ctx.state.restore;
   delete ctx.state.restore;
-  return restore ? { model: restore } : true;
+  const listed = ctx.providers.some(
+    (entry) =>
+      entry.instanceId === restore?.instanceId &&
+      entry.models.some((model) => model.slug === restore.model),
+  );
+  return listed ? { model: restore } : true;
 }
 const cheaper = provider.models.find(
   (model) => model.latest && (model.family === "Haiku" || model.family === "Luna"),

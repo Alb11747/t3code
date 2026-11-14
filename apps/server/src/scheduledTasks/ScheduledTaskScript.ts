@@ -15,6 +15,7 @@ import {
   type ServerProvider,
   type ThreadId,
   type UsageLimitSourceSnapshot,
+  resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import { modelFamilyName, resolveLatestFamilyModel } from "@t3tools/shared/latestModel";
 import * as NodeOS from "node:os";
@@ -34,9 +35,10 @@ import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import { behindHub, hubSourceOf } from "../usage/ThreadAccountService.ts";
 import * as UsageLimitSources from "../usage/UsageLimitSources.ts";
-import { withOfferedOptions } from "./latestModel.ts";
+import { invalidOptionChoices, withOfferedOptions } from "./latestModel.ts";
 
 export type ScriptTrigger = "scheduled" | "manual" | "webhook" | "test";
 
@@ -58,10 +60,17 @@ export interface ScriptEvaluation {
     readonly modelSelection: ModelSelection | null;
   } | null;
   readonly error: string | null;
+  /** The state to save when a script that finished returned something invalid. */
+  readonly stateJson?: string | null;
   readonly logs: string;
   readonly durationMs: number;
-  readonly contextJson: string;
+  /** The `ctx` as JSON, built only for Test script. */
+  readonly contextJson: string | null;
 }
+
+/** The state a check saves, or undefined when the script did not finish with usable state. */
+export const scriptStateToSave = (evaluation: ScriptEvaluation): string | null | undefined =>
+  evaluation.decision === null ? evaluation.stateJson : evaluation.decision.stateJson;
 
 export interface ScriptEvaluateInput {
   readonly source: string;
@@ -81,6 +90,8 @@ export interface ScriptModels {
   /** The model the run uses unless the script picks one; a bare slug stays on its instance. */
   readonly current: ModelSelection | null;
   readonly providers: ReadonlyArray<ServerProvider>;
+  /** Instances the task's project has turned off. */
+  readonly disabledForProject: ReadonlyArray<string>;
 }
 
 export interface ScriptWebhookRequest {
@@ -120,6 +131,9 @@ export function scriptCheck(evaluation: ScriptEvaluation, at: string): Scheduled
     message: (evaluation.error ?? evaluation.decision?.reason ?? null)?.slice(0, 2_000) ?? null,
     logs: logs.length <= CHECK_LOG_LIMIT_CHARS ? logs : `…${logs.slice(-CHECK_LOG_LIMIT_CHARS)}`,
     durationMs: evaluation.durationMs,
+    ...(evaluation.decision?.modelSelection
+      ? { modelSelection: evaluation.decision.modelSelection }
+      : {}),
   };
 }
 
@@ -145,7 +159,7 @@ const encodeJson = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unkno
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const encodeCheck = Schema.encodeEffect(Schema.fromJsonString(ScheduledTaskScriptCheck));
 
-type Decided = Pick<ScriptEvaluation, "outcome" | "decision" | "error">;
+type Decided = Pick<ScriptEvaluation, "outcome" | "decision" | "error" | "stateJson">;
 
 const failed = (error: string): Decided => ({ outcome: "error", decision: null, error });
 
@@ -196,7 +210,11 @@ function resolveScriptModel(value: unknown, models: ScriptModels): ModelSelectio
   const instanceId = fields.instanceId ?? models.current?.instanceId;
   if (instanceId === undefined)
     return "No provider instance to run on; return { instanceId, model }.";
-  const enabled = models.providers.filter((provider) => provider.enabled);
+  if (models.disabledForProject.includes(instanceId))
+    return `Provider instance "${instanceId}" is turned off for this task's project.`;
+  const enabled = models.providers.filter(
+    (provider) => provider.enabled && !models.disabledForProject.includes(provider.instanceId),
+  );
   const provider = enabled.find((candidate) => candidate.instanceId === instanceId);
   if (provider === undefined)
     return `No enabled provider instance "${instanceId}". Choose one of: ${enabled.map((candidate) => candidate.instanceId).join(", ") || "none"}.`;
@@ -205,10 +223,14 @@ function resolveScriptModel(value: unknown, models: ScriptModels): ModelSelectio
     return `${provider.instanceId} does not list the model "${slug}". See ctx.providers.`;
   const options = fields.options == null ? undefined : parseOptions(fields.options);
   if (typeof options === "string") return options;
-  // Unless the script names options, the current ones carry over where the new model offers them.
+  if (options !== undefined) {
+    const refused = invalidOptionChoices(slug, options, provider.models);
+    if (refused !== null) return refused;
+    return { instanceId: provider.instanceId, model: slug, ...(options.length ? { options } : {}) };
+  }
+  // Unnamed options carry over from the current model where the new one offers them.
   const carried =
-    options ??
-    (models.current?.instanceId === provider.instanceId ? models.current.options : undefined);
+    models.current?.instanceId === provider.instanceId ? models.current.options : undefined;
   return withOfferedOptions(provider.instanceId, slug, carried, provider.models);
 }
 
@@ -225,6 +247,8 @@ export function decideScriptResult(
     return failed(
       `ctx.state is ${stateJson.length} characters; the limit is ${MAX_SCHEDULED_TASK_SCRIPT_STATE_CHARS}.`,
     );
+  // The script finished, so its state is saved even when what it returned is refused.
+  const refuse = (error: string): Decided => ({ ...failed(error), stateJson });
   const decide = (input: {
     readonly run: boolean;
     readonly prompt?: string | null;
@@ -247,24 +271,25 @@ export function decideScriptResult(
   if (!payload.hasResult || result === true) return decide({ run: true });
   if (result === false) return decide({ run: false });
   if (typeof result !== "object" || result === null || Array.isArray(result))
-    return failed("Return true, false, or an object such as { run: false, reason: '...' }.");
+    return refuse("Return true, false, or an object such as { run: false, reason: '...' }.");
   const fields = result as Record<string, unknown>;
   if (fields.run !== undefined && typeof fields.run !== "boolean")
-    return failed("`run` must be true or false.");
+    return refuse("`run` must be true or false.");
   if (fields.prompt != null && (typeof fields.prompt !== "string" || fields.prompt.trim() === ""))
-    return failed("`prompt` must be non-empty text.");
+    return refuse("`prompt` must be non-empty text.");
   if (fields.reason != null && typeof fields.reason !== "string")
-    return failed("`reason` must be text.");
+    return refuse("`reason` must be text.");
   let nextRunAtMs: number | null = null;
   if (fields.nextRunAt != null) {
     const parsed = parseNextRunAt(fields.nextRunAt, nowMs);
-    if (typeof parsed === "string") return failed(parsed);
+    if (typeof parsed === "string") return refuse(parsed);
     nextRunAtMs = parsed;
   }
   let modelSelection: ModelSelection | null = null;
-  if (fields.model != null) {
+  // A skipped run uses no model, so a bad one cannot fail it.
+  if (fields.model != null && fields.run !== false) {
     const resolved = resolveScriptModel(fields.model, models);
-    if (typeof resolved === "string") return failed(resolved);
+    if (typeof resolved === "string") return refuse(resolved);
     modelSelection = resolved;
   }
   const reason =
@@ -404,15 +429,17 @@ export const layer = Layer.effect(
     const fs = yield* FileSystem.FileSystem;
     const processRunner = yield* ProcessRunner.ProcessRunner;
     const random = yield* SecureRandom.SecureRandom;
+    const settings = yield* ServerSettings.ServerSettingsService;
 
     // A provider behind a hub reports the windows of whichever hub account served its last turn,
-    // so it is left out here; its accounts are listed under the hub, as `t3_usage` does.
+    // so the hub's accounts replace it, as on `t3_usage`. When they cannot be read it stays,
+    // marked, so a usage gate never loses the only reading it had.
     const usageAccounts = (
       providerList: ReadonlyArray<ServerProvider>,
       snapshots: ReadonlyArray<UsageLimitSourceSnapshot>,
     ) => {
       const native = providerList.flatMap((provider) =>
-        provider.enabled && provider.usageLimits && !behindHub(provider)
+        provider.enabled && provider.usageLimits && hubSourceOf(provider, snapshots) === null
           ? [
               {
                 source: "native" as const,
@@ -423,6 +450,7 @@ export const layer = Layer.effect(
                 email: provider.auth.email ?? null,
                 plan: null,
                 subscriptionEndsAt: null,
+                ...(behindHub(provider) ? { hubAccountsUnavailable: true } : {}),
                 ...provider.usageLimits,
               },
             ]
@@ -448,9 +476,10 @@ export const layer = Layer.effect(
     const providerContext = (
       providerList: ReadonlyArray<ServerProvider>,
       snapshots: ReadonlyArray<UsageLimitSourceSnapshot>,
+      disabledForProject: ReadonlyArray<string>,
     ) =>
       providerList
-        .filter((provider) => provider.enabled)
+        .filter((provider) => provider.enabled && !disabledForProject.includes(provider.instanceId))
         .map((provider) => {
           const hub = hubSourceOf(provider, snapshots);
           return {
@@ -587,11 +616,31 @@ export const layer = Layer.effect(
           Effect.logWarning("Task script could not read usage.", { cause }).pipe(Effect.as([])),
         ),
       );
+      const disabledForProject = yield* settings.getSettings.pipe(
+        Effect.map((current) =>
+          providerList
+            .filter(
+              (provider) =>
+                !resolveProjectProviderInstanceEnabled(
+                  current,
+                  input.projectId,
+                  provider.instanceId,
+                ),
+            )
+            .map((provider) => provider.instanceId),
+        ),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Task script could not read provider settings.", { cause }).pipe(
+            Effect.as([]),
+          ),
+        ),
+      );
       const { script: _script, webhook: _endpoint, ...task } = input.task ?? {};
       // A bound thread runs on its own model, so that is what a script's choice replaces.
       const models: ScriptModels = {
         current: thread?.modelSelection ?? input.modelSelection,
         providers: providerList,
+        disabledForProject,
       };
       const { modelSelection: _threadModel, ...threadFields } = thread ?? {};
       const context = {
@@ -600,7 +649,7 @@ export const layer = Layer.effect(
         task: input.task === null ? null : task,
         prompt: input.prompt,
         model: models.current,
-        providers: providerContext(providerList, snapshots),
+        providers: providerContext(providerList, snapshots, disabledForProject),
         state: parseState(input.stateJson),
         usage: { accounts: usageAccounts(providerList, snapshots) },
         thread: thread === null ? null : threadFields,
@@ -617,7 +666,11 @@ export const layer = Layer.effect(
         Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
         Effect.provideService(SecureRandom.SecureRandom, random),
       );
-      return { ...result, contextJson: yield* encodeJson(context).pipe(Effect.orDie) };
+      return {
+        ...result,
+        contextJson:
+          input.trigger === "test" ? yield* encodeJson(context).pipe(Effect.orDie) : null,
+      };
     });
 
     return { evaluate };

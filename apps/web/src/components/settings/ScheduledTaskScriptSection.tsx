@@ -248,6 +248,9 @@ export function ScheduledTaskScriptSection({
                   </span>
                 </div>
                 {lastCheck.message ? <p className="break-words">{lastCheck.message}</p> : null}
+                {lastCheck.modelSelection ? (
+                  <p>Ran on {describeModel(lastCheck.modelSelection)}.</p>
+                ) : null}
                 {lastCheck.logs ? <CodeBlock label="Logs" text={lastCheck.logs} /> : null}
               </div>
             ) : null}

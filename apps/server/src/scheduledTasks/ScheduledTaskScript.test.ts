@@ -20,10 +20,10 @@ const ok = (result: unknown, state = "{}") => ({
   logs: "",
 });
 
-const effort = (...ids: string[]) => ({
+const choices = (id: string, ...ids: string[]) => ({
   optionDescriptors: [
     {
-      id: "effort",
+      id,
       label: "Effort",
       type: "select",
       options: ids.map((id) => ({ id, label: id })),
@@ -41,13 +41,19 @@ const MODELS: ScriptModels = {
       instanceId: "claude",
       enabled: true,
       models: [
-        { slug: "claude-opus-5-5", capabilities: effort("high", "max") },
-        { slug: "claude-haiku-5-5", capabilities: effort("low", "high") },
+        { slug: "claude-opus-5-5", capabilities: choices("effort", "high", "max") },
+        { slug: "claude-haiku-5-5", capabilities: choices("effort", "low", "high") },
       ],
     },
-    { instanceId: "codex", enabled: true, models: [{ slug: "gpt-6-luna", capabilities: null }] },
+    {
+      instanceId: "codex",
+      enabled: true,
+      models: [{ slug: "gpt-6-luna", capabilities: choices("reasoningEffort", "minimal", "low") }],
+    },
     { instanceId: "off", enabled: false, models: [{ slug: "gpt-6-luna", capabilities: null }] },
+    { instanceId: "grok", enabled: true, models: [{ slug: "grok-5", capabilities: null }] },
   ] as unknown as ReadonlyArray<ServerProvider>,
+  disabledForProject: ["grok"],
 };
 
 describe("decideScriptResult", () => {
@@ -87,16 +93,34 @@ describe("decideScriptResult", () => {
       },
     ],
     [
-      { model: { instanceId: "codex", model: "gpt-6-luna", options: { effort: "low" } } },
+      { model: { instanceId: "codex", model: "gpt-6-luna", options: { reasoningEffort: "low" } } },
       {
         decision: {
           modelSelection: {
             instanceId: "codex",
             model: "gpt-6-luna",
-            options: [{ id: "effort", value: "low" }],
+            options: [{ id: "reasoningEffort", value: "low" }],
           },
         },
       },
+    ],
+    // Options the script names must exist; only carried-over ones fall back silently.
+    [
+      { model: { instanceId: "codex", model: "gpt-6-luna", options: { effort: "low" } } },
+      {
+        outcome: "error",
+        error: "gpt-6-luna does not offer effort: low. It offers reasoningEffort (minimal, low).",
+      },
+    ],
+    [{ model: { model: "claude-haiku-5-5", options: { effort: "max" } } }, { outcome: "error" }],
+    [
+      { model: { instanceId: "grok", model: "grok-5" } },
+      { outcome: "error", error: expect.stringContaining("turned off for this task's project") },
+    ],
+    // A skip runs nothing, so its model is ignored.
+    [
+      { run: false, model: "claude-sonnet-9" },
+      { outcome: "skip", decision: { modelSelection: null } },
     ],
     [
       { model: { model: "claude-haiku-5-5", options: [{ id: "effort", value: "low" }] } },
@@ -137,6 +161,11 @@ describe("decideScriptResult", () => {
     );
     expect(decideScriptResult(ok(true, "null"), NOW, MODELS).decision?.stateJson).toBeNull();
     expect(decideScriptResult(ok(true, "{}"), NOW, MODELS).decision?.stateJson).toBeNull();
+    // A refused return still saves the state of a script that finished.
+    expect(decideScriptResult(ok({ model: "nope" }, '{"n":1}'), NOW, MODELS)).toMatchObject({
+      outcome: "error",
+      stateJson: '{"n":1}',
+    });
     expect(
       decideScriptResult(ok(true, JSON.stringify("x".repeat(20_000))), NOW, MODELS),
     ).toMatchObject({

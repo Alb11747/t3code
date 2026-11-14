@@ -984,7 +984,7 @@ export const layer = Layer.effect(
               source: script.source,
               check: TaskScripts.scriptCheck(evaluation, checkedAt),
               stateVersion: scriptState.version,
-              stateJson: evaluation.decision?.stateJson,
+              stateJson: TaskScripts.scriptStateToSave(evaluation),
             })
             .pipe(
               Effect.catchCause((cause) =>
@@ -1850,7 +1850,7 @@ export const layer = Layer.effect(
         error: evaluation.error,
         logs: evaluation.logs,
         durationMs: evaluation.durationMs,
-        context: evaluation.contextJson,
+        context: evaluation.contextJson ?? "{}",
       };
     });
 

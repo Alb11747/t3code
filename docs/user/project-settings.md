@@ -195,10 +195,12 @@ provider, such as `"claude-haiku-5-5"`, or
 `{ instanceId: "codex", model: "gpt-6-luna", options: { reasoningEffort: "low" } }`
 to switch provider, for example when Claude is out of quota. The task keeps its
 saved model, but a thread the task posts into stays on the model it was moved
-to, as when you switch it yourself. Effort and other options the new model
-doesn't offer fall back to its default. If the script throws, takes longer than
-30 seconds, or names a provider or model the environment doesn't list, the run
-fails instead of starting.
+to, as when you switch it yourself. Options you don't name carry over where the
+new model offers them. If the script throws, takes longer than 30 seconds, or
+names a provider the project has turned off, a model the provider doesn't list
+(including before its model list has loaded) or an option the model doesn't
+offer, the run fails instead of starting. A skipped run ignores `model`. The
+task's last check shows the model a script picked.
 
 The script receives `ctx` with the current time, the task, its prompt, `model`
 (what this run uses unless the script picks one), `providers` (each enabled
@@ -207,8 +209,11 @@ and the CLI Proxy hub its accounts are under), usage for
 every account the environment knows about (5-hour and weekly windows, reset
 credits and Codex usage credits, including CLI Proxy accounts), the thread the
 task posts into (whether it is running, its latest activity, its context size
-and when its Claude prompt cache expires), and the webhook request. `ctx.state`
-is saved after each check, even when the run then fails to start, so a script
+and when its Claude prompt cache expires), and the webhook request. A provider
+that routes through a CLI Proxy hub has its accounts listed under the hub, so
+match them by its `hub.sourceId` rather than by `instanceId`; when the hub's
+accounts can't be read, its own reading appears instead, marked
+`hubAccountsUnavailable`. `ctx.state` is saved after each check, even when the run then fails to start, so a script
 can remember when it last ran. A one-time task skipped without `nextRunAt` does
 not run, and editing or pausing a task while its script runs cancels that run. **Examples**
 inserts scripts that skip runs while usage is high, run less often when usage

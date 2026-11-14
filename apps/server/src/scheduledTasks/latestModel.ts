@@ -65,3 +65,37 @@ export function withOfferedOptions(
     ...(options === undefined || options.length === 0 ? {} : { options }),
   };
 }
+
+/**
+ * Why `selections` do not fit `model`'s described options, naming what it offers, or null. A model
+ * that describes no options cannot be checked, as for MCP targets.
+ */
+export function invalidOptionChoices(
+  model: string,
+  selections: NonNullable<ModelSelection["options"]>,
+  models: ServerProvider["models"],
+): string | null {
+  const descriptors = models.find((entry) => entry.slug === model)?.capabilities?.optionDescriptors;
+  if (descriptors === undefined) return null;
+  const seen = new Set<string>();
+  const refused = selections.filter((selection) => {
+    const repeated = seen.has(selection.id);
+    seen.add(selection.id);
+    const descriptor = descriptors.find((entry) => entry.id === selection.id);
+    return (
+      repeated ||
+      descriptor === undefined ||
+      (descriptor.type === "boolean"
+        ? typeof selection.value !== "boolean"
+        : !descriptor.options.some((option) => option.id === selection.value))
+    );
+  });
+  if (refused.length === 0) return null;
+  const offered = descriptors
+    .map(
+      (descriptor) =>
+        `${descriptor.id} (${descriptor.type === "select" ? descriptor.options.map((option) => option.id).join(", ") : "true or false"})`,
+    )
+    .join("; ");
+  return `${model} does not offer ${refused.map((selection) => `${selection.id}: ${String(selection.value)}`).join(", ")}. It offers ${offered || "no options"}.`;
+}

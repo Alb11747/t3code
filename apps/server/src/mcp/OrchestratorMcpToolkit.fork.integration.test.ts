@@ -93,6 +93,12 @@ import {
   waitForProjection,
 } from "./OrchestratorMcpToolkit.fork.testkit.ts";
 
+// Distinct from the caller's model, so a create that falls back to it is visible.
+const projectDefaultSelection = {
+  ...codexSelection,
+  options: [{ id: "reasoning", value: "low" }],
+};
+
 describe("orchestrator MCP toolkit", () => {
   it.live(
     "delegates cross-provider tasks, polls and cancels children, and creates ordinary threads",
@@ -320,7 +326,7 @@ describe("orchestrator MCP toolkit", () => {
                 getById: (id) =>
                   Effect.succeed(
                     id === projectId
-                      ? Option.some({ id, defaultModelSelection: null } as never)
+                      ? Option.some({ id, defaultModelSelection: projectDefaultSelection } as never)
                       : Option.none(),
                   ),
               }),
@@ -1171,6 +1177,26 @@ describe("orchestrator MCP toolkit", () => {
             });
             expect(unlistedModelCall.isError).toBe(true);
             expect((yield* Ref.get(scheduledStore))[0]?.modelSelection).toEqual(scheduledModel);
+            for (const [requestId, modelSelection, stored] of [
+              ["schedule-model-explicit", scheduledModel, scheduledModel],
+              ["schedule-model-default", null, projectDefaultSelection],
+            ] as const) {
+              const created = yield* invoke("schedule_task", {
+                prompt: "check the nightly build",
+                schedule: { type: "interval", everyMs: 3_600_000 },
+                modelSelection,
+                clientRequestId: requestId,
+              });
+              expect(created.isError).toBe(false);
+              const { scheduledTaskId: createdId } = created.structuredContent as {
+                scheduledTaskId: string;
+              };
+              expect(
+                (yield* Ref.get(scheduledStore)).find((task) => task.id === createdId)
+                  ?.modelSelection,
+              ).toEqual(stored);
+              yield* invoke("delete_scheduled_task", { scheduledTaskId: createdId });
+            }
 
             const scheduledDeleteCall = yield* invoke("delete_scheduled_task", { scheduledTaskId });
             expect(scheduledDeleteCall.isError).toBe(false);

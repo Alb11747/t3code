@@ -1346,6 +1346,8 @@ const make = Effect.gen(function* () {
     readonly providers: ReadonlyArray<ServerProvider>;
     /** Receipt replays bypass current settings because they start no work. Dispatch must reuse the checked command ID. */
     readonly skipProjectEnablementFilter?: boolean;
+    /** What the provider is refused for, in the error. */
+    readonly work?: string;
   }): Effect.fn.Return<ResolvedTarget, OrchestratorMcpFailure> {
     const requestedInstanceId = input.target?.providerInstanceId;
     const requestedDriver = input.target?.driverKind;
@@ -1417,7 +1419,7 @@ const make = Effect.gen(function* () {
     if (constraints.length > 0) {
       return yield* failure(
         "provider_unavailable",
-        `Provider ${instanceId} cannot run a child task: ${constraints.join(" ")}`,
+        `Provider ${instanceId} cannot run ${input.work ?? "a child task"}: ${constraints.join(" ")}`,
       );
     }
 
@@ -2026,6 +2028,7 @@ const make = Effect.gen(function* () {
         ...(requested.options === undefined ? {} : { options: requested.options }),
       },
       providers: yield* loadProviders,
+      work: "scheduled tasks",
     });
     return target.modelSelection;
   });

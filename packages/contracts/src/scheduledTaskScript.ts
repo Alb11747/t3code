@@ -27,6 +27,8 @@ export const ScheduledTaskScriptCheck = Schema.Struct({
   /** Console output, truncated. */
   logs: Schema.String,
   durationMs: Schema.Number,
+  /** The model the script chose for the run. */
+  modelSelection: Schema.optionalKey(ModelSelection),
 });
 export type ScheduledTaskScriptCheck = typeof ScheduledTaskScriptCheck.Type;
 
