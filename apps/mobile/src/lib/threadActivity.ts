@@ -1156,13 +1156,7 @@ function deriveThreadFeedRunFolds(
       group.entries
         .filter(
           (entry) =>
-            !(
-              entry.type === "message" &&
-              (messageIsConfirmedFinalAnswer(entry.message) ||
-                (entry.id === terminalAssistantId &&
-                  (entry.message.projectedItem?.item.type !== "assistant_message" ||
-                    entry.message.projectedItem.item.phase === undefined)))
-            ) &&
+            entry.id !== terminalAssistantId &&
             entry.type !== "html-render" &&
             entry.type !== "mcp-app" &&
             !(entry.type === "activity-group" && isContextCompactionActivityGroup(entry)) &&
@@ -1252,17 +1246,6 @@ function deriveThreadFeedRunFolds(
     });
   }
   return foldsByAnchorId;
-}
-
-function messageIsConfirmedFinalAnswer(message: ThreadFeedMessage): boolean {
-  const item = message.projectedItem?.item;
-  return (
-    item?.type === "assistant_message" &&
-    item.phase === "final_answer" &&
-    item.status === "completed" &&
-    !item.streaming &&
-    !message.streaming
-  );
 }
 
 const supersededReasoningGroups = new WeakMap<ThreadFeedActivityGroup, ThreadFeedActivityGroup>();
