@@ -370,10 +370,16 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
         ],
       });
       const requests: Array<string> = [];
+      const startRequested = yield* Deferred.make<void>();
       const harness = yield* makeCodexReplayHarness(
         transcript,
         () => Effect.void,
-        (method) => Effect.sync(() => requests.push(method)),
+        (method) =>
+          Effect.sync(() => requests.push(method)).pipe(
+            Effect.andThen(
+              method === "turn/start" ? Deferred.succeed(startRequested, undefined) : Effect.void,
+            ),
+          ),
       );
       const turnInput = (attempt: string) =>
         Effect.map(DateTime.now, (now) =>
@@ -388,6 +394,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
       const first = yield* harness.runtime
         .startTurn(yield* turnInput("rejected"))
         .pipe(Effect.forkScoped);
+      yield* Deferred.await(startRequested);
       yield* TestClock.adjust("0 millis");
       yield* Fiber.interrupt(first);
       const compact = yield* harness.runtime.compactThread!(yield* turnInput("compact")).pipe(
@@ -589,7 +596,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
               approvalPolicy: "never",
               approvalsReviewer: "user",
               sandboxPolicy: { type: "dangerFullAccess" },
-              summary: "detailed",
+              summary: "auto",
               collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
             },
           },
@@ -682,7 +689,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
                     approvalPolicy: "never",
                     approvalsReviewer: "user",
                     sandboxPolicy: { type: "dangerFullAccess" },
-                    summary: "detailed",
+                    summary: "auto",
                     collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
                   },
                 },
@@ -1578,7 +1585,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
                   approvalPolicy: "never",
                   approvalsReviewer: "user",
                   sandboxPolicy: { type: "dangerFullAccess" },
-                  summary: "detailed",
+                  summary: "auto",
                   collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
                 },
               },

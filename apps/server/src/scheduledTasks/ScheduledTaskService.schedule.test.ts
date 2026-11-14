@@ -299,6 +299,7 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
     const layerDependencies = Layer.mergeAll(
       NodeCrypto.layer,
       ManagedPolicy.layerTest(),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({}),
       // Capture the poll pass so the test drives each due interval directly.
       Layer.mock(Scheduler.Scheduler)({
         register: (name, work) =>
@@ -508,6 +509,7 @@ it.effect("a fixed-time slot missed while the server was off shows on the task",
       NodeCrypto.layer,
       Scheduler.layer,
       ManagedPolicy.layerTest(),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({}),
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({
         launch: () =>
           Ref.update(launches, (count) => count + 1).pipe(
@@ -585,6 +587,7 @@ it.effect(
         NodeCrypto.layer,
         Scheduler.layer,
         ManagedPolicy.layerTest(),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({
           launch: (input) =>
             (input.title === "Slow"

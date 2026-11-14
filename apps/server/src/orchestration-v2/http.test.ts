@@ -396,7 +396,7 @@ it.effect("exports full history with size, scope, and missing-thread checks", ()
       services,
       ThreadManagementService.ThreadManagementService,
     ).getThreadSnapshot(thread.id);
-    expect(snapshot.projection.visibleTurnItems).toHaveLength(200);
+    expect(snapshot.projection.visibleTurnItems).toHaveLength(199);
 
     expect((yield* read(ThreadId.make("missing"))).status).toBe(404);
     allowed = false;

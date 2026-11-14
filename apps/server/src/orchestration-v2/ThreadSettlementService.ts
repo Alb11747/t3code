@@ -347,7 +347,9 @@ export const make = Effect.gen(function* () {
     // Merge events resweep all candidates because unlinked threads settle through branch lookup.
     const candidates = threads.filter(
       (thread) =>
-        (automaticSettlementEnabled || thread.autoSettleAlwaysAt != null || thread.lineage.relationshipToParent === "subagent") &&
+        (automaticSettlementEnabled ||
+          thread.autoSettleAlwaysAt != null ||
+          thread.lineage.relationshipToParent === "subagent") &&
         isAutoSettlementCandidate(thread, nowMs),
     );
 
@@ -725,7 +727,9 @@ export const make = Effect.gen(function* () {
       case "thread.deleted":
         return enqueueFullSweep();
       case "thread.metadata-updated":
-        return event.payload.issueWatches === undefined ? Effect.void : enqueueThread(event.threadId);
+        return event.payload.issueWatches === undefined
+          ? Effect.void
+          : enqueueThread(event.threadId);
       case "thread.pull-request-link-updated":
       case "thread.pull-request-synced":
       case "provider-session.detached":

@@ -1053,7 +1053,7 @@ describe("buildThreadFeed", () => {
         deriveThreadFeedPresentation(
           buildThreadFeed(turnItems.map((item, position) => projected(item, position))),
           null,
-          expanded ? new Set([runId]) : new Set(),
+          expanded ? new Set([runId, RunId.make(`${runId}:steer:steer`)]) : new Set(),
         );
       const assistantIds = (entries: ThreadFeedEntry[]) =>
         entries.flatMap((entry) =>

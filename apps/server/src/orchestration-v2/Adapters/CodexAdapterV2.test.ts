@@ -2088,13 +2088,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ],
       });
       const interruptSent = yield* Deferred.make<void>();
+      const startRequested = yield* Deferred.make<void>();
       const harness = yield* makeCodexReplayHarness(
         transcript,
         () => Effect.void,
         (method) =>
-          method === "turn/interrupt"
-            ? Deferred.succeed(interruptSent, undefined).pipe(Effect.asVoid)
-            : Effect.void,
+          method === "turn/start"
+            ? Deferred.succeed(startRequested, undefined)
+            : method === "turn/interrupt"
+              ? Deferred.succeed(interruptSent, undefined).pipe(Effect.asVoid)
+              : Effect.void,
       );
       const starting = yield* harness.runtime
         .startTurn(
@@ -2107,6 +2110,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           }),
         )
         .pipe(Effect.forkScoped);
+      yield* Deferred.await(startRequested);
       yield* TestClock.adjust("0 millis");
       yield* TestClock.adjust("500 millis");
       // The provider request deadline gives up on the start.
@@ -2245,16 +2249,24 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ],
       });
       const registeredTurns: Array<string> = [];
+      const startRequested = yield* Deferred.make<void>();
       const retriedTurnRegistered = yield* Deferred.make<void>();
-      const harness = yield* makeCodexReplayHarness(transcript, (event) => {
-        if (event.type !== "provider_turn.updated") return Effect.void;
-        const nativeId = event.providerTurn.nativeTurnRef?.nativeId;
-        if (nativeId == null || registeredTurns.includes(nativeId)) return Effect.void;
-        registeredTurns.push(nativeId);
-        return nativeId === retriedTurnId
-          ? Deferred.succeed(retriedTurnRegistered, undefined)
-          : Effect.void;
-      });
+      const harness = yield* makeCodexReplayHarness(
+        transcript,
+        (event) => {
+          if (event.type !== "provider_turn.updated") return Effect.void;
+          const nativeId = event.providerTurn.nativeTurnRef?.nativeId;
+          if (nativeId == null || registeredTurns.includes(nativeId)) return Effect.void;
+          registeredTurns.push(nativeId);
+          return nativeId === retriedTurnId
+            ? Deferred.succeed(retriedTurnRegistered, undefined)
+            : Effect.void;
+        },
+        (method) =>
+          method === "turn/start"
+            ? Deferred.succeed(startRequested, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+      );
       const turnInput = (attempt: string) =>
         Effect.map(DateTime.now, (now) =>
           makeCodexTestTurnInput({
@@ -2268,6 +2280,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const starting = yield* harness.runtime
         .startTurn(yield* turnInput("abandoned-attempt"))
         .pipe(Effect.forkScoped);
+      yield* Deferred.await(startRequested);
       yield* TestClock.adjust("0 millis");
       yield* TestClock.adjust("500 millis");
       yield* Fiber.interrupt(starting);
@@ -4675,7 +4688,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect("fails a stalled 429 provider retry as a usage limit and stops the Codex turn", () =>
+  it.effect("retries a stalled 429 without a quota reset after stopping the native turn", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const scenario = "codex-provider-retry-stall";
@@ -4749,19 +4762,24 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         yield* TestClock.adjust("9 minutes");
         assert.isEmpty(harness.terminalEvents());
         yield* TestClock.adjust("1 minute");
-        yield* harness.firstTerminal;
         yield* Deferred.await(interruptSent);
-        const terminal = harness.terminalEvents()[0];
-        assert.equal(terminal?.status, "failed");
-        if (terminal?.status !== "failed") return;
-        assert.equal(terminal.failure.class, "usage_limit");
-        assert.equal(terminal.failure.code, "responseStreamDisconnected");
+        assert.isEmpty(harness.terminalEvents());
+        const retry = harness.events
+          .flatMap((event) =>
+            event.type === "turn_item.updated" && event.turnItem.type === "error"
+              ? [event.turnItem]
+              : [],
+          )
+          .at(-1);
+        assert.equal(retry?.status, "running");
+        assert.equal(retry?.failure.class, "transport_error");
+        assert.equal(retry?.failure.code, "responseStreamDisconnected");
         assert.equal(
-          terminal.failure.message,
+          retry?.failure.message,
           "exceeded retry limit, last status: 429 Too Many Requests",
         );
-        assert.equal(terminal.retry?.attempt, 1);
-        assert.equal(terminal.threadDisposition, "reusable");
+        assert.equal(retry?.retry?.attempt, 1);
+        assert.equal(retry?.retry?.maxAttempts, null);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -5252,7 +5270,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             : [],
         );
         assert.equal(items.at(-1)?.text, "Unfinished answer");
-        assert.equal(items.at(-1)?.phase, "commentary");
+        assert.equal(items.at(-1)?.phase, "partial_answer");
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -5331,7 +5349,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       );
       assert.deepEqual(
         items.map((item) => item.phase),
-        ["commentary", "final_answer"],
+        ["partial_answer", "final_answer"],
       );
       assert.equal(items[0]?.id, items[1]?.id);
     }).pipe(

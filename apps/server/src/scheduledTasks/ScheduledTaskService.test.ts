@@ -437,6 +437,7 @@ it.effect.each([
       Layer.provide(
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({}),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             sendToThread: (input) => Ref.set(sent, input.messageId).pipe(Effect.as({} as never)),

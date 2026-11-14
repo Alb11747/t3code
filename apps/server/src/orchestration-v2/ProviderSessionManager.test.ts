@@ -1,6 +1,4 @@
-import {
-  type OrchestrationV2AppThread,
-} from "@t3tools/contracts";
+import { type OrchestrationV2AppThread } from "@t3tools/contracts";
 
 import * as NetAddress from "effect/net/NetAddress";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";

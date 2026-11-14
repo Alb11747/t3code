@@ -7288,6 +7288,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // text the agent never receives, and like any user send it releases the
     // hold; an explicit steer still fails below.
     if (
+      command.createdBy === "user" &&
       command.deliveryIntent === "auto" &&
       (dispatchMode.type === "steer_active" || dispatchMode.type === "restart_active") &&
       (yield* stopReachedRun(command, command.threadId, dispatchMode.targetRunId))
@@ -7554,6 +7555,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           .pipe(mapDispatchError(command));
         yield* ensureSteeringMessage(command, command);
         steerWhenReadyRunId = target.id;
+        if (command.modelSelection === undefined) modelSelection = target.modelSelection;
         dispatchMode = { type: "queue_after_active" };
       }
     }
@@ -7682,17 +7684,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.dispatchMode.type !== "steer_active" &&
       projection.runs.some((run) => run.status === "queued" && run.freshContext === true);
     const startupDeliveryIntent =
+      steerWhenReadyRunId !== undefined
+        ? command.deliveryIntent === "auto"
+          ? "auto"
+          : "steer"
+        : activeRun !== undefined &&
+            !freshContext &&
+            (command.deliveryIntent === "auto" || command.deliveryIntent === "steer") &&
+            goalCommand === null &&
+            delegatedCompletion === undefined &&
+            command.notification === undefined &&
+            !isNativeMaintenanceCommand(command) &&
+            (activeRunMessage === undefined || !isNativeMaintenanceCommand(activeRunMessage)) &&
+            runLacksRunningProviderTurn(projection, activeRun)
+          ? command.deliveryIntent
+          : undefined;
+    if (
+      startupDeliveryIntent !== undefined &&
       activeRun !== undefined &&
-      !freshContext &&
-      (command.deliveryIntent === "auto" || command.deliveryIntent === "steer") &&
-      goalCommand === null &&
-      delegatedCompletion === undefined &&
-      command.notification === undefined &&
-      !isNativeMaintenanceCommand(command) &&
-      (activeRunMessage === undefined || !isNativeMaintenanceCommand(activeRunMessage)) &&
-      runLacksRunningProviderTurn(projection, activeRun)
-        ? command.deliveryIntent
-        : undefined;
+      command.modelSelection === undefined &&
+      !projection.messages.some((message) => message.id === command.messageId)
+    ) {
+      modelSelection = activeRun.modelSelection;
+    }
     if (
       activeRun !== undefined &&
       startupDeliveryIntent !== undefined &&
@@ -11759,6 +11773,39 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         now,
       });
       return cancelUnsettledEffects === undefined ? undefined : { cancelUnsettledEffects };
+    }
+    if (
+      (target?.status === "preparing" ||
+        target?.status === "starting" ||
+        (target?.status === "running" &&
+          !projection.providerTurns.some(
+            (turn) => turn.runAttemptId === target.activeAttemptId && turn.status === "running",
+          ))) &&
+      !(yield* stopReachedRun(command, command.threadId, target.id))
+    ) {
+      yield* ensureSteeringMessage(command, queuedMessage);
+      const adapter = yield* providerAdapters
+        .get(target.providerInstanceId)
+        .pipe(mapDispatchError(command));
+      const capabilities = yield* adapter.getCapabilities().pipe(mapDispatchError(command));
+      yield* commandPolicy
+        .decideSteeringExecution({
+          commandId: command.commandId,
+          threadId: command.threadId,
+          providerInstanceId: target.providerInstanceId,
+          capabilities,
+        })
+        .pipe(mapDispatchError(command));
+      yield* emitEvent({
+        type: "run.updated",
+        threadId: command.threadId,
+        runId: queuedRun.id,
+        nodeId: queuedRootNode.id,
+        providerInstanceId: queuedRun.providerInstanceId,
+        occurredAt: now,
+        payload: { ...queuedRun, steerWhenReadyRunId: target.id, deliveryIntent: "steer" },
+      });
+      return;
     }
     if (targetRun?.status === "running" || targetRun?.status === "waiting") {
       const targetProviderThread = projection.providerThreads.find(

@@ -1226,7 +1226,7 @@ interface ActiveCodexTurnContext {
   readonly runningCompactionItemIds: Set<string>;
   readonly assistantMessagePhases: Map<
     string,
-    "commentary" | "pending_final_answer" | "final_answer"
+    "commentary" | "partial_answer" | "pending_final_answer" | "final_answer"
   >;
   // Modern approval requests omit paths; keep the kinds without retaining patch bodies.
   readonly fileChangeKindsByItem: Map<string, CodexFileChangeKinds>;
@@ -2033,7 +2033,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
           readonly accepted: Deferred.Deferred<
             void,
-            CodexErrors.CodexAppServerError | ProviderAdapter.ProviderAdapterProtocolError
+            | CodexErrors.CodexAppServerError
+            | ProviderAdapter.ProviderAdapterProtocolError
+            | Schema.SchemaError
           >;
           readonly completed: Deferred.Deferred<void>;
           readonly callerDone: Deferred.Deferred<void>;
@@ -2551,7 +2553,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           request: Effect.Effect<
             | { readonly id: string; readonly startedAt: DateTime.Utc; readonly queued?: boolean }
             | undefined,
-            CodexErrors.CodexAppServerError | ProviderAdapter.ProviderAdapterProtocolError
+            | CodexErrors.CodexAppServerError
+            | ProviderAdapter.ProviderAdapterProtocolError
+            | Schema.SchemaError
           >,
           install: Effect.Effect<void> = Effect.void,
           hold?: CodexGoalHold,
@@ -2563,7 +2567,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 input: turnInput,
                 accepted: yield* Deferred.make<
                   void,
-                  CodexErrors.CodexAppServerError | ProviderAdapter.ProviderAdapterProtocolError
+                  | CodexErrors.CodexAppServerError
+                  | ProviderAdapter.ProviderAdapterProtocolError
+                  | Schema.SchemaError
                 >(),
                 completed: yield* Deferred.make<void>(),
                 callerDone: yield* Deferred.make<void>(),
@@ -3920,7 +3926,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             completedAt,
             updatedAt,
             type: "assistant_message",
-            phase: phase === "pending_final_answer" ? "partial_answer" : phase,
+            phase:
+              phase === "pending_final_answer"
+                ? completed
+                  ? "partial_answer"
+                  : "final_answer"
+                : phase,
             messageId,
             text: item.text,
             streaming: !completed,
@@ -5522,7 +5533,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               if (payload.item.phase != null) {
                 context.assistantMessagePhases.set(
                   payload.item.id,
-                  payload.item.phase === "final_answer" ? "pending_final_answer" : "commentary",
+                  payload.item.phase === "final_answer"
+                    ? "pending_final_answer"
+                    : payload.item.phase,
                 );
               }
               if (payload.item.phase != null)
@@ -5934,7 +5947,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload.item.id,
                 payload.item.phase == null || payload.item.phase === "final_answer"
                   ? "final_answer"
-                  : "commentary",
+                  : payload.item.phase,
               );
             }
             if (finalAnswer) {
@@ -7766,7 +7779,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               overloadRetryAttempts.delete(threadId);
               yield* Ref.update(additionalContextByThread, (current) => {
                 const next = new Map(current);
-                if (turnStartParams.additionalContext) next.set(threadId, turnStartParams.additionalContext);
+                if (turnStartParams.additionalContext)
+                  next.set(threadId, turnStartParams.additionalContext);
                 else next.delete(threadId);
                 return next;
               });

@@ -25,6 +25,7 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
+  RuntimeRequestId,
   ScheduledTaskId,
   ThreadId,
   TurnItemId,
@@ -802,7 +803,7 @@ it.effect.each([
           }
           const messageId = MessageId.make(
             notice === "delegated task question"
-              ? "message:delegated-task-question:child-question"
+              ? `message:delegated-task-question:${threadId}:child-question`
               : "message:notice",
           );
           const notification =
@@ -822,7 +823,42 @@ it.effect.each([
                   summary: "Background command finished",
                 };
           if (notification.source.kind === "delegated_task") {
+            yield* orchestrator.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make("create-question-child"),
+              threadId: notification.source.childThreadId,
+              projectId: thread.projectId,
+              title: "Question child",
+              modelSelection: runSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              createdBy: "agent",
+              creationSource: "mcp",
+            });
             const now = yield* DateTime.now;
+            yield* (yield* EventSink.EventSinkV2).write({
+              events: [
+                {
+                  id: EventId.make("event:child-pending-question"),
+                  type: "runtime-request.updated",
+                  threadId: notification.source.childThreadId,
+                  occurredAt: now,
+                  payload: {
+                    id: RuntimeRequestId.make("child-question"),
+                    nodeId: NodeId.make("child-question-node"),
+                    providerTurnId: null,
+                    nativeRequestRef: null,
+                    kind: "user_input",
+                    status: "pending",
+                    responseCapability: { type: "message" },
+                    createdAt: now,
+                    resolvedAt: null,
+                  },
+                },
+              ],
+            });
             const first = started[0]!;
             yield* (yield* EventSink.EventSinkV2).write({
               events: [
@@ -1138,17 +1174,6 @@ it.effect.each(
             queuedRunId: secondQueuedId,
           });
         }
-        const secondReDeferred = yield* orchestrator.streamDomainEvents.pipe(
-          Stream.filter(
-            (event) =>
-              event.type === "run.updated" &&
-              event.payload.id === secondQueuedId &&
-              event.payload.status === "queued",
-          ),
-          Stream.take(1),
-          Stream.runDrain,
-          Effect.forkScoped,
-        );
         const secondPromoted = yield* orchestrator.streamDomainEvents.pipe(
           Stream.filter(
             (event) =>
@@ -1186,7 +1211,13 @@ it.effect.each(
         });
         yield* Queue.offer(events, { type: "provider_turn.updated", driver, providerTurn: turn });
         yield* Fiber.join(promoted);
-        if (restarting) yield* Fiber.join(secondReDeferred);
+        if (restarting) {
+          const deferred = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (candidate) => candidate.id === secondQueuedId,
+          );
+          assert.equal(deferred?.status, "queued");
+          assert.equal(deferred?.deliveryIntent, "steer");
+        }
         yield* worker.drain();
         if (restarting) {
           yield* Fiber.join(secondPromoted);

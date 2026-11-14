@@ -780,7 +780,8 @@ export const layer: Layer.Layer<
         session.driver === "codex" ||
         session.driver === "claudeAgent" ||
         session.providerSession.capabilities.turns.supportsNativeGoals === true;
-      const goalCommand = attempt.recovery === undefined && goalDriver && parseGoalCommand(message) !== null;
+      const goalCommand =
+        attempt.recovery === undefined && goalDriver && parseGoalCommand(message) !== null;
       // The provider turn marks cancellation work delivered; restart continuations use their own text or resume natively.
       const noteContinuation = isRestartNoteContinuation(
         run,

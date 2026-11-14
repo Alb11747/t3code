@@ -52,10 +52,24 @@ const damagedDatabaseError = (dbPath: string, cause: SqlError.SqlError) =>
     }),
   });
 
+// Fork-only schema additions must not consume upstream migration IDs.
+const migrateSchema = runMigrations().pipe(
+  Effect.andThen(ensureForkProjectionIndexes()),
+  Effect.andThen(ensureScheduledTaskScriptTable()),
+);
+
 // CLI commands open the server's database from another process; migrating behind its owner changes the schema it runs on.
 const runMigrationsAsOwner = Effect.fn("SqlitePersistence.runMigrationsAsOwner")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const forkSchema = yield* sql<{ readonly count: number }>`
+    SELECT COUNT(*) AS count FROM sqlite_schema
+    WHERE (type = 'index' AND name IN ('fork_runs_latest_started_idx', 'fork_runs_fresh_context_idx'))
+      OR (type = 'table' AND name = 'fork_scheduled_task_scripts')
+  `;
   // With nothing pending, runMigrations only validates the recorded history and writes nothing.
-  if (!(yield* hasPendingMigrations())) return yield* runMigrations();
+  if (!(yield* hasPendingMigrations()) && forkSchema[0]?.count === 3) {
+    return yield* runMigrations();
+  }
   const { serverRuntimeStatePath } = yield* ServerConfig.ServerConfig;
   yield* ServerOwnership.holdServerOwnershipLock(serverRuntimeStatePath).pipe(
     Effect.catchTags({
@@ -63,7 +77,7 @@ const runMigrationsAsOwner = Effect.fn("SqlitePersistence.runMigrationsAsOwner")
         Effect.fail(new ServerOwnsDatabaseError({ stateDir })),
     }),
   );
-  yield* runMigrations();
+  yield* migrateSchema;
 }, Effect.scoped);
 
 const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>
@@ -90,9 +104,6 @@ const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>
       // PASSIVE checkpoints retain peak WAL size until the last connection closes.
       yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
       yield* migrate;
-      // Fork-only schema additions must not consume upstream migration IDs.
-      yield* ensureForkProjectionIndexes();
-      yield* ensureScheduledTaskScriptTable();
       // Collecting stats scans every page, and stale small-table stats cause scans after growth; use indexes by default.
       // Connections cache stats; reload after deleting them.
       const statTables = yield* sql`SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat1'`;
@@ -103,7 +114,7 @@ const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>
     }).pipe(Effect.withSpan("Sqlite.setup")),
   );
 
-const layerSetup = makeLayerSetup(runMigrations());
+const layerSetup = makeLayerSetup(migrateSchema);
 
 const makeLayerFromPath = <E, R>(makeSetup: (dbPath: string) => Layer.Layer<never, E, R>) =>
   Effect.fn("makeSqlitePersistenceLive")(function* (dbPath: string) {
