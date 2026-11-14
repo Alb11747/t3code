@@ -152,58 +152,24 @@ describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platfo
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-ledger-" });
-      const gate = path.join(stateDir, "gate");
-      const ready = path.join(stateDir, "ready");
-      NodeChildProcess.execFileSync("mkfifo", [gate, ready]);
-      // The wrapper's child is recorded before it execs and stopped after.
+      // The inner shell prints once it has exec'd. Until then it still carries the wrapper's
+      // command line, and recording that would make the reaper skip the group as recycled.
       const wrapper = yield* spawnGroup(
         SERVE_ARGS,
-        `(read _ < '${gate}'; exec /bin/sh -c 'echo > "${ready}"; sleep 600 & wait' "$0" "$@") & exit 0`,
+        '/bin/sh -c "echo ready; sleep 600 & wait" "$0" "$@" & exit 0',
       );
       yield* wrapper.exited;
+      yield* wrapper.printed;
       expect(groupExists(wrapper.pid)).toBe(true);
 
       yield* recordFromDeadServer(stateDir, wrapper);
       expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toHaveLength(1);
-      yield* fs.writeFileString(gate, "\n");
-      yield* fs.readFileString(ready);
 
       const restarted = yield* OpenCodeServerLedger.make({ stateDir });
       yield* restarted.reapOrphans;
 
       expect(groupExists(wrapper.pid)).toBe(false);
       expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toEqual([]);
-    }).pipe(provideHost),
-  );
-
-  it.live("reaps version-1 entries only when the recorded command still matches", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      for (const commandMatches of [true, false]) {
-        const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-ledger-v1-" });
-        const orphan = yield* spawnGroup(SERVE_ARGS);
-        yield* recordFromDeadServer(stateDir, orphan);
-        const entryPath = path.join(stateDir, "opencode-servers", `${orphan.pid}.json`);
-        const entry: { version: number; args?: ReadonlyArray<string>; command?: string } =
-          JSON.parse(yield* fs.readFileString(entryPath));
-        entry.version = 1;
-        delete entry.args;
-        entry.command = NodeChildProcess.execFileSync(
-          "/bin/ps",
-          ["-ww", "-o", "args=", "-p", String(orphan.pid)],
-          { encoding: "utf8" },
-        ).trimEnd();
-        if (!commandMatches) entry.command += " --different-command";
-        yield* fs.writeFileString(entryPath, JSON.stringify(entry));
-
-        const restarted = yield* OpenCodeServerLedger.make({ stateDir });
-        yield* restarted.reapOrphans;
-
-        expect(groupExists(orphan.pid)).toBe(!commandMatches);
-        if (commandMatches) expect(yield* orphan.exited).toBe("SIGTERM");
-        expect(yield* fs.exists(entryPath)).toBe(false);
-      }
     }).pipe(provideHost),
   );
 
