@@ -23,10 +23,12 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   OrchestrationV2ThreadProjectionJson,
+  RouterAccountAlias,
   ScheduledTaskId,
   ThreadId,
   TextGenerationError,
   ServerSettingsError,
+  UsageLimitSourceId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -62,6 +64,7 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
+import * as UsageLimitSources from "../usage/UsageLimitSources.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ThreadTitleRegeneration from "./ThreadTitleRegenerationService.ts";
@@ -135,6 +138,8 @@ interface HarnessOptions {
   readonly getLaunchSettings?: ServerSettings.ServerSettingsService["Service"]["getSettings"];
   readonly providers?: ReadonlyArray<ServerProvider>;
   readonly git?: Partial<GitWorkflow.GitWorkflowService["Service"]>;
+  // Fork: what the CLI Proxy hub's router calls an alias now.
+  readonly routerAliases?: Record<string, string>;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -250,6 +255,11 @@ function makeHarness(options: HarnessOptions = {}) {
           ? Layer.empty
           : Layer.mock(ServerSettings.ServerSettingsService)({
               getSettings: options.getLaunchSettings,
+            }),
+        options.routerAliases === undefined
+          ? Layer.empty
+          : Layer.mock(UsageLimitSources.UsageLimitSources)({
+              routerAlias: () => Effect.succeed((alias) => options.routerAliases?.[alias] ?? alias),
             }),
       ),
     ),
@@ -508,6 +518,30 @@ it.effect("runs a thread-bound automation on the provider the thread uses now", 
     assert.deepStrictEqual(run?.modelSelection, claudeModelSelection);
     assert.deepStrictEqual(projection.thread.modelSelection, claudeModelSelection);
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerScheduledTasks)));
+});
+
+it.effect("stores a draft's account choice under the alias the hub's router uses now", () => {
+  const harness = makeHarness({
+    routerAliases: { "account-aaaaaaaaaaaaaaa1": "account-1111111111111111" },
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const launched = yield* launches.launch({
+      ...launchInput({ command: "command:account", thread: "thread:account" }),
+      accountChoice: {
+        sourceId: UsageLimitSourceId.make("hub"),
+        account: RouterAccountAlias.make("account-aaaaaaaaaaaaaaa1"),
+        stall: true,
+      },
+    });
+    const projection = yield* threads.getThreadProjection(launched.threadId);
+    assert.deepStrictEqual(projection.thread.accountChoice, {
+      sourceId: UsageLimitSourceId.make("hub"),
+      account: RouterAccountAlias.make("account-1111111111111111"),
+      stall: true,
+    });
+  }).pipe(Effect.provide(harness.layer));
 });
 
 it.effect("retains automation and sender attribution while a message waits in the queue", () => {

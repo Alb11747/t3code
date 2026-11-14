@@ -311,6 +311,26 @@ describe("ThreadAccountService.set", () => {
     }),
   );
 
+  it.effect("picks by the router's new alias while the snapshot still has the old one", () =>
+    Effect.gen(function* () {
+      const NEW = "account-4444444444444444";
+      const { pins, commands } = yield* setAccount({
+        owner: null,
+        account: NEW,
+        renamed: { [OTHER]: NEW, [OWNER]: "account-5555555555555555" },
+      });
+      expect(pins).toMatchObject([{ account: NEW }]);
+      expect(commands[0]).toMatchObject({ accountChoice: { account: NEW } });
+      const state = yield* Effect.gen(function* () {
+        const service = yield* ThreadAccountService.make;
+        return yield* service.state({ threadId, modelSelection: modelSelection as never });
+      }).pipe(Effect.provide(testLayer({ renamed: { [OWNER]: NEW } })));
+      // The router's pick (OWNER in the stale snapshot) keeps its "in use" mark.
+      expect(state?.next).toBe(NEW);
+      expect(state?.accounts.map((account) => account.routerAlias)).toContain(NEW);
+    }),
+  );
+
   it.effect("clears a choice by unpinning every session the thread has had", () =>
     Effect.gen(function* () {
       const { controls, commands } = yield* setAccount({
@@ -452,6 +472,7 @@ describe("ThreadAccountService stored aliases", () => {
       instanceId: "claude",
     };
     const commands: OrchestrationV2ServerCommand[] = [];
+    const settingsPatches: Array<unknown> = [];
     const dispatched = Deferred.makeUnsafe<void>();
     return Effect.gen(function* () {
       const service = yield* ThreadAccountService.make;
@@ -462,13 +483,20 @@ describe("ThreadAccountService stored aliases", () => {
       });
       yield* Deferred.await(dispatched);
       // A choice under neither alias may name an account that returns, so it stays, and a pick
-      // made after the read is not overwritten.
+      // or wait setting changed after the read is not overwritten.
       expect(commands).toEqual([
         {
           type: "thread.account-choice.set",
           commandId: expect.stringMatching(/^thread-account-alias:thread-2:/),
           threadId: "thread-2",
-          accountChoice: { sourceId: "hub", account: OWNER, stall: true, instanceId: "claude" },
+          accountChoice: { sourceId: "hub", account: OWNER, stall: false, instanceId: "claude" },
+        },
+      ]);
+      expect(settingsPatches).toEqual([
+        {
+          usageLimitSources: {
+            hub: { url: "http://hub.test", steers: { claude: OWNER, codex: OTHER } },
+          },
         },
       ]);
     }).pipe(
@@ -476,10 +504,16 @@ describe("ThreadAccountService stored aliases", () => {
         testLayer({
           commands,
           dispatched,
+          settingsPatches,
+          settings: {
+            usageLimitSources: {
+              hub: { url: "http://hub.test", steers: { claude: LEGACY_OWNER, codex: OTHER } },
+            },
+          },
           renamed: RENAMED,
           choices: {
             "thread-0": { sourceId: "hub", account: OTHER, stall: false },
-            "thread-2": legacyChoice,
+            "thread-2": { ...legacyChoice, stall: false },
           },
           storedThreads: [
             {

@@ -51,6 +51,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as UsageLimitSources from "../usage/UsageLimitSources.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -261,6 +262,8 @@ const make = Effect.gen(function* () {
     strategy.type === "root" && strategy.branch === undefined
       ? git.currentBranch(workspaceRoot).pipe(Effect.orElseSucceed(() => null))
       : Effect.succeed(strategy.branch ?? null);
+  // Fork: optional so launches work without CLI Proxy hubs, as in most tests.
+  const usageLimitSources = yield* Effect.serviceOption(UsageLimitSources.UsageLimitSources);
   const preparationScope = yield* Scope.make("sequential");
   const scheduledLaunches = yield* Ref.make<ReadonlySet<CommandId>>(new Set());
   yield* Effect.addFinalizer(() => Scope.close(preparationScope, Exit.void));
@@ -1205,12 +1208,19 @@ const make = Effect.gen(function* () {
           input.modelSelection.instanceId,
         );
         if (accountChoice !== null) {
+          // A draft can hold an alias the hub's router has renamed since it was picked.
+          const rename = Option.isSome(usageLimitSources)
+            ? yield* usageLimitSources.value.routerAlias(accountChoice.sourceId)
+            : (alias: string) => alias;
           yield* threads
             .dispatch({
               type: "thread.account-choice.set",
               commandId: CommandId.make(`${input.commandId}:account`),
               threadId,
-              accountChoice,
+              accountChoice: {
+                ...accountChoice,
+                account: rename(accountChoice.account) as typeof accountChoice.account,
+              },
             })
             .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
         }

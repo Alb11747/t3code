@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -163,34 +164,44 @@ const CURRENT = "account-aaaaaaaaaaaaaaaa";
 const SPARE = "account-bbbbbbbbbbbbbbbb";
 const HUB = UsageLimitSourceId.make("hub");
 
-// A hub with two Claude slots whose router lists `router.listing` (omitted when undefined).
-function aliasHub(router: { listing: RouterListing; pins?: ReadonlyArray<unknown> }) {
+// A hub with two Claude slots whose router lists `router.listing` (omitted when undefined) and
+// never answers `GET control` while `hangs`, completing `asked` instead.
+function aliasHub(router: {
+  listing: RouterListing;
+  pins?: ReadonlyArray<unknown>;
+  hangs?: boolean;
+  asked?: Deferred.Deferred<void>;
+}) {
   const pins: Array<unknown> = [];
   const http = HttpClient.make((request) =>
-    Effect.sync(() => {
-      const path = new URL(request.url).pathname;
-      const body =
-        request.body._tag === "Uint8Array"
-          ? JSON.parse(new TextDecoder().decode(request.body.body))
-          : undefined;
-      if (path.endsWith("/control/pin")) pins.push(body.account);
-      const answer = path.endsWith("/auth-files")
-        ? {
-            files: [
-              { id: "a.json", auth_index: "7", provider: "claude", email: "a@x.test" },
-              { id: "b.json", auth_index: "8", provider: "claude", email: "b@x.test" },
-            ],
-          }
-        : path.endsWith("/control")
-          ? {
-              pins: router.pins ?? [],
-              ...(router.listing === undefined ? {} : { accounts: router.listing }),
-            }
-          : path.endsWith("/api-call")
-            ? { status_code: 500, body: "" }
-            : { pins: [] };
-      return HttpClientResponse.fromWeb(request, Response.json(answer));
-    }),
+    router.hangs && new URL(request.url).pathname.endsWith("/control")
+      ? (router.asked ? Deferred.succeed(router.asked, undefined) : Effect.void).pipe(
+          Effect.andThen(Effect.never),
+        )
+      : Effect.sync(() => {
+          const path = new URL(request.url).pathname;
+          const body =
+            request.body._tag === "Uint8Array"
+              ? JSON.parse(new TextDecoder().decode(request.body.body))
+              : undefined;
+          if (path.endsWith("/control/pin")) pins.push(body.account);
+          const answer = path.endsWith("/auth-files")
+            ? {
+                files: [
+                  { id: "a.json", auth_index: "7", provider: "claude", email: "a@x.test" },
+                  { id: "b.json", auth_index: "8", provider: "claude", email: "b@x.test" },
+                ],
+              }
+            : path.endsWith("/control")
+              ? {
+                  pins: router.pins ?? [],
+                  ...(router.listing === undefined ? {} : { accounts: router.listing }),
+                }
+              : path.endsWith("/api-call")
+                ? { status_code: 500, body: "" }
+                : { pins: [] };
+          return HttpClientResponse.fromWeb(request, Response.json(answer));
+        }),
   );
   const layer = Layer.mergeAll(
     ServerSettings.ServerSettingsService.layerTest({
@@ -278,6 +289,26 @@ describe("router account aliases", () => {
         Stream.runHead,
       );
       expect(renamed._tag).toBe("Some");
+    }).pipe(Effect.provide(hub.layer), Effect.scoped);
+  });
+
+  it.effect("keeps the last listing when the router stops answering within three seconds", () => {
+    const router: { listing: RouterListing; hangs?: boolean; asked: Deferred.Deferred<void> } = {
+      listing: [{ account: CURRENT, provider: "claude", auth_index: "7" }],
+      asked: Deferred.makeUnsafe<void>(),
+    };
+    const hub = aliasHub(router);
+    return Effect.gen(function* () {
+      const sources = yield* UsageLimitSources.make;
+      yield* sources.refresh;
+      router.hangs = true;
+      const refresh = yield* sources.refresh.pipe(Effect.forkChild);
+      yield* Deferred.await(router.asked);
+      // Startup refreshes can queue behind it, each waiting three seconds; the general management
+      // timeout alone would take 15.
+      yield* TestClock.adjust("14 seconds");
+      yield* Fiber.join(refresh);
+      expect(yield* aliasesOf(sources)).toEqual([CURRENT, undefined]);
     }).pipe(Effect.provide(hub.layer), Effect.scoped);
   });
 });

@@ -40,6 +40,7 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -228,6 +229,18 @@ export const make = Effect.gen(function* () {
   const usageResetSnooze = yield* UsageResetSnoozeService.make;
   const api = sources;
 
+  // A snapshot keeps the aliases of its last refresh, which can trail the router's listing.
+  const accountsOf = Effect.fn("ThreadAccounts.accountsOf")(function* (
+    source: UsageLimitSourceSnapshot,
+  ) {
+    const rename = yield* sources.routerAlias(source.id);
+    return source.accounts.map((account) =>
+      account.routerAlias === undefined
+        ? account
+        : { ...account, routerAlias: rename(account.routerAlias) as RouterAccountAlias },
+    );
+  });
+
   const resolveTarget = Effect.fn("ThreadAccounts.resolveTarget")(function* (
     instanceId: ProviderInstanceId,
   ) {
@@ -237,10 +250,9 @@ export const make = Effect.gen(function* () {
     const routerProvider = provider ? routerProviderOf(provider.driver) : undefined;
     if (!provider || !routerProvider) return null;
     const source = hubSourceOf(provider, yield* sources.current);
-    const accounts =
-      source?.accounts.filter(
-        (account) => account.driver === provider.driver && account.routerAlias !== undefined,
-      ) ?? [];
+    const accounts = (source ? yield* accountsOf(source) : []).filter(
+      (account) => account.driver === provider.driver && account.routerAlias !== undefined,
+    );
     if (!source || accounts.length < 2) return null;
     const hub = yield* sources.hub(source.id);
     return hub === null ? null : { source, accounts, routerProvider, hub, instanceId };
@@ -261,15 +273,19 @@ export const make = Effect.gen(function* () {
     const searched = (yield* sources.current).filter(
       (source) => sourceId === undefined || source.id === sourceId,
     );
-    const candidates = searched.flatMap((source) =>
-      source.accounts
-        .filter(
-          (account) =>
-            account.routerAlias !== undefined &&
-            (provider === undefined || routerProviderOf(account.driver) === provider),
-        )
-        .map((account) => ({ source, account })),
-    );
+    const candidates = (yield* Effect.forEach(searched, (source) =>
+      accountsOf(source).pipe(
+        Effect.map((accounts) =>
+          accounts
+            .filter(
+              (account) =>
+                account.routerAlias !== undefined &&
+                (provider === undefined || routerProviderOf(account.driver) === provider),
+            )
+            .map((account) => ({ source, account })),
+        ),
+      ),
+    )).flat();
     // Only the hub whose router renamed a legacy alias knows it.
     const renamed = new Set(
       (yield* Effect.forEach(searched, (source) => sources.routerAlias(source.id)))
@@ -772,11 +788,15 @@ export const make = Effect.gen(function* () {
         routing({ sourceId: source.id }).pipe(
           // Stock hubs have no quota router to read.
           Effect.orElseSucceed(() => null),
-          Effect.map((routes) => ({
+          // After the routing read, which can bring a newer listing.
+          Effect.flatMap((routes) =>
+            accountsOf(source).pipe(Effect.map((accounts) => ({ routes, accounts }))),
+          ),
+          Effect.map(({ routes, accounts }) => ({
             sourceId: source.id,
             label: source.label,
             ...(source.error ? { error: source.error } : {}),
-            accounts: source.accounts.map((account): AccountUsageSummary => ({
+            accounts: accounts.map((account): AccountUsageSummary => ({
               driver: account.driver,
               ...(account.routerAlias ? { account: account.routerAlias } : {}),
               ...(account.email ? { email: account.email } : {}),
@@ -939,8 +959,23 @@ export const make = Effect.gen(function* () {
   const renameChoices = Effect.fn("ThreadAccounts.renameChoices")(function* (
     sourceId: UsageLimitSourceId,
   ) {
-    const threads = yield* projections.getThreadsWithAccountChoices(sourceId);
     const rename = yield* sources.routerAlias(sourceId);
+    // Saved steers too: after a management-key change no legacy alias would match them.
+    const config = (yield* settingsService.getSettings).usageLimitSources[sourceId];
+    if (config?.steers) {
+      const steers = Object.fromEntries(
+        Object.entries(config.steers).map(([provider, account]) => [
+          provider,
+          account === undefined ? account : (rename(account) as RouterAccountAlias),
+        ]),
+      );
+      if (!Equal.equals(steers, config.steers)) {
+        yield* settingsService.updateSettings({
+          usageLimitSources: { [sourceId]: { ...config, steers } },
+        });
+      }
+    }
+    const threads = yield* projections.getThreadsWithAccountChoices(sourceId);
     for (const thread of threads) {
       const choice = thread.accountChoice;
       if (!choice) continue;
@@ -956,7 +991,7 @@ export const make = Effect.gen(function* () {
           `thread-account-alias:${thread.id}:${DateTime.toEpochMillis(yield* DateTime.now)}`,
         ),
         threadId: thread.id,
-        accountChoice: { ...choice, account },
+        accountChoice: { ...stored, account },
       });
     }
   });
@@ -1005,9 +1040,10 @@ export const make = Effect.gen(function* () {
       const account = (yield* sources.routerAlias(choice.sourceId))(
         choice.account,
       ) as RouterAccountAlias;
-      const email = (yield* sources.current)
-        .find((source) => source.id === choice.sourceId)
-        ?.accounts.find((entry) => entry.routerAlias === account)?.email;
+      const source = (yield* sources.current).find((entry) => entry.id === choice.sourceId);
+      const email = source
+        ? (yield* accountsOf(source)).find((entry) => entry.routerAlias === account)?.email
+        : undefined;
       return email === undefined ? { account } : { account, email };
     }),
   } satisfies (typeof ThreadAccounts)["Service"];

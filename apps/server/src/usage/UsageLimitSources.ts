@@ -82,6 +82,8 @@ export class UsageLimitSources extends Context.Service<
   >
 >()("t3/usage/UsageLimitSources") {}
 
+const LISTING_TIMEOUT = "3 seconds";
+
 function sourceLabel(id: string, config: UsageLimitSourceConfig): string {
   if (config.label) return config.label;
   const fallback = id.trim() || "Usage limit source";
@@ -129,9 +131,11 @@ export const make = Effect.gen(function* () {
     routerNames.set(sourceId, { listing, legacyOf });
     return previous !== undefined && !Equal.equals(previous.listing, listing);
   };
-  // A failed read keeps the last listing; a hub never read (or without a router) computes aliases.
+  // A failed or slow read keeps the last listing; a hub never read (or without a router) computes
+  // aliases. Bounded like other control reads, since every account read of the refresh waits on it.
   const listingOf = (sourceId: UsageLimitSourceId, hub: CliproxyHub) =>
     api.control(hub).pipe(
+      Effect.timeout(LISTING_TIMEOUT),
       Effect.option,
       Effect.map((control) => {
         if (Option.isSome(control)) observe(sourceId, control.value.accounts);
