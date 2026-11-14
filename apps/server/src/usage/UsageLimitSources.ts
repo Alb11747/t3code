@@ -68,15 +68,13 @@ export class UsageLimitSources extends Context.Service<
       sourceId: UsageLimitSourceId,
     ) => Effect.Effect<(alias: string) => string>;
     /**
-     * Fork: `routerAlias` for the account of a pin (by session), steer (by provider) or end to
-     * send, except that a router rolled back from 0.28.0 matches the controls it lists by alias,
-     * so an existing one for the same account is sent with the alias it lists.
+     * Fork: `routerAlias` for an end to remove, except that a router rolled back from 0.28.0
+     * deletes an end only by the alias it lists, so a listed end for the account keeps that alias.
      */
-    readonly sendAlias: (
+    readonly removedEndAlias: (
       sourceId: UsageLimitSourceId,
       hub: CliproxyHub,
       alias: string,
-      control: { readonly session: string } | { readonly provider: string } | "end",
     ) => Effect.Effect<string>;
   } & Pick<
     CliproxyApi,
@@ -255,11 +253,10 @@ export const make = Effect.gen(function* () {
           : (listing?.find((entry) => entry.legacy_account === alias)?.account ?? alias);
     });
 
-  const sendAlias = Effect.fn("UsageLimitSources.sendAlias")(function* (
+  const removedEndAlias = Effect.fn("UsageLimitSources.removedEndAlias")(function* (
     sourceId: UsageLimitSourceId,
     config: CliproxyHub,
     alias: string,
-    kind: Parameters<UsageLimitSources["Service"]["sendAlias"]>[3],
   ) {
     const rename = yield* routerAlias(sourceId);
     const target = rename(alias);
@@ -269,16 +266,8 @@ export const make = Effect.gen(function* () {
     }
     const current = yield* control(sourceId, config).pipe(Effect.option);
     if (Option.isNone(current)) return target;
-    const { pins, steers, ends } = current.value;
-    const listed =
-      kind === "end"
-        ? (ends ?? [])
-        : "session" in kind
-          ? (pins ?? []).filter(
-              (pin) => pin.session.replace(/^(claude|codex):/, "") === kind.session,
-            )
-          : (steers ?? []).filter((steer) => steer.provider === kind.provider);
-    return listed.find((entry) => rename(entry.account) === target)?.account ?? target;
+    const ends = current.value.ends ?? [];
+    return ends.find((end) => rename(end.account) === target)?.account ?? target;
   });
 
   const nextPickReset = Effect.fn("UsageLimitSources.nextPickReset")(function* (
@@ -328,7 +317,7 @@ export const make = Effect.gen(function* () {
     nextPick: api.nextPick,
     control,
     routerAlias,
-    sendAlias,
+    removedEndAlias,
     pin: api.pin,
     unpin: api.unpin,
     steer: api.steer,

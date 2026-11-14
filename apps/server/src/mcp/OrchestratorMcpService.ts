@@ -829,13 +829,16 @@ function threadStall(
 }
 
 // Fork: a choice made for another provider instance no longer applies.
-function accountOf(thread: OrchestrationV2ThreadProjection["thread"], email: string | undefined) {
+function accountOf(
+  thread: OrchestrationV2ThreadProjection["thread"],
+  described: { readonly account: string; readonly email?: string } | undefined,
+) {
   const choice = threadAccountChoiceFor(thread.accountChoice, thread.modelSelection.instanceId);
   return choice
     ? {
         account: {
-          account: choice.account,
-          ...(email === undefined ? {} : { email }),
+          account: described?.account ?? choice.account,
+          ...(described?.email === undefined ? {} : { email: described.email }),
           waitWhenOut: choice.stall,
         },
       }
@@ -942,7 +945,7 @@ function threadDetail(
   shell: OrchestrationV2ThreadShell,
   nowMs: number,
   firstPage: boolean,
-  accountEmail: string | undefined,
+  account: { readonly account: string; readonly email?: string } | undefined,
 ): OrchestratorMcpThreadDetail {
   const latest = ThreadManagementService.latestRun(projection);
   const active = ThreadManagementService.latestActiveRun(projection);
@@ -990,7 +993,7 @@ function threadDetail(
     ...threadSettlement(projection.thread),
     ...threadSnooze(shell, nowMs),
     ...threadStall(shell),
-    ...accountOf(projection.thread, accountEmail),
+    ...accountOf(projection.thread, account),
     ...threadBackgroundWork(shell),
     createdAt: DateTime.formatIso(projection.thread.createdAt),
     updatedAt: DateTime.formatIso(projection.thread.updatedAt),
@@ -3324,7 +3327,7 @@ const make = Effect.gen(function* () {
           input.beforePosition === undefined &&
           input.itemId === undefined,
         target.thread.accountChoice
-          ? yield* threadAccounts.emailOf(target.thread.accountChoice.account)
+          ? yield* threadAccounts.describeChoice(target.thread.accountChoice)
           : undefined,
       );
       const recentRuns = target.runs

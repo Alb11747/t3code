@@ -210,13 +210,17 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           shell,
           projection: { thread },
         } = yield* readThread(input.threadId);
-        const accounts = yield* (yield* ThreadAccountService.ThreadAccounts)
+        const threadAccounts = yield* ThreadAccountService.ThreadAccounts;
+        const accounts = yield* threadAccounts
           .state({ threadId: thread.id, modelSelection: thread.modelSelection })
           .pipe(Effect.orElseSucceed(() => null));
         const chosen = threadAccountChoiceFor(
           thread.accountChoice,
           thread.modelSelection.instanceId,
         );
+        const chosenAccount = chosen
+          ? (yield* threadAccounts.describeChoice(chosen)).account
+          : null;
         return {
           threadId: thread.id,
           modelSelection: thread.modelSelection,
@@ -228,7 +232,10 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           ...(accounts === null
             ? {}
             : {
-                account: chosen ? { account: chosen.account, waitWhenOut: chosen.stall } : null,
+                account:
+                  chosen && chosenAccount
+                    ? { account: chosenAccount, waitWhenOut: chosen.stall }
+                    : null,
                 accounts: accounts.accounts.flatMap((account) =>
                   account.routerAlias === undefined
                     ? []

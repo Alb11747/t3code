@@ -84,7 +84,7 @@ export const make = Effect.gen(function* () {
       if (hub === null) return;
       yield* sources.pin(hub, {
         sessions: [session],
-        account: yield* sources.sendAlias(choice.sourceId, hub, choice.account, { session }),
+        account: (yield* sources.routerAlias(choice.sourceId))(choice.account),
         stall: choice.stall,
         expiresAt: controlExpiry(yield* DateTime.now),
         // Each pin replaces the last; a plain one would end the move that subagents still follow.
@@ -110,18 +110,16 @@ export const make = Effect.gen(function* () {
       Object.entries(settings.usageLimitSources),
       ([sourceId, config]) =>
         Effect.gen(function* () {
-          const steers = Object.entries(config.steers ?? {}).filter(
-            (entry): entry is [string, string] => entry[1] !== undefined,
+          const accounts = Object.values(config.steers ?? {}).filter(
+            (account): account is string => account !== undefined,
           );
-          if (!config.enabled || steers.length === 0) return;
+          if (!config.enabled || accounts.length === 0) return;
           const hub = yield* sources.hub(sourceId as UsageLimitSourceId);
           if (hub === null) return;
+          const rename = yield* sources.routerAlias(sourceId as UsageLimitSourceId);
           yield* Effect.forEach(
-            steers,
-            ([provider, account]) =>
-              sources
-                .sendAlias(sourceId as UsageLimitSourceId, hub, account, { provider })
-                .pipe(Effect.flatMap((alias) => sources.steer(hub, alias, expiresAt))),
+            accounts,
+            (account) => sources.steer(hub, rename(account), expiresAt),
             { discard: true },
           );
         }).pipe(

@@ -89,7 +89,7 @@ function prepareTurn(input: {
         ServerSettings.ServerSettingsService.layerTest({}),
         Layer.mock(UsageLimitSources.UsageLimitSources)({
           hub: () => Effect.succeed({ url: "http://hub.test", managementKey: "key" }),
-          sendAlias: (_sourceId, _hub, alias) => Effect.succeed(alias),
+          routerAlias: () => Effect.succeed((alias) => alias),
           pin: (_hub, pin) =>
             Effect.sync(() => void pins.push(pin)).pipe(
               Effect.andThen(input.pin ?? Effect.undefined),
@@ -255,11 +255,10 @@ describe("router account aliases", () => {
         router.listing = undefined;
         yield* sources.refresh;
         expect(yield* aliasesOf(sources)).toEqual([LEGACY, "account-69e27c40424fa28a"]);
-        yield* turn(CURRENT);
-        // It matches a pin it already lists by that pin's alias, here the one it loaded.
+        // Also when it already lists the pin under the new alias it loaded.
         router.pins = [{ session: "claude:native", account: CURRENT }];
         yield* turn(CURRENT);
-        expect(hub.pins).toEqual([CURRENT, LEGACY, CURRENT]);
+        expect(hub.pins).toEqual([CURRENT, LEGACY]);
       }).pipe(Effect.provide(hub.layer), Effect.scoped);
     },
   );

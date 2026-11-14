@@ -83,6 +83,8 @@ function testLayer(input: {
   // What the hub's router calls an alias now, as UsageLimitSources.routerAlias answers.
   readonly renamed?: Record<string, string>;
   readonly dispatched?: Deferred.Deferred<void>;
+  // The stored choice per thread now, where it differs from `accountChoice`.
+  readonly choices?: Record<string, unknown>;
 }) {
   return Layer.mergeAll(
     Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
@@ -103,7 +105,7 @@ function testLayer(input: {
       current: Effect.succeed(snapshots),
       streamChanges: Stream.make(snapshots),
       routerAlias: () => Effect.succeed((alias) => input.renamed?.[alias] ?? alias),
-      sendAlias: (_sourceId, _hub, alias) => Effect.succeed(input.renamed?.[alias] ?? alias),
+      removedEndAlias: (_sourceId, _hub, alias) => Effect.succeed(input.renamed?.[alias] ?? alias),
       hub: () => Effect.succeed({ url: "http://hub.test", managementKey: "key" }),
       nextPick: (_hub, request) =>
         Effect.sync(() => {
@@ -132,9 +134,12 @@ function testLayer(input: {
         }),
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
-      getThreadRecords: () =>
+      getThreadRecords: (id) =>
         Effect.succeed({
-          thread: { modelSelection, accountChoice: input.accountChoice },
+          thread: {
+            modelSelection,
+            accountChoice: input.choices?.[id] ?? input.accountChoice,
+          },
           providerThreads: [
             { nativeThreadRef: { nativeId: "native-session" } },
             { nativeThreadRef: { nativeId: "older-session" } },
@@ -440,12 +445,24 @@ describe("ThreadAccountService.routing", () => {
 
 describe("ThreadAccountService stored aliases", () => {
   it.effect("gives stored choices the alias the router renamed theirs to", () => {
+    const legacyChoice = {
+      sourceId: "hub",
+      account: LEGACY_OWNER,
+      stall: true,
+      instanceId: "claude",
+    };
     const commands: OrchestrationV2ServerCommand[] = [];
     const dispatched = Deferred.makeUnsafe<void>();
     return Effect.gen(function* () {
-      yield* ThreadAccountService.make;
+      const service = yield* ThreadAccountService.make;
+      // Agents reading a choice the rename has not reached yet see the current alias.
+      expect(yield* service.describeChoice(legacyChoice as never)).toEqual({
+        account: OWNER,
+        email: "work@example.com",
+      });
       yield* Deferred.await(dispatched);
-      // A choice under neither alias may name an account that returns, so it stays.
+      // A choice under neither alias may name an account that returns, so it stays, and a pick
+      // made after the read is not overwritten.
       expect(commands).toEqual([
         {
           type: "thread.account-choice.set",
@@ -460,20 +477,20 @@ describe("ThreadAccountService stored aliases", () => {
           commands,
           dispatched,
           renamed: RENAMED,
+          choices: {
+            "thread-0": { sourceId: "hub", account: OTHER, stall: false },
+            "thread-2": legacyChoice,
+          },
           storedThreads: [
+            {
+              id: "thread-0",
+              accountChoice: { sourceId: "hub", account: LEGACY_OTHER, stall: false },
+            },
             {
               id: "thread-1",
               accountChoice: { sourceId: "hub", account: ELSEWHERE, stall: false },
             },
-            {
-              id: "thread-2",
-              accountChoice: {
-                sourceId: "hub",
-                account: LEGACY_OWNER,
-                stall: true,
-                instanceId: "claude",
-              },
-            },
+            { id: "thread-2", accountChoice: legacyChoice },
           ],
         }),
       ),

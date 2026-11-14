@@ -14,6 +14,7 @@ import {
   RouterProvider,
   type ServerProvider,
   type ServerProviderUsageLimits,
+  type ThreadAccountChoice,
   type ThreadAccountEndInput,
   type ThreadAccountMarginInput,
   type ThreadAccountPreview,
@@ -193,8 +194,10 @@ export class ThreadAccounts extends Context.Reference<{
   readonly usageResetAt: (
     threadId: ThreadId,
   ) => Effect.Effect<UsageResetSnooze, ThreadAccountError>;
-  /** The email of a hub account, for agent-facing replies that name it by alias. */
-  readonly emailOf: (alias: RouterAccountAlias) => Effect.Effect<string | undefined>;
+  /** A stored choice's account as its hub's router names it now, with its email, for agents. */
+  readonly describeChoice: (
+    choice: ThreadAccountChoice,
+  ) => Effect.Effect<{ readonly account: RouterAccountAlias; readonly email?: string }>;
 }>("t3/usage/ThreadAccounts", {
   defaultValue: () => ({
     state: () => Effect.succeed(null),
@@ -209,7 +212,7 @@ export class ThreadAccounts extends Context.Reference<{
       Effect.fail(new UsageLimitSourceError({ detail: "Reset credits are unavailable." })),
     redeem: () => Effect.fail(fail("Reset credits are unavailable.")),
     usageResetAt: () => Effect.fail(fail("Usage resets are unavailable.")),
-    emailOf: () => Effect.undefined,
+    describeChoice: (choice) => Effect.succeed({ account: choice.account }),
   }),
 }) {}
 
@@ -469,7 +472,7 @@ export const make = Effect.gen(function* () {
       }
       yield* api.pin(target.hub, {
         sessions: [session],
-        account: yield* sources.sendAlias(target.source.id, target.hub, account, { session }),
+        account: rename(account),
         stall,
         expiresAt: controlExpiry(now),
         move: moved,
@@ -545,7 +548,7 @@ export const make = Effect.gen(function* () {
         }
         yield* api.steer(
           located.hub,
-          yield* sources.sendAlias(located.source.id, located.hub, located.alias, { provider }),
+          (yield* sources.routerAlias(located.source.id))(located.alias),
           controlExpiry(yield* DateTime.now),
         );
         return yield* saveSteer(located.source.id, provider, located.alias);
@@ -591,9 +594,7 @@ export const make = Effect.gen(function* () {
     } else {
       yield* api.steer(
         target.hub,
-        yield* sources.sendAlias(target.source.id, target.hub, account, {
-          provider: target.routerProvider,
-        }),
+        (yield* sources.routerAlias(target.source.id))(account),
         controlExpiry(yield* DateTime.now),
       );
     }
@@ -864,7 +865,9 @@ export const make = Effect.gen(function* () {
     const located = yield* locate(input.account);
     yield* api.subscriptionEnd(
       located.hub,
-      yield* sources.sendAlias(located.source.id, located.hub, located.alias, "end"),
+      endsAt === null
+        ? yield* sources.removedEndAlias(located.source.id, located.hub, located.alias)
+        : (yield* sources.routerAlias(located.source.id))(located.alias),
       endsAt,
     );
   });
@@ -943,6 +946,10 @@ export const make = Effect.gen(function* () {
       if (!choice) continue;
       const account = rename(choice.account) as RouterAccountAlias;
       if (account === choice.account) continue;
+      // A pick made since the read wins over the rename.
+      const latest = yield* orchestrator.getThreadRecords(thread.id, []).pipe(Effect.option);
+      const stored = Option.isSome(latest) ? latest.value.thread.accountChoice : undefined;
+      if (stored?.sourceId !== sourceId || stored.account !== choice.account) continue;
       yield* orchestrator.dispatch({
         type: "thread.account-choice.set",
         commandId: CommandId.make(
@@ -992,13 +999,16 @@ export const make = Effect.gen(function* () {
     consumeResetCredit,
     redeem: (input: ThreadAccountRedeemInput) => asThreadAccountError(redeem(input)),
     usageResetAt: (threadId: ThreadId) => asThreadAccountError(usageResetAt(threadId)),
-    emailOf: Effect.fn("ThreadAccounts.emailOf")(function* (alias: RouterAccountAlias) {
-      for (const source of yield* sources.current) {
-        const renamed = (yield* sources.routerAlias(source.id))(alias);
-        const account = source.accounts.find((entry) => entry.routerAlias === renamed);
-        if (account !== undefined) return account.email;
-      }
-      return undefined;
+    describeChoice: Effect.fn("ThreadAccounts.describeChoice")(function* (
+      choice: ThreadAccountChoice,
+    ) {
+      const account = (yield* sources.routerAlias(choice.sourceId))(
+        choice.account,
+      ) as RouterAccountAlias;
+      const email = (yield* sources.current)
+        .find((source) => source.id === choice.sourceId)
+        ?.accounts.find((entry) => entry.routerAlias === account)?.email;
+      return email === undefined ? { account } : { account, email };
     }),
   } satisfies (typeof ThreadAccounts)["Service"];
 });
