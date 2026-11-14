@@ -2652,6 +2652,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               isPinned,
               isSettled,
               autoSettleEnabled: thread.autoSettleDisabledAt == null,
+              autoSettleAlways:
+                thread.autoSettleAlwaysAt === undefined
+                  ? undefined
+                  : thread.autoSettleAlwaysAt != null,
               compactBeforeCacheExpires: thread.compactBeforeCacheExpires,
               isSnoozed,
               canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
@@ -2764,10 +2768,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             return;
           }
           case "auto-settle:enabled":
+          case "auto-settle:always":
           case "auto-settle:disabled": {
             const result = await setThreadAutoSettle(
               threadRef,
-              clicked.value === "auto-settle:enabled",
+              clicked.value !== "auto-settle:disabled",
+              clicked.value === "auto-settle:always",
             );
             if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
               const error = squashAtomCommandFailure(result);

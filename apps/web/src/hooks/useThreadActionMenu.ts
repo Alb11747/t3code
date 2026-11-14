@@ -149,6 +149,8 @@ export function useThreadActionMenu(input: {
         isPinned: thread.pinnedAt != null,
         isSettled: supports.settlement && thread.settledOverride === "settled",
         autoSettleEnabled: thread.autoSettleDisabledAt == null,
+        autoSettleAlways:
+          thread.autoSettleAlwaysAt === undefined ? undefined : thread.autoSettleAlwaysAt != null,
         compactBeforeCacheExpires: thread.compactBeforeCacheExpires,
         isSnoozed: supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() }),
         canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
@@ -250,9 +252,14 @@ export function useThreadActionMenu(input: {
           return;
         }
         case "auto-settle:enabled":
+        case "auto-settle:always":
         case "auto-settle:disabled":
           await reportFailure("Failed to update auto-settle", () =>
-            setThreadAutoSettle(threadRef, action === "auto-settle:enabled"),
+            setThreadAutoSettle(
+              threadRef,
+              action !== "auto-settle:disabled",
+              action === "auto-settle:always",
+            ),
           );
           return;
         case "compact-before-expiry:default":

@@ -15,6 +15,7 @@ export type ThreadActionMenuId =
   | "unsettle"
   | "auto-settle"
   | "auto-settle:enabled"
+  | "auto-settle:always"
   | "auto-settle:disabled"
   | "compact-before-expiry"
   | "compact-before-expiry:default"
@@ -85,6 +86,8 @@ export interface ThreadActionMenuState {
   readonly isPinned: boolean;
   readonly isSettled: boolean;
   readonly autoSettleEnabled: boolean;
+  /** Undefined when the server cannot force auto-settle on for one thread. */
+  readonly autoSettleAlways?: boolean | undefined;
   /** Undefined when the server has no per-thread idle compaction. */
   readonly compactBeforeCacheExpires?: boolean | null | undefined;
   readonly isSnoozed: boolean;
@@ -223,8 +226,17 @@ export function buildThreadActionMenuItems(
               {
                 id: "auto-settle:enabled" as const,
                 label: "Follow settings",
-                checked: state.autoSettleEnabled,
+                checked: state.autoSettleEnabled && state.autoSettleAlways !== true,
               },
+              ...(state.autoSettleAlways === undefined
+                ? []
+                : [
+                    {
+                      id: "auto-settle:always" as const,
+                      label: "Always",
+                      checked: state.autoSettleAlways,
+                    },
+                  ]),
               {
                 id: "auto-settle:disabled" as const,
                 label: "Never",

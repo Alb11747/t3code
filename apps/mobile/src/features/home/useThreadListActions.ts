@@ -201,6 +201,7 @@ export function useThreadListActions(): {
   readonly setThreadAutoSettle: (
     thread: EnvironmentThreadShell,
     enabled: boolean,
+    always?: boolean,
   ) => Promise<boolean>;
   readonly moveThread: (
     thread: EnvironmentThreadShell,
@@ -467,7 +468,11 @@ export function useThreadListActions(): {
     offerUndo(thread, "Unpinned", claim, plan);
     return true;
   };
-  const setThreadAutoSettle = async (thread: EnvironmentThreadShell, enabled: boolean) => {
+  const setThreadAutoSettle = async (
+    thread: EnvironmentThreadShell,
+    enabled: boolean,
+    always?: boolean,
+  ) => {
     if (!environmentSupportsAutoSettleOptOut(thread.environmentId)) {
       Dialog.alert(
         "Could not update auto-settle",
@@ -478,7 +483,7 @@ export function useThreadListActions(): {
     selectionHaptic();
     const result = await setAutoSettleMutation({
       environmentId: thread.environmentId,
-      input: { threadId: thread.id, enabled },
+      input: { threadId: thread.id, enabled, ...(always ? { always } : {}) },
     });
     if (result._tag === "Failure") {
       const error = Cause.squash(result.cause);

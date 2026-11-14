@@ -710,7 +710,11 @@ export function useThreadActions() {
     });
   };
 
-  const setThreadAutoSettle = async (target: ScopedThreadRef, enabled: boolean) => {
+  const setThreadAutoSettle = async (
+    target: ScopedThreadRef,
+    enabled: boolean,
+    always?: boolean,
+  ) => {
     if (!readEnvironmentSupportsAutoSettleOptOut(target.environmentId)) {
       return AsyncResult.failure(
         Cause.fail(
@@ -723,7 +727,7 @@ export function useThreadActions() {
     }
     return setThreadAutoSettleMutation({
       environmentId: target.environmentId,
-      input: { threadId: target.threadId, enabled },
+      input: { threadId: target.threadId, enabled, ...(always ? { always } : {}) },
     });
   };
 

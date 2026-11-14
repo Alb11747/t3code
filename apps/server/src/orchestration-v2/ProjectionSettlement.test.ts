@@ -306,6 +306,11 @@ it.effect(
       const rolledBack = yield* createThread("rolled-back-background");
       yield* createItem(rolledBack, yield* createRun(rolledBack, "rolled_back"), "running");
       yield* createRun(rolledBack, "completed", 2);
+      const always = yield* createThread("always", { autoSettleAlwaysAt: old });
+      yield* createRun(always);
+      yield* createRun(
+        yield* createThread("always-pinned", { autoSettleAlwaysAt: old, pinnedAt: old }),
+      );
       const roster = yield* createThread("provider-roster");
       yield* createRun(roster);
       yield* store.apply({
@@ -343,7 +348,13 @@ it.effect(
       );
       assert.deepEqual(
         new Set(eligible.map((thread) => thread.id)),
-        new Set([idle, completed, queued, woke, background, persistent, rolledBack]),
+        new Set([idle, completed, queued, woke, background, persistent, rolledBack, always]),
+      );
+      assert.deepEqual(
+        (yield* store.getSettlementCandidates(undefined, { alwaysOnly: true })).map(
+          (thread) => thread.id,
+        ),
+        [always],
       );
       assert.deepEqual(
         new Set(eligible.map((thread) => thread.id)),

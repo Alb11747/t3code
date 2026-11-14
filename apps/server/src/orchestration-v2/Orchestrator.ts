@@ -4214,10 +4214,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           };
         }
         case "thread.auto-settle.set": {
-          const unchanged = command.enabled === (thread.autoSettleDisabledAt == null);
+          const always = command.enabled && command.always === true;
+          const unchanged =
+            command.enabled === (thread.autoSettleDisabledAt == null) &&
+            always === (thread.autoSettleAlwaysAt != null);
           return {
             ...thread,
             autoSettleDisabledAt: command.enabled ? null : (thread.autoSettleDisabledAt ?? now),
+            autoSettleAlwaysAt: always ? (thread.autoSettleAlwaysAt ?? now) : null,
             updatedAt: unchanged ? thread.updatedAt : now,
           };
         }

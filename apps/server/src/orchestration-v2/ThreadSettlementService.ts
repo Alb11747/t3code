@@ -6,6 +6,7 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
   CommandId,
+  DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   isOrchestrationV2WorkActive,
   type ThreadId,
   type OrchestrationV2DomainEvent,
@@ -202,6 +203,11 @@ export function resolveAutoSettlementAt(input: {
   readonly autoSettleKeepPullRequests?: boolean;
 }): DateTime.Utc | null {
   const { thread } = input;
+  // Always applies every rule, with the default window where Settings turn inactivity off.
+  const always = thread.autoSettleAlwaysAt != null;
+  const autoSettleAfterDays = always
+    ? (input.autoSettleAfterDays ?? DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)
+    : input.autoSettleAfterDays;
   let pullRequest = input.pullRequest;
   const links = settlementPullRequestLinks(thread.pullRequests ?? []);
   if (links.some((link) => link.snapshot === null)) return null;
@@ -231,7 +237,10 @@ export function resolveAutoSettlementAt(input: {
       toMillis(thread.latestRunStartedAt),
       toMillis(thread.latestRunCompletedAt),
     ]) ?? DateTime.toEpochMillis(thread.createdAt);
-  if (pullRequest !== null && pullRequestSettles(thread, pullRequest, input.autoSettleOnMerge)) {
+  if (
+    pullRequest !== null &&
+    pullRequestSettles(thread, pullRequest, always || input.autoSettleOnMerge)
+  ) {
     return DateTime.makeUnsafe(activityAtMs);
   }
   const hasPullRequest =
@@ -239,14 +248,14 @@ export function resolveAutoSettlementAt(input: {
     pullRequest !== null ||
     thread.linkedPullRequest != null ||
     thread.branchPullRequest != null;
-  if (input.autoSettleKeepPullRequests === true && hasPullRequest) return null;
-  if (input.autoSettleAfterDays === null) return null;
+  if (!always && input.autoSettleKeepPullRequests === true && hasPullRequest) return null;
+  if (autoSettleAfterDays === null) return null;
   const snoozedUntilMs = toMillis(thread.snoozedUntil);
   const timerWakeAtMs =
     snoozedUntilMs !== null && snoozedUntilMs <= input.nowMs ? snoozedUntilMs : null;
   const inactivityAtMs =
     latestMillis([activityAtMs, toMillis(thread.lastSnoozeWakeAt), timerWakeAtMs]) ?? activityAtMs;
-  return inactivityAtMs < input.nowMs - input.autoSettleAfterDays * DAY_MS
+  return inactivityAtMs < input.nowMs - autoSettleAfterDays * DAY_MS
     ? DateTime.makeUnsafe(inactivityAtMs)
     : null;
 }
@@ -320,10 +329,10 @@ export const make = Effect.gen(function* () {
     threadId?: ThreadId,
   ) {
     const settings = yield* settingsService.getSettings;
-    if (!autoSettlementConfigured(settings)) {
-      return;
-    }
-    const threads = yield* projections.getSettlementCandidates(threadId);
+    // With every rule off, only threads set to Always can settle.
+    const threads = yield* projections.getSettlementCandidates(threadId, {
+      alwaysOnly: !autoSettlementConfigured(settings),
+    });
     if (threads.length === 0) return;
     const projectShells = yield* projectStore.listShells();
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);

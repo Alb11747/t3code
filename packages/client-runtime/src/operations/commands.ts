@@ -531,6 +531,7 @@ export const pinThread = Effect.fn("EnvironmentCommands.pinThread")(function* (
 
 export interface SetThreadAutoSettleInput extends ThreadCommandInput {
   readonly enabled: boolean;
+  readonly always?: boolean;
 }
 export const setThreadAutoSettle = Effect.fn("EnvironmentCommands.setThreadAutoSettle")(function* (
   input: SetThreadAutoSettleInput,
@@ -540,6 +541,7 @@ export const setThreadAutoSettle = Effect.fn("EnvironmentCommands.setThreadAutoS
     commandId: yield* allocateCommandId(input),
     threadId: input.threadId,
     enabled: input.enabled,
+    ...(input.always === undefined ? {} : { always: input.always }),
   });
 });
 

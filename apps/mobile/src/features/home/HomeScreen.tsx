@@ -126,6 +126,7 @@ interface HomeScreenProps {
   readonly onSetThreadAutoSettle: (
     thread: EnvironmentThreadShell,
     enabled: boolean,
+    always?: boolean,
   ) => Promise<boolean>;
   readonly onMoveThread: (
     thread: EnvironmentThreadShell,

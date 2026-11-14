@@ -684,7 +684,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly onArchiveThread: (thread: EnvironmentThreadShell) => void;
   readonly onPinThread: (thread: EnvironmentThreadShell) => void;
   readonly onUnpinThread: (thread: EnvironmentThreadShell) => void;
-  readonly onSetThreadAutoSettle: (thread: EnvironmentThreadShell, enabled: boolean) => void;
+  readonly onSetThreadAutoSettle: (
+    thread: EnvironmentThreadShell,
+    enabled: boolean,
+    always?: boolean,
+  ) => void;
   readonly settlementSupported: boolean;
   readonly snoozeSupported: boolean;
   readonly snoozePresets: ReadonlyArray<SnoozePresetSetting> | undefined;
@@ -837,7 +841,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const handlePin = useCallback(() => onPinThread(thread), [onPinThread, thread]);
   const handleUnpin = useCallback(() => onUnpinThread(thread), [onUnpinThread, thread]);
   const handleSetAutoSettle = useCallback(
-    (enabled: boolean) => onSetThreadAutoSettle(thread, enabled),
+    (enabled: boolean, always?: boolean) => onSetThreadAutoSettle(thread, enabled, always),
     [onSetThreadAutoSettle, thread],
   );
   const handleMoveUp = useCallback(() => onMoveThread?.(thread, "up"), [onMoveThread, thread]);
@@ -922,8 +926,21 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 {
                   id: "auto-settle:enabled",
                   title: "Follow settings",
-                  state: thread.autoSettleDisabledAt == null ? "on" : "off",
+                  state:
+                    thread.autoSettleDisabledAt == null && thread.autoSettleAlwaysAt == null
+                      ? "on"
+                      : "off",
                 },
+                // Servers without per-thread Always omit the field.
+                ...(thread.autoSettleAlwaysAt === undefined
+                  ? []
+                  : [
+                      {
+                        id: "auto-settle:always",
+                        title: "Always",
+                        state: thread.autoSettleAlwaysAt == null ? "off" : "on",
+                      } satisfies MenuAction,
+                    ]),
                 {
                   id: "auto-settle:disabled",
                   title: "Never",
@@ -964,6 +981,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     [
       props.autoSettleOptOutSupported,
       thread.autoSettleDisabledAt,
+      thread.autoSettleAlwaysAt,
       thread.compactBeforeCacheExpires,
     ],
   );
@@ -1082,6 +1100,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       if (nativeEvent.event === "pin") handlePin();
       if (nativeEvent.event === "unpin") handleUnpin();
       if (nativeEvent.event === "auto-settle:enabled") handleSetAutoSettle(true);
+      if (nativeEvent.event === "auto-settle:always") handleSetAutoSettle(true, true);
       if (nativeEvent.event === "auto-settle:disabled") handleSetAutoSettle(false);
       if (nativeEvent.event.startsWith("compact-before-expiry:"))
         void updateMetadata({

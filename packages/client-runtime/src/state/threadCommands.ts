@@ -439,6 +439,13 @@ export function createThreadEnvironmentAtoms<R, E>(
     setAutoSettle: optimistic.wrap(commands.setAutoSettle, (thread, input, now) => ({
       ...thread,
       autoSettleDisabledAt: input.enabled ? null : (thread.autoSettleDisabledAt ?? now),
+      // Keep the field absent for servers that never sent it, which hides Always.
+      ...(thread.autoSettleAlwaysAt === undefined && input.always !== true
+        ? {}
+        : {
+            autoSettleAlwaysAt:
+              input.enabled && input.always === true ? (thread.autoSettleAlwaysAt ?? now) : null,
+          }),
     })),
     pin: optimistic.wrap(commands.pin, (thread, input, now) => ({
       ...thread,

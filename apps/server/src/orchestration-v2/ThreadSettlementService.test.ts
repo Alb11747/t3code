@@ -344,6 +344,53 @@ describe("resolveAutoSettlementAt", () => {
     ).toEqual(at(-1_000));
   });
 
+  it("applies every rule to an Always thread even when Settings turn them off", () => {
+    const input = {
+      thread: shell({
+        latestUserMessageAt: at(-8 * DAY_MS),
+        autoSettleAlwaysAt: at(-DAY_MS),
+        linkedPullRequest: {
+          projectId: ProjectId.make("project-1"),
+          repository: "owner/repo",
+          number: 1,
+          url: "https://example.test/owner/repo/pull/1",
+        },
+      }),
+      pullRequest: null,
+      nowMs: NOW_MS,
+      autoSettleAfterDays: null,
+      autoSettleOnMerge: false,
+      autoSettleKeepPullRequests: true,
+    };
+    expect(ThreadSettlementService.resolveAutoSettlementAt(input)).toEqual(at(-8 * DAY_MS));
+    expect(
+      ThreadSettlementService.resolveAutoSettlementAt({
+        ...input,
+        thread: { ...input.thread, latestUserMessageAt: at(-6 * DAY_MS) },
+      }),
+    ).toBeNull();
+    expect(
+      ThreadSettlementService.resolveAutoSettlementAt({
+        ...input,
+        thread: { ...input.thread, latestUserMessageAt: at(-2 * DAY_MS) },
+        autoSettleAfterDays: 1,
+      }),
+    ).toEqual(at(-2 * DAY_MS));
+    expect(
+      ThreadSettlementService.resolveAutoSettlementAt({
+        ...input,
+        thread: { ...input.thread, latestUserMessageAt: at(-2 * 60 * 60 * 1_000) },
+        pullRequest: { state: "merged", mergedAt: DateTime.formatIso(at(-1)) },
+      }),
+    ).toEqual(at(-2 * 60 * 60 * 1_000));
+    expect(
+      ThreadSettlementService.resolveAutoSettlementAt({
+        ...input,
+        thread: { ...input.thread, pinnedAt: at(-DAY_MS) },
+      }),
+    ).toBeNull();
+  });
+
   it("settles on merge only after the user's last action and preserves the activity time", () => {
     const thread = shell({
       latestUserMessageAt: at(-2 * 60 * 60 * 1_000),
@@ -884,6 +931,32 @@ describe("ThreadSettlementServiceV2 worker", () => {
           yield* startHarness(service, fixture.activation, fixture.snapshotReads);
           const commands = yield* Ref.get(fixture.commands);
           expect(commands.map((command) => command.threadId)).toEqual([thread.id]);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect("settles only Always threads while every settlement rule is off", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const always = makeThread("always", {
+          autoSettleAlwaysAt: DateTime.makeUnsafe("2026-08-21T00:00:00.000Z"),
+        });
+        const follow = makeThread("follow-settings");
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([always, follow]),
+          settings: {
+            ...DEFAULT_SERVER_SETTINGS,
+            sidebarAutoSettleAfterDays: null,
+            sidebarAutoSettleOnMerge: false,
+          },
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          const commands = yield* Ref.get(fixture.commands);
+          expect(commands.map((command) => command.threadId)).toEqual([always.id]);
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),
