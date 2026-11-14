@@ -303,15 +303,15 @@ function ThreadAccountPickerChip(
             {chosen ? (
               deviates && next ? (
                 <>
-                  {accountShortLabel(chosen)}
+                  {accountShortLabel(chosen, state.accounts)}
                   <ArrowRightIcon aria-hidden className="size-3" />
-                  {accountShortLabel(next)}
+                  {accountShortLabel(next, state.accounts)}
                 </>
               ) : (
-                accountShortLabel(chosen)
+                accountShortLabel(chosen, state.accounts)
               )
             ) : next ? (
-              `Auto · ${accountShortLabel(next)}`
+              `Auto · ${accountShortLabel(next, state.accounts)}`
             ) : (
               "Auto"
             )}
@@ -335,7 +335,9 @@ function ThreadAccountPickerChip(
               disabled={busy || (!isDraft && !permitted)}
               title="Automatic"
               detail={
-                next ? `Router picks · would use ${accountShortLabel(next)} next` : "Router picks"
+                next
+                  ? `Router picks · would use ${accountShortLabel(next, state.accounts)} next`
+                  : "Router picks"
               }
               onSelect={() => pick(null)}
             />
@@ -375,8 +377,9 @@ function ThreadAccountPickerChip(
               </label>
               {deviates && chosen && next ? (
                 <p className="text-xs text-warning-foreground">
-                  {accountShortLabel(chosen)} cannot take the next request, so it goes to{" "}
-                  {accountShortLabel(next)}. Turn on Wait when it runs out to wait instead.
+                  {accountShortLabel(chosen, state.accounts)} cannot take the next request, so it
+                  goes to {accountShortLabel(next, state.accounts)}. Turn on Wait when it runs out
+                  to wait instead.
                 </p>
               ) : null}
               {compactionNote ? (
@@ -399,7 +402,8 @@ function ThreadAccountPickerChip(
                   disabled={busy || !permitted}
                   onClick={() => void steer(null)}
                 >
-                  Stop sending new {provider} threads to {accountShortLabel(steered)}
+                  Stop sending new {provider} threads to{" "}
+                  {accountShortLabel(steered, state.accounts)}
                 </Button>
               ) : null}
             </div>

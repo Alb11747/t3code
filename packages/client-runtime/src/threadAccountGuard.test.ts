@@ -1,7 +1,11 @@
 import type { RouterAccountAlias, ThreadAccountPreview } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { accountRequestKind, createAccountSendGuard } from "./threadAccountGuard.ts";
+import {
+  accountRequestKind,
+  accountShortLabel,
+  createAccountSendGuard,
+} from "./threadAccountGuard.ts";
 
 const MAX = "account-1111111111111111" as RouterAccountAlias;
 const PRO = "account-2222222222222222" as RouterAccountAlias;
@@ -108,5 +112,26 @@ describe("accountRequestKind", () => {
     ["fix the bug", false, "next"],
   ] as const)("%j (compacts first: %s) is %s", (text, compactsFirst, kind) => {
     expect(accountRequestKind({ text, compactsFirst })).toBe(kind);
+  });
+});
+
+describe("accountShortLabel", () => {
+  it("keeps the domain when two accounts share the name before it", () => {
+    const account = (id: string, email: string) => ({
+      id,
+      email,
+      routerAlias: MAX,
+      plan: undefined,
+    });
+    const peers = [
+      account("a", "alb@gmail.com"),
+      account("b", "alb@hotmail.com"),
+      account("c", "work@x.com"),
+    ];
+    expect(peers.map((peer) => accountShortLabel(peer, peers))).toEqual([
+      "alb@gmail.com",
+      "alb@hotmail.com",
+      "work",
+    ]);
   });
 });

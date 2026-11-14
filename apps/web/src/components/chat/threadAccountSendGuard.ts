@@ -61,7 +61,7 @@ export function compactionAccountNote(input: {
   const from = input.current ?? input.next;
   if (input.compaction === null || from === null || input.compaction === from) return null;
   const account = input.accounts.find((candidate) => candidate.routerAlias === input.compaction);
-  return `After compacting, continues on ${account ? accountShortLabel(account) : input.compaction}.`;
+  return `After compacting, continues on ${account ? accountShortLabel(account, input.accounts) : input.compaction}.`;
 }
 
 /** The chip's note for the Compact controls; reads the chip's own queries, never more. */

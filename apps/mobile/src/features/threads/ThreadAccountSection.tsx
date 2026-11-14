@@ -178,9 +178,9 @@ export function ThreadAccountSection(props: {
   const afterCompaction = byAlias(previewAccount(compactionPreview.data));
   const current = nextPreview.data?.current ?? null;
   const routeNote = [
-    next ? `Next request: ${accountShortLabel(next)}` : undefined,
+    next ? `Next request: ${accountShortLabel(next, state.accounts)}` : undefined,
     afterCompaction && afterCompaction.routerAlias !== (current ?? nextAlias)
-      ? `after compacting: ${accountShortLabel(afterCompaction)}`
+      ? `after compacting: ${accountShortLabel(afterCompaction, state.accounts)}`
       : undefined,
   ]
     .filter(Boolean)

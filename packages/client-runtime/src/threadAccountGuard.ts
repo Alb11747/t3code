@@ -45,9 +45,12 @@ export function previewAccount(
 
 type AccountNaming = Pick<UsageLimitSourceAccount, "email" | "routerAlias" | "id" | "plan">;
 
+const accountFullName = (account: AccountNaming) =>
+  account.email ?? account.routerAlias ?? account.id;
+
 /** "work" for work@example.com; the router alias when the hub lists no email. */
 function accountShortName(account: AccountNaming): string {
-  const label = account.email ?? account.routerAlias ?? account.id;
+  const label = accountFullName(account);
   const at = label.indexOf("@");
   return at > 0 ? label.slice(0, at) : label;
 }
@@ -58,9 +61,16 @@ function accountPlanTier(account: AccountNaming): string | undefined {
   return tier && !/^subscription$/i.test(tier) ? tier : undefined;
 }
 
-export function accountShortLabel(account: AccountNaming): string {
+/** Among `peers`, two addresses that share a name (a@x.com, a@y.com) keep their domains. */
+export function accountShortLabel(
+  account: AccountNaming,
+  peers: ReadonlyArray<AccountNaming> = [],
+): string {
+  const short = accountShortName(account);
+  const shared = peers.some((peer) => peer.id !== account.id && accountShortName(peer) === short);
+  const name = shared ? accountFullName(account) : short;
   const tier = accountPlanTier(account);
-  return tier ? `${accountShortName(account)} (${tier})` : accountShortName(account);
+  return tier ? `${name} (${tier})` : name;
 }
 
 export function accountChangeMessage(input: {
@@ -71,7 +81,7 @@ export function accountChangeMessage(input: {
 }): string {
   const name = (alias: RouterAccountAlias) => {
     const account = input.accounts.find((candidate) => candidate.routerAlias === alias);
-    return account ? accountShortLabel(account) : alias;
+    return account ? accountShortLabel(account, input.accounts) : alias;
   };
   return input.kind === "compaction"
     ? `After compacting, this thread will now continue on ${name(input.to)}, not ${name(input.from)}. Press again to confirm.`
