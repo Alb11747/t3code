@@ -7275,7 +7275,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             .pipe(mapDispatchError(command));
           if (
             Option.isSome(session) &&
-            session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools === true
+            session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools ===
+              true &&
+            // Cursor accepts human input natively and has no Claude boundary hook to drain it.
+            !(providerThread.driver === "cursor" && command.createdBy === "user")
           ) {
             dispatchMode = { type: "queue_after_active" };
             atToolBoundary = true;
@@ -7555,7 +7558,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           .pipe(mapDispatchError(command));
         yield* ensureSteeringMessage(command, command);
         steerWhenReadyRunId = target.id;
-        if (command.modelSelection === undefined) modelSelection = target.modelSelection;
+        if (
+          command.modelSelection === undefined &&
+          modelSelection.instanceId === target.providerInstanceId
+        ) {
+          modelSelection = target.modelSelection;
+        }
         dispatchMode = { type: "queue_after_active" };
       }
     }
@@ -7702,6 +7710,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       startupDeliveryIntent !== undefined &&
       activeRun !== undefined &&
+      modelSelection.instanceId === activeRun.providerInstanceId &&
       command.modelSelection === undefined &&
       !projection.messages.some((message) => message.id === command.messageId)
     ) {
@@ -11819,7 +11828,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               .pipe(mapDispatchError(command));
       if (
         Option.isSome(session) &&
-        session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools === true
+        session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools === true &&
+        !(
+          targetProviderThread?.driver === "cursor" &&
+          queuedMessage.createdBy === "user" &&
+          command.requestedBy !== "agent"
+        )
       ) {
         // The same refusals as the boundary join: Stop wins, and a run that
         // owns a delegated task keeps its own turn.
@@ -16606,11 +16620,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         Effect.gen(function* () {
           const attempted = new Set<RunId>();
           while (true) {
-            const projection = yield* projectionStore.getThreadRecords(
+            const { runs } = yield* projectionStore.getThreadRecords(threadId, ["runs"], {
+              runStatuses: ["queued", "running"],
+            });
+            if (!runs.some((run) => run.status === "queued")) return;
+            const records = yield* projectionStore.getThreadRecords(
               threadId,
-              ["runs", "messages", "providerTurns", "providerThreads", "providerSessions"],
-              { turnItemTypes: [], messageRoles: ["user"] },
+              ["messages", "providerTurns", "providerThreads", "providerSessions"],
+              {
+                messageRoles: ["user"],
+                messageRunIds: runs.map((run) => run.id),
+                providerTurnAttemptIds: runs.flatMap((run) =>
+                  run.activeAttemptId === null ? [] : [run.activeAttemptId],
+                ),
+              },
             );
+            const projection = { ...records, runs };
             const steeringRunIds = queuedSteeringRunIds(projection.runs);
             const next = queuedRunsInDeliveryOrder(projection)
               .filter((queued) => {
@@ -16922,7 +16947,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             candidate.id === input.taskId &&
             candidate.origin === "app_owned" &&
             candidate.childThreadId === command.threadId &&
-            isOrchestrationV2WorkActive(candidate.status),
+            (isOrchestrationV2WorkActive(candidate.status) || candidate.status === "idle"),
         );
         const child = yield* projectionStore
           .getThreadRecords(

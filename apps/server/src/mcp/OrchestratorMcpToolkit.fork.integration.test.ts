@@ -186,13 +186,33 @@ describe("orchestrator MCP toolkit", () => {
               take: Effect.never,
             },
           );
-          const waitForContinuationOffers = (count: number) =>
+          const continuationReservations = (
+            offers: ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>,
+          ) => {
+            const reservations = new Map<string, (typeof offers)[number]>();
+            for (const offer of offers) {
+              expect(offer.delegatedCompletion).toBeDefined();
+              const key = JSON.stringify([
+                offer.threadId,
+                offer.providerThreadId,
+                offer.delegatedCompletion,
+              ]);
+              const previous = reservations.get(key);
+              if (previous === undefined) reservations.set(key, offer);
+              else expect(offer).toEqual(previous);
+            }
+            return [...reservations.values()];
+          };
+          const waitForContinuationOffers = (count: number, distinctReservations = false) =>
             Effect.scoped(
               Effect.gen(function* () {
                 const subscription = yield* PubSub.subscribe(offerEvents);
                 while (true) {
                   const current = yield* Ref.get(continuationOffers);
-                  if (current.length >= count) return current;
+                  const matched = distinctReservations
+                    ? continuationReservations(current)
+                    : current;
+                  if (matched.length >= count) return matched;
                   yield* PubSub.take(subscription);
                 }
               }),
@@ -201,7 +221,16 @@ describe("orchestrator MCP toolkit", () => {
             Effect.gen(function* () {
               const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
               yield* worker.drain();
-              expect(yield* Ref.get(continuationOffers)).toHaveLength(count);
+              const offers = yield* Ref.get(continuationOffers);
+              expect(offers, JSON.stringify(offers)).toHaveLength(count);
+            });
+          const expectDeliveryReservationsToStay = (count: number) =>
+            Effect.gen(function* () {
+              yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+              const offers = yield* Ref.get(continuationOffers);
+              const reservations = continuationReservations(offers);
+              expect(reservations, JSON.stringify(offers)).toHaveLength(count);
+              return reservations;
             });
           const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
             {
@@ -325,7 +354,7 @@ describe("orchestrator MCP toolkit", () => {
               Layer.mock(ProjectService.ProjectService)({
                 getById: (id) =>
                   Effect.succeed(
-                    id === projectId
+                    id === projectId || id === "project:mcp-foreign"
                       ? Option.some({ id, defaultModelSelection: projectDefaultSelection } as never)
                       : Option.none(),
                   ),
@@ -706,6 +735,7 @@ describe("orchestrator MCP toolkit", () => {
 
             const childPromptReadCall = yield* invoke("t3_thread_read", {
               threadId: directChildThreadId,
+              afterPosition: -1,
               limit: 1,
             });
             const childPromptRead = yield* decodeThreadReadResult(
@@ -1059,7 +1089,7 @@ describe("orchestrator MCP toolkit", () => {
               threadId: parentThreadId,
               cursor: 90,
             }).pipe(Effect.flip);
-            expect(unknownPagingParamError.message).toContain("Expected no excess property");
+            expect(unknownPagingParamError.message).toContain('Unknown argument "cursor"');
             const threadUpdateTool = server.tools.find(
               ({ tool }) => tool.name === "t3_thread_update",
             );
@@ -1582,8 +1612,27 @@ describe("orchestrator MCP toolkit", () => {
 
             expect(childFollowup.taskId).toBeDefined();
             expect(activeChildFollowup.taskId).toBeDefined();
-            yield* waitForContinuationOffers(2);
-            yield* expectOffersToStay(2);
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+                (task) => task.id === heldFollowup.taskId,
+              ),
+            ).toMatchObject({
+              cancelledRunId: heldFollowup.runId,
+              completionDelivery: { state: "disposed" },
+            });
+            // Recovery can retry the open cohort while task_status observes it.
+            const followupOffers = yield* waitForContinuationOffers(1, true);
+            expect(followupOffers[0]).toMatchObject({
+              threadId: parentThreadId,
+              providerThreadId: parentRun.providerThreadId,
+              delivery: "message_text",
+              delegatedCompletion: {
+                parentRunId: parentRun.id,
+                generation: expect.any(Number),
+                messageId: expect.any(String),
+              },
+            });
+            yield* expectDeliveryReservationsToStay(1);
             yield* invoke("task_status", { taskId: childFollowup.taskId });
             yield* invoke("task_status", { taskId: activeChildFollowup.taskId });
             yield* Ref.set(continuationOffers, []);
@@ -2188,6 +2237,7 @@ describe("orchestrator MCP toolkit", () => {
 
             const promptedReadCall = yield* invoke("t3_thread_read", {
               threadId: promptedThread.threadId,
+              afterPosition: -1,
               limit: 1,
             });
             const promptedRead = yield* decodeThreadReadResult(
@@ -3041,7 +3091,7 @@ describe("orchestrator MCP toolkit", () => {
               generation: firstLateDelivery.generation + 1,
               taskIds: [lateTask.id],
             });
-            const lateOffers = yield* waitForContinuationOffers(2);
+            const lateOffers = yield* waitForContinuationOffers(2, true);
             expect(lateOffers).toHaveLength(2);
             expect(
               successorReserved.runs.filter((run) => {
@@ -3150,7 +3200,7 @@ describe("orchestrator MCP toolkit", () => {
               generation: successorDelivery.generation,
               taskIds: successorDelivery.taskIds,
             });
-            yield* expectOffersToStay(2);
+            yield* expectDeliveryReservationsToStay(2);
             yield* Deferred.succeed(successorGate, undefined);
             const batchedReserved = yield* waitForProjection(
               orchestrator,
@@ -3182,8 +3232,8 @@ describe("orchestrator MCP toolkit", () => {
                     ?.state,
               ),
             ).toEqual(["delivered", "claimed", "claimed"]);
-            yield* waitForContinuationOffers(3);
-            yield* expectOffersToStay(3);
+            yield* waitForContinuationOffers(3, true);
+            yield* expectDeliveryReservationsToStay(3);
             expect(
               batchedReserved.runs.filter((run) => {
                 const message = batchedReserved.messages.find(
@@ -3230,7 +3280,7 @@ describe("orchestrator MCP toolkit", () => {
                     ?.state,
               ),
             ).toEqual(["delivered", "delivered", "delivered", "delivered"]);
-            yield* expectOffersToStay(3);
+            yield* expectDeliveryReservationsToStay(3);
 
             const removeParentGate = yield* Deferred.make<void>();
             parentTerminalGates.set(lateParentThreadId, removeParentGate);
@@ -3924,8 +3974,10 @@ describe("orchestrator MCP toolkit", () => {
               completionWake: "always",
               result: `Codex completed: ${approvalCompletionPrompt}`,
             });
-            const offers = (yield* Ref.get(continuationOffers)).filter(
-              (offer) => offer.threadId === approvalParentId,
+            const offers = continuationReservations(
+              (yield* Ref.get(continuationOffers)).filter(
+                (offer) => offer.threadId === approvalParentId,
+              ),
             );
             expect(offers).toHaveLength(1);
             const approvalParent = yield* orchestrator.getThreadProjection(approvalParentId);
@@ -3943,8 +3995,10 @@ describe("orchestrator MCP toolkit", () => {
             expect((yield* readApprovalStatus()).pendingApproval).toBeNull();
             yield* worker.drain();
             expect(
-              (yield* Ref.get(continuationOffers)).filter(
-                (offer) => offer.threadId === approvalParentId,
+              continuationReservations(
+                (yield* Ref.get(continuationOffers)).filter(
+                  (offer) => offer.threadId === approvalParentId,
+                ),
               ),
             ).toHaveLength(1);
             yield* Deferred.succeed(approvalParentGate, undefined);

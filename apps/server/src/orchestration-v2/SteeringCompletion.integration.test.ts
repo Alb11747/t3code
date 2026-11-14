@@ -532,6 +532,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     interruptTurn = Effect.void,
     steeringAcceptsAttachments = true,
     nativeGoals,
+    providerDriver,
     runContinuationWorker = true,
     onSteer = () => Effect.void,
     extraAdapters = [],
@@ -543,6 +544,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     interruptTurn?: Effect.Effect<void>;
     steeringAcceptsAttachments?: boolean;
     nativeGoals?: boolean | undefined;
+    providerDriver?: ProviderDriverKind;
     runContinuationWorker?: boolean;
     onSteer?: (
       turn: ProviderAdapter.ProviderAdapterV2SteerInput,
@@ -550,7 +552,8 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     extraAdapters?: ReadonlyArray<ProviderAdapter.ProviderAdapterV2["Service"]>;
   } = {},
 ) {
-  const driver = ProviderDriverKind.make(nativeGoals === undefined ? "codex" : "opencode");
+  const driver =
+    providerDriver ?? ProviderDriverKind.make(nativeGoals === undefined ? "codex" : "opencode");
   const cwd = yield* checkpointWorkspace(name);
   const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
   const started: ProviderAdapter.ProviderAdapterV2TurnInput[] = [];
@@ -3547,17 +3550,23 @@ it.effect.each(["auto", "steer"] as const)(
 );
 
 it.effect.each([
-  { requester: "agent", attachments: [] },
-  { requester: "user", attachments: [] },
-  { requester: "agent", attachments: [imageAttachment] },
+  { requester: "agent", attachments: [], providerDriver: "codex", author: "user" },
+  { requester: "user", attachments: [], providerDriver: "codex", author: "user" },
+  { requester: "agent", attachments: [imageAttachment], providerDriver: "codex", author: "user" },
+  { requester: "user", attachments: [], providerDriver: "cursor", author: "user" },
+  { requester: "agent", attachments: [], providerDriver: "cursor", author: "user" },
+  { requester: "user", attachments: [], providerDriver: "cursor", author: "agent" },
 ] as const)(
-  "a queue promotion requested by the $requester into a turn whose steering cancels tools (attachments=$attachments.length)",
-  ({ requester, attachments }) =>
+  "a queue promotion requested by the $requester for $author input on $providerDriver (attachments=$attachments.length)",
+  ({ requester, attachments, providerDriver, author }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
-          `queue-promote-${requester}-${attachments.length}`,
-          { activeSteeringInterruptsTools: true },
+          `queue-promote-${providerDriver}-${requester}-${author}-${attachments.length}`,
+          {
+            activeSteeringInterruptsTools: true,
+            providerDriver: ProviderDriverKind.make(providerDriver),
+          },
         );
         yield* Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -3572,8 +3581,8 @@ it.effect.each([
             text: "queued",
             attachments,
             dispatchMode: { type: "queue_after_active" },
-            createdBy: "user",
-            creationSource: "web",
+            createdBy: author,
+            creationSource: author === "user" ? "web" : "mcp",
           });
           const queuedRun = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
             (run) => run.status === "queued",
@@ -3591,7 +3600,22 @@ it.effect.each([
           yield* worker.drain();
 
           assert.equal(promoted._tag, "Success");
-          // The agent's promotion waits for the running turn's next tool boundary.
+          if (providerDriver === "cursor" && requester === "user" && author === "user") {
+            const projection = yield* orchestrator.getThreadProjection(threadId);
+            assert.deepEqual(steered, ["queued"]);
+            assert.equal(started.length, 1);
+            assert.equal(
+              projection.runs.find((run) => run.id === queuedRun.id)?.status,
+              "cancelled",
+            );
+            assert.isNotTrue(
+              projection.messages.find((message) => message.id === queuedRun.userMessageId)
+                ?.atToolBoundary,
+            );
+            assert.deepEqual(yield* offerAtToolBoundary(threadId, first.runId), []);
+            return;
+          }
+          // Automatic promotions stay protected even when Cursor accepts human steering natively.
           assert.deepEqual(steered, []);
           assert.equal(
             (yield* orchestrator.getThreadProjection(threadId)).runs.find(
@@ -3606,7 +3630,7 @@ it.effect.each([
               createdBy: offer.createdBy,
               attachments: offer.attachments,
             })),
-            [{ text: "queued", createdBy: "user", attachments }],
+            [{ text: "queued", createdBy: author, attachments }],
           );
           assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), []);
           assert.deepEqual(steered, []);

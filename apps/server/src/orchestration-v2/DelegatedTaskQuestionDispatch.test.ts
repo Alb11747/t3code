@@ -263,6 +263,48 @@ it.effect.each([
           ],
         });
 
+        const seedQuestion = Effect.fn("DelegatedTaskQuestionDispatch.seedQuestion")(function* (
+          childId: ThreadId,
+          questionId: RuntimeRequestId,
+        ) {
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`create:${childId}`),
+            threadId: childId,
+            projectId: ProjectId.make("project:delegated-question"),
+            title: "Question child",
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: cwd,
+            createdBy: "agent",
+            creationSource: "mcp",
+          });
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make(`event:pending:${questionId}`),
+                type: "runtime-request.updated",
+                threadId: childId,
+                occurredAt: now,
+                payload: {
+                  id: questionId,
+                  nodeId: NodeId.make(`node:${questionId}`),
+                  providerTurnId: null,
+                  nativeRequestRef: null,
+                  kind: "user_input",
+                  status: "pending",
+                  responseCapability: { type: "message" },
+                  createdAt: now,
+                  resolvedAt: null,
+                },
+              },
+            ],
+          });
+        });
+        yield* seedQuestion(childThreadId, requestId);
+
         const notice = questionNotification(parentThreadId, delegated, childThreadId, {
           requestId,
         });
@@ -381,6 +423,10 @@ it.effect.each([
             { requestId: RuntimeRequestId.make("request:earlier-question") },
           );
           earlierMessageId = earlierNotice.messageId;
+          yield* seedQuestion(
+            earlierChildThreadId,
+            RuntimeRequestId.make("request:earlier-question"),
+          );
           yield* orchestrator.dispatch(earlierNotice);
           yield* orchestrator.dispatch({
             type: "run.interrupt",

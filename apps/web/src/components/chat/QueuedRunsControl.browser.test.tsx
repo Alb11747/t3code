@@ -121,6 +121,9 @@ it("previews assistant quotes as readable text and preserves the citation when e
       },
       {
         run: { id: "run:inline-image", userMessageId: "message:inline-image" },
+        delivery: "queued",
+        deliveryLabel: "Queued",
+        editBlockedReason: null,
         text: `Make the header look like ${inlineImage} and keep the logo.`,
         attachments: [{ type: "image", id: "attachment:header", name: "header.png" }],
       },
@@ -209,7 +212,7 @@ it("shows who sent a queued message and folds automation and agent prompts", asy
   const onOpenThread = vi.fn();
   await using _screen = await renderQueue({ onOpenThread });
   // Four rows collapse the queue.
-  await page.getByRole("button", { name: "Show all 4 queued" }).click();
+  await page.getByRole("button", { name: "Show all 4 messages" }).click();
 
   const automation = page.getByRole("button", { name: /PR dispatcher/ });
   await expect.element(automation).toHaveAttribute("aria-expanded", "false");

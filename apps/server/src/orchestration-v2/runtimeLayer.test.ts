@@ -2053,7 +2053,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
             commandId: CommandId.make(`command:system:startup-steer:${rejectedRun.id}${suffix}`),
             threadId,
             queuedRunId: rejectedRun.id,
-            targetRunId: (yield* orchestrator.getThreadProjection(threadId)).runs[0]!.id,
+            targetRunId: RunId.make("runtime-startup-steer-unavailable-target"),
           })
           .pipe(Effect.flip);
       }

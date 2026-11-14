@@ -696,6 +696,8 @@ function layerTest(input: {
     ...(input.startTurn === undefined ? {} : { startTurn: input.startTurn }),
     ...(input.interruptTurn === undefined ? {} : { interruptTurn: input.interruptTurn }),
     ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
+    ...(input.unloads === undefined ? {} : { unloads: input.unloads }),
+    ...(input.archive === undefined ? {} : { archive: input.archive }),
     ...(input.spawnBeforeOpen === undefined ? {} : { spawnBeforeOpen: input.spawnBeforeOpen }),
     ...(input.scopeCloseReached === undefined
       ? {}

@@ -9662,7 +9662,22 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           if (current === context) {
             const retry = (yield* Ref.get(providerRetries)).get(context.providerTurnId);
             const queryError = cause === undefined ? undefined : Cause.squash(cause);
-            const failure = providerFailureFromQueryError(queryError, closedQuery.receivedInit);
+            const queryFailure = providerFailureFromQueryError(
+              queryError,
+              closedQuery.receivedInit,
+            );
+            const processExit = cause === undefined ? undefined : claudeProcessExitFailure(cause);
+            const failure =
+              processExit === undefined
+                ? queryFailure
+                : {
+                    ...queryFailure,
+                    ...processExit,
+                    retryable:
+                      processExit.code === "process_killed_by_signal"
+                        ? false
+                        : queryFailure.retryable,
+                  };
             const retryFailure =
               cause === undefined ||
               (context.overloadRetry !== null && Cause.hasInterruptsOnly(cause))

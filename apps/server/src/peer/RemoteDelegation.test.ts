@@ -495,7 +495,11 @@ const boxToolkitLayer = (thread: BoxThread) => {
       Ref.update(thread.sent, (seen) => [...seen, input.text]).pipe(
         Effect.as(
           (input.mode === "queue"
-            ? { run: { id: boxQueuedRunId, status: "queued" }, delivery: "queued" }
+            ? {
+                run: { id: boxQueuedRunId, status: "queued" },
+                delivery: "queued",
+                message: { atToolBoundary: false },
+              }
             : { run: { id: boxLaterRunId, status: "running" }, delivery: "started" }) as never,
         ),
       ),
