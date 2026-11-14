@@ -6,8 +6,6 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import {
   type DesktopUpdateChannel,
-  IDLE_COMPACTION_MODES,
-  globalIdleCompaction,
   managedUpdatesDenial,
   managedUpdatesMessage,
   ProviderDriverKind,
@@ -58,7 +56,12 @@ import {
 } from "./useScopedSettings";
 import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
 import { useOptionalSettingsScope, useSettingsScope } from "./SettingsScopeContext";
-import { scopedIdleCompaction } from "./scopedSettings";
+import {
+  IDLE_COMPACTION_CHOICES,
+  idleCompactionChoice,
+  idleCompactionChoicePatch,
+  scopedIdleCompaction,
+} from "./scopedSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { ThreadTitleInstructionsSettings } from "./ThreadTitleInstructionsSettings";
 import { SnoozePresetsRow } from "./SnoozePresetsSettings";
@@ -1497,26 +1500,8 @@ function ScopedCompactIdleThreadsRow() {
   return (
     <>
       <IdleCompactionModeRow idleCompaction={idleCompaction} />
-      {/* Older servers omit these and compact every idle thread; a default here would lie. */}
-      {settings.smartIdleCompaction === undefined ? null : (
-        <SettingsRow
-          serverScoped
-          {...searchableSetting("smart-idle-compaction")}
-          description="Before cache expiry, compact only threads a watched PR or issue, subagents, background work, or a scheduled task will wake later. Agents and the thread menu can override this per thread."
-          settingKeys={["smartIdleCompaction"]}
-          control={
-            <ScopedSwitch
-              settingKeys={["smartIdleCompaction"]}
-              checked={settings.smartIdleCompaction}
-              onCheckedChange={(checked) =>
-                updateSettings({ smartIdleCompaction: Boolean(checked) })
-              }
-              aria-label="Only compact waiting threads"
-            />
-          }
-        />
-      )}
-      {settings.compactSnoozedThreads === undefined ? null : (
+      {/* Older servers omit this and compact every idle thread; a default here would lie. */}
+      {settings.compactSnoozedThreads === undefined || !idleCompaction.beforeCacheExpires ? null : (
         <SettingsRow
           serverScoped
           {...searchableSetting("compact-snoozed-threads")}
@@ -1545,51 +1530,62 @@ function IdleCompactionModeRow({
 }) {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
+  const { smartAvailable } = idleCompaction;
+  const defaultChoice = idleCompactionChoice(DEFAULT_UNIFIED_SETTINGS, smartAvailable);
+  const choices = IDLE_COMPACTION_CHOICES.filter((choice) =>
+    choice.value === "beforeCacheExpires"
+      ? !smartAvailable
+      : choice.value === "waiting" || choice.value === "all"
+        ? smartAvailable
+        : true,
+  );
 
   return (
     <SettingsRow
       serverScoped
-      settingKeys={["idleCompaction", "compactIdleThreads"]}
-      mixed={idleCompaction.mixed}
+      settingKeys={["idleCompaction", "compactIdleThreads", "smartIdleCompaction"]}
+      mixed={idleCompaction.choice === null}
       {...searchableSetting("compact-idle-threads")}
-      description="When to compact an idle Claude thread over 200,000 tokens: after you return, just before its prompt cache expires, or never. Each Claude provider can override this."
+      description={
+        smartAvailable
+          ? "When to compact an idle Claude thread over 200K tokens. Waiting threads are ones a watched PR or issue, subagent, background work, or scheduled task will wake. Threads and providers can override this."
+          : "When to compact an idle Claude thread over 200,000 tokens: after you return, just before its prompt cache expires, or never. Each Claude provider can override this."
+      }
       resetAction={
-        globalIdleCompaction(settings) !== globalIdleCompaction(DEFAULT_UNIFIED_SETTINGS) ? (
+        idleCompactionChoice(settings, smartAvailable) !== defaultChoice ? (
           <SettingResetButton
             label="compact idle threads"
-            onClick={() =>
-              updateSettings({ idleCompaction: globalIdleCompaction(DEFAULT_UNIFIED_SETTINGS) })
-            }
+            onClick={() => updateSettings(idleCompactionChoicePatch(defaultChoice))}
           />
         ) : null
       }
       control={
         <Select
-          value={idleCompaction.mixed ? null : globalIdleCompaction(settings)}
+          value={idleCompaction.choice}
           onValueChange={(value) => {
-            const mode = IDLE_COMPACTION_MODES.find((candidate) => candidate.value === value);
-            if (mode) updateSettings({ idleCompaction: mode.value });
+            const choice = choices.find((candidate) => candidate.value === value);
+            if (choice) updateSettings(idleCompactionChoicePatch(choice.value));
           }}
         >
-          <SelectTrigger size="sm" className="w-full sm:w-56" aria-label="Compact idle threads">
+          <SelectTrigger size="sm" className="w-full sm:w-80" aria-label="Compact idle threads">
             <SelectValue>
               {(value: string | null) =>
                 value === null
                   ? "Mixed"
-                  : IDLE_COMPACTION_MODES.find((mode) => mode.value === value)?.label
+                  : IDLE_COMPACTION_CHOICES.find((choice) => choice.value === value)?.label
               }
             </SelectValue>
           </SelectTrigger>
           <SelectPopup align="end" alignItemWithTrigger={false}>
-            {IDLE_COMPACTION_MODES.map((mode) => (
+            {choices.map((choice) => (
               <SelectItem
                 hideIndicator
-                key={mode.value}
-                value={mode.value}
+                key={choice.value}
+                value={choice.value}
                 // A server from before modes has only the on/off switch, so it cannot store "Never".
-                disabled={mode.value === "off" && !idleCompaction.neverAvailable}
+                disabled={choice.value === "off" && !idleCompaction.neverAvailable}
               >
-                {mode.label}
+                {choice.label}
               </SelectItem>
             ))}
           </SelectPopup>

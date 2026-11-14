@@ -18,7 +18,7 @@ import * as Stream from "effect/Stream";
 import { forkParked } from "../serverActivation.ts";
 import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { idleCompactionScope, idleCompactionWindow } from "./IdleCompaction.ts";
+import { compactOnceApplies, idleCompactionScope, idleCompactionWindow } from "./IdleCompaction.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
@@ -45,15 +45,17 @@ export const make = Effect.gen(function* () {
         const claudeInstance = Object.hasOwn(current.providerInstances, thread.providerInstanceId)
           ? current.providerInstances[thread.providerInstanceId]?.driver === "claudeAgent"
           : thread.providerInstanceId === "claudeAgent";
-        const scopeOf = (selected: typeof thread) =>
+        const scopeOf = (selected: typeof thread, compactOnce: boolean) =>
           idleCompactionScope(
             resolveIdleCompaction(current, selected.providerInstanceId),
             smartIdleCompactionOf(current),
             selected.compactBeforeCacheExpires,
+            compactOnce,
           );
         if (
           !claudeInstance ||
-          scopeOf(thread) === null ||
+          // Staleness needs the runs, so any mark passes this pre-filter.
+          scopeOf(thread, thread.compactOnceRequestedAt != null) === null ||
           !resolveProjectProviderInstanceEnabled(
             current,
             thread.projectId,
@@ -89,7 +91,10 @@ export const make = Effect.gen(function* () {
             contextTransferStatuses: ["pending"],
           },
         );
-        const scope = scopeOf(records.thread);
+        const scope = scopeOf(
+          records.thread,
+          compactOnceApplies(records.thread.compactOnceRequestedAt, records.runs),
+        );
         if (
           scope === null ||
           !resolveProjectProviderInstanceEnabled(

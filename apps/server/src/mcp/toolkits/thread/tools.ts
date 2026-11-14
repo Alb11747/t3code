@@ -150,12 +150,15 @@ const PendingRequestTool = Tool.make("t3_pending_request", {
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
 
+const CompactBeforeCacheExpiresValue = Schema.NullOr(
+  Schema.Union([Schema.Boolean, Schema.Literal("once")]),
+);
 const threadConfiguration = Schema.Struct({
   threadId: ThreadId,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
-  compactBeforeCacheExpires: Schema.NullOr(Schema.Boolean),
+  compactBeforeCacheExpires: CompactBeforeCacheExpiresValue,
   // Fork: CLI Proxy quota-router accounts, present when the provider routes through one.
   account: Schema.optional(
     Schema.NullOr(Schema.Struct({ account: RouterAccountAlias, waitWhenOut: Schema.Boolean })),
@@ -172,9 +175,9 @@ const threadConfiguration = Schema.Struct({
     ),
   ),
 });
-const CompactBeforeCacheExpires = Schema.NullOr(Schema.Boolean).annotate({
+const CompactBeforeCacheExpires = CompactBeforeCacheExpiresValue.annotate({
   description:
-    "Claude: true compacts this thread before its cache expires while idle, for waits over an hour; false never; null follows settings.",
+    'Claude: true compacts this thread before its cache expires while idle, for waits over an hour; false never; null follows settings. "once": compact if nobody replies before the cache expires after this turn; use it when ending a turn that waits on the user (question, review, decision) with a large context.',
 });
 const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   ...commandTool,

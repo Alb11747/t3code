@@ -95,6 +95,7 @@ import type * as Statement from "effect/sql/Statement";
 
 import { MCP_APP_OUTPUT_KEY } from "@t3tools/shared/mcpApp";
 import { threadHtmlRenderAttachmentIds } from "../attachmentStore.ts";
+import { compactOnceApplies } from "./IdleCompaction.ts";
 import {
   isThreadHistoryUserTurn,
   isConversationHistoryItem,
@@ -1071,6 +1072,8 @@ type ShellThreadRow = {
   readonly latest_user_message_at: string | null;
   readonly latest_user_authored_message_at: string | null;
   readonly has_actionable_proposed_plan: number;
+  /** Null unless the thread holds a one-shot compaction mark. */
+  readonly compact_once_latest_started_at: string | null;
 };
 
 type ShellRunRow = {
@@ -1667,6 +1670,7 @@ export function threadShellFromProjection(
     title: projection.thread.title,
     contextNote: projection.thread.contextNote ?? null,
     compactBeforeCacheExpires: projection.thread.compactBeforeCacheExpires ?? null,
+    compactOnce: compactOnceApplies(projection.thread.compactOnceRequestedAt, projection.runs),
     ...(projection.thread.accountChoice ? { accountChoice: projection.thread.accountChoice } : {}),
     providerInstanceId: projection.thread.providerInstanceId,
     modelSelection: projection.thread.modelSelection,
@@ -1860,6 +1864,7 @@ type ShellThreadState = {
   readonly latestUserMessageAt: DateTime.Utc | null;
   readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
   readonly hasActionableProposedPlan: boolean;
+  readonly compactOnce: boolean;
   readonly pendingBackgroundTasks: OrchestrationV2ThreadShell["pendingBackgroundTasks"];
   readonly providerInstanceHistory: OrchestrationV2ThreadShell["providerInstanceHistory"];
   readonly goal: OrchestrationV2ThreadShell["goal"];
@@ -1977,6 +1982,7 @@ function shellFromState(input: {
     title: input.state.thread.title,
     contextNote: input.state.thread.contextNote ?? null,
     compactBeforeCacheExpires: input.state.thread.compactBeforeCacheExpires ?? null,
+    compactOnce: input.state.compactOnce,
     ...(input.state.thread.accountChoice
       ? { accountChoice: input.state.thread.accountChoice }
       : {}),
@@ -6591,7 +6597,16 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 WHERE plan.thread_id = t.thread_id
                   AND plan.kind = 'proposed_plan'
                   AND plan.status = 'active'
-              ) AS has_actionable_proposed_plan
+              ) AS has_actionable_proposed_plan,
+              CASE WHEN json_extract(t.payload_json, '$.compactOnceRequestedAt') IS NULL THEN NULL ELSE (
+                -- Runs start in ordinal order, so the newest started run decides compactOnceApplies.
+                SELECT json_extract(r.payload_json, '$.startedAt')
+                FROM orchestration_v2_projection_runs r
+                WHERE r.thread_id = t.thread_id
+                  AND json_extract(r.payload_json, '$.startedAt') IS NOT NULL
+                ORDER BY r.ordinal DESC
+                LIMIT 1
+              ) END AS compact_once_latest_started_at
             FROM orchestration_v2_projection_threads t
             LEFT JOIN orchestration_v2_projection_runs active ON active.run_id = (
               SELECT r.run_id
@@ -7288,6 +7303,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               : DateTime.makeUnsafe(row.latest_user_message_at),
           latestUserAuthoredMessageAt,
           hasActionableProposedPlan: row.has_actionable_proposed_plan === 1,
+          compactOnce: compactOnceApplies(
+            thread.compactOnceRequestedAt,
+            row.compact_once_latest_started_at === null
+              ? []
+              : [{ startedAt: DateTime.makeUnsafe(row.compact_once_latest_started_at) }],
+          ),
           pendingBackgroundTasks,
           providerInstanceHistory: providerInstanceHistoryForShell({
             threadId: thread.id,

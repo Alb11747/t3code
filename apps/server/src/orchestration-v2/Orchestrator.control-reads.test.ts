@@ -610,6 +610,77 @@ it.effect("idle compaction keeps a snooze that a sent message ends", () =>
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("a one-shot compaction mark lasts until a run starts after it", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:compact-once");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-compact-once"),
+      threadId,
+      projectId: ProjectId.make("project:compact-once"),
+      title: "Compact once",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const setCompaction = (step: string, value: boolean | null | "once") =>
+      orchestrator.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make(`compact-once-${step}`),
+        threadId,
+        compactBeforeCacheExpires: value,
+      });
+    const compactOnce = Effect.gen(function* () {
+      const shell = yield* projections.getThreadShell(threadId);
+      const fromProjection = ProjectionStore.threadShellFromProjection(
+        yield* projections.getThreadProjection(threadId),
+      );
+      assert.equal(shell?.compactOnce, fromProjection.compactOnce);
+      return shell?.compactOnce;
+    });
+    yield* setCompaction("always", true);
+    yield* setCompaction("mark", "once");
+    assert.equal((yield* projections.getThread(threadId)).compactBeforeCacheExpires, true);
+    assert.equal(yield* compactOnce, true);
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("compact-once-reply"),
+      threadId,
+      messageId: MessageId.make("compact-once-reply"),
+      text: "Keep the old API",
+      attachments: [],
+      dispatchMode: { type: "defer_start" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    // Waiting to start is not a reply yet.
+    assert.equal(yield* compactOnce, true);
+    yield* TestClock.adjust("1 second");
+    const run = (yield* projections.getThreadProjection(threadId)).runs[0]!;
+    const now = yield* DateTime.now;
+    yield* projections.apply({
+      id: EventId.make("compact-once-run-started"),
+      type: "run.updated",
+      threadId,
+      runId: run.id,
+      occurredAt: now,
+      payload: { ...run, status: "running", startedAt: now },
+    });
+    assert.equal(yield* compactOnce, false);
+    yield* setCompaction("mark-again", "once");
+    yield* setCompaction("never", false);
+    assert.isNull((yield* projections.getThread(threadId)).compactOnceRequestedAt);
+    const refused = yield* Effect.exit(setCompaction("refused", "once"));
+    assert.equal(refused._tag, "Failure");
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("mark unread leaves a future snooze untouched", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;

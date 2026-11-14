@@ -17,6 +17,7 @@ import {
   planProjectOverridesClear,
   planScopedSettingsClear,
   planScopedSettingsPatch,
+  idleCompactionChoicePatch,
   scopedIdleCompaction,
   resolveScopedSettingsTargets,
   scopedSettingsAreMixed,
@@ -203,12 +204,41 @@ describe("scoped settings writes", () => {
       settings: { ...DEFAULT_SERVER_SETTINGS, compactIdleThreads: "onReturn" as const },
     };
     const legacy = { settings: { ...DEFAULT_SERVER_SETTINGS, compactIdleThreads: false } };
-    expect(scopedIdleCompaction([fixed, modes])).toEqual({ mixed: false, neverAvailable: true });
-    expect(scopedIdleCompaction([fixed, legacy])).toEqual({ mixed: false, neverAvailable: false });
+    expect(scopedIdleCompaction([fixed, modes])).toMatchObject({
+      choice: "onReturn",
+      neverAvailable: true,
+    });
+    expect(scopedIdleCompaction([fixed, legacy])).toMatchObject({
+      choice: "onReturn",
+      neverAvailable: false,
+    });
     expect(
       scopedIdleCompaction([fixed, { settings: { ...fixed.settings, idleCompaction: "off" } }])
-        .mixed,
-    ).toBe(true);
+        .choice,
+    ).toBeNull();
+  });
+
+  it("splits before-the-cache-expires by Smart only where every server reports it", () => {
+    const target = (smartIdleCompaction?: boolean) => ({
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        idleCompaction: "beforeCacheExpires" as const,
+        ...(smartIdleCompaction === undefined ? {} : { smartIdleCompaction }),
+      },
+    });
+    expect(scopedIdleCompaction([target(true), target(true)])).toMatchObject({
+      choice: "waiting",
+      smartAvailable: true,
+    });
+    expect(scopedIdleCompaction([target(true), target(false)]).choice).toBeNull();
+    expect(scopedIdleCompaction([target(false), target()])).toMatchObject({
+      choice: "beforeCacheExpires",
+      smartAvailable: false,
+    });
+    expect(idleCompactionChoicePatch("all")).toEqual({
+      idleCompaction: "beforeCacheExpires",
+      smartIdleCompaction: false,
+    });
   });
 
   it("sends an idle compaction mode in the form each environment's server reads", () => {

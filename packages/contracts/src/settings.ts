@@ -823,7 +823,7 @@ export const ClaudeSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Compact idle threads",
         description:
-          "When to compact an idle thread over 200,000 tokens: after you return, just before its prompt cache expires, or never. Overrides the default in Providers > Advanced.",
+          "When to compact an idle thread over 200,000 tokens: after you return, just before its prompt cache expires, or never. Overrides the default in Providers > Advanced; before the cache expires follows its waiting or all threads choice.",
         providerSettingsForm: {
           control: "select",
           options: INSTANCE_IDLE_COMPACTION_MODES,
@@ -1447,7 +1447,7 @@ export const ServerSettings = Schema.Struct({
   idleCompaction: Schema.optionalKey(IdleCompactionMode),
   /**
    * Before the cache expires, compact only threads that will resume. Absent on servers without
-   * it, so clients can hide the switch; read through `smartIdleCompactionOf`.
+   * it, so clients can hide its choice; read through `smartIdleCompactionOf`.
    */
   smartIdleCompaction: Schema.optionalKey(Schema.Boolean),
   /** Lets idle compaction include snoozed threads; read through `compactSnoozedThreadsOf`. */

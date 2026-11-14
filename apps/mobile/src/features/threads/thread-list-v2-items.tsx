@@ -962,12 +962,28 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 {
                   id: "compact-before-expiry:default",
                   title: "Follow settings",
-                  state: thread.compactBeforeCacheExpires === null ? "on" : "off",
+                  state:
+                    thread.compactBeforeCacheExpires === null && thread.compactOnce !== true
+                      ? "on"
+                      : "off",
                 },
+                // Servers without the one-shot mark omit the field; Never refuses it.
+                ...(thread.compactOnce === undefined || thread.compactBeforeCacheExpires === false
+                  ? []
+                  : [
+                      {
+                        id: "compact-before-expiry:once",
+                        title: "This time only",
+                        state: thread.compactOnce ? "on" : "off",
+                      } satisfies MenuAction,
+                    ]),
                 {
                   id: "compact-before-expiry:on",
                   title: "Always",
-                  state: thread.compactBeforeCacheExpires === true ? "on" : "off",
+                  state:
+                    thread.compactBeforeCacheExpires === true && thread.compactOnce !== true
+                      ? "on"
+                      : "off",
                 },
                 {
                   id: "compact-before-expiry:off",
@@ -983,6 +999,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       thread.autoSettleDisabledAt,
       thread.autoSettleAlwaysAt,
       thread.compactBeforeCacheExpires,
+      thread.compactOnce,
     ],
   );
   const canTurnIntoProject = canTurnThreadIntoProject(thread);
@@ -1110,7 +1127,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             compactBeforeCacheExpires:
               nativeEvent.event === "compact-before-expiry:default"
                 ? null
-                : nativeEvent.event === "compact-before-expiry:on",
+                : nativeEvent.event === "compact-before-expiry:once"
+                  ? "once"
+                  : nativeEvent.event === "compact-before-expiry:on",
           },
         });
       if (nativeEvent.event === "arrange") appAtomRegistry.set(threadArrangementOpenAtom, true);

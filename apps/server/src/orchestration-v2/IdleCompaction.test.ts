@@ -34,6 +34,7 @@ import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
 import {
+  compactOnceApplies,
   idleCompactionScope,
   idleCompactionWindow,
   type IdleCompactionPolicy,
@@ -210,6 +211,22 @@ describe("idleCompactionWindow", () => {
     expect(idleCompactionScope("onReturn", true, true)).toBe("all");
     expect(idleCompactionScope("beforeCacheExpires", true, false)).toBeNull();
     expect(idleCompactionScope("off", true, true)).toBeNull();
+    expect(idleCompactionScope("beforeCacheExpires", true, null, true)).toBe("all");
+    expect(idleCompactionScope("onReturn", true, null, true)).toBe("all");
+    expect(idleCompactionScope("beforeCacheExpires", false, false, true)).toBeNull();
+    expect(idleCompactionScope("off", false, null, true)).toBeNull();
+  });
+
+  it("keeps a one-shot mark until a run starts after it", () => {
+    const { runs } = records();
+    const iso = (offset: number) => DateTime.formatIso(at(offset));
+    expect(compactOnceApplies(null, runs)).toBe(false);
+    // Set during the run it follows.
+    expect(compactOnceApplies(iso(-MINUTE_MS / 2), runs)).toBe(true);
+    // A reply, a queued message, or the compaction started after it.
+    expect(compactOnceApplies(iso(-2 * MINUTE_MS), runs)).toBe(false);
+    // A removed queued message never started.
+    expect(compactOnceApplies(iso(-2 * MINUTE_MS), [{ ...runs[0]!, startedAt: null }])).toBe(true);
   });
 
   it.each([
@@ -292,8 +309,13 @@ describe("IdleCompactionService", () => {
     { mode: "onReturn", threadOverride: true, reads: 1 },
     { mode: "beforeCacheExpires", threadOverride: false, reads: 0 },
     { mode: "off", threadOverride: true, reads: 0 },
+    { mode: "beforeCacheExpires", smart: true, compactOnce: "set", reads: 1 },
+    { mode: "onReturn", compactOnce: "set", reads: 1 },
+    { mode: "beforeCacheExpires", smart: true, compactOnce: "stale", reads: 1, dispatches: 0 },
+    { mode: "beforeCacheExpires", threadOverride: false, compactOnce: "set", reads: 0 },
+    { mode: "off", compactOnce: "set", reads: 0 },
   ] as const)(
-    "loads history only for eligible idle compaction: $mode/$override/$enabled/$projectDisabled/$instance/$unconfigured",
+    "loads history only for eligible idle compaction: $mode/$override/$enabled/$projectDisabled/$instance/$unconfigured/$threadOverride/$compactOnce",
     (scenario) => {
       const test = {
         override: "default",
@@ -318,6 +340,14 @@ describe("IdleCompactionService", () => {
               providerInstanceId: selectedInstance,
               modelSelection: { ...base.thread.modelSelection, instanceId: selectedInstance },
               compactBeforeCacheExpires: test.threadOverride,
+              // The run started a minute ago; a stale mark predates it.
+              ...("compactOnce" in test
+                ? {
+                    compactOnceRequestedAt: DateTime.formatIso(
+                      at(test.compactOnce === "set" ? -MINUTE_MS / 2 : -2 * MINUTE_MS),
+                    ),
+                  }
+                : {}),
             },
             runs: base.runs.map((run) => ({
               ...run,

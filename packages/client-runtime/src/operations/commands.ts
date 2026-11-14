@@ -137,7 +137,7 @@ export interface UpdateThreadMetadataInput extends ThreadCommandInput {
   readonly regenerateTitle?: boolean;
   readonly linkedPullRequest?: ThreadLinkedPullRequest | null;
   readonly contextNote?: import("@t3tools/contracts").ThreadContextNoteUpdate | null;
-  readonly compactBeforeCacheExpires?: boolean | null;
+  readonly compactBeforeCacheExpires?: boolean | null | "once";
   readonly expectedEmpty?: boolean;
 }
 

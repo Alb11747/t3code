@@ -189,6 +189,8 @@ export interface EnvironmentThreadShell {
   readonly linkedPullRequest?: ThreadLinkedPullRequest | null;
   readonly contextNote?: import("@t3tools/contracts").ThreadContextNote | null;
   readonly compactBeforeCacheExpires?: boolean | null;
+  /** A one-shot compaction mark applies; absent from servers without it. */
+  readonly compactOnce?: boolean;
   /** Fork: the CLI Proxy account the thread's requests go to; absent or null is automatic. */
   readonly accountChoice?: import("@t3tools/contracts").ThreadAccountChoice | null;
   readonly branchPullRequest?: ThreadLinkedPullRequest | null;
@@ -305,6 +307,7 @@ export function presentThreadShell(
     ...(thread.compactBeforeCacheExpires === undefined
       ? {}
       : { compactBeforeCacheExpires: thread.compactBeforeCacheExpires }),
+    ...(thread.compactOnce === undefined ? {} : { compactOnce: thread.compactOnce }),
     ...(thread.accountChoice ? { accountChoice: thread.accountChoice } : {}),
     branchPullRequest: thread.branchPullRequest ?? null,
     lineage: thread.lineage,

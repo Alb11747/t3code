@@ -67,29 +67,34 @@ composer commands.
 **Compact idle threads** in **Settings > Providers > Advanced** controls this for threads
 over 200,000 tokens. Each Claude provider's settings can override it:
 
-- **When you return** shows the **Compact** chip described above. This is the default.
-- **Before the cache expires (beta)** tries to compact an idle thread shortly before its
-  prompt cache expires, while the history is still cached.
-  The compaction appears in the thread as a `/compact` turn sent by T3 Code.
-  If the window is missed, such as when you enable this mode after the cache has
-  expired or the server restarts before compaction runs, it falls back to
-  **When you return**. Switch the chip to **Keep** to keep the full history for that message.
 - **Never** skips idle compaction and Claude's resume prompt. **Auto-compact after**
   still applies, and you can still compact by hand.
+- **When you return** shows the **Compact** chip described above. This is the default.
+- **Before the cache expires: waiting threads** compacts an idle thread shortly
+  before its prompt cache expires, while the history is still cached, but only if
+  something will wake it later: a watched pull request or issue, running subagents
+  or background work, or a scheduled task aimed at the thread. A thread you simply
+  stopped using keeps its full history.
+- **Before the cache expires: all threads** does the same for every idle thread.
 
-With **Only compact waiting threads** on (the default), **Before the cache expires**
-compacts only threads that something will wake later: a watched pull request or
-issue, running subagents or background work, or a scheduled task aimed at the
-thread. A thread you simply stopped using keeps its full history. **Compact
-snoozed threads** also counts a snooze as a wake. A thread whose scheduled task
-or snooze ends before the cache expires isn't compacted, because the cache is
-still warm when it wakes.
+Before the cache expires, the compaction appears in the thread as a `/compact`
+turn sent by T3 Code. If the window is missed, such as when you choose this after
+the cache has expired or the server restarts before compaction runs, it falls back
+to **When you return**. Switch the chip to **Keep** to keep the full history for
+that message. A thread whose scheduled task or snooze ends before the cache
+expires isn't compacted, because the cache is still warm when it wakes. **Compact
+snoozed threads**, shown with these two choices, includes snoozed threads and
+counts a snooze as a wake. A Claude provider set to **Before the cache expires**
+follows the waiting or all threads choice.
 
 To choose for one thread, use **Compact before cache expires** in the thread's
 menu: **Always** compacts it before the cache expires while idle, even when the
-setting is **When you return**, and **Never** skips it. Agents can set the same
-option. An agent can also compact its own thread once its current turn ends and
-then continue it with a message.
+setting is **When you return**, and **Never** skips it. **This time only**
+compacts it once, if nobody replies before the cache expires, then goes back to
+the thread's choice; any new turn cancels it. Agents can set the same options, so
+you can ask them in your project instructions to mark their thread this way when
+they end a turn waiting on you with a large context. An agent can also compact
+its own thread once its current turn ends and then continue it with a message.
 
 Compacting a thread after its prompt cache expired normally writes the whole old
 history back to the cache, even though the summary replaces it. Turn on **Skip

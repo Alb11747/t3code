@@ -23,6 +23,7 @@ import {
 } from "../components/usageResetSnooze.logic";
 import {
   buildThreadActionMenuItems,
+  compactBeforeCacheExpiresChoice,
   threadActionRequiresOperate,
   type ThreadActionMenuId,
 } from "../components/threadActionMenu.logic";
@@ -152,6 +153,7 @@ export function useThreadActionMenu(input: {
         autoSettleAlways:
           thread.autoSettleAlwaysAt === undefined ? undefined : thread.autoSettleAlwaysAt != null,
         compactBeforeCacheExpires: thread.compactBeforeCacheExpires,
+        compactOnce: thread.compactOnce,
         isSnoozed: supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() }),
         canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
         isRegeneratingTitle,
@@ -263,6 +265,7 @@ export function useThreadActionMenu(input: {
           );
           return;
         case "compact-before-expiry:default":
+        case "compact-before-expiry:once":
         case "compact-before-expiry:on":
         case "compact-before-expiry:off":
           await reportFailure("Failed to update compaction", () =>
@@ -270,10 +273,7 @@ export function useThreadActionMenu(input: {
               environmentId: threadRef.environmentId,
               input: {
                 threadId: threadRef.threadId,
-                compactBeforeCacheExpires:
-                  action === "compact-before-expiry:default"
-                    ? null
-                    : action === "compact-before-expiry:on",
+                compactBeforeCacheExpires: compactBeforeCacheExpiresChoice(action),
               },
             }),
           );

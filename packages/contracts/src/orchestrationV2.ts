@@ -466,6 +466,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   contextNote: Schema.optional(Schema.NullOr(ThreadContextNote)),
   /** Overrides the idle compaction setting for this thread; null follows it. */
   compactBeforeCacheExpires: Schema.optional(Schema.NullOr(Schema.Boolean)),
+  /** Fork: compact this idle spell once; any run that starts after it makes it stale. */
+  compactOnceRequestedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** Fork: the quota-router account the thread's requests go to; null routes automatically. */
   accountChoice: Schema.optional(Schema.NullOr(ThreadAccountChoice)),
   /** Fork: an owned conversation moved accounts; turns drop its old thinking until it compacts. */
@@ -2167,6 +2169,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   title: Schema.String,
   contextNote: Schema.optional(Schema.NullOr(ThreadContextNote)),
   compactBeforeCacheExpires: Schema.optional(Schema.NullOr(Schema.Boolean)),
+  /** Fork: a one-shot compaction mark still applies. Absent from servers without it. */
+  compactOnce: Schema.optional(Schema.Boolean),
   accountChoice: Schema.optional(Schema.NullOr(ThreadAccountChoice)),
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
@@ -3163,7 +3167,10 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     title: Schema.optional(TrimmedNonEmptyString),
     contextNote: Schema.optional(Schema.NullOr(ThreadContextNoteUpdate)),
-    compactBeforeCacheExpires: Schema.optional(Schema.NullOr(Schema.Boolean)),
+    /** "once" marks this idle spell and keeps the stored choice; the others clear the mark. */
+    compactBeforeCacheExpires: Schema.optional(
+      Schema.NullOr(Schema.Union([Schema.Boolean, Schema.Literal("once")])),
+    ),
     regenerateTitle: Schema.optional(Schema.Boolean),
     branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
     worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),

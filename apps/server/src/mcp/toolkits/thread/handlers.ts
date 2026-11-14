@@ -206,6 +206,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     McpToolAccess.reads((input) =>
       Effect.gen(function* () {
         const {
+          shell,
           projection: { thread },
         } = yield* readThread(input.threadId);
         const accounts = yield* (yield* ThreadAccountService.ThreadAccounts)
@@ -220,7 +221,9 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           modelSelection: thread.modelSelection,
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
-          compactBeforeCacheExpires: thread.compactBeforeCacheExpires ?? null,
+          compactBeforeCacheExpires: shell.compactOnce
+            ? ("once" as const)
+            : (thread.compactBeforeCacheExpires ?? null),
           ...(accounts === null
             ? {}
             : {

@@ -637,14 +637,10 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Compact idle threads",
     to: "/settings/providers",
     scope: "environment-defaults",
-    searchTerms: ["claude context compaction idle cache tokens usage summary resume"],
-  },
-  {
-    id: "smart-idle-compaction",
-    title: "Only compact waiting threads",
-    to: "/settings/providers",
-    scope: "environment-defaults",
-    searchTerms: ["smart adaptive claude compaction cache expires watch subagent scheduled wake"],
+    searchTerms: [
+      "claude context compaction idle cache tokens usage summary resume",
+      "smart waiting threads cache expires watch subagent scheduled wake",
+    ],
   },
   {
     id: "compact-snoozed-threads",
