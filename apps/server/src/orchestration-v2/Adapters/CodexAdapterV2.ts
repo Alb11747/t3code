@@ -188,13 +188,6 @@ function codexFileChangeApprovalPrompt(input: {
   return input.grantRoot?.trim() || undefined;
 }
 
-export function normalizeCodexThreadLoadModelSelection(selection: ModelSelection): ModelSelection {
-  // Codex applies effort on turn/start; resume discards its pinned request effort.
-  const { options, ...rest } = selection;
-  const loadOptions = options?.filter((option) => option.id !== "reasoningEffort");
-  return { ...rest, ...(loadOptions?.length ? { options: loadOptions } : {}) };
-}
-
 // Reasoning-effort changes preserve the tokenizer and context window; other changes need fresh telemetry.
 export function canReuseCodexContextUsage(previous: ModelSelection, next: ModelSelection): boolean {
   return modelSelectionsEqual(
@@ -7644,7 +7637,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           providerSession: session,
           events: Stream.fromEffectRepeat(Queue.take(events)),
           canReuseContextUsage: canReuseCodexContextUsage,
-          normalizeThreadLoadModelSelection: normalizeCodexThreadLoadModelSelection,
           // Idle release can beat delayed subagent resumes: Codex reports them completed between turns with no resume-expected signal.
           hasPendingBackgroundWork: Effect.gen(function* () {
             if (nativeTurnAcceptances.size > 0) return true;

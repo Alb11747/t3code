@@ -318,21 +318,15 @@ function providerThreadRuntimeKey(
 }
 
 function providerThreadLoadKey(input: {
-  readonly runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime;
   readonly providerThread: Parameters<
     ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeThread"]
   >[0]["providerThread"];
   readonly modelSelection?: ModelSelection;
   readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
 }): string {
-  const modelSelection =
-    input.modelSelection === undefined
-      ? undefined
-      : (input.runtime.normalizeThreadLoadModelSelection?.(input.modelSelection) ??
-        input.modelSelection);
   return JSON.stringify({
     providerThread: providerThreadRuntimeKey(input.providerThread),
-    modelSelection: modelSelection ?? null,
+    modelSelection: input.modelSelection ?? null,
     runtimePolicy: input.runtimePolicy ?? null,
   });
 }
@@ -2002,7 +1996,6 @@ export const layerWithOptions = (
                   providerSessionId,
                   threadId: input.threadId,
                   providerThreadKey: providerThreadLoadKey({
-                    runtime,
                     providerThread,
                     modelSelection: input.modelSelection,
                     runtimePolicy: input.runtimePolicy,
@@ -2019,7 +2012,6 @@ export const layerWithOptions = (
               return resume();
             }
             const providerThreadKey = providerThreadLoadKey({
-              runtime,
               providerThread: input.providerThread,
               ...(input.modelSelection === undefined
                 ? {}
@@ -2064,7 +2056,6 @@ export const layerWithOptions = (
                   providerSessionId,
                   threadId,
                   providerThreadKey: providerThreadLoadKey({
-                    runtime,
                     providerThread,
                     ...(input.modelSelection === undefined
                       ? {}
@@ -2096,7 +2087,6 @@ export const layerWithOptions = (
                   providerSessionId,
                   threadId: input.targetThreadId,
                   providerThreadKey: providerThreadLoadKey({
-                    runtime,
                     providerThread,
                     ...(input.modelSelection === undefined
                       ? {}
