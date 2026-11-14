@@ -66,6 +66,8 @@ function testLayer(input: {
   readonly settingsPatches?: Array<unknown>;
   readonly accountChoice?: unknown;
   readonly redemptions?: Array<unknown>;
+  readonly picks?: Array<unknown>;
+  readonly oldRouter?: boolean;
 }) {
   return Layer.mergeAll(
     Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
@@ -85,8 +87,20 @@ function testLayer(input: {
     Layer.mock(UsageLimitSources.UsageLimitSources)({
       current: Effect.succeed(snapshots),
       hub: () => Effect.succeed({ url: "http://hub.test", managementKey: "key" }),
-      nextPick: () =>
-        Effect.succeed({ account: OWNER, owner: input.owner ?? null, resetsAt: null }),
+      nextPick: (_hub, request) =>
+        Effect.sync(() => {
+          input.picks?.push(request);
+          return {
+            account: request.kind === "compaction" ? OTHER : OWNER,
+            owner: input.owner ?? null,
+            resetsAt: null,
+            basis: "warm",
+            // Older routers ignore `kind` and do not echo it.
+            kind: input.oldRouter ? null : (request.kind ?? "next"),
+            current: OWNER,
+            switchBelowContextTokens: null,
+          };
+        }),
       pin: (_hub, pin) => Effect.sync(() => void input.pins?.push(pin)),
       unpin: (_hub, sessions) => Effect.sync(() => void input.controls?.push({ unpin: sessions })),
       control: () => Effect.succeed(input.control ?? {}),
@@ -443,5 +457,60 @@ describe("ThreadAccountService agent controls", () => {
         ),
       );
     },
+  );
+});
+
+describe("ThreadAccountService.preview", () => {
+  const selection = modelSelection as never;
+  it.effect("shares one router read per session, model and kind until it ages out", () => {
+    const picks: Array<unknown> = [];
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const service = yield* ThreadAccountService.make;
+      const next = { threadId, modelSelection: selection, kind: "next" as const };
+      const first = yield* service.preview(next);
+      // The chip's state shares the preview's read.
+      yield* service.state({ threadId, modelSelection: selection });
+      yield* service.preview(next);
+      const compaction = yield* service.preview({ ...next, kind: "compaction" });
+      expect(picks).toHaveLength(2);
+      yield* service.preview({ ...next, fresh: true });
+      expect(picks).toHaveLength(3);
+      yield* TestClock.adjust("5 seconds");
+      yield* service.preview(next);
+      expect(picks).toHaveLength(4);
+      expect(picks[0]).toEqual({
+        provider: "claude",
+        model: "claude-sonnet-5-5",
+        session: "native-session",
+        keepWarm: true,
+      });
+      expect(first).toEqual({
+        account: OWNER,
+        current: OWNER,
+        basis: "warm",
+        approximate: false,
+        switchBelowContextTokens: null,
+      });
+      expect(compaction).toMatchObject({ account: OTHER, approximate: false });
+      const usage = yield* service.usage({ threadId });
+      expect(usage.thread).toMatchObject({ next: OWNER, afterCompaction: OTHER });
+    }).pipe(Effect.provide(testLayer({ picks })));
+  });
+
+  it.effect("marks a compaction preview approximate when the router ignores the kind", () =>
+    Effect.gen(function* () {
+      const service = yield* ThreadAccountService.make;
+      const compaction = yield* service.preview({
+        threadId,
+        modelSelection: selection,
+        kind: "compaction",
+      });
+      expect(compaction).toMatchObject({ approximate: true });
+      const next = yield* service.preview({ threadId, modelSelection: selection, kind: "next" });
+      expect(next).toMatchObject({ approximate: false });
+      const usage = yield* service.usage({ threadId });
+      expect(usage.thread && "afterCompaction" in usage.thread).toBe(false);
+    }).pipe(Effect.provide(testLayer({ oldRouter: true }))),
   );
 });

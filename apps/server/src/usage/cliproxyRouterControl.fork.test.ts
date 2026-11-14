@@ -17,7 +17,8 @@ function routerHub(answer: (request: { method: string; path: string; body: unkno
         request.body._tag === "Uint8Array"
           ? JSON.parse(new TextDecoder().decode(request.body.body))
           : undefined;
-      const seen = { method: request.method, path: new URL(request.url).pathname, body };
+      const url = new URL(request.url);
+      const seen = { method: request.method, path: url.pathname + url.search, body };
       requests.push(seen);
       const answered = answer(seen);
       return HttpClientResponse.fromWeb(
@@ -99,18 +100,33 @@ describe("quota-router account controls", () => {
     }),
   );
 
-  it.effect("reads a conversation's established owner from the pick preview", () =>
+  it.effect("reads the owner, request kind and current account from the pick preview", () =>
     Effect.gen(function* () {
       const test = routerHub(() => ({
         account: "account-0123456789abcdef",
         owner: "account-fedcba9876543210",
         reset_at: null,
+        basis: "steered",
+        kind: "compaction",
+        current: "account-fedcba9876543210",
+        switch_below_context_tokens: 100000,
       }));
-      expect(yield* (yield* test.api).nextPick(hub, { provider: "claude", session })).toEqual({
+      const pick = yield* (yield* test.api).nextPick(hub, {
+        provider: "claude",
+        session,
+        kind: "compaction",
+        keepWarm: true,
+      });
+      expect(pick).toEqual({
         account: "account-0123456789abcdef",
         owner: "account-fedcba9876543210",
         resetsAt: null,
+        basis: "steered",
+        kind: "compaction",
+        current: "account-fedcba9876543210",
+        switchBelowContextTokens: 100000,
       });
+      expect(test.requests[0]?.path).toContain("kind=compaction&keep_warm=1");
     }),
   );
 

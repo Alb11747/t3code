@@ -202,6 +202,11 @@ const NextPick = Schema.Struct({
   reset_at: Schema.optional(Schema.NullOr(Schema.String)),
   // Quota router 0.24: an account-bound conversation's established account.
   owner: Schema.optional(Schema.NullOr(Schema.String)),
+  // Newer routers: the request kind answered for, the conversation's account now, and the
+  // context size at which the small-context switch can change the pick.
+  kind: Schema.optional(Schema.String),
+  current: Schema.optional(Schema.NullOr(Schema.String)),
+  switch_below_context_tokens: Schema.optional(Schema.NullOr(Schema.Number)),
 });
 
 const decodeAuthFiles = Schema.decodeUnknownEffect(AuthFiles);
@@ -769,18 +774,26 @@ export const makeCliproxyApi = Effect.gen(function* () {
     return { resetsAt: pick.resetsAt };
   });
 
-  /** The router's pick preview; null when the hub cannot preview picks. */
+  /**
+   * The router's pick preview; null when the hub cannot preview picks. `kind` is the kind the
+   * router answered for: null from routers that ignore the parameter and answer for the next
+   * ordinary request. `keepWarm` says the requests carry `X-T3-Keep-Warm`, as Claude's do.
+   */
   const nextPick = Effect.fn("CliproxyApi.nextPick")(function* (
     config: CliproxyHub,
     input: {
       readonly provider: RouterProvider;
       readonly session?: string;
       readonly model?: string;
+      readonly kind?: "compaction";
+      readonly keepWarm?: boolean;
     },
   ) {
     const query = new URLSearchParams({ provider: input.provider });
     if (input.session) query.set("session", input.session);
     if (input.model) query.set("model", input.model);
+    if (input.kind) query.set("kind", input.kind);
+    if (input.keepWarm) query.set("keep_warm", "1");
     const pick = yield* management(config, `control/next?${query}`).pipe(
       Effect.flatMap(decodeNextPick),
       Effect.tapError((error) =>
@@ -792,7 +805,15 @@ export const makeCliproxyApi = Effect.gen(function* () {
     const resetsAt = pick.value.reset_at
       ? Option.getOrNull(Option.map(DateTime.make(pick.value.reset_at), DateTime.formatIso))
       : null;
-    return { account: pick.value.account ?? null, owner: pick.value.owner ?? null, resetsAt };
+    return {
+      account: pick.value.account ?? null,
+      owner: pick.value.owner ?? null,
+      resetsAt,
+      basis: pick.value.basis ?? null,
+      kind: pick.value.kind ?? null,
+      current: pick.value.current ?? null,
+      switchBelowContextTokens: pick.value.switch_below_context_tokens ?? null,
+    };
   });
 
   const control = Effect.fn("CliproxyApi.control")(function* (config: CliproxyHub) {

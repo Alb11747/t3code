@@ -195,6 +195,17 @@ threads of that provider to the account. A new thread can pick its account befor
 message. The choice belongs to the provider it was made for: after switching the thread to
 another provider, it routes automatically until you pick again.
 
+The chip also names the account the next message will use, for example **Auto · work**, and a
+thread whose chosen account has run out shows where it falls back to (**work → spare**). The
+router can move a thread when it compacts or while its context is small, so when a compaction
+would continue on another account, the chip's menu and tooltip and the **Compact** controls say
+so. If the account changes between what the chip showed and your send, T3 Code keeps your message,
+names both accounts, and sends when you press again; a change you made yourself does not stop the
+send, and neither does a hub that does not answer within a second and a half. On mobile, a send
+that would move the conversation to another account asks the same way, and the thread's settings
+sheet shows where its next request and a compaction would go. Showing where a compaction goes
+needs a quota router newer than 0.24.0.
+
 Switching an existing thread re-sends its context to the new account as a cold cache write.
 Some conversations stay bound to the account they started on; moving one asks first, because its
 earlier thinking is dropped (messages, tool results and files stay). The thread then drops that

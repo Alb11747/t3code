@@ -44,6 +44,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.providerConsumeResetCredit]: "provider",
   [WS_METHODS.claudeKeepWarmAction]: "provider",
   [WS_METHODS.threadAccountState]: "provider",
+  [WS_METHODS.threadAccountPreview]: "provider",
   [WS_METHODS.threadAccountSet]: "provider",
   [WS_METHODS.threadAccountSteer]: "provider",
   [WS_METHODS.threadAccountRouting]: "provider",

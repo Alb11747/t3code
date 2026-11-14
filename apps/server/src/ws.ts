@@ -2643,6 +2643,7 @@ export const layerWsRpc = (
         [WS_METHODS.claudeKeepWarmAction]: (input) => keepWarmActions.run(input),
         [WS_METHODS.providerResolveUsageResetSnooze]: (input) => usageResetSnooze.resolve(input),
         [WS_METHODS.threadAccountState]: (input) => threadAccounts.state(input),
+        [WS_METHODS.threadAccountPreview]: (input) => threadAccounts.preview(input),
         [WS_METHODS.threadAccountSet]: (input) => threadAccounts.set(input),
         [WS_METHODS.threadAccountSteer]: (input) => threadAccounts.steer(input),
         [WS_METHODS.threadAccountRouting]: (input) => threadAccounts.routing(input),

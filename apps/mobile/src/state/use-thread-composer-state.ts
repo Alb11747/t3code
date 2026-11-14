@@ -61,6 +61,11 @@ import {
 } from "../features/threads/pending-thread-feed";
 import { threadAllowsProviderSwitch } from "./thread-provider-switching";
 import { appAtomRegistry } from "./atom-registry";
+import { confirmThreadAccountForSend } from "./thread-account-send-guard";
+import {
+  accountRequestKind,
+  mayRouteThroughHub,
+} from "@t3tools/client-runtime/thread-account-guard";
 import { pendingThreadCreationMessage } from "./pending-thread-creation";
 import {
   composerAttachmentUploadBlockReason,
@@ -742,6 +747,20 @@ export function useThreadComposerState(input: {
           selectedThreadQueuedMessages.length === 0,
         now: metadata.createdAt,
       });
+    // Fork: a send that steers the running turn joins requests the turn makes anyway.
+    if (
+      beforeDispatch === undefined &&
+      followUpAction !== "steer" &&
+      !(await confirmThreadAccountForSend({
+        environmentId: thread.environmentId,
+        threadId: thread.id,
+        modelSelection,
+        routed: mayRouteThroughHub(provider),
+        kind: accountRequestKind({ text, compactsFirst: compactBeforeSend }),
+      }))
+    ) {
+      return null;
+    }
     const messageId = MessageId.make(metadata.messageId);
     onWillEnqueue?.();
     clearThreadComposerError(threadKey);

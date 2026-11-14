@@ -20,6 +20,7 @@ import { Button } from "../../components/ui/Button";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
+import { confirmThreadAccountForSend } from "../../state/thread-account-send-guard";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useQuietThreadStructure } from "../../state/use-thread-detail";
@@ -86,11 +87,25 @@ export function KeepWarmStallCard({
       setError(cause instanceof Error ? cause.message : failure);
     }
   }
-  const act = (action: ClaudeKeepWarmAction) =>
-    run(
+  const act = async (action: ClaudeKeepWarmAction) => {
+    // Compacting continues the thread on whichever account the router places it.
+    if (
+      action === "compact" &&
+      !(await confirmThreadAccountForSend({
+        environmentId,
+        threadId: thread.id,
+        modelSelection: thread.modelSelection,
+        routed: accounts !== null,
+        kind: "compaction",
+      }))
+    ) {
+      return;
+    }
+    await run(
       () => runAction({ environmentId, input: { threadId: thread.id, action } }),
       "Could not change the stalled thread.",
     );
+  };
   const toggleSnooze = () =>
     run(
       () =>

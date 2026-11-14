@@ -9,6 +9,8 @@ import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
 import { ClaudeKeepWarmActionError, ClaudeKeepWarmActionInput } from "./claudeKeepWarm.ts";
 import {
   ThreadAccountError,
+  ThreadAccountPreview,
+  ThreadAccountPreviewInput,
   ThreadAccountRouting,
   ThreadAccountRoutingInput,
   ThreadAccountSetInput,
@@ -464,6 +466,7 @@ export const WS_METHODS = {
   providerConsumeResetCredit: "provider.consumeResetCredit",
   claudeKeepWarmAction: "provider.claude.keepWarmAction",
   threadAccountState: "provider.threadAccount.state",
+  threadAccountPreview: "provider.threadAccount.preview",
   threadAccountSet: "provider.threadAccount.set",
   threadAccountSteer: "provider.threadAccount.steer",
   threadAccountRouting: "provider.threadAccount.routing",
@@ -736,6 +739,12 @@ const ThreadAccountRpcError = Schema.Union([ThreadAccountError, EnvironmentAutho
 const WsThreadAccountStateRpc = Rpc.make(WS_METHODS.threadAccountState, {
   payload: ThreadAccountStateInput,
   success: ThreadAccountState,
+  error: ThreadAccountRpcError,
+});
+
+const WsThreadAccountPreviewRpc = Rpc.make(WS_METHODS.threadAccountPreview, {
+  payload: ThreadAccountPreviewInput,
+  success: ThreadAccountPreview,
   error: ThreadAccountRpcError,
 });
 
@@ -2144,6 +2153,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsClaudeKeepWarmActionRpc,
   WsProviderResolveUsageResetSnoozeRpc,
   WsThreadAccountStateRpc,
+  WsThreadAccountPreviewRpc,
   WsThreadAccountSetRpc,
   WsThreadAccountSteerRpc,
   WsThreadAccountRoutingRpc,

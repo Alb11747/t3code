@@ -16,6 +16,8 @@ import {
   type ServerProviderUsageLimits,
   type ThreadAccountEndInput,
   type ThreadAccountMarginInput,
+  type ThreadAccountPreview,
+  type ThreadAccountPreviewInput,
   type ThreadAccountRouting,
   type ThreadAccountRoutingInput,
   type ThreadAccountSetInput,
@@ -31,6 +33,7 @@ import {
   type UsageResetSnooze,
   threadAccountChoiceFor,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -57,6 +60,11 @@ const NOT_ROUTED =
   "This thread's provider does not route through one CLI Proxy quota router with several accounts.";
 const MARGIN_ACTOR = "T3 Code";
 const MAX_CONTROL_MS = 7 * 24 * 60 * 60 * 1000;
+// Composers poll the preview while visible and check it before each send; one read per hub,
+// session, model and kind serves every client and the picker for this long.
+const PREVIEW_SHARE_MS = 5_000;
+// Like turn-start pins: a dead hub must not hold a send's account check or the chip.
+const PREVIEW_TIMEOUT = "3 seconds";
 const REDEEM_OFF =
   "The user has not let agents redeem reset credits. They can turn on Settings → Threads → Usage limits → Let agents redeem reset credits.";
 
@@ -106,6 +114,10 @@ export class ThreadAccounts extends Context.Reference<{
   readonly state: (
     input: ThreadAccountStateInput,
   ) => Effect.Effect<ThreadAccountState, ThreadAccountError>;
+  /** Where the thread's next request, or the one after a compaction, would go. */
+  readonly preview: (
+    input: ThreadAccountPreviewInput,
+  ) => Effect.Effect<ThreadAccountPreview, ThreadAccountError>;
   readonly set: (input: ThreadAccountSetInput) => Effect.Effect<void, ThreadAccountError>;
   readonly steer: (input: ThreadAccountSteerInput) => Effect.Effect<void, ThreadAccountError>;
   readonly routing: (
@@ -132,6 +144,7 @@ export class ThreadAccounts extends Context.Reference<{
 }>("t3/usage/ThreadAccounts", {
   defaultValue: () => ({
     state: () => Effect.succeed(null),
+    preview: () => Effect.succeed(null),
     routing: () => Effect.succeed(null),
     usage: () => Effect.succeed({ agentsCanRedeemResetCredits: false, native: [], hubs: [] }),
     set: () => Effect.fail(fail("Account choice is unavailable.")),
@@ -211,6 +224,83 @@ export const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => undefined),
     );
 
+  type Target = NonNullable<Effect.Success<ReturnType<typeof resolveTarget>>>;
+  type Pick = Effect.Success<ReturnType<typeof api.nextPick>>;
+  const pickReads = new Map<string, { readonly at: number; readonly read: Effect.Effect<Pick> }>();
+  // Shares one router read per hub, session, model and kind; `fresh` reads again and shares that.
+  const sharedPick = Effect.fn("ThreadAccounts.sharedPick")(function* (
+    target: Target,
+    input: { readonly session: string | undefined; readonly model: string },
+    kind: ThreadAccountPreviewInput["kind"],
+    fresh: boolean,
+  ) {
+    // None of these hold a newline.
+    const key = [
+      target.hub.url,
+      target.routerProvider,
+      input.session ?? "",
+      input.model,
+      kind,
+    ].join("\n");
+    const now = yield* Clock.currentTimeMillis;
+    for (const [entryKey, entry] of pickReads) {
+      if (now - entry.at >= PREVIEW_SHARE_MS) pickReads.delete(entryKey);
+    }
+    const shared = pickReads.get(key);
+    if (shared !== undefined && !fresh) return yield* shared.read;
+    const read = yield* Effect.cached(
+      api
+        .nextPick(target.hub, {
+          provider: target.routerProvider,
+          model: input.model,
+          ...(input.session ? { session: input.session } : {}),
+          ...(kind === "compaction" ? { kind } : {}),
+          // T3's Claude processes mark every request for the router's keep-warm holds.
+          ...(target.routerProvider === "claude" ? { keepWarm: true } : {}),
+        })
+        .pipe(
+          Effect.timeout(PREVIEW_TIMEOUT),
+          Effect.catchCause((cause) =>
+            Effect.logDebug("quota router pick preview timed out", { cause }).pipe(Effect.as(null)),
+          ),
+        ),
+    );
+    pickReads.set(key, { at: now, read });
+    return yield* read;
+  });
+
+  const aliasIn = (target: Target) => {
+    const known = new Set(target.accounts.map((account) => account.routerAlias));
+    return (value: string | null | undefined) =>
+      value && known.has(value) ? (value as RouterAccountAlias) : null;
+  };
+
+  const preview = Effect.fn("ThreadAccounts.preview")(function* (
+    input: ThreadAccountPreviewInput,
+  ): Effect.fn.Return<ThreadAccountPreview> {
+    const target = yield* resolveTarget(input.modelSelection.instanceId);
+    if (target === null) return null;
+    const session = input.threadId
+      ? yield* sessionOf(input.threadId, input.modelSelection)
+      : undefined;
+    const pick = yield* sharedPick(
+      target,
+      { session, model: input.modelSelection.model },
+      input.kind,
+      input.fresh === true,
+    );
+    if (pick === null) return null;
+    const alias = aliasIn(target);
+    return {
+      account: alias(pick.account),
+      current: alias(pick.current),
+      basis: pick.basis,
+      // Routers that ignore `kind` answer for the next ordinary request.
+      approximate: input.kind === "compaction" && pick.kind !== "compaction",
+      switchBelowContextTokens: pick.switchBelowContextTokens,
+    };
+  });
+
   const state = Effect.fn("ThreadAccounts.state")(function* (
     input: ThreadAccountStateInput,
   ): Effect.fn.Return<ThreadAccountState> {
@@ -219,16 +309,10 @@ export const make = Effect.gen(function* () {
     const session = input.threadId
       ? yield* sessionOf(input.threadId, input.modelSelection)
       : undefined;
-    const known = new Set(target.accounts.map((account) => account.routerAlias));
-    const alias = (value: string | null | undefined) =>
-      value && known.has(value) ? (value as NonNullable<typeof value>) : null;
+    const alias = aliasIn(target);
     const [pick, control] = yield* Effect.all(
       [
-        api.nextPick(target.hub, {
-          provider: target.routerProvider,
-          model: input.modelSelection.model,
-          ...(session ? { session } : {}),
-        }),
+        sharedPick(target, { session, model: input.modelSelection.model }, "next", false),
         api.control(target.hub).pipe(Effect.option),
       ],
       { concurrency: "unbounded" },
@@ -614,6 +698,13 @@ export const make = Effect.gen(function* () {
     if (input.threadId === undefined) return { agentsCanRedeemResetCredits, native, hubs };
     const thread = yield* threadOf(input.threadId);
     const picked = yield* state({ threadId: thread.id, modelSelection: thread.modelSelection });
+    const afterCompaction = picked
+      ? yield* preview({
+          threadId: thread.id,
+          modelSelection: thread.modelSelection,
+          kind: "compaction",
+        })
+      : null;
     const chosen = threadAccountChoiceFor(thread.accountChoice, thread.modelSelection.instanceId);
     return {
       agentsCanRedeemResetCredits,
@@ -622,6 +713,9 @@ export const make = Effect.gen(function* () {
       thread: {
         threadId: thread.id,
         next: picked?.next ?? null,
+        ...(afterCompaction?.account && !afterCompaction.approximate
+          ? { afterCompaction: afterCompaction.account }
+          : {}),
         owner: picked?.owner ?? null,
         chosen: chosen ? { account: chosen.account, waitWhenOut: chosen.stall } : null,
       },
@@ -740,6 +834,7 @@ export const make = Effect.gen(function* () {
 
   return {
     state: (input: ThreadAccountStateInput) => asThreadAccountError(state(input)),
+    preview: (input: ThreadAccountPreviewInput) => asThreadAccountError(preview(input)),
     set: (input: ThreadAccountSetInput) => asThreadAccountError(set(input)),
     steer: (input: ThreadAccountSteerInput) => asThreadAccountError(steer(input)),
     routing: (input: ThreadAccountRoutingInput) => asThreadAccountError(routing(input)),

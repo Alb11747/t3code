@@ -1417,6 +1417,19 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.threadAccountState,
       staleTimeMs: 30_000,
     }),
+    // Fork: where the thread's next request or compaction would go; composers refresh it while
+    // shown (the server shares one router read across clients for a few seconds).
+    threadAccountPreview: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:thread-account-preview",
+      tag: WS_METHODS.threadAccountPreview,
+      staleTimeMs: 10_000,
+      idleTtlMs: 60_000,
+    }),
+    // The same read, run once just before a send.
+    checkThreadAccountPreview: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:check-thread-account-preview",
+      tag: WS_METHODS.threadAccountPreview,
+    }),
     setThreadAccount: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:set-thread-account",
       tag: WS_METHODS.threadAccountSet,

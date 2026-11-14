@@ -24,6 +24,7 @@ import { composerFloatingLayerProps } from "./composerEventScope";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 import { openThreadAccountPicker } from "./threadAccountChoice";
 import { useThreadAccountState } from "./ThreadAccountPicker";
+import { confirmAccountForSend, useCompactionAccountNote } from "./threadAccountSendGuard";
 
 type StallProps = {
   environmentId: EnvironmentId;
@@ -87,9 +88,18 @@ function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProp
     modelSelection: shell?.modelSelection ?? null,
   }).data;
   const chooseAccount = () => openThreadAccountPicker(scopedThreadKey(threadRef));
+  const compactionNote = useCompactionAccountNote(scopedThreadKey(threadRef));
 
   async function act(action: ClaudeKeepWarmAction) {
     setPending(true);
+    // Compacting continues the thread on whichever account the router places it.
+    if (
+      action === "compact" &&
+      !(await confirmAccountForSend(scopedThreadKey(threadRef), "compaction"))
+    ) {
+      setPending(false);
+      return;
+    }
     const result = await runAction({ environmentId, input: { threadId, action } });
     setPending(false);
     if (result._tag === "Failure") {
@@ -159,7 +169,16 @@ function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProp
         </MenuTrigger>
         <MenuPopup {...composerFloatingLayerProps} side="top" align="end" width="content">
           {accounts ? <MenuItem onClick={chooseAccount}>Choose account…</MenuItem> : null}
-          <MenuItem onClick={() => void act("compact")}>Compact</MenuItem>
+          <MenuItem onClick={() => void act("compact")}>
+            {compactionNote ? (
+              <span className="flex flex-col">
+                <span>Compact</span>
+                <span className="text-xs text-muted-foreground">{compactionNote}</span>
+              </span>
+            ) : (
+              "Compact"
+            )}
+          </MenuItem>
           <MenuItem onClick={() => void toggleSnooze()}>
             {snoozed ? "Wake now" : "Snooze until reset"}
           </MenuItem>

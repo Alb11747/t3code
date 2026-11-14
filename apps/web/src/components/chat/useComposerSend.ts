@@ -91,6 +91,7 @@ import {
   resolveResumeCompactionProviderThread,
   resolveResumeCompactionContext,
 } from "./compaction.logic";
+import { confirmAccountForSend } from "./threadAccountSendGuard";
 import { runMobileComposerTransition } from "./draftHeroTransition";
 import { useClientSettingsHydrated } from "../../hooks/useSettings";
 import { environmentPresentations } from "../../state/presentation";
@@ -102,6 +103,7 @@ import {
 } from "./composerSend.logic";
 import { useMultipleModelSend } from "./useMultipleModelSend";
 import { type ComposerDispatchMode } from "@t3tools/client-runtime/state/composer-dispatch";
+import { accountRequestKind } from "@t3tools/client-runtime/thread-account-guard";
 import {
   awaitAttachmentUploads,
   getUploadedAttachments,
@@ -847,6 +849,20 @@ export function useComposerSend(input: ComposerSendInput) {
     }
 
     sendInFlightRef.current = true;
+    // Fork: stop once if the CLI Proxy account the chip showed changed. A message that steers a
+    // running turn joins requests the turn makes anyway, so only new turns are checked.
+    const { compactBeforeSend: compactsFirst } = readTurnPlan();
+    if (
+      multipleModelSelections === null &&
+      (phase !== "running" || shouldQueueBehindActiveRun) &&
+      !(await confirmAccountForSend(
+        routeThreadKey,
+        accountRequestKind({ text: messageTextForSend, compactsFirst }),
+      ))
+    ) {
+      sendInFlightRef.current = false;
+      return;
+    }
     const sendGeneration = ++composerSendGenerationRef.current;
     const attachmentCapabilitiesBeforeUpload = readLiveAttachmentCapabilities();
     if (attachmentCapabilitiesBeforeUpload.fileBlockReason !== null) {

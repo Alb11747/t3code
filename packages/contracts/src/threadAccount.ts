@@ -63,6 +63,37 @@ export const ThreadAccountState = Schema.NullOr(
 );
 export type ThreadAccountState = typeof ThreadAccountState.Type;
 
+/** `compaction`: the first request after a compaction, which starts a new cache and can move. */
+export const ThreadAccountRequestKind = Schema.Literals(["next", "compaction"]);
+export type ThreadAccountRequestKind = typeof ThreadAccountRequestKind.Type;
+
+export const ThreadAccountPreviewInput = Schema.Struct({
+  ...ThreadAccountStateInput.fields,
+  kind: ThreadAccountRequestKind,
+  /** Skips the server's few-second shared read, for the check just before a send. */
+  fresh: Schema.optional(Schema.Boolean),
+});
+export type ThreadAccountPreviewInput = typeof ThreadAccountPreviewInput.Type;
+
+/**
+ * Where the router would send the thread's request of that kind. Null when the provider does not
+ * route through one hub with two or more accounts, or the router cannot preview picks.
+ */
+export const ThreadAccountPreview = Schema.NullOr(
+  Schema.Struct({
+    account: Schema.NullOr(RouterAccountAlias),
+    /** The account the conversation is on now, when the router knows it. */
+    current: Schema.NullOr(RouterAccountAlias),
+    /** The router's reason, such as `warm`, `pinned`, `steered` or `placed`. */
+    basis: Schema.NullOr(Schema.String),
+    /** An older router answered for the next ordinary request instead of this kind. */
+    approximate: Schema.Boolean,
+    /** The pick can change when the thread's context size crosses this many tokens. */
+    switchBelowContextTokens: Schema.NullOr(Schema.Number),
+  }),
+);
+export type ThreadAccountPreview = typeof ThreadAccountPreview.Type;
+
 /** `account: null` returns the thread to automatic routing. */
 export const ThreadAccountSetInput = Schema.Struct({
   threadId: ThreadId,
@@ -233,6 +264,8 @@ export const ThreadAccountUsage = Schema.Struct({
       threadId: ThreadId,
       /** The account the router would send the thread's next request to. */
       next: Schema.NullOr(RouterAccountAlias),
+      /** The account it would continue on after a compaction; absent when the router cannot tell. */
+      afterCompaction: Schema.optional(RouterAccountAlias),
       /** The account an account-bound conversation is tied to. */
       owner: Schema.NullOr(RouterAccountAlias),
       chosen: Schema.NullOr(

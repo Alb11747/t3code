@@ -1,11 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { accountShortLabel, previewAccount } from "@t3tools/client-runtime/thread-account-guard";
 import {
   THREAD_ACCOUNT_MOVE_WARNING,
   type EnvironmentId,
   type ModelSelection,
   type RouterAccountAlias,
   type ThreadAccountChoice,
+  type ThreadAccountPreview,
   type ThreadAccountState,
   type ThreadId,
   type UsageLimitSourceAccount,
@@ -22,6 +24,7 @@ import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { cn } from "../../lib/cn";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
+import { noteThreadAccountChange } from "../../state/thread-account-send-guard";
 import { useAtomCommand } from "../../state/use-atom-command";
 
 const PROVIDER_NAMES: Record<string, string> = { claudeAgent: "Claude", codex: "Codex" };
@@ -77,6 +80,19 @@ export function ThreadAccountSection(props: {
       input: { ...(threadId ? { threadId } : {}), modelSelection: props.modelSelection },
     }),
   );
+  const previewFor = (kind: "next" | "compaction") =>
+    serverEnvironment.threadAccountPreview({
+      environmentId: props.environmentId,
+      input: { ...(threadId ? { threadId } : {}), modelSelection: props.modelSelection, kind },
+    });
+  // Only a provider with a hub of two or more accounts has a pick to preview.
+  const routed = (query.data?.accounts.length ?? 0) >= 2;
+  const nextPreview = useEnvironmentQuery<ThreadAccountPreview, unknown>(
+    routed ? previewFor("next") : null,
+  );
+  const compactionPreview = useEnvironmentQuery<ThreadAccountPreview, unknown>(
+    routed ? previewFor("compaction") : null,
+  );
   const runSet = useAtomCommand(serverEnvironment.setThreadAccount, { reportFailure: false });
   const runSteer = useAtomCommand(serverEnvironment.steerThreadAccount, { reportFailure: false });
   const permitted = useAtomValue(
@@ -111,6 +127,8 @@ export function ThreadAccountSection(props: {
       else setError(cause instanceof Error ? cause.message : "Could not change the account.");
     }
     query.refresh();
+    nextPreview.refresh();
+    compactionPreview.refresh();
   }
   const confirmMove = (
     account: UsageLimitSourceAccount,
@@ -125,6 +143,7 @@ export function ThreadAccountSection(props: {
       onConfirm: () => set(alias, stall, true),
     });
   const set = (account: RouterAccountAlias | null, stall: boolean, dropThinking = false) => {
+    if (threadId !== null) noteThreadAccountChange(props.environmentId, threadId);
     if (threadId === null) {
       onDraftChange?.(
         account === null
@@ -154,13 +173,25 @@ export function ThreadAccountSection(props: {
     set(alias, stall);
   };
 
+  const nextAlias = nextPreview.data ? previewAccount(nextPreview.data) : state.next;
+  const next = byAlias(nextAlias);
+  const afterCompaction = byAlias(previewAccount(compactionPreview.data));
+  const current = nextPreview.data?.current ?? null;
+  const routeNote = [
+    next ? `Next request: ${accountShortLabel(next)}` : undefined,
+    afterCompaction && afterCompaction.routerAlias !== (current ?? nextAlias)
+      ? `after compacting: ${accountShortLabel(afterCompaction)}`
+      : undefined,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const rows = [
     { key: "auto", title: "Automatic", detail: "Router picks", account: null },
     ...state.accounts.map((account) => ({
       key: account.id,
       title: label(account),
       detail: [
-        state.next === account.routerAlias ? "in use" : undefined,
+        nextAlias === account.routerAlias ? "in use" : undefined,
         steered?.routerAlias === account.routerAlias ? "new threads" : undefined,
         describe(account),
       ]
@@ -262,6 +293,9 @@ export function ThreadAccountSection(props: {
           </Pressable>
         ) : null}
       </View>
+      {routeNote ? (
+        <Text className="mx-8 mt-2 text-xs text-foreground-muted">{routeNote}</Text>
+      ) : null}
       {threadId === null ? null : (
         <Text className="mx-8 mt-2 text-xs text-foreground-muted">
           Switching re-sends the thread's context as a cold cache write.

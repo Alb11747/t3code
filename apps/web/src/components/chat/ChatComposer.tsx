@@ -208,6 +208,7 @@ import {
 } from "./ComposerAttachmentStrip";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { ComposerFooterPrimaryActions } from "./ComposerFooterControls";
+import { useCompactionAccountNote } from "./threadAccountSendGuard";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { buildPullRequestReferenceContext } from "../pullRequest/pullRequestDetail.logic";
@@ -887,6 +888,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     lockedInstanceId:
       activeThread?.runtime?.providerInstanceId ?? activeThreadModelSelection?.instanceId,
   });
+  // Fork: the account chip's note when compacting would move the thread to another account.
+  const compactAccountNote = useCompactionAccountNote(scopedThreadKey(routeThreadRef));
   const resumeCompactionTokens = resumeCompactionTokensForSelection({
     resumeCompaction: props.resumeCompaction,
     selectedProvider,
@@ -3656,6 +3659,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryActionStable}
                     compactBeforeSendTokens={resumeCompactionTokens}
+                    compactAccountNote={compactAccountNote}
                     keepFullHistory={props.keepFullHistory}
                     onToggleKeepFullHistory={props.onToggleKeepFullHistory}
                   >
