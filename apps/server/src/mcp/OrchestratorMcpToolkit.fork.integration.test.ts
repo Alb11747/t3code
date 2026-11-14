@@ -1650,6 +1650,15 @@ describe("orchestrator MCP toolkit", () => {
                 messageId: expect.any(String),
               },
             });
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).runs.find(
+                (run) => run.id === parentRun.id,
+              )?.delegatedCompletion?.delivery,
+            ).toMatchObject({
+              generation: followupOffers[0]?.delegatedCompletion?.generation,
+              messageId: followupOffers[0]?.delegatedCompletion?.messageId,
+              taskIds: expect.arrayContaining([childFollowup.taskId, activeChildFollowup.taskId]),
+            });
             yield* expectDeliveryReservationsToStay(1);
             yield* invoke("task_status", { taskId: childFollowup.taskId });
             yield* invoke("task_status", { taskId: activeChildFollowup.taskId });
