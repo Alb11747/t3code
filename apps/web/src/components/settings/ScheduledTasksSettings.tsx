@@ -50,6 +50,7 @@ import {
 
 import { formatRelativeTime } from "../../timestampFormat";
 import { useEnvironmentSettings } from "../../hooks/useSettings";
+import { createModelSelection } from "@t3tools/shared/model";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import { providerInstanceEntriesFor } from "../../providerInstances";
 import { usePrimaryCloudLinkState } from "../../cloud/cloudLinkState";
@@ -86,6 +87,7 @@ import {
   clampManagedRuntimeMode,
   managedCapabilityDenial,
 } from "@t3tools/contracts";
+import { modelFamilyName } from "@t3tools/shared/latestModel";
 import { resolvePastedPath } from "@t3tools/shared/path";
 import { useManagedPolicy } from "~/state/managedPolicy";
 import { ManagedNotice } from "../ManagedPolicy";
@@ -127,7 +129,9 @@ import { Menu, MenuTrigger, MenuPopup, MenuItem, MenuSeparator } from "../ui/men
 import { ToggleGroup, Toggle } from "../ui/toggle-group";
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from "../ui/empty";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
+import { TraitsPicker } from "../chat/TraitsPicker";
 import { Badge } from "../ui/badge";
+import { Checkbox } from "../ui/checkbox";
 import { Button } from "../ui/button";
 import {
   Combobox,
@@ -197,6 +201,7 @@ const EMPTY_DRAFT: DraftState = {
   runtimeMode: "full-access",
   interactionMode: "default",
   baseModelSelection: null,
+  followLatestModel: false,
   signatureEnabled: false,
   ...WEBHOOK_SIGNATURE_DEFAULTS,
   signatureSecret: "",
@@ -1448,6 +1453,16 @@ function ScheduledTaskEditorForm({
   const activeInstanceId =
     activeSelection?.instanceId ?? firstInstance?.instanceId ?? ("" as ProviderInstanceId);
   const activeModel = activeSelection?.model ?? "";
+  // The saved selection keeps its options while its model stays picked.
+  const modelSelection =
+    activeSelection !== null &&
+    draft.baseModelSelection !== null &&
+    draft.baseModelSelection.instanceId === activeSelection.instanceId &&
+    draft.baseModelSelection.model === activeSelection.model
+      ? draft.baseModelSelection
+      : activeSelection;
+  const activeEntry = instanceEntries.find((entry) => entry.instanceId === activeInstanceId);
+  const activeModelFamily = modelFamilyName(activeModel);
   const modelOptionsByInstance = getCustomModelOptionsByInstance(
     settings,
     providers,
@@ -1475,7 +1490,7 @@ function ScheduledTaskEditorForm({
       tasksQuery.data === null
     )
       return;
-    const selection = activeSelection;
+    const selection = modelSelection;
     if (
       !draft.title.trim() ||
       !draft.prompt.trim() ||
@@ -1530,12 +1545,6 @@ function ScheduledTaskEditorForm({
       reportFailure("Checkout path is required", "Enter the path of the checkout to run in.");
       return;
     }
-    const modelSelection =
-      draft.baseModelSelection !== null &&
-      draft.baseModelSelection.instanceId === selection.instanceId &&
-      draft.baseModelSelection.model === selection.model
-        ? draft.baseModelSelection
-        : selection;
     // Lock before resolving Scratch, which may create the folder on first use.
     submissionPending.current = true;
     setSaving(true);
@@ -1562,7 +1571,8 @@ function ScheduledTaskEditorForm({
       threadId: draft.threadId ? (draft.threadId as ThreadId) : null,
       ...(offersThreadModes ? { threadMode: draft.threadMode } : {}),
       workspaceStrategy: workspaceStrategyFromDraft(draft, noProject),
-      modelSelection,
+      modelSelection: selection,
+      followLatestModel: activeModelFamily !== null && draft.followLatestModel,
       // Tasks have no mode picker; a mode above the administrator's ceiling would fail every run.
       runtimeMode:
         clampManagedRuntimeMode(environment?.serverConfig?.managedPolicy, draft.runtimeMode) ??
@@ -1824,7 +1834,7 @@ function ScheduledTaskEditorForm({
           </Field>
 
           <Field label="Model">
-            <div>
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               <ProviderModelPicker
                 environmentId={environmentId}
                 disabled={saving || !connected}
@@ -1839,7 +1849,47 @@ function ScheduledTaskEditorForm({
                   setDraft((current) => ({ ...current, modelKey: `${instanceId}:${model}` }))
                 }
               />
+              {activeEntry && modelSelection ? (
+                <TraitsPicker
+                  provider={activeEntry.driverKind}
+                  models={activeEntry.models}
+                  model={modelSelection.model}
+                  modelOptions={modelSelection.options ?? []}
+                  allowPromptInjectedEffort={false}
+                  disabled={saving || !connected}
+                  triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                  onModelOptionsChange={(options) =>
+                    setDraft((current) => ({
+                      ...current,
+                      modelKey: `${modelSelection.instanceId}:${modelSelection.model}`,
+                      baseModelSelection: createModelSelection(
+                        modelSelection.instanceId,
+                        modelSelection.model,
+                        options,
+                      ),
+                    }))
+                  }
+                />
+              ) : null}
             </div>
+            {draft.threadId ? (
+              <p className="text-xs text-muted-foreground">
+                Runs use this thread&apos;s current model, so this one applies only if the task
+                starts a new thread. A check script can choose a model per run.
+              </p>
+            ) : null}
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Checkbox
+                checked={activeModelFamily !== null && draft.followLatestModel}
+                disabled={saving || !connected || activeModelFamily === null}
+                onCheckedChange={(checked) =>
+                  setDraft((current) => ({ ...current, followLatestModel: checked === true }))
+                }
+              />
+              {activeModelFamily === null
+                ? "Use the newest model of this family"
+                : `Use the newest ${activeModelFamily} model`}
+            </label>
           </Field>
 
           <div className="space-y-3">
@@ -2191,6 +2241,7 @@ function ScheduledTaskEditorForm({
               prompt: draft.prompt,
               projectId: (selectedProject?.id ?? null) as ProjectId | null,
               threadId: draft.threadId ? (draft.threadId as ThreadId) : null,
+              modelSelection,
             }}
             disabled={saving}
           />

@@ -6,6 +6,7 @@ import {
   type RunId,
   OrchestratorMcpFailure,
   type OrchestrationV2Command,
+  threadAccountChoiceFor,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
@@ -22,6 +23,7 @@ import {
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
 import { queuedRunsInDeliveryOrder } from "../../../orchestration-v2/QueuedRunOrder.ts";
+import * as ThreadAccountService from "../../../usage/ThreadAccountService.ts";
 import { ThreadToolkit } from "./tools.ts";
 
 function queueEntry(
@@ -198,18 +200,49 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     ),
   ),
   t3_thread_configure: McpToolAccess.either(
-    (input) => input.modelSelection === undefined && input.compactBeforeCacheExpires === undefined,
+    (input) =>
+      input.modelSelection === undefined &&
+      input.compactBeforeCacheExpires === undefined &&
+      input.account === undefined,
     McpToolAccess.reads((input) =>
       Effect.gen(function* () {
         const {
+          shell,
           projection: { thread },
         } = yield* readThread(input.threadId);
+        const accounts = yield* (yield* ThreadAccountService.ThreadAccounts)
+          .state({ threadId: thread.id, modelSelection: thread.modelSelection })
+          .pipe(Effect.orElseSucceed(() => null));
+        const chosen = threadAccountChoiceFor(
+          thread.accountChoice,
+          thread.modelSelection.instanceId,
+        );
         return {
           threadId: thread.id,
           modelSelection: thread.modelSelection,
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
-          compactBeforeCacheExpires: thread.compactBeforeCacheExpires ?? null,
+          compactBeforeCacheExpires: shell.compactOnce
+            ? ("once" as const)
+            : (thread.compactBeforeCacheExpires ?? null),
+          ...(accounts === null
+            ? {}
+            : {
+                account: chosen ? { account: chosen.account, waitWhenOut: chosen.stall } : null,
+                accounts: accounts.accounts.flatMap((account) =>
+                  account.routerAlias === undefined
+                    ? []
+                    : [
+                        {
+                          account: account.routerAlias,
+                          ...(account.email ? { email: account.email } : {}),
+                          ...(account.plan ? { plan: account.plan } : {}),
+                          ...(accounts.next === account.routerAlias ? { next: true } : {}),
+                          ...(accounts.owner === account.routerAlias ? { owner: true } : {}),
+                        },
+                      ],
+                ),
+              }),
         };
       }),
     ),
@@ -231,6 +264,15 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
             .pipe(Effect.mapError(dispatchFailure));
           sequence = result.sequence;
         }
+        if (input.account !== undefined) {
+          yield* (yield* ThreadAccountService.ThreadAccounts).set({
+            threadId: thread.id,
+            account: input.account,
+            ...(input.waitWhenOut === undefined ? {} : { stall: input.waitWhenOut }),
+            ...(input.dropThinking === undefined ? {} : { dropThinking: input.dropThinking }),
+          });
+          sequence ??= 0;
+        }
         const modelSelection = input.modelSelection;
         if (modelSelection !== undefined) {
           const type = modelSelectionCommandType(thread.providerInstanceId, modelSelection);
@@ -245,7 +287,10 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           sequence = result.sequence;
         }
         return {
-          sequence: yield* required(sequence, "modelSelection` or `compactBeforeCacheExpires"),
+          sequence: yield* required(
+            sequence,
+            "modelSelection`, `compactBeforeCacheExpires` or `account",
+          ),
         };
       }),
     ),
@@ -386,6 +431,15 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           }
           command = { ...common, type: "thread.snooze", snoozedUntil: input.snoozedUntil };
           break;
+        case "snooze_until_reset": {
+          const { resetsAt } = yield* (yield* ThreadAccountService.ThreadAccounts).usageResetAt(
+            projection.thread.id,
+          );
+          const result = yield* threads
+            .dispatch({ ...common, type: "thread.snooze", snoozedUntil: resetsAt })
+            .pipe(Effect.mapError(dispatchFailure));
+          return { sequence: result.sequence, snoozedUntil: resetsAt };
+        }
         case "unsnooze":
         case "unsettle":
           command = { ...common, type: `thread.${input.action}`, reason: "user" };

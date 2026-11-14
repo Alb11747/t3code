@@ -91,6 +91,7 @@ import * as ScratchThreadPromotion from "../project/ScratchThreadPromotion.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as DeviceHost from "../device/DeviceHost.ts";
 import * as DeviceService from "../device/DeviceService.ts";
@@ -389,6 +390,7 @@ const layerScheduledTasksTest = ScheduledTaskService.layer.pipe(
           ),
         ),
       ).pipe(Layer.provide(ProjectionStore.layer)),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({}),
       Layer.mock(SecretRequests.SecretRequests)({}),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",

@@ -23,6 +23,7 @@ import {
   PastedTextAttachmentSource,
   type PreviewAnnotationPayload,
   RuntimeMode,
+  ThreadAccountChoice,
   ThreadContextRecord,
   EnvironmentContextRecord,
   type ServerProvider,
@@ -321,6 +322,7 @@ export const PersistedComposerDraftFileAttachment = Schema.Struct({
 });
 export type PersistedComposerDraftFileAttachment = typeof PersistedComposerDraftFileAttachment.Type;
 const isPersistedComposerDraftFileAttachment = Schema.is(PersistedComposerDraftFileAttachment);
+const isThreadAccountChoice = Schema.is(ThreadAccountChoice);
 
 const PersistedTerminalContextDraft = Schema.Struct({
   id: Schema.String,
@@ -349,6 +351,8 @@ const PersistedComposerThreadDraftState = Schema.Struct({
   modelSelectionExplicit: Schema.optionalKey(Schema.Boolean),
   runtimeMode: Schema.optionalKey(RuntimeMode),
   interactionMode: Schema.optionalKey(ProviderInteractionMode),
+  /** Fork: the CLI Proxy account a draft picked, sent with its first message. */
+  accountChoice: Schema.optionalKey(ThreadAccountChoice),
 });
 type PersistedComposerThreadDraftState = typeof PersistedComposerThreadDraftState.Type;
 
@@ -478,6 +482,7 @@ export interface ComposerThreadDraftState {
   modelSelectionExplicit?: boolean;
   runtimeMode: RuntimeMode | null;
   interactionMode: ProviderInteractionMode | null;
+  accountChoice?: ThreadAccountChoice;
 }
 
 export function composerDraftHasUserContent(
@@ -665,6 +670,7 @@ interface ComposerDraftStoreState {
     threadRef: ComposerThreadTarget,
     interactionMode: ProviderInteractionMode | null | undefined,
   ) => void;
+  setAccountChoice: (threadRef: ComposerThreadTarget, choice: ThreadAccountChoice | null) => void;
   addImage: (threadRef: ComposerThreadTarget, image: ComposerImageAttachment) => boolean;
   addImages: (
     threadRef: ComposerThreadTarget,
@@ -1008,7 +1014,8 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     Object.keys(draft.modelSelectionByProvider).length === 0 &&
     draft.activeProvider === null &&
     draft.runtimeMode === null &&
-    draft.interactionMode === null
+    draft.interactionMode === null &&
+    draft.accountChoice === undefined
   );
 }
 
@@ -2077,6 +2084,9 @@ function normalizePersistedDraftsByThreadId(
       draftCandidate.interactionMode === "plan" || draftCandidate.interactionMode === "default"
         ? draftCandidate.interactionMode
         : null;
+    const accountChoice = isThreadAccountChoice(draftCandidate.accountChoice)
+      ? draftCandidate.accountChoice
+      : null;
     const contextIds = new Map<string, string>();
     for (const [kind, entries] of [
       ["image", attachments],
@@ -2168,7 +2178,8 @@ function normalizePersistedDraftsByThreadId(
       replyTo === null &&
       !hasModelData &&
       !runtimeMode &&
-      !interactionMode
+      !interactionMode &&
+      !accountChoice
     ) {
       continue;
     }
@@ -2203,6 +2214,7 @@ function normalizePersistedDraftsByThreadId(
         : {}),
       ...(runtimeMode ? { runtimeMode } : {}),
       ...(interactionMode ? { interactionMode } : {}),
+      ...(accountChoice ? { accountChoice } : {}),
     };
   }
 
@@ -2243,7 +2255,9 @@ function stripLegacyModelSeedsFromEmptyDraftSessions(
         modelSelectionExplicit: _modelSelectionExplicit,
         ...retained
       } = draft;
-      return retained.runtimeMode || retained.interactionMode ? [[threadKey, retained]] : [];
+      return retained.runtimeMode || retained.interactionMode || retained.accountChoice
+        ? [[threadKey, retained]]
+        : [];
     }),
   );
 }
@@ -2302,7 +2316,8 @@ export function partializeComposerDraftStoreState(
       draft.replyTo === null &&
       !hasModelData &&
       draft.runtimeMode === null &&
-      draft.interactionMode === null
+      draft.interactionMode === null &&
+      draft.accountChoice === undefined
     ) {
       continue;
     }
@@ -2372,6 +2387,7 @@ export function partializeComposerDraftStoreState(
         : {}),
       ...(draft.runtimeMode ? { runtimeMode: draft.runtimeMode } : {}),
       ...(draft.interactionMode ? { interactionMode: draft.interactionMode } : {}),
+      ...(draft.accountChoice ? { accountChoice: draft.accountChoice } : {}),
     };
     persistedDraftsByThreadKey[threadKey] = persistedDraft;
   }
@@ -2642,6 +2658,7 @@ function toHydratedThreadDraft(
     ...(persistedDraft.modelSelectionExplicit ? { modelSelectionExplicit: true } : {}),
     runtimeMode: persistedDraft.runtimeMode ?? null,
     interactionMode: persistedDraft.interactionMode ?? null,
+    ...(persistedDraft.accountChoice ? { accountChoice: persistedDraft.accountChoice } : {}),
   };
 }
 
@@ -3428,6 +3445,28 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ...base,
               interactionMode: nextInteractionMode,
             };
+            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
+            if (shouldRemoveDraft(nextDraft)) {
+              delete nextDraftsByThreadKey[threadKey];
+            } else {
+              nextDraftsByThreadKey[threadKey] = nextDraft;
+            }
+            return { draftsByThreadKey: nextDraftsByThreadKey };
+          });
+        },
+        setAccountChoice: (threadRef, choice) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          if (threadKey.length === 0) {
+            return;
+          }
+          set((state) => {
+            const existing = state.draftsByThreadKey[threadKey];
+            if (!existing && choice === null) {
+              return state;
+            }
+            const { accountChoice: _previous, ...base } = existing ?? createEmptyThreadDraft();
+            const nextDraft: ComposerThreadDraftState =
+              choice === null ? base : { ...base, accountChoice: choice };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {
               delete nextDraftsByThreadKey[threadKey];
@@ -4633,6 +4672,14 @@ export function useComposerThreadDraft(threadRef: ComposerThreadTarget): Compose
   return useComposerDraftStore((state) => {
     return getComposerDraftState(state, threadRef) ?? EMPTY_THREAD_DRAFT;
   });
+}
+
+export function useComposerDraftAccountChoice(
+  threadRef: ComposerThreadTarget,
+): ThreadAccountChoice | null {
+  return useComposerDraftStore(
+    (state) => getComposerDraftState(state, threadRef)?.accountChoice ?? null,
+  );
 }
 
 export function useThreadHasUnsentDraft(threadRef: ScopedThreadRef): boolean {

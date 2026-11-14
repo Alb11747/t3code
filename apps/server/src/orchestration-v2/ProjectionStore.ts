@@ -97,6 +97,7 @@ import type * as Statement from "effect/sql/Statement";
 import { MCP_APP_OUTPUT_KEY } from "@t3tools/shared/mcpApp";
 import { threadHtmlRenderAttachmentIds } from "../attachmentStore.ts";
 import { readableSearchText } from "./messageSearchIndex.ts";
+import { compactOnceApplies } from "./IdleCompaction.ts";
 import {
   isFoldableWorkItem,
   isThreadHistoryUserTurn,
@@ -361,7 +362,10 @@ export interface ProjectionRecordFilter {
   readonly runIds?: ReadonlyArray<RunId>;
   /** Without `includeLatestRun`, reads through a status index and sorts the matches, so keep it to statuses few runs hold. */
   readonly runStatuses?: ReadonlyArray<OrchestrationV2Run["status"]>;
-  /** Keeps the thread's highest-ordinal run even when `runStatuses` excludes it. */
+  /**
+   * Keeps the thread's highest-ordinal run even when `runStatuses` excludes it, and its latest
+   * started run, which decides whether a one-shot compaction mark still applies.
+   */
   readonly includeLatestRun?: true;
   readonly providerTurnThreadIds?: ReadonlyArray<ProviderThreadId>;
   /** Only the provider turn whose token usage was updated last. */
@@ -633,6 +637,17 @@ export interface ProjectionStoreV2Shape {
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadPullRequests>, ProjectionStoreV2Error>;
   readonly getThreadsWithIssueWatches: () => Effect.Effect<
     ReadonlyArray<Pick<OrchestrationV2AppThread, "id" | "issueWatches">>,
+    ProjectionStoreV2Error
+  >;
+  /** Fork: unarchived threads whose account choice names this hub. */
+  readonly getThreadsWithAccountChoices: (
+    sourceId: string,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationV2AppThread>, ProjectionStoreV2Error>;
+  /** Fork: threads whose provider threads carry these native session ids, archived ones included. */
+  readonly getThreadsByNativeIds: (
+    nativeIds: ReadonlyArray<string>,
+  ) => Effect.Effect<
+    ReadonlyArray<{ readonly nativeId: string; readonly id: ThreadId; readonly title: string }>,
     ProjectionStoreV2Error
   >;
   /** Titles of the given threads that exist, archived ones included. */
@@ -1134,6 +1149,8 @@ type ShellThreadRow = {
   readonly latest_user_message_at: string | null;
   readonly latest_user_authored_message_at: string | null;
   readonly has_actionable_proposed_plan: number;
+  /** Null unless the thread holds a one-shot compaction mark. */
+  readonly compact_once_latest_started_at: string | null;
 };
 
 type ShellRunRow = {
@@ -1777,6 +1794,8 @@ export function threadShellFromProjection(
     title: projection.thread.title,
     contextNote: projection.thread.contextNote ?? null,
     compactBeforeCacheExpires: projection.thread.compactBeforeCacheExpires ?? null,
+    compactOnce: compactOnceApplies(projection.thread.compactOnceRequestedAt, projection.runs),
+    ...(projection.thread.accountChoice ? { accountChoice: projection.thread.accountChoice } : {}),
     providerInstanceId: projection.thread.providerInstanceId,
     modelSelection: projection.thread.modelSelection,
     runtimeMode: projection.thread.runtimeMode,
@@ -1970,6 +1989,7 @@ type ShellThreadState = {
   readonly latestUserMessageAt: DateTime.Utc | null;
   readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
   readonly hasActionableProposedPlan: boolean;
+  readonly compactOnce: boolean;
   readonly pendingBackgroundTasks: OrchestrationV2ThreadShell["pendingBackgroundTasks"];
   readonly providerInstanceHistory: OrchestrationV2ThreadShell["providerInstanceHistory"];
   readonly goal: OrchestrationV2ThreadShell["goal"];
@@ -2096,6 +2116,10 @@ function shellFromState(input: {
     title: input.state.thread.title,
     contextNote: input.state.thread.contextNote ?? null,
     compactBeforeCacheExpires: input.state.thread.compactBeforeCacheExpires ?? null,
+    compactOnce: input.state.compactOnce,
+    ...(input.state.thread.accountChoice
+      ? { accountChoice: input.state.thread.accountChoice }
+      : {}),
     providerInstanceId: input.state.thread.providerInstanceId,
     modelSelection: input.state.thread.modelSelection,
     runtimeMode: input.state.thread.runtimeMode,
@@ -2180,6 +2204,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
   ProjectionStoreV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    // Fork: a steer can start ahead of an earlier queued run, so ordinals do not order starts.
+    const latestStartedRunId = (threadId: ThreadId) => sql`(
+      SELECT run_id FROM orchestration_v2_projection_runs
+      WHERE thread_id = ${threadId}
+        AND json_extract(payload_json, '$.startedAt') IS NOT NULL
+      ORDER BY json_extract(payload_json, '$.startedAt') DESC
+      LIMIT 1
+    )`;
 
     const inlineWorkOutput = sql`item.type = 'dynamic_tool' AND (
       item.payload_json LIKE '%htmlRender%' OR item.payload_json LIKE ${`%${MCP_APP_OUTPUT_KEY}%`}
@@ -3749,7 +3781,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               WHERE thread_id = ${threadId} AND (
                 status IN ('pending','starting','running','waiting')
                 OR run_id IN (SELECT value FROM json_each(${cohortRunIds}))
-                OR run_id = ${window.requiredRunId ?? null})
+                OR run_id = ${window.requiredRunId ?? null}
+                OR run_id = ${latestStartedRunId(threadId)})
               UNION
               SELECT json_extract(payload_json, '$.rootNodeId') FROM orchestration_v2_projection_runs
               WHERE thread_id = ${threadId} AND (
@@ -3879,7 +3912,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                         AND (status <> 'cancelled' OR json_extract(payload_json, '$.startedAt') IS NOT NULL)
                       ORDER BY ordinal DESC
                       LIMIT 1
-                    ))
+                    )
+                    OR run_id = ${latestStartedRunId(threadId)})
                     ORDER BY ordinal ASC`
               }
           `
@@ -7875,7 +7909,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 WHERE plan.thread_id = t.thread_id
                   AND plan.kind = 'proposed_plan'
                   AND plan.status = 'active'
-              ) AS has_actionable_proposed_plan
+              ) AS has_actionable_proposed_plan,
+              CASE WHEN json_extract(t.payload_json, '$.compactOnceRequestedAt') IS NULL THEN NULL ELSE (
+                -- A steer can start ahead of an earlier queued run, so take the latest start.
+                SELECT MAX(json_extract(r.payload_json, '$.startedAt'))
+                FROM orchestration_v2_projection_runs r
+                WHERE r.thread_id = t.thread_id
+              ) END AS compact_once_latest_started_at
             FROM orchestration_v2_projection_threads t
             LEFT JOIN orchestration_v2_projection_runs active ON active.run_id = (
               SELECT r.run_id
@@ -8350,6 +8390,47 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
+    const getThreadsWithAccountChoices = Effect.fn("ProjectionStore.getThreadsWithAccountChoices")(
+      function* (sourceId: string) {
+        const rows = yield* sql<PayloadRow>`
+          SELECT payload_json FROM orchestration_v2_projection_threads
+          WHERE deleted_at IS NULL AND archived_at IS NULL
+            AND json_extract(payload_json, '$.accountChoice.sourceId') = ${sourceId}
+          ORDER BY thread_id ASC
+        `;
+        return yield* Effect.forEach(rows, (row) => decodeThreadPayload(row.payload_json));
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
+    // No index on the native id; only explicit routing reads ask, for the few sessions a hub lists.
+    const getThreadsByNativeIds = Effect.fn("ProjectionStore.getThreadsByNativeIds")(
+      function* (nativeIds: ReadonlyArray<string>) {
+        if (nativeIds.length === 0) return [];
+        const rows = yield* sql<{
+          readonly native_id: string;
+          readonly thread_id: string;
+          readonly title: string;
+        }>`
+          SELECT DISTINCT
+            json_extract(provider.payload_json, '$.nativeThreadRef.nativeId') AS native_id,
+            thread.thread_id AS thread_id,
+            thread.title AS title
+          FROM orchestration_v2_projection_provider_threads AS provider
+          JOIN orchestration_v2_projection_threads AS thread
+            ON thread.thread_id = provider.thread_id
+          WHERE thread.deleted_at IS NULL
+            AND json_extract(provider.payload_json, '$.nativeThreadRef.nativeId') IN ${sql.in(nativeIds)}
+        `;
+        return rows.map((row) => ({
+          nativeId: row.native_id,
+          id: ThreadId.make(row.thread_id),
+          title: row.title,
+        }));
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
     const getThreadWorktreePaths: ProjectionStoreV2Shape["getThreadWorktreePaths"] = (options) =>
       sql<{ readonly thread_id: string; readonly worktree_path: string }>`
         SELECT thread_id, json_extract(payload_json, '$.worktreePath') AS worktree_path
@@ -8547,6 +8628,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               : DateTime.makeUnsafe(row.latest_user_message_at),
           latestUserAuthoredMessageAt,
           hasActionableProposedPlan: row.has_actionable_proposed_plan === 1,
+          compactOnce: compactOnceApplies(
+            thread.compactOnceRequestedAt,
+            row.compact_once_latest_started_at === null
+              ? []
+              : [{ startedAt: DateTime.makeUnsafe(row.compact_once_latest_started_at) }],
+          ),
           pendingBackgroundTasks,
           providerInstanceHistory: providerInstanceHistoryForShell({
             threadId: thread.id,
@@ -9158,6 +9245,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getSettlementCandidates: readOnReader(getSettlementCandidates),
       getThreadsWithPullRequests: readOnReader(getThreadsWithPullRequests),
       getThreadsWithIssueWatches: readOnReader(getThreadsWithIssueWatches),
+      getThreadsWithAccountChoices: readOnReader(getThreadsWithAccountChoices),
+      getThreadsByNativeIds: readOnReader(getThreadsByNativeIds),
       getThreadTitles: readOnReader(getThreadTitles),
       getThreadLinkMetadata: readOnReader(getThreadLinkMetadata),
       getThreadWorktreePaths: readOnReader(getThreadWorktreePaths),

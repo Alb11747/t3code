@@ -8,6 +8,17 @@ import {
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
 import { ClaudeKeepWarmActionError, ClaudeKeepWarmActionInput } from "./claudeKeepWarm.ts";
 import {
+  ThreadAccountError,
+  ThreadAccountPreview,
+  ThreadAccountPreviewInput,
+  ThreadAccountRouting,
+  ThreadAccountRoutingInput,
+  ThreadAccountSetInput,
+  ThreadAccountState,
+  ThreadAccountStateInput,
+  ThreadAccountSteerInput,
+} from "./threadAccount.ts";
+import {
   UsageResetSnooze,
   UsageResetSnoozeError,
   UsageResetSnoozeInput,
@@ -456,6 +467,11 @@ export const WS_METHODS = {
   providerAuthStart: "provider.auth.start",
   providerConsumeResetCredit: "provider.consumeResetCredit",
   claudeKeepWarmAction: "provider.claude.keepWarmAction",
+  threadAccountState: "provider.threadAccount.state",
+  threadAccountPreview: "provider.threadAccount.preview",
+  threadAccountSet: "provider.threadAccount.set",
+  threadAccountSteer: "provider.threadAccount.steer",
+  threadAccountRouting: "provider.threadAccount.routing",
   providerResolveUsageResetSnooze: "provider.resolveUsageResetSnooze",
   providerAuthComplete: "provider.auth.complete",
   chatGptReconnectProfile: "provider.chatgpt.reconnect-profile",
@@ -730,6 +746,38 @@ const WsClaudeKeepWarmActionRpc = Rpc.make(WS_METHODS.claudeKeepWarmAction, {
   payload: ClaudeKeepWarmActionInput,
   success: Schema.Void,
   error: Schema.Union([ClaudeKeepWarmActionError, EnvironmentAuthorizationError]),
+});
+
+const ThreadAccountRpcError = Schema.Union([ThreadAccountError, EnvironmentAuthorizationError]);
+
+const WsThreadAccountStateRpc = Rpc.make(WS_METHODS.threadAccountState, {
+  payload: ThreadAccountStateInput,
+  success: ThreadAccountState,
+  error: ThreadAccountRpcError,
+});
+
+const WsThreadAccountPreviewRpc = Rpc.make(WS_METHODS.threadAccountPreview, {
+  payload: ThreadAccountPreviewInput,
+  success: ThreadAccountPreview,
+  error: ThreadAccountRpcError,
+});
+
+const WsThreadAccountSetRpc = Rpc.make(WS_METHODS.threadAccountSet, {
+  payload: ThreadAccountSetInput,
+  success: Schema.Void,
+  error: ThreadAccountRpcError,
+});
+
+const WsThreadAccountSteerRpc = Rpc.make(WS_METHODS.threadAccountSteer, {
+  payload: ThreadAccountSteerInput,
+  success: Schema.Void,
+  error: ThreadAccountRpcError,
+});
+
+const WsThreadAccountRoutingRpc = Rpc.make(WS_METHODS.threadAccountRouting, {
+  payload: ThreadAccountRoutingInput,
+  success: ThreadAccountRouting,
+  error: ThreadAccountRpcError,
 });
 
 const WsProviderAuthStartRpc = Rpc.make(WS_METHODS.providerAuthStart, {
@@ -2142,6 +2190,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderConsumeResetCreditRpc,
   WsClaudeKeepWarmActionRpc,
   WsProviderResolveUsageResetSnoozeRpc,
+  WsThreadAccountStateRpc,
+  WsThreadAccountPreviewRpc,
+  WsThreadAccountSetRpc,
+  WsThreadAccountSteerRpc,
+  WsThreadAccountRoutingRpc,
   WsProviderAuthStartRpc,
   WsProviderAuthCompleteRpc,
   WsChatGptReconnectProfileRpc,

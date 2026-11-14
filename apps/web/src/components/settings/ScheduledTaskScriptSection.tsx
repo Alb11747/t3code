@@ -6,6 +6,7 @@ import {
 import {
   type EnvironmentId,
   MAX_SCHEDULED_TASK_SCRIPT_CHARS,
+  type ModelSelection,
   type ProjectId,
   type ScheduledTaskId,
   type ScheduledTaskScript,
@@ -45,6 +46,11 @@ function prettyJson(text: string): string {
   }
 }
 
+function describeModel(selection: ModelSelection): string {
+  const options = (selection.options ?? []).map((option) => `${option.id} ${option.value}`);
+  return `${selection.model} on ${selection.instanceId}${options.length ? ` (${options.join(", ")})` : ""}`;
+}
+
 function CodeBlock({ label, text }: { readonly label: string; readonly text: string }) {
   return (
     <div className="space-y-1">
@@ -76,6 +82,7 @@ export function ScheduledTaskScriptSection({
     readonly prompt: string;
     readonly projectId: ProjectId | null;
     readonly threadId: ThreadId | null;
+    readonly modelSelection: ModelSelection | null;
   };
   readonly disabled: boolean;
 }) {
@@ -103,6 +110,9 @@ export function ScheduledTaskScriptSection({
         prompt: testTarget.prompt,
         ...(testTarget.projectId === null ? {} : { projectId: testTarget.projectId }),
         threadId: testTarget.threadId,
+        ...(testTarget.modelSelection === null
+          ? {}
+          : { modelSelection: testTarget.modelSelection }),
       },
     });
     setTesting(false);
@@ -130,10 +140,12 @@ export function ScheduledTaskScriptSection({
                 <Label htmlFor="scheduled-task-script">Check script</Label>
                 <p className="text-xs text-muted-foreground">
                   JavaScript that runs on the server before each run, including webhook runs. Return{" "}
-                  <code>false</code> to skip, or <code>{"{ run, prompt, nextRunAt, reason }"}</code>
-                  . <code>ctx</code> holds usage for every account, the bound thread (including its
-                  Claude cache expiry), the webhook request, and <code>ctx.state</code>, which is
-                  saved after each check. If it throws, the run fails.
+                  <code>false</code> to skip, or{" "}
+                  <code>{"{ run, prompt, model, nextRunAt, reason }"}</code>; <code>model</code>{" "}
+                  picks this run&apos;s model from <code>ctx.providers</code>. <code>ctx</code> also
+                  holds usage for every account, the bound thread (including its Claude cache
+                  expiry), the webhook request, and <code>ctx.state</code>, which is saved after
+                  each check. If it throws, the run fails.
                 </p>
               </div>
               <Menu>
@@ -204,6 +216,11 @@ export function ScheduledTaskScriptSection({
                 {result.decision?.prompt ? (
                   <CodeBlock label="Prompt" text={result.decision.prompt} />
                 ) : null}
+                {result.decision?.modelSelection ? (
+                  <p className="text-xs">
+                    Runs on {describeModel(result.decision.modelSelection)}.
+                  </p>
+                ) : null}
                 {result.decision?.nextRunAt ? (
                   <p className="text-xs">
                     Next run moves to {new Date(result.decision.nextRunAt).toLocaleString()}.
@@ -231,6 +248,9 @@ export function ScheduledTaskScriptSection({
                   </span>
                 </div>
                 {lastCheck.message ? <p className="break-words">{lastCheck.message}</p> : null}
+                {lastCheck.modelSelection ? (
+                  <p>Ran on {describeModel(lastCheck.modelSelection)}.</p>
+                ) : null}
                 {lastCheck.logs ? <CodeBlock label="Logs" text={lastCheck.logs} /> : null}
               </div>
             ) : null}

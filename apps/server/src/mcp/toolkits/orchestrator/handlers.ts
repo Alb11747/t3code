@@ -104,21 +104,14 @@ const handlers = {
       // A scheduled run starts long after its caller, with nothing to carry the link.
       { refused: "schedule tasks in this environment" },
     ),
+    // Passes every field, so a field added to the tool cannot be dropped here again.
     McpToolAccess.writes(
-      ({ scheduledTaskId, prompt, title, schedule, enabled, freshSession, bindToCurrentThread }) =>
+      ({ scheduledTaskId, projectId: _project, clientRequestId: _id, ...fields }) =>
         Effect.gen(function* () {
           if (scheduledTaskId === undefined) return yield* Effect.die("unreachable");
           const scope = yield* McpInvocationContext.McpInvocationContext;
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-          return yield* service.updateScheduledTask(scope, {
-            scheduledTaskId,
-            prompt,
-            title,
-            schedule,
-            enabled,
-            freshSession,
-            bindToCurrentThread,
-          });
+          return yield* service.updateScheduledTask(scope, { ...fields, scheduledTaskId });
         }),
     ),
   ),

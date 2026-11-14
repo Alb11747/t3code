@@ -172,6 +172,7 @@ import { ProjectRowActions } from "./ProjectComboboxRow";
 import {
   buildDraftActionMenuItems,
   buildThreadActionMenuItems,
+  compactBeforeCacheExpiresChoice,
   threadActionRequiresOperate,
 } from "./threadActionMenu.logic";
 import {
@@ -2681,6 +2682,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                   ? undefined
                   : thread.autoSettleAlwaysAt != null,
               compactBeforeCacheExpires: thread.compactBeforeCacheExpires,
+              compactOnce: thread.compactOnce,
               isSnoozed,
               canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
               isRegeneratingTitle,
@@ -2812,16 +2814,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             return;
           }
           case "compact-before-expiry:default":
+          case "compact-before-expiry:once":
           case "compact-before-expiry:on":
           case "compact-before-expiry:off": {
             const result = await updateThreadMetadata({
               environmentId: threadRef.environmentId,
               input: {
                 threadId: threadRef.threadId,
-                compactBeforeCacheExpires:
-                  clicked.value === "compact-before-expiry:default"
-                    ? null
-                    : clicked.value === "compact-before-expiry:on",
+                compactBeforeCacheExpires: compactBeforeCacheExpiresChoice(clicked.value),
               },
             });
             if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {

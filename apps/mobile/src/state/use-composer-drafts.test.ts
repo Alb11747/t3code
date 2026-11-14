@@ -22,6 +22,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  UsageLimitSourceId,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2ShellSnapshot,
   type ModelSelection,
@@ -2122,12 +2123,17 @@ describe("mobile composer drafts", () => {
     });
   });
 
-  it("clears sent content without clearing the selected model or workspace", () => {
+  it("clears sent content and the account choice without clearing the selected model or workspace", () => {
     const draftKey = "environment-1:thread-1";
     const draft: ComposerDraft = {
       text: "send this",
       attachments: [],
       importedShareIds: ["share-1"],
+      accountChoice: {
+        sourceId: UsageLimitSourceId.make("hub"),
+        account: "account-0123456789abcdef",
+        stall: false,
+      },
       modelSelection: {
         instanceId: ProviderInstanceId.make("codex"),
         model: "gpt-5.4",

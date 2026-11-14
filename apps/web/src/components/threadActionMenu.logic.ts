@@ -19,6 +19,7 @@ export type ThreadActionMenuId =
   | "auto-settle:disabled"
   | "compact-before-expiry"
   | "compact-before-expiry:default"
+  | "compact-before-expiry:once"
   | "compact-before-expiry:on"
   | "compact-before-expiry:off"
   | "snooze"
@@ -90,6 +91,8 @@ export interface ThreadActionMenuState {
   readonly autoSettleAlways?: boolean | undefined;
   /** Undefined when the server has no per-thread idle compaction. */
   readonly compactBeforeCacheExpires?: boolean | null | undefined;
+  /** Undefined when the server has no one-shot compaction mark. */
+  readonly compactOnce?: boolean | undefined;
   readonly isSnoozed: boolean;
   readonly canSnoozeNow: boolean;
   readonly isRegeneratingTitle: boolean;
@@ -257,12 +260,22 @@ export function buildThreadActionMenuItems(
               {
                 id: "compact-before-expiry:default" as const,
                 label: "Follow settings",
-                checked: state.compactBeforeCacheExpires === null,
+                checked: state.compactBeforeCacheExpires === null && state.compactOnce !== true,
               },
+              // The server refuses a one-shot mark on a thread set to Never.
+              ...(state.compactOnce === undefined || state.compactBeforeCacheExpires === false
+                ? []
+                : [
+                    {
+                      id: "compact-before-expiry:once" as const,
+                      label: "This time only",
+                      checked: state.compactOnce,
+                    },
+                  ]),
               {
                 id: "compact-before-expiry:on" as const,
                 label: "Always",
-                checked: state.compactBeforeCacheExpires === true,
+                checked: state.compactBeforeCacheExpires === true && state.compactOnce !== true,
               },
               {
                 id: "compact-before-expiry:off" as const,
@@ -315,4 +328,16 @@ export function buildThreadActionMenuItems(
             }
           : item,
       );
+}
+
+export function compactBeforeCacheExpiresChoice(
+  action:
+    | "compact-before-expiry:default"
+    | "compact-before-expiry:once"
+    | "compact-before-expiry:on"
+    | "compact-before-expiry:off",
+): boolean | null | "once" {
+  if (action === "compact-before-expiry:default") return null;
+  if (action === "compact-before-expiry:once") return "once";
+  return action === "compact-before-expiry:on";
 }

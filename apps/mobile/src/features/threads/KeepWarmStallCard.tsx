@@ -1,8 +1,15 @@
 import { useAtomValue } from "@effect/atom-react";
+import { StackActions, useNavigation } from "@react-navigation/native";
+import { scopedThreadKey } from "../../lib/scopedEntities";
 import { activeKeepWarmHold } from "@t3tools/client-runtime/state/claudeKeepWarm";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import type { ClaudeKeepWarmAction, EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
+import type {
+  ClaudeKeepWarmAction,
+  EnvironmentId,
+  ScopedThreadRef,
+  ThreadAccountState,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
@@ -11,9 +18,13 @@ import { View } from "react-native";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { orchestrationEnvironment } from "../../state/orchestration";
+import { useEnvironmentQuery } from "../../state/query";
+import { serverEnvironment } from "../../state/server";
+import { confirmThreadAccountForSend } from "../../state/thread-account-send-guard";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useQuietThreadStructure } from "../../state/use-thread-detail";
+import type { ExistingThreadSettingsRouteParams } from "./ThreadSettingsSheet";
 
 const formatTime = (iso: string) => DateTime.toDateUtc(DateTime.makeUnsafe(iso)).toLocaleString();
 
@@ -39,6 +50,22 @@ export function KeepWarmStallCard({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showMore, setShowMore] = useState(false);
+  // Fork: the thread settings sheet holds the account picker a bound conversation needs to move.
+  const navigation = useNavigation();
+  const accounts = useEnvironmentQuery<ThreadAccountState, unknown>(
+    serverEnvironment.threadAccountState({
+      environmentId,
+      input: { threadId: thread.id, modelSelection: thread.modelSelection },
+    }),
+  ).data;
+  const chooseAccount = () =>
+    navigation.dispatch(
+      StackActions.push("ThreadSettingsSheet", {
+        environmentId,
+        threadId: thread.id,
+        draftKey: scopedThreadKey(environmentId, thread.id),
+      } satisfies ExistingThreadSettingsRouteParams),
+    );
   const hold = activeKeepWarmHold(
     structure?.projection.turnItems ?? [],
     thread.runtime?.activeRunId ?? null,
@@ -60,11 +87,25 @@ export function KeepWarmStallCard({
       setError(cause instanceof Error ? cause.message : failure);
     }
   }
-  const act = (action: ClaudeKeepWarmAction) =>
-    run(
+  const act = async (action: ClaudeKeepWarmAction) => {
+    // Compacting continues the thread on whichever account the router places it.
+    if (
+      action === "compact" &&
+      !(await confirmThreadAccountForSend({
+        environmentId,
+        threadId: thread.id,
+        modelSelection: thread.modelSelection,
+        routed: accounts !== null,
+        kind: "compaction",
+      }))
+    ) {
+      return;
+    }
+    await run(
       () => runAction({ environmentId, input: { threadId: thread.id, action } }),
       "Could not change the stalled thread.",
     );
+  };
   const toggleSnooze = () =>
     run(
       () =>
@@ -116,16 +157,19 @@ export function KeepWarmStallCard({
           label="Switch account"
           tone="secondary"
           disabled={disabled}
-          onPress={() => void act("switch")}
-        />
-        <Button
-          label="Compact"
-          tone="secondary"
-          disabled={disabled}
-          onPress={() => void act("compact")}
+          onPress={() => (accounts?.owner ? chooseAccount() : void act("switch"))}
         />
         {showMore ? (
           <>
+            {accounts ? (
+              <Button label="Choose account…" tone="secondary" onPress={chooseAccount} />
+            ) : null}
+            <Button
+              label="Compact"
+              tone="secondary"
+              disabled={disabled}
+              onPress={() => void act("compact")}
+            />
             <Button
               label={snoozed ? "Wake now" : "Snooze until reset"}
               tone="secondary"
@@ -143,6 +187,10 @@ export function KeepWarmStallCard({
           <Button label="More" tone="secondary" onPress={() => setShowMore(true)} />
         )}
       </View>
+      <Text className="text-xs text-foreground-muted">
+        Switching writes the context to the other account's cache once (cold cache write); a
+        conversation bound to its account also drops its earlier thinking.
+      </Text>
       {failure}
     </View>
   );

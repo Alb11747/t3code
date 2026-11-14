@@ -914,6 +914,7 @@ function ThreadRouteContent(
         worktreePath: null,
         startFromOrigin: false,
         worktreeBranchName: "",
+        ...(selectedThread.accountChoice ? { accountChoice: selectedThread.accountChoice } : {}),
       }),
     });
     localResendBusy.current = false;

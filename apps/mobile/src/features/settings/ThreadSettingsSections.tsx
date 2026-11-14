@@ -101,6 +101,7 @@ export function AutoSettleSettingsRows(props: {
     patch: Partial<AutoSettleSettings> & {
       autoResumeLimitedThreads?: boolean;
       snoozeLimitedThreads?: boolean;
+      agentsCanRedeemResetCredits?: boolean;
     },
   ) => props.write(patch);
 
@@ -143,6 +144,17 @@ export function AutoSettleSettingsRows(props: {
             disabled={disabledFor("snoozeLimitedThreads")}
             onValueChange={(value) => writeToAll({ snoozeLimitedThreads: value })}
           />
+          {/* Older servers omit this and cannot redeem for agents. */}
+          {referenceSettings.agentsCanRedeemResetCredits === undefined ? null : (
+            <SettingsSwitchRow
+              icon="arrow.clockwise"
+              label="Let agents redeem reset credits"
+              subtitle="Agents can use a banked rate-limit reset when you ask them to or their instructions allow it. A redeemed reset cannot be taken back."
+              value={uniformMobileSetting(displayTargets, "agentsCanRedeemResetCredits") ?? null}
+              disabled={disabledFor("agentsCanRedeemResetCredits")}
+              onValueChange={(value) => writeToAll({ agentsCanRedeemResetCredits: value })}
+            />
+          )}
         </SettingsSection>
       ) : null}
       <SettingsSection title="Auto-settle">

@@ -1,10 +1,11 @@
 import * as Schema from "effect/Schema";
 
 import { IsoDateTime, ProjectId, ScheduledTaskId, ThreadId } from "./baseSchemas.ts";
+import { ModelSelection } from "./modelSelection.ts";
 
 /**
  * Fork: a JavaScript check that runs on the server before each scheduled, manual or webhook run
- * of a task. It can skip the run, replace the prompt, move the next run, and keep JSON state.
+ * of a task. It can skip the run, replace the prompt or model, move the next run, and keep JSON state.
  */
 export const MAX_SCHEDULED_TASK_SCRIPT_CHARS = 32_000;
 export const MAX_SCHEDULED_TASK_SCRIPT_STATE_CHARS = 16_000;
@@ -26,6 +27,8 @@ export const ScheduledTaskScriptCheck = Schema.Struct({
   /** Console output, truncated. */
   logs: Schema.String,
   durationMs: Schema.Number,
+  /** The model the script chose for the run. */
+  modelSelection: Schema.optionalKey(ModelSelection),
 });
 export type ScheduledTaskScriptCheck = typeof ScheduledTaskScriptCheck.Type;
 
@@ -45,6 +48,8 @@ export const ScheduledTaskScriptDecision = Schema.Struct({
   reason: Schema.NullOr(Schema.String),
   /** The state the run would save, as JSON text. */
   state: Schema.NullOr(Schema.String),
+  /** The model the script chose for this run, checked against the server's providers. */
+  modelSelection: Schema.optionalKey(ModelSelection),
 });
 export type ScheduledTaskScriptDecision = typeof ScheduledTaskScriptDecision.Type;
 
@@ -55,6 +60,8 @@ export const ScheduledTaskTestScriptInput = Schema.Struct({
   prompt: Schema.optional(Schema.String),
   projectId: Schema.optional(ProjectId),
   threadId: Schema.optional(Schema.NullOr(ThreadId)),
+  /** The editor's model, which a script's bare model slug is resolved against. */
+  modelSelection: Schema.optional(ModelSelection),
 });
 export type ScheduledTaskTestScriptInput = typeof ScheduledTaskTestScriptInput.Type;
 

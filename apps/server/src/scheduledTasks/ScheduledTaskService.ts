@@ -1,6 +1,7 @@
 import {
   CommandId,
   MessageId,
+  type ModelSelection,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type ProjectId,
   ScheduledTask,
@@ -79,6 +80,8 @@ import {
 import { describeFailedWebhookFilter, findFailedWebhookFilter } from "./webhookFilter.ts";
 import { constantTimeEquals, verifyWebhookSignature } from "./webhookVerification.ts";
 import * as TaskScripts from "./ScheduledTaskScript.ts";
+import * as LatestModel from "./latestModel.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 
 export const WEBHOOK_ROUTE_PREFIX = "/api/hooks";
 const isScheduledTaskError = Schema.is(ScheduledTaskError);
@@ -418,6 +421,9 @@ const decodeRow = Effect.fnUntraced(
       lastRunError: row.last_run_error,
       runCount: row.run_count,
       ...(webhook === undefined ? {} : { webhook }),
+      ...(LatestModel.readFollowLatestModel(row.model_selection_json)
+        ? { followLatestModel: true }
+        : {}),
     });
   },
   (effect, row, _origin?) =>
@@ -481,6 +487,11 @@ export const layer = Layer.effect(
     const readWebhookOrigin = yield* ScheduledTaskWebhookOrigin;
     const managedPolicy = yield* ManagedPolicy.ManagedPolicy;
     const scripts = yield* TaskScripts.ScheduledTaskScripts;
+    const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+    const latestModelSelection = (selection: ModelSelection) =>
+      providerRegistry.getProviders.pipe(
+        Effect.map((providers) => LatestModel.latestModelSelection(selection, providers)),
+      );
     const scriptStore = TaskScripts.makeScriptStore(sql);
     const webhookPolicyOrganization = ManagedPolicy.deniedBy(managedPolicy, "webhookTasks");
     // Existing webhook tasks stay stored but report why they do not run.
@@ -683,7 +694,7 @@ export const layer = Layer.effect(
           ${task.threadId},
           ${scheduledTaskThreadMode(task)},
           ${JSON.stringify(task.workspaceStrategy)},
-          ${JSON.stringify(task.modelSelection)},
+          ${LatestModel.modelSelectionJson(task)},
           ${task.runtimeMode},
           ${task.interactionMode},
           ${task.createdBy},
@@ -1034,6 +1045,7 @@ export const layer = Layer.effect(
                 projectId: active.projectId,
                 threadId: active.threadId === null ? null : ThreadId.make(active.threadId),
                 stateJson: scriptState.stateJson,
+                modelSelection: active.modelSelection,
                 webhook:
                   webhook === undefined
                     ? null
@@ -1058,7 +1070,7 @@ export const layer = Layer.effect(
               source: script.source,
               check: TaskScripts.scriptCheck(evaluation, checkedAt),
               stateVersion: scriptState.version,
-              stateJson: evaluation.decision?.stateJson,
+              stateJson: TaskScripts.scriptStateToSave(evaluation),
             })
             .pipe(
               Effect.catchCause((cause) =>
@@ -1119,6 +1131,42 @@ export const layer = Layer.effect(
           evaluation?.outcome === "error"
             ? `The task script failed: ${evaluation.error ?? "unknown error"}`
             : null;
+        // Fork: the script's model is for this run only; following still moves the stored one.
+        const scriptModel = evaluation?.decision?.modelSelection ?? null;
+
+        // Fork: move a following task to its family's newest model before it dispatches.
+        const followed =
+          active.followLatestModel && scriptFailure === null
+            ? yield* latestModelSelection(active.modelSelection)
+            : active.modelSelection;
+        if (followed !== active.modelSelection) {
+          // An edit since this run read the task keeps the model it chose.
+          yield* sql`
+            UPDATE scheduled_tasks
+            SET model_selection_json = ${LatestModel.modelSelectionJson({ ...active, modelSelection: followed })}
+            WHERE task_id = ${active.id} AND updated_at = ${active.updatedAt}
+          `.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Could not save a scheduled task's newer model.", {
+                taskId: task.id,
+                cause,
+              }),
+            ),
+          );
+        }
+        const boundThreadSelection =
+          active.followLatestModel &&
+          scriptFailure === null &&
+          scriptModel === null &&
+          active.threadId !== null
+            ? (yield* threadManagement
+                .getThreadShell(ThreadId.make(active.threadId))
+                .pipe(Effect.orElseSucceed(() => null)))?.modelSelection
+            : undefined;
+        const boundFollowed =
+          boundThreadSelection === undefined
+            ? undefined
+            : yield* latestModelSelection(boundThreadSelection);
 
         if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
         else
@@ -1165,6 +1213,11 @@ export const layer = Layer.effect(
               attachments: [],
               mode: "queue",
               ...(threadMode === "fresh_session" ? { freshContext: true } : {}),
+              ...(scriptModel !== null
+                ? { modelSelection: scriptModel }
+                : boundFollowed === undefined || boundFollowed === boundThreadSelection
+                  ? {}
+                  : { modelSelection: boundFollowed }),
               createdBy: active.createdBy,
               creationSource: active.creationSource,
             })
@@ -1195,7 +1248,7 @@ export const layer = Layer.effect(
                       commandId,
                       projectId: active.projectId,
                       title: active.title,
-                      modelSelection: active.modelSelection,
+                      modelSelection: scriptModel ?? followed,
                       runtimeMode: active.runtimeMode,
                       interactionMode: active.interactionMode,
                       workspaceStrategy: active.workspaceStrategy,
@@ -1216,8 +1269,9 @@ export const layer = Layer.effect(
                     ),
                 )
               : yield* Effect.exit(
-                  // The stored selection only seeds fresh threads. A bound run
-                  // follows the thread's current provider, so it passes none.
+                  // The stored selection only seeds fresh threads. A bound run follows the
+                  // thread's current provider, so it passes none unless following a newer model
+                  // or the script chose one, which moves the thread as a composer switch would.
                   sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
                     Effect.as(ThreadId.make(active.threadId)),
                   ),
@@ -1702,6 +1756,10 @@ export const layer = Layer.effect(
         lastRunStatus: existingTask?.lastRunStatus ?? "never",
         lastRunError: existingTask?.lastRunError ?? null,
         runCount: existingTask?.runCount ?? 0,
+        ...((input.followLatestModel ?? existingTask?.followLatestModel) &&
+        LatestModel.canFollow(input.modelSelection)
+          ? { followLatestModel: true }
+          : {}),
       };
       // Fork: one transaction, so a failed script write cannot leave the task running unchecked.
       yield* sql
@@ -1897,6 +1955,7 @@ export const layer = Layer.effect(
         threadId: threadId === null ? null : ThreadId.make(threadId),
         stateJson: task?.script?.state ?? null,
         webhook: null,
+        modelSelection: input.modelSelection ?? task?.modelSelection ?? null,
       });
       return {
         outcome: evaluation.outcome,
@@ -1904,7 +1963,7 @@ export const layer = Layer.effect(
         error: evaluation.error,
         logs: evaluation.logs,
         durationMs: evaluation.durationMs,
-        context: evaluation.contextJson,
+        context: evaluation.contextJson ?? "{}",
       };
     });
 

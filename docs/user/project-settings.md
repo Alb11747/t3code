@@ -89,6 +89,13 @@ set the same `timeZone` in a fixed-time schedule, such as
 `{type:"fixed_time", timeOfDay:"04:00", timeZone:"UTC"}` for 04:00 UTC daily.
 Choose **Once** to run a task a single time at a date and time in your own time
 zone. If the environment is offline then, the task runs when it is back.
+Choose the model and its effort under **Model**, for every kind of schedule.
+Runs that post into an existing thread use that thread's current model, so
+change the model there; the task's model starts new threads. Agents set it with
+`modelSelection` on `schedule_task`, and `null` goes back to the project's
+default. Turn on **Use the newest … model** under the model to keep a task on the latest
+release of its model family: a task set to GPT-6.1 Sol runs on GPT-6.2 Sol once
+that model appears, and a task posting into a thread moves that thread too.
 
 Under **Destination**, choose where runs go. **New thread each run** keeps every
 run separate. The two one-thread choices start a thread on the first run and post
@@ -174,8 +181,6 @@ returns. Leave it off if you don't want request bodies stored outside your
 machine. To skip requests that waited too long, set **Skip requests older
 than** on the task.
 
-## Defaults and inheritance
-
 ## Check scripts
 
 Under **Advanced** in a task's editor on desktop or web, a check script decides
@@ -185,27 +190,45 @@ on the environment before every run, including manual and webhook runs. Return
 `{ run: false, reason: "Usage is high", nextRunAt: "2026-11-14T09:00:00Z" }`.
 `prompt` replaces the run's prompt, and `nextRunAt` moves the next run (at least
 a minute away), so a task can wait three days instead of one or wake just before
-a deadline. If the script throws or takes longer than 30 seconds, the run fails
-instead of starting.
+a deadline. `model` picks the model for this run: a model id on the same
+provider, such as `"claude-haiku-5-5"`, or
+`{ instanceId: "codex", model: "gpt-6-luna", options: { reasoningEffort: "low" } }`
+to switch provider, for example when Claude is out of quota. The task keeps its
+saved model, but a thread the task posts into stays on the model it was moved
+to, as when you switch it yourself. Options you don't name carry over where the
+new model offers them. If the script throws, takes longer than 30 seconds, or
+names a provider the project has turned off, a model the provider doesn't list
+(including before its model list has loaded) or an option the model doesn't
+offer, the run fails instead of starting. A skipped run ignores `model`. The
+task's last check shows the model a script picked.
 
-The script receives `ctx` with the current time, the task, its prompt, usage for
+The script receives `ctx` with the current time, the task, its prompt, `model`
+(what this run uses unless the script picks one), `providers` (each enabled
+provider with its models, their family and whether each is the newest of it,
+and the CLI Proxy hub its accounts are under), usage for
 every account the environment knows about (5-hour and weekly windows, reset
 credits and Codex usage credits, including CLI Proxy accounts), the thread the
 task posts into (whether it is running, its latest activity, its context size
-and when its Claude prompt cache expires), and the webhook request. `ctx.state`
-is saved after each check, even when the run then fails to start, so a script
+and when its Claude prompt cache expires), and the webhook request. A provider
+that routes through a CLI Proxy hub has its accounts listed under the hub, so
+match them by its `hub.sourceId` rather than by `instanceId`; when the hub's
+accounts can't be read, its own reading appears instead, marked
+`hubAccountsUnavailable`. `ctx.state` is saved after each check, even when the run then fails to start, so a script
 can remember when it last ran. A one-time task skipped without `nextRunAt` does
 not run, and editing or pausing a task while its script runs cancels that run. **Examples**
 inserts scripts that skip runs while usage is high, run less often when usage
-is low, and keep a Claude thread's cache warm. **Test script** runs the script
-once and shows its decision, logs and `ctx` without starting a run or saving
-state. The task list marks runs a script skipped.
+is low, switch to a cheaper model when usage is nearly used up, and keep a
+Claude thread's cache warm. **Test script** runs the script once and shows its
+decision (including the model it picked), logs and `ctx` without starting a
+run or saving state. The task list marks runs a script skipped.
 
 Scripts run with the environment's full access to files, commands and the
 network, so editing or testing one requires terminal access to that environment.
 Anyone who can see scheduled tasks can read the script and its saved state;
 keep secrets out of it. Mobile keeps a task's script when you save the task
 there but can't edit it.
+
+## Defaults and inheritance
 
 Threads contains the model and workspace for new threads. Browser controls agent browser
 access. Source control contains automatic pull, the default pull request merge method and text

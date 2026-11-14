@@ -793,6 +793,7 @@ export function NewTaskFlowProvider(
         ...((workspaceSelection?.startFromOrigin ?? startFromOrigin)
           ? { startFromOrigin: true }
           : {}),
+        ...(draft.accountChoice ? { accountChoice: draft.accountChoice } : {}),
       },
       createdAt: metadata.createdAt,
     };

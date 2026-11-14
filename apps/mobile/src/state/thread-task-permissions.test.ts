@@ -37,6 +37,7 @@ const state = vi.hoisted(() => ({
   projection: null as OrchestrationV2ThreadProjection | null,
   pendingRequests: { approvals: [], userInputs: [] } as PendingThreadRequests,
   enqueue: vi.fn(async () => undefined),
+  confirmAccount: vi.fn(async () => true),
   freshPending: false,
   compactModel: null as string | null,
   compactDueAt: "",
@@ -144,6 +145,9 @@ vi.mock("./use-thread-outbox", async () => {
   return { dispatchingQueuedMessageIdAtom: Atom.make(null), useThreadOutboxMessages: () => ({}) };
 });
 vi.mock("./thread-outbox", () => ({ enqueueThreadOutboxMessage: state.enqueue }));
+vi.mock("./thread-account-send-guard", () => ({
+  confirmThreadAccountForSend: state.confirmAccount,
+}));
 vi.mock("./composer-attachment-uploads", async () => {
   const { Atom } = await import("effect/reactivity");
   return {
@@ -228,6 +232,7 @@ beforeEach(() => {
     userInputs: [],
   };
   vi.clearAllMocks();
+  state.confirmAccount.mockResolvedValue(true);
   state.approve.mockResolvedValue(AsyncResult.success(undefined));
   state.answer.mockResolvedValue(AsyncResult.success(undefined));
   state.feedback.mockResolvedValue(AsyncResult.success({ feedbackId: "feedback" }));
@@ -269,6 +274,19 @@ describe("mobile task permissions", () => {
     expect(state.enqueue).not.toHaveBeenCalled();
     expect(state.clearDraft).not.toHaveBeenCalled();
     expect(state.draft.text).toBe("New feedback");
+  });
+
+  it("keeps a draft edited during the account check instead of sending the old text", async () => {
+    state.grantedEnvironments.add("secondary");
+    const composer = useThreadComposerState(NO_SIDE_CHATS);
+    state.confirmAccount.mockImplementationOnce(async () => {
+      state.draft = { ...state.draft, text: "Keep my draft, and more" };
+      return true;
+    });
+    expect(await composer.onSendMessage()).toBeNull();
+    expect(state.enqueue).not.toHaveBeenCalled();
+    expect(state.clearDraft).not.toHaveBeenCalled();
+    expect(await composer.onSendMessage()).toBe("message");
   });
 
   it("keeps a connected read-only task's draft instead of queueing it with another environment's grant", async () => {

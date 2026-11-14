@@ -21,6 +21,7 @@ import {
   withSmartIdleCompaction,
   isSecretReference,
   type SecretReference,
+  withAgentResetCreditRedemption,
   withIdleCompaction,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
@@ -131,6 +132,7 @@ const normalizeServerSettings = (
     Effect.map((next) =>
       withSmartIdleCompaction(withIdleCompaction(next, globalIdleCompaction(next))),
     ),
+    Effect.map(withAgentResetCreditRedemption),
     Effect.map((next) => ({ ...next, ...deriveLegacyProjectOverrides(next) })),
     Effect.mapError(
       (cause) =>
@@ -828,6 +830,7 @@ const make = Effect.gen(function* () {
     settings = withSmartIdleCompaction(
       withIdleCompaction(settings, globalIdleCompaction(settings)),
     );
+    settings = withAgentResetCreditRedemption(settings);
 
     // A file that failed to decode must stay on disk for the user to repair.
     const settingsFileTrusted = Option.isNone(parseFailure);

@@ -1,4 +1,5 @@
 import { EasDeviceHostConfigs, SimlockDeviceHostConfigs, SshDeviceHostConfigs } from "./device.ts";
+import { RouterAccountAlias } from "./providerUsageLimits.ts";
 import {
   AuthOrchestrationOperateScope,
   AuthSettingsWriteScope,
@@ -842,7 +843,7 @@ export const ClaudeSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Compact idle threads",
         description:
-          "When to compact an idle thread over 200,000 tokens: after you return, just before its prompt cache expires, or never. Overrides the default in Providers > Advanced.",
+          "When to compact an idle thread over 200,000 tokens: after you return, just before its prompt cache expires, or never. Overrides the default in Providers > Advanced; before the cache expires follows its waiting or all threads choice.",
         providerSettingsForm: {
           control: "select",
           options: INSTANCE_IDLE_COMPACTION_MODES,
@@ -950,6 +951,13 @@ export const UsageLimitSourceConfig = Schema.Struct({
     secretSetting,
   ),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /** Fork: the quota-router account new threads of each provider prefer; T3 renews the steer. */
+  steers: Schema.optional(
+    Schema.Struct({
+      claude: Schema.optional(RouterAccountAlias),
+      codex: Schema.optional(RouterAccountAlias),
+    }),
+  ),
 });
 export type UsageLimitSourceConfig = typeof UsageLimitSourceConfig.Type;
 
@@ -1461,7 +1469,7 @@ export const ServerSettings = Schema.Struct({
   idleCompaction: Schema.optionalKey(IdleCompactionMode),
   /**
    * Before the cache expires, compact only threads that will resume. Absent on servers without
-   * it, so clients can hide the switch; read through `smartIdleCompactionOf`.
+   * it, so clients can hide its choice; read through `smartIdleCompactionOf`.
    */
   smartIdleCompaction: Schema.optionalKey(Schema.Boolean),
   /** Lets idle compaction include snoozed threads; read through `compactSnoozedThreadsOf`. */
@@ -1584,6 +1592,11 @@ export const ServerSettings = Schema.Struct({
   usageLimitSources: Schema.Record(UsageLimitSourceId, UsageLimitSourceConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  /**
+   * Fork: lets agents redeem banked rate-limit resets. Absent on servers without it, so clients
+   * can hide the switch; read through `agentsCanRedeemResetCreditsOf`.
+   */
+  agentsCanRedeemResetCredits: Schema.optionalKey(Schema.Boolean),
   textGenerators: Schema.Record(ProviderInstanceId, TextGeneratorConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
@@ -1703,6 +1716,17 @@ export const withSmartIdleCompaction = <S extends ServerSettings>(settings: S): 
   ...settings,
   smartIdleCompaction: smartIdleCompactionOf(settings),
   compactSnoozedThreads: compactSnoozedThreadsOf(settings),
+});
+
+/** Fork: off unless the user turns it on. */
+export const agentsCanRedeemResetCreditsOf = (
+  settings: Pick<ServerSettings, "agentsCanRedeemResetCredits">,
+) => settings.agentsCanRedeemResetCredits ?? false;
+
+/** Fork: fills the switch in, which tells clients this server has it. */
+export const withAgentResetCreditRedemption = <S extends ServerSettings>(settings: S): S => ({
+  ...settings,
+  agentsCanRedeemResetCredits: agentsCanRedeemResetCreditsOf(settings),
 });
 
 /** Sets the mode, and the legacy switch shipped clients still read alongside it. */
@@ -1980,6 +2004,7 @@ export const ServerSettingsPatch = Schema.Struct({
   usageLimitSources: Schema.optionalKey(
     Schema.Record(UsageLimitSourceId, Schema.NullOr(UsageLimitSourceConfig)),
   ),
+  agentsCanRedeemResetCredits: Schema.optionalKey(Schema.Boolean),
   // Merge per entry like usageLimitSources; null removes an entry.
   textGenerators: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, Schema.NullOr(TextGeneratorConfig)),
@@ -2009,6 +2034,8 @@ export function requiredScopesForServerSettingsPatch(
       key === "providers" ||
       key === "providerInstances" ||
       key === "usageLimitSources" ||
+      // Fork: as redeeming a reset yourself does.
+      key === "agentsCanRedeemResetCredits" ||
       key === "textGenerators" ||
       key === "secretProviders"
     ) {

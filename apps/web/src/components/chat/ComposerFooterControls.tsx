@@ -217,6 +217,8 @@ export const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryA
   onInterrupt: () => void;
   compactBeforeSendTokens: number | null;
   hideCompactToggle: boolean;
+  /** Fork: where the thread continues after compacting, when that moves its account. */
+  compactAccountNote?: string | null;
   keepFullHistory: boolean;
   onToggleKeepFullHistory: () => void;
 }) {
@@ -247,6 +249,7 @@ export const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryA
         onInterrupt={props.onInterrupt}
         compactBeforeSendTokens={props.compactBeforeSendTokens}
         hideCompactToggle={props.hideCompactToggle}
+        compactAccountNote={props.compactAccountNote ?? null}
         keepFullHistory={props.keepFullHistory}
         onToggleKeepFullHistory={props.onToggleKeepFullHistory}
       >

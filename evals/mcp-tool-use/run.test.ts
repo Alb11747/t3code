@@ -246,17 +246,18 @@ it.each([
   assert.equal(failed({ shellMustNot, shellMust }, run).length > 0, fails);
 });
 
-it("accepts any tool listed as an alternative", () => {
-  const expect = { calls: [{ tool: "link_pull_request|watch_pull_request" }] };
-  const run = (tool: string): SampleRun => ({
-    calls: [{ step: 0, tool, input: {} }],
+it("accepts any tool or substring listed as an alternative", () => {
+  const expect = {
+    calls: [{ tool: "link_pull_request|watch_pull_request", args: { url: "~/1|/2" } }],
+  };
+  const run = (tool: string, url = "https://x.test/pull/2"): SampleRun => ({
+    calls: [{ step: 0, tool, input: { url } }],
     text: "",
     stopReason: "end_turn",
   });
   assert.deepEqual(failed(expect, run("watch_pull_request")), []);
-  assert.deepEqual(failed(expect, run("list_thread_pull_requests")), [
-    "calls link_pull_request|watch_pull_request",
-  ]);
+  assert.lengthOf(failed(expect, run("watch_pull_request", "https://x.test/pull/3")), 1);
+  assert.lengthOf(failed(expect, run("list_thread_pull_requests")), 1);
   // A bound on alternatives counts their calls together.
   const both: SampleRun = {
     calls: ["preview_status", "preview_open"].map((tool) => ({ step: 0, tool, input: {} })),

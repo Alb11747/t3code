@@ -68,6 +68,8 @@ import {
 } from "../features/threads/pending-thread-feed";
 import { threadAllowsProviderSwitch } from "./thread-provider-switching";
 import { appAtomRegistry } from "./atom-registry";
+import { confirmThreadAccountForSend } from "./thread-account-send-guard";
+import { accountRequestKind } from "@t3tools/client-runtime/thread-account-guard";
 import { pendingThreadCreationMessage } from "./pending-thread-creation";
 import {
   composerAttachmentUploadBlockReason,
@@ -746,17 +748,12 @@ export function useThreadComposerState(input: {
       return null;
     }
 
-    if (beforeDispatch !== undefined) {
-      const response = await beforeDispatch(
-        text,
-        attachments.length > 0 || draft.context !== undefined,
-      );
-      if (!response) return null;
-      // A context paste still landing, or any draft or settings change while approvals were
-      // declined, means this snapshot is no longer what the user sent.
-      if (appAtomRegistry.get(composerContextImportsAtom)[threadKey]) return null;
+    // A context paste still landing, or any draft or settings change during a wait before
+    // sending, means this snapshot is no longer what the user sent.
+    const draftChangedSinceSend = () => {
+      if (appAtomRegistry.get(composerContextImportsAtom)[threadKey]) return true;
       const current = getComposerDraftSnapshot(threadKey);
-      if (
+      return (
         current.text !== draft.text ||
         JSON.stringify(current.context) !== JSON.stringify(draft.context) ||
         JSON.stringify(current.modelSelection) !== JSON.stringify(draft.modelSelection) ||
@@ -764,8 +761,14 @@ export function useThreadComposerState(input: {
         current.interactionMode !== draft.interactionMode ||
         current.attachments.length !== attachments.length ||
         current.attachments.some((attachment, index) => attachment.id !== attachments[index]?.id)
-      )
-        return null;
+      );
+    };
+    if (beforeDispatch !== undefined) {
+      const response = await beforeDispatch(
+        text,
+        attachments.length > 0 || draft.context !== undefined,
+      );
+      if (!response || draftChangedSinceSend()) return null;
       if (response === "responded") {
         clearComposerDraftContent(threadKey);
         return null;
@@ -796,6 +799,21 @@ export function useThreadComposerState(input: {
       followUpDispatchMode === null &&
       appAtomRegistry.get(fullHistoryThreadKeysAtom)[threadKey] !== true &&
       resumeCompactionTokens(modelSelection, text, metadata.createdAt) !== null;
+    // Fork: a send that steers the running turn joins requests the turn makes anyway.
+    if (
+      beforeDispatch === undefined &&
+      followUpAction !== "steer" &&
+      (!(await confirmThreadAccountForSend({
+        environmentId: thread.environmentId,
+        threadId: thread.id,
+        modelSelection,
+        provider,
+        kind: accountRequestKind({ text, compactsFirst: compactBeforeSend }),
+      })) ||
+        draftChangedSinceSend())
+    ) {
+      return null;
+    }
     const messageId = MessageId.make(metadata.messageId);
     onWillEnqueue?.();
     clearThreadComposerError(threadKey);

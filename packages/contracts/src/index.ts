@@ -25,6 +25,7 @@ export * from "./modelSelection.ts";
 export * from "./chatAttachment.ts";
 export * from "./claudeKeepWarm.ts";
 export * from "./usageResetSnooze.ts";
+export * from "./threadAccount.ts";
 export * from "./checkpointDiff.ts";
 export * from "./model.ts";
 export * from "./keybindings.ts";

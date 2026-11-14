@@ -93,6 +93,12 @@ import {
   waitForProjection,
 } from "./OrchestratorMcpToolkit.fork.testkit.ts";
 
+// Distinct from the caller's model, so a create that falls back to it is visible.
+const projectDefaultSelection = {
+  ...codexSelection,
+  options: [{ id: "reasoning", value: "low" }],
+};
+
 describe("orchestrator MCP toolkit", () => {
   it.live(
     "delegates cross-provider tasks, polls and cancels children, and creates ordinary threads",
@@ -180,13 +186,17 @@ describe("orchestrator MCP toolkit", () => {
               take: Effect.never,
             },
           );
+          // Upstream re-offers a pending wake when it reconciles; only distinct wakes count.
+          const distinctOffers = (
+            offers: ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>,
+          ) => new Set(offers.map((offer) => JSON.stringify(offer.delegatedCompletion ?? offer)));
           const waitForContinuationOffers = (count: number) =>
             Effect.scoped(
               Effect.gen(function* () {
                 const subscription = yield* PubSub.subscribe(offerEvents);
                 while (true) {
                   const current = yield* Ref.get(continuationOffers);
-                  if (current.length >= count) return current;
+                  if (distinctOffers(current).size >= count) return current;
                   yield* PubSub.take(subscription);
                 }
               }),
@@ -195,7 +205,7 @@ describe("orchestrator MCP toolkit", () => {
             Effect.gen(function* () {
               const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
               yield* worker.drain();
-              expect(yield* Ref.get(continuationOffers)).toHaveLength(count);
+              expect(distinctOffers(yield* Ref.get(continuationOffers)).size).toBe(count);
             });
           const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
             {
@@ -320,8 +330,10 @@ describe("orchestrator MCP toolkit", () => {
                 getById: (id) =>
                   Effect.succeed(
                     id === projectId
-                      ? Option.some({ id, defaultModelSelection: null } as never)
-                      : Option.none(),
+                      ? Option.some({ id, defaultModelSelection: projectDefaultSelection } as never)
+                      : id === "project:mcp-foreign"
+                        ? Option.some({ id } as never)
+                        : Option.none(),
                   ),
               }),
             ),
@@ -698,8 +710,10 @@ describe("orchestrator MCP toolkit", () => {
               pendingAfterWait.runs.find((run) => run.id === directRead.queuedRun.id)?.status,
             ).toBe("queued");
 
+            // Reads default to newest first; -1 reads from the opening prompt.
             const childPromptReadCall = yield* invoke("t3_thread_read", {
               threadId: directChildThreadId,
+              afterPosition: -1,
               limit: 1,
             });
             const childPromptRead = yield* decodeThreadReadResult(
@@ -748,11 +762,12 @@ describe("orchestrator MCP toolkit", () => {
             expect(firstChunk.text + (remainder.items[0]?.text ?? "")).toBe(
               "Claude completed: Complete before a parent reads this child result directly.",
             );
+            // Upstream acknowledges the result once a read completes its text.
             expect(
               (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
                 (task) => task.id === directRead.task.id,
               )?.completionDelivery?.state,
-            ).toBe("claimed");
+            ).toBe("acknowledged");
 
             const terminalResultReadCall = yield* invoke("t3_thread_read", {
               threadId: directChildThreadId,
@@ -1053,7 +1068,7 @@ describe("orchestrator MCP toolkit", () => {
               threadId: parentThreadId,
               cursor: 90,
             }).pipe(Effect.flip);
-            expect(unknownPagingParamError.message).toContain("Expected no excess property");
+            expect(unknownPagingParamError.message).toContain('Unknown argument "cursor"');
             const threadUpdateTool = server.tools.find(
               ({ tool }) => tool.name === "t3_thread_update",
             );
@@ -1151,15 +1166,46 @@ describe("orchestrator MCP toolkit", () => {
               tasks: [{ scheduledTaskId, boundThreadId: parentThreadId }],
             });
 
+            const scheduledModel = { instanceId: claudeInstanceId, model: claudeModel };
             const scheduledUpdateCall = yield* invoke("schedule_task", {
               scheduledTaskId,
               enabled: false,
+              freshSession: true,
+              modelSelection: scheduledModel,
             });
             expect(scheduledUpdateCall.isError).toBe(false);
             expect(scheduledUpdateCall.structuredContent).toMatchObject({
               scheduledTaskId,
               enabled: false,
+              freshSession: true,
+              modelSelection: scheduledModel,
             });
+            const unlistedModelCall = yield* invoke("schedule_task", {
+              scheduledTaskId,
+              modelSelection: { instanceId: claudeInstanceId, model: "claude-unlisted-1" },
+            });
+            expect(unlistedModelCall.isError).toBe(true);
+            expect((yield* Ref.get(scheduledStore))[0]?.modelSelection).toEqual(scheduledModel);
+            for (const [requestId, modelSelection, stored] of [
+              ["schedule-model-explicit", scheduledModel, scheduledModel],
+              ["schedule-model-default", null, projectDefaultSelection],
+            ] as const) {
+              const created = yield* invoke("schedule_task", {
+                prompt: "check the nightly build",
+                schedule: { type: "interval", everyMs: 3_600_000 },
+                modelSelection,
+                clientRequestId: requestId,
+              });
+              expect(created.isError).toBe(false);
+              const { scheduledTaskId: createdId } = created.structuredContent as {
+                scheduledTaskId: string;
+              };
+              expect(
+                (yield* Ref.get(scheduledStore)).find((task) => task.id === createdId)
+                  ?.modelSelection,
+              ).toEqual(stored);
+              yield* invoke("delete_scheduled_task", { scheduledTaskId: createdId });
+            }
 
             const scheduledDeleteCall = yield* invoke("delete_scheduled_task", { scheduledTaskId });
             expect(scheduledDeleteCall.isError).toBe(false);
@@ -1545,8 +1591,13 @@ describe("orchestrator MCP toolkit", () => {
 
             expect(childFollowup.taskId).toBeDefined();
             expect(activeChildFollowup.taskId).toBeDefined();
-            yield* waitForContinuationOffers(2);
-            yield* expectOffersToStay(2);
+            // Both follow-ups finished before the parent's wake was delivered, so one wake reports both.
+            yield* waitForContinuationOffers(1);
+            yield* expectOffersToStay(1);
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]?.delegatedCompletion
+                ?.delivery?.taskIds,
+            ).toEqual([childFollowup.taskId, activeChildFollowup.taskId]);
             yield* invoke("task_status", { taskId: childFollowup.taskId });
             yield* invoke("task_status", { taskId: activeChildFollowup.taskId });
             yield* Ref.set(continuationOffers, []);
@@ -2151,6 +2202,7 @@ describe("orchestrator MCP toolkit", () => {
 
             const promptedReadCall = yield* invoke("t3_thread_read", {
               threadId: promptedThread.threadId,
+              afterPosition: -1,
               limit: 1,
             });
             const promptedRead = yield* decodeThreadReadResult(
@@ -3005,7 +3057,7 @@ describe("orchestrator MCP toolkit", () => {
               taskIds: [lateTask.id],
             });
             const lateOffers = yield* waitForContinuationOffers(2);
-            expect(lateOffers).toHaveLength(2);
+            expect(distinctOffers(lateOffers).size).toBe(2);
             expect(
               successorReserved.runs.filter((run) => {
                 const message = successorReserved.messages.find(
@@ -3906,10 +3958,12 @@ describe("orchestrator MCP toolkit", () => {
             expect((yield* readApprovalStatus()).pendingApproval).toBeNull();
             yield* worker.drain();
             expect(
-              (yield* Ref.get(continuationOffers)).filter(
-                (offer) => offer.threadId === approvalParentId,
-              ),
-            ).toHaveLength(1);
+              distinctOffers(
+                (yield* Ref.get(continuationOffers)).filter(
+                  (offer) => offer.threadId === approvalParentId,
+                ),
+              ).size,
+            ).toBe(1);
             yield* Deferred.succeed(approvalParentGate, undefined);
           }).pipe(Effect.provide(layerTest));
         }),

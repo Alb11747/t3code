@@ -31,16 +31,33 @@ export type IdleCompactionRecords = Pick<
 >;
 
 /**
+ * A one-shot mark covers the idle spell after the run it was set in. Any run that starts
+ * after it (a reply, a queued message, the compaction itself) makes it stale.
+ */
+export function compactOnceApplies(
+  requestedAt: string | null | undefined,
+  runs: ReadonlyArray<{ readonly startedAt: DateTime.Utc | null }>,
+): boolean {
+  if (requestedAt == null) return false;
+  const requestedMs = Date.parse(requestedAt);
+  return !runs.some(
+    (run) => run.startedAt !== null && DateTime.toEpochMillis(run.startedAt) > requestedMs,
+  );
+}
+
+/**
  * Which idle threads compact before their cache expires. "waiting" (Smart) takes only
- * threads something will wake after the cache expires; a thread's own setting wins.
+ * threads something will wake after the cache expires; a thread's own setting wins, and an
+ * applicable one-shot mark counts as "always" in any mode but off.
  */
 export function idleCompactionScope(
   mode: IdleCompactionMode,
   smart: boolean,
   threadOverride: boolean | null | undefined,
+  compactOnce = false,
 ): "all" | "waiting" | null {
   if (mode === "off" || threadOverride === false) return null;
-  if (threadOverride === true) return "all";
+  if (threadOverride === true || compactOnce) return "all";
   if (mode !== "beforeCacheExpires") return null;
   return smart ? "waiting" : "all";
 }

@@ -184,6 +184,56 @@ This connection supplies usage information; configure
 the provider separately to send agent requests through the hub. Remove the hub from the same
 settings section when you no longer need it.
 
+### Choose a thread's account
+
+When a Claude or Codex provider sends its requests through a hub running the quota router and
+the hub has two or more accounts for it, the composer shows an account chip next to the model
+picker (on mobile, in the thread's settings sheet). **Automatic** lets the router pick; choosing
+an account keeps the thread on it. With **Wait when it runs out** on, the thread waits for that
+account to reset instead of falling back to another one. **Use for new threads too** sends new
+threads of that provider to the account. A new thread can pick its account before its first
+message. The choice belongs to the provider it was made for: after switching the thread to
+another provider, it routes automatically until you pick again.
+
+The chip also names the account the next message will use, for example **Auto · work**, and a
+thread whose chosen account has run out shows where it falls back to (**work → spare**). The
+router can move a thread when it compacts or while its context is small, so when a compaction
+would continue on another account, the chip's menu and tooltip and the **Compact** controls say
+so. If the account changes between what the chip showed and your send, T3 Code keeps your message,
+names both accounts, and sends when you press again within half a minute; a change you made yourself does not stop the
+send, and neither does a hub that does not answer within a second and a half. On mobile, a send
+that would move the conversation to another account asks the same way, and the thread's settings
+sheet shows where its next request and a compaction would go. Showing where a compaction goes
+needs a quota router newer than 0.24.0.
+
+Switching an existing thread re-sends its context to the new account as a cold cache write.
+Some conversations stay bound to the account they started on; moving one asks first, because its
+earlier thinking is dropped (messages, tool results and files stay). The thread then drops that
+old thinking on every turn until it next compacts. Asking first needs quota router 0.24.0 or
+later: older routers do not report which account a conversation is bound to, so T3 Code switches
+without asking, and a bound conversation's requests then fail until you set it back.
+
+To see every choice in one place, open **Usage** → **Limits**. Each such hub gets a **Routing**
+section listing the account new threads of each provider prefer (**Clear** returns them to
+Automatic) and every pinned thread with its account (**Remove** sets the thread back to
+Automatic). Pins set outside T3 Code, for example by another tool, are listed by a shortened
+session id and cannot be removed here. A choice marked **stored, not active** is saved in T3 Code
+but has lapsed on the hub; T3 Code applies it again at the thread's next turn, or for new
+threads within six hours. Pins show when they expire, and the section also lists requests the
+router is holding right now and any safety-margin overrides, with when each ends.
+
+Agents can manage the same routing: ask one which account has quota left, to move a thread to
+another account (it asks you first when that drops the thread's earlier thinking), to send new
+threads to an account, to let a Claude thread use the router's spare safety margin for a while,
+to record the date an account's subscription ends, or to snooze a thread until its account has
+quota again. Name accounts by email address, or by the part before the `@` when no other account
+shares it.
+
+Agents can also redeem a banked reset credit for you, but only after you turn on **Settings** →
+**Threads** → **Usage limits** → **Let agents redeem reset credits**. It is off by default. An agent
+should redeem only when you ask it to or its instructions allow it, and a redeemed reset cannot be
+taken back.
+
 ## Subscription usage widget
 
 Add **Subscription usage** from your iOS or Android widget gallery to see remaining Codex and

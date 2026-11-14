@@ -67,6 +67,7 @@ import {
   PullRequestsToolkit,
 } from "../../apps/server/src/mcp/toolkits/pullRequests/tools.ts";
 import { ThreadToolkit } from "../../apps/server/src/mcp/toolkits/thread/tools.ts";
+import { UsageToolkit } from "../../apps/server/src/mcp/toolkits/usage/tools.ts";
 import { WorktreeToolkit } from "../../apps/server/src/mcp/toolkits/worktree/tools.ts";
 import {
   CLAUDE_PROVIDER,
@@ -463,6 +464,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   DeviceToolkit,
   HtmlToolkit,
   MessageToolkit,
+  UsageToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
 // McpHttpServer decodes arguments with each tool's JSON codec, which drops undeclared keys.
 const t3InputDecoders = new Map(
@@ -1734,8 +1736,8 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
 
 const BOUND = /^([<>]=)(-?\d+(?:\.\d+)?)$/;
 /**
- * Partial match: `~text` is a case-insensitive substring, `<=N` / `>=N` bound a number, and `null`
- * matches a missing or null value.
+ * Partial match: `~text` is a case-insensitive substring (`~a|b`: either), `<=N` / `>=N` bound a
+ * number, and `null` matches a missing or null value.
  */
 const matches = (expected: unknown, actual: unknown): boolean => {
   if (expected === null) return actual === undefined || actual === null;
@@ -1745,7 +1747,11 @@ const matches = (expected: unknown, actual: unknown): boolean => {
     return typeof actual === "number" && (bound[1] === "<=" ? actual <= limit : actual >= limit);
   }
   if (typeof expected === "string" && expected.startsWith("~")) {
-    return valueText(actual).toLowerCase().includes(expected.slice(1).toLowerCase());
+    const text = valueText(actual).toLowerCase();
+    return expected
+      .slice(1)
+      .split("|")
+      .some((part) => text.includes(part.toLowerCase()));
   }
   if (Array.isArray(expected)) {
     return (

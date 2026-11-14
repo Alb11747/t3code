@@ -589,6 +589,7 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly providerTurnOrdinal: number;
   readonly nativeThreadHasTurns?: boolean;
   readonly promptCacheExpiresAt?: DateTime.Utc;
+  readonly dropMismatchedThinking?: boolean;
   readonly loadInheritedBackgroundTurnItems?: () => Effect.Effect<
     ReadonlyArray<InheritedBackgroundTurnItemRoute>,
     unknown
@@ -1953,6 +1954,7 @@ export const layer: Layer.Layer<
           ...(input.promptCacheExpiresAt === undefined
             ? {}
             : { promptCacheExpiresAt: input.promptCacheExpiresAt }),
+          ...(input.dropMismatchedThinking ? { dropMismatchedThinking: true } : {}),
           ...(input.run.restartContinuationOfRunId === undefined
             ? {}
             : {

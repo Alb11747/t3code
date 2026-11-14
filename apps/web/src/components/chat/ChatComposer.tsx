@@ -210,6 +210,7 @@ import {
 } from "./ComposerAttachmentStrip";
 import { CollapsedComposerStopAction, ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { ComposerFooterPrimaryActions } from "./ComposerFooterControls";
+import { useCompactionAccountNote } from "./threadAccountSendGuard";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { buildPullRequestReferenceContext } from "../pullRequest/pullRequestDetail.logic";
@@ -371,6 +372,8 @@ export interface ChatComposerProps {
   activeThreadId: ThreadId | null;
   activeThread: Thread | undefined;
   activeThreadRuns: ReadonlyArray<OrchestrationV2Run>;
+  /** Fork: the thread's context size, for the account picker's cold-write note. */
+  contextTokens?: number | null;
   promptHistoryEntries: ReadonlyArray<TimelineEntry>;
   forceExpandedOnMobile: boolean;
   projectSelectionRequired: boolean;
@@ -964,6 +967,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selectedModel,
     selectedModelOptionsForDispatch,
   );
+  // Fork: the account chip's note when compacting would move the thread to another account.
+  const compactAccountNote = useCompactionAccountNote({
+    environmentId: routeThreadRef.environmentId,
+    threadId: routeThreadRef.threadId,
+    modelSelection: selectedModelSelection,
+  });
   const selectedModelForPicker = selectedModel;
   const modelOptionsByInstance = new Map<ProviderInstanceId, ReadonlyArray<AppModelOption>>();
   for (const entry of providerInstanceEntries) {
@@ -2437,6 +2446,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     <ComposerControlsBar
       environmentId={environmentId}
       workspaceCwd={gitCwd}
+      contextTokens={props.contextTokens ?? null}
       routeKind={routeKind}
       routeThreadRef={routeThreadRef}
       draftId={draftId}
@@ -3754,6 +3764,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     onInterrupt={handleInterruptPrimaryActionStable}
                     compactBeforeSendTokens={resumeCompactionTokens}
                     hideCompactToggle={dictationTakesFooter}
+                    compactAccountNote={compactAccountNote}
                     keepFullHistory={props.keepFullHistory}
                     onToggleKeepFullHistory={props.onToggleKeepFullHistory}
                   >

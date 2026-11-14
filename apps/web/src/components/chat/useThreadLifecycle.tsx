@@ -72,6 +72,8 @@ import {
   runStopNowItem,
 } from "./ThreadActivityBanners";
 import { useForceStopThread } from "./useForceStopThread";
+import { confirmAccountForSend } from "./threadAccountSendGuard";
+import { accountRequestKind } from "@t3tools/client-runtime/thread-account-guard";
 import { useAtomValue } from "@effect/atom-react";
 import type { RunStopPresentation } from "@t3tools/client-runtime/state/thread-execution";
 import { Atom } from "effect/reactivity";
@@ -515,6 +517,15 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     if (!activeThread || !clientSettingsHydrated || sendInFlightRef.current) return;
     const context = composerRef.current?.getSendContext();
     if (!context?.providerAvailable) return;
+    // Fork: the Compact button and other commands start a turn; check its account first.
+    sendInFlightRef.current = true;
+    const proceed = await confirmAccountForSend(
+      scopedThreadKey(scopeThreadRef(environmentId, activeThread.id)),
+      { environmentId, threadId: activeThread.id, modelSelection: context.selectedModelSelection },
+      accountRequestKind({ text, compactsFirst: false }),
+    );
+    sendInFlightRef.current = false;
+    if (!proceed) return;
 
     const threadId = activeThread.id;
     const messageId = newMessageId();

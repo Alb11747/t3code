@@ -8,6 +8,7 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
 import * as Digest from "effect/crypto/Digest";
+import * as Mac from "effect/crypto/Mac";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
@@ -128,15 +129,66 @@ const CreditList = Schema.Struct({
 });
 
 const Control = Schema.Struct({
+  pins: Schema.optional(
+    Schema.NullOr(
+      Schema.Array(
+        Schema.Struct({
+          session: Schema.String,
+          account: Schema.String,
+          stall: Schema.optional(Schema.Boolean),
+          move: Schema.optional(Schema.Boolean),
+          expires_at: Schema.optional(Schema.String),
+        }),
+      ),
+    ),
+  ),
+  steers: Schema.optional(
+    Schema.NullOr(
+      Schema.Array(
+        Schema.Struct({
+          provider: Schema.String,
+          account: Schema.String,
+          expires_at: Schema.optional(Schema.String),
+        }),
+      ),
+    ),
+  ),
   held: Schema.optional(
     Schema.NullOr(
       Schema.Array(
         Schema.Struct({
           session: Schema.String,
           account: Schema.optional(Schema.String),
+          since: Schema.optional(Schema.String),
           release_at: Schema.String,
           reset_at: Schema.optional(Schema.NullOr(Schema.String)),
+          window: Schema.optional(Schema.String),
           kind: Schema.optional(Schema.String),
+          reason: Schema.optional(Schema.String),
+        }),
+      ),
+    ),
+  ),
+  // Quota router 0.12: declared subscription ends; 0.14.6: per-session safety-margin overrides.
+  ends: Schema.optional(
+    Schema.NullOr(
+      Schema.Array(
+        Schema.Struct({
+          account: Schema.String,
+          provider: Schema.optional(Schema.String),
+          ends_at: Schema.String,
+        }),
+      ),
+    ),
+  ),
+  margins: Schema.optional(
+    Schema.NullOr(
+      Schema.Array(
+        Schema.Struct({
+          session: Schema.String,
+          headroom_scale: Schema.Number,
+          expires_at: Schema.String,
+          actor: Schema.optional(Schema.String),
         }),
       ),
     ),
@@ -148,6 +200,13 @@ const NextPick = Schema.Struct({
   account: Schema.optional(Schema.NullOr(Schema.String)),
   basis: Schema.optional(Schema.String),
   reset_at: Schema.optional(Schema.NullOr(Schema.String)),
+  // Quota router 0.24: an account-bound conversation's established account.
+  owner: Schema.optional(Schema.NullOr(Schema.String)),
+  // Newer routers: the request kind answered for, the conversation's account now, and the
+  // context size at which the small-context switch can change the pick.
+  kind: Schema.optional(Schema.String),
+  current: Schema.optional(Schema.NullOr(Schema.String)),
+  switch_below_context_tokens: Schema.optional(Schema.NullOr(Schema.Number)),
 });
 
 const decodeAuthFiles = Schema.decodeUnknownEffect(AuthFiles);
@@ -160,6 +219,9 @@ const decodeClaudeUsage = Schema.decodeUnknownEffect(Schema.fromJsonString(Claud
 const decodeCodexUsage = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexUsage));
 const decodeGrokUsage = Schema.decodeUnknownEffect(Schema.fromJsonString(GrokUsageResponse));
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+const encodeAliasInput = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
+);
 const isUsageLimitSourceError = Schema.is(UsageLimitSourceError);
 
 // Extra CAs can fix untrusted chains; expiry/hostname failures report codes only.
@@ -447,9 +509,18 @@ const HUB_PROVIDERS = new Map<string, HubProvider>([
   ],
 ]);
 
+/** The router's provider name for a driver whose sessions it can pin. */
+const ROUTER_PROVIDERS = { claudeAgent: "claude", codex: "codex" } as const;
+export type RouterProvider = (typeof ROUTER_PROVIDERS)[keyof typeof ROUTER_PROVIDERS];
+export const routerProviderOf = (driver: string): RouterProvider | undefined =>
+  Object.hasOwn(ROUTER_PROVIDERS, driver)
+    ? ROUTER_PROVIDERS[driver as keyof typeof ROUTER_PROVIDERS]
+    : undefined;
+
 export const makeCliproxyApi = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
   const digest = yield* Digest.Digest;
+  const mac = yield* Mac.Mac;
   const platform = yield* HostProcess.Platform;
   const architecture = yield* HostProcess.Architecture;
 
@@ -458,7 +529,7 @@ export const makeCliproxyApi = Effect.gen(function* () {
     path: string,
     body?: unknown,
     // `conflict` replaces the generic text for an HTTP 409, whose body stays unread like any other.
-    options: { readonly method?: "DELETE"; readonly conflict?: string } = {},
+    options: { readonly method?: "DELETE" | "PUT"; readonly conflict?: string } = {},
   ) {
     const url = yield* Effect.try({
       try: () => {
@@ -524,6 +595,18 @@ export const makeCliproxyApi = Effect.gen(function* () {
     return response.body;
   });
 
+  // The router's alias: "account-" plus 16 hex of HMAC-SHA256, keyed by the management key, over
+  // JSON.stringify([provider, auth_index]).
+  const accountAlias = Effect.fn("CliproxyApi.accountAlias")(function* (
+    hub: CliproxyHub,
+    account: AuthFile,
+  ) {
+    const utf8 = (value: string) => new TextEncoder().encode(value);
+    const key = yield* Mac.key(Mac.hmacSha256, utf8(hub.managementKey));
+    const signed = yield* encodeAliasInput([account.provider, account.auth_index]);
+    return `account-${Hex.encode(yield* mac.sign(key, utf8(signed))).slice(0, 16)}`;
+  });
+
   const readAccount = Effect.fn("CliproxyApi.readAccount")(function* (
     hub: CliproxyHub,
     account: AuthFile,
@@ -543,7 +626,13 @@ export const makeCliproxyApi = Effect.gen(function* () {
         }),
       })),
     );
-    return { id: account.id, driver: provider.driver, ...reading };
+    const routerAlias = yield* accountAlias(hub, account).pipe(Effect.option);
+    return {
+      id: account.id,
+      driver: provider.driver,
+      ...(Option.isSome(routerAlias) ? { routerAlias: routerAlias.value } : {}),
+      ...reading,
+    };
   });
 
   const readAccounts = Effect.fn("CliproxyApi.readAccounts")(function* (
@@ -674,14 +763,37 @@ export const makeCliproxyApi = Effect.gen(function* () {
   const nextPickReset = Effect.fn("CliproxyApi.nextPickReset")(function* (
     config: CliproxyHub,
     input: {
-      readonly provider: "claude" | "codex";
+      readonly provider: RouterProvider;
       readonly session?: string;
       readonly model?: string;
+    },
+  ) {
+    const pick = yield* nextPick(config, input);
+    // No account means the router could not tell (no pool for the provider), unlike an unknown reset.
+    if (pick === null || pick.account === null) return null;
+    return { resetsAt: pick.resetsAt };
+  });
+
+  /**
+   * The router's pick preview; null when the hub cannot preview picks. `kind` is the kind the
+   * router answered for: null from routers that ignore the parameter and answer for the next
+   * ordinary request. `keepWarm` says the requests carry `X-T3-Keep-Warm`, as Claude's do.
+   */
+  const nextPick = Effect.fn("CliproxyApi.nextPick")(function* (
+    config: CliproxyHub,
+    input: {
+      readonly provider: RouterProvider;
+      readonly session?: string;
+      readonly model?: string;
+      readonly kind?: "compaction";
+      readonly keepWarm?: boolean;
     },
   ) {
     const query = new URLSearchParams({ provider: input.provider });
     if (input.session) query.set("session", input.session);
     if (input.model) query.set("model", input.model);
+    if (input.kind) query.set("kind", input.kind);
+    if (input.keepWarm) query.set("keep_warm", "1");
     const pick = yield* management(config, `control/next?${query}`).pipe(
       Effect.flatMap(decodeNextPick),
       Effect.tapError((error) =>
@@ -689,12 +801,148 @@ export const makeCliproxyApi = Effect.gen(function* () {
       ),
       Effect.option,
     );
-    // No account means the router could not tell (no pool for the provider), unlike an unknown reset.
-    if (Option.isNone(pick) || !pick.value.account) return null;
+    if (Option.isNone(pick)) return null;
     const resetsAt = pick.value.reset_at
       ? Option.getOrNull(Option.map(DateTime.make(pick.value.reset_at), DateTime.formatIso))
       : null;
-    return { resetsAt };
+    return {
+      account: pick.value.account ?? null,
+      owner: pick.value.owner ?? null,
+      resetsAt,
+      basis: pick.value.basis ?? null,
+      kind: pick.value.kind ?? null,
+      current: pick.value.current ?? null,
+      switchBelowContextTokens: pick.value.switch_below_context_tokens ?? null,
+    };
+  });
+
+  const control = Effect.fn("CliproxyApi.control")(function* (config: CliproxyHub) {
+    return yield* management(config, "control").pipe(
+      Effect.flatMap(decodeControl),
+      Effect.mapError((error) =>
+        isUsageLimitSourceError(error)
+          ? error
+          : new UsageLimitSourceError({
+              detail: "The hub returned an unexpected control response.",
+            }),
+      ),
+    );
+  });
+
+  /**
+   * Routes the sessions to `account` until `expiresAt` (at most seven days ahead). `move` (quota
+   * router 0.24) lets the pin replace an account-bound conversation's owner; older routers ignore
+   * it and would reject the conversation's requests, so their pin is withdrawn with an error. A
+   * failed move is withdrawn too: the router can save the pin before failing to save the move.
+   */
+  const pin = Effect.fn("CliproxyApi.pin")(function* (
+    config: CliproxyHub,
+    input: {
+      readonly sessions: ReadonlyArray<string>;
+      readonly account: string;
+      readonly stall: boolean;
+      readonly expiresAt: string;
+      readonly move?: boolean;
+    },
+  ) {
+    const response = yield* management(
+      config,
+      "control/pin",
+      {
+        sessions: input.sessions,
+        account: input.account,
+        stall: input.stall,
+        expires_at: input.expiresAt,
+        ...(input.move ? { move: true } : {}),
+      },
+      { conflict: "The router refused the pin: this conversation is bound to another account." },
+    ).pipe(
+      Effect.tapError(() =>
+        input.move ? unpin(config, input.sessions).pipe(Effect.ignore) : Effect.void,
+      ),
+    );
+    if (!input.move) return;
+    const reply = yield* decodeControl(response).pipe(Effect.option);
+    const moved =
+      Option.isSome(reply) &&
+      input.sessions.every((session) =>
+        (reply.value.pins ?? []).some((pin) => pin.session === session && pin.move === true),
+      );
+    if (moved) return;
+    yield* unpin(config, input.sessions).pipe(Effect.ignore);
+    return yield* new UsageLimitSourceError({
+      detail:
+        "This CLI Proxy quota router cannot move an account-bound conversation. Update it to 0.24.0 or later.",
+    });
+  });
+
+  const unpin = Effect.fn("CliproxyApi.unpin")(function* (
+    config: CliproxyHub,
+    sessions: ReadonlyArray<string>,
+  ) {
+    yield* management(config, "control/pin", { sessions }, { method: "DELETE" });
+  });
+
+  const steer = Effect.fn("CliproxyApi.steer")(function* (
+    config: CliproxyHub,
+    account: string,
+    expiresAt: string,
+  ) {
+    yield* management(
+      config,
+      "control/steer",
+      { account, expires_at: expiresAt },
+      { method: "PUT" },
+    );
+  });
+
+  const unsteer = Effect.fn("CliproxyApi.unsteer")(function* (
+    config: CliproxyHub,
+    provider: RouterProvider,
+  ) {
+    yield* management(config, "control/steer", { provider }, { method: "DELETE" });
+  });
+
+  /**
+   * Sets (`headroomScale` 0 to 1, until `expiresAt`) or, with null, clears a Claude session's
+   * safety-margin override; `actor` is the audit label the router lists with it.
+   */
+  const margin = Effect.fn("CliproxyApi.margin")(function* (
+    config: CliproxyHub,
+    input: {
+      readonly sessions: ReadonlyArray<string>;
+      readonly headroomScale: number | null;
+      readonly expiresAt: string;
+      readonly actor: string;
+    },
+  ) {
+    yield* input.headroomScale === null
+      ? management(
+          config,
+          "control/margin",
+          { sessions: input.sessions, actor: input.actor },
+          { method: "DELETE" },
+        )
+      : management(config, "control/margin", {
+          sessions: input.sessions,
+          headroom_scale: input.headroomScale,
+          expires_at: input.expiresAt,
+          actor: input.actor,
+        });
+  });
+
+  /** Declares, or with null removes, the account's subscription end. */
+  const subscriptionEnd = Effect.fn("CliproxyApi.subscriptionEnd")(function* (
+    config: CliproxyHub,
+    account: string,
+    endsAt: string | null,
+  ) {
+    yield* management(
+      config,
+      "control/end",
+      endsAt === null ? { account } : { account, ends_at: endsAt },
+      { method: endsAt === null ? "DELETE" : "PUT" },
+    );
   });
 
   return {
@@ -705,5 +953,15 @@ export const makeCliproxyApi = Effect.gen(function* () {
     releaseKeepWarm,
     restoreKeepWarm,
     nextPickReset,
+    nextPick,
+    control,
+    pin,
+    unpin,
+    steer,
+    unsteer,
+    margin,
+    subscriptionEnd,
   };
 });
+
+export type CliproxyApi = Effect.Success<typeof makeCliproxyApi>;

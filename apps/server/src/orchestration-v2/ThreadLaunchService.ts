@@ -4,6 +4,8 @@ import * as TerminalManager from "../terminal/Manager.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
+  type ThreadAccountChoice,
+  threadAccountChoiceFor,
   type ChatAttachment,
   type MessageId,
   type ModelSelection,
@@ -92,6 +94,7 @@ export interface ThreadLaunchInput {
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly workspaceStrategy: ThreadLaunchWorkspaceStrategy;
+  readonly accountChoice?: ThreadAccountChoice;
   readonly initialMessage?: ThreadLaunchInitialMessage;
   readonly importedNativeThread?: {
     readonly ref: {
@@ -1179,6 +1182,22 @@ const make = Effect.gen(function* () {
             : initialWorkspaceStrategy;
         if (project.id !== input.projectId) {
           return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
+        }
+        // Fork: a draft's account choice lands before its first message, whose turn pins it. A
+        // choice made before the draft switched providers no longer applies.
+        const accountChoice = threadAccountChoiceFor(
+          input.accountChoice,
+          input.modelSelection.instanceId,
+        );
+        if (accountChoice !== null) {
+          yield* threads
+            .dispatch({
+              type: "thread.account-choice.set",
+              commandId: CommandId.make(`${input.commandId}:account`),
+              threadId,
+              accountChoice,
+            })
+            .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
         }
         let runId: RunId | null = null;
         let messageSequence: number | undefined;

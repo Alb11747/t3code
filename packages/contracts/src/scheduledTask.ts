@@ -279,6 +279,8 @@ export const ScheduledTask = Schema.Struct({
   blockedByPolicy: Schema.optionalKey(Schema.String),
   /** Fork: the check script that runs before each run. */
   script: Schema.optionalKey(ScheduledTaskScript),
+  /** Fork: each run moves `modelSelection` to the newest model of its family. */
+  followLatestModel: Schema.optionalKey(Schema.Boolean),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
@@ -315,6 +317,8 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   /** Fork: omitted keeps the stored script, null removes it and its state. */
   script: Schema.optional(Schema.NullOr(ScheduledTaskScriptSource)),
   resetScriptState: Schema.optional(Schema.Boolean),
+  /** Fork: omitted keeps the stored value, so older clients preserve it. */
+  followLatestModel: Schema.optional(Schema.Boolean),
 });
 export type ScheduledTaskUpsertInput = typeof ScheduledTaskUpsertInput.Type;
 

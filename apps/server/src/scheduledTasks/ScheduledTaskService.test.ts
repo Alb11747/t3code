@@ -29,6 +29,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -218,6 +219,7 @@ it.effect(
                   isScratchProject: () => Effect.succeed(false),
                 }),
                 Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+                Layer.mock(ProviderRegistry.ProviderRegistry)({}),
                 Layer.mock(SecretRequests.SecretRequests)({}),
                 NodeCrypto.layer,
                 Scheduler.layer,
@@ -316,6 +318,7 @@ it.effect(
                   isScratchProject: () => Effect.succeed(false),
                 }),
                 Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+                Layer.mock(ProviderRegistry.ProviderRegistry)({}),
                 Layer.mock(SecretRequests.SecretRequests)({}),
                 NodeCrypto.layer,
                 Scheduler.layer,
@@ -368,6 +371,7 @@ it.effect("thread cleanup notifies subscribers and a finishing run cannot recrea
               ),
             getThreadShell: () => Effect.succeed(threadShell(ProjectId.make("project:test"))),
           }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
@@ -432,6 +436,7 @@ it.effect.each([
     const layer = ScheduledTaskService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
+          Layer.mock(ProviderRegistry.ProviderRegistry)({}),
           ManagedPolicy.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -540,6 +545,7 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
             getThreadShell: () =>
               Ref.modify(shellProjects, ([next, ...rest]) => [threadShell(next ?? promoted), rest]),
           }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
@@ -606,6 +612,7 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
                 },
               ]).pipe(Effect.as({} as never)),
           }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
@@ -681,6 +688,7 @@ it.effect("a first run whose thread was deleted before it bound removes the task
             getThreadShell: () =>
               Effect.succeed({ deletedAt: DateTime.makeUnsafe("2026-11-03T00:00:00Z") } as never),
           }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
@@ -733,6 +741,7 @@ it.effect.each(["recreated under the same id", "moved to another project"] as co
                 ),
             }),
             Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+            Layer.mock(ProviderRegistry.ProviderRegistry)({}),
             Layer.mock(SecretRequests.SecretRequests)({}),
             Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
               namedProjectsRoot: "/projects",
@@ -791,6 +800,7 @@ it.effect("refuses saving an enabled task above the policy ceiling", () =>
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadShell: () => Effect.succeed(threadShell(ProjectId.make("project:test"))),
           }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
@@ -871,6 +881,7 @@ it.effect("checks a task's destination thread only when the destination changes"
             getThreadShell: (threadId) =>
               Ref.get(shells).pipe(Effect.map((all) => all.get(threadId) ?? null)),
           }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({}),
           Layer.mock(SecretRequests.SecretRequests)({
             consume: () => Ref.update(consumed, (count) => count + 1).pipe(Effect.as("secret")),
           }),
@@ -951,6 +962,7 @@ it.effect("a run interrupted right after it reserves the task does not block the
               ),
           }),
           Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",

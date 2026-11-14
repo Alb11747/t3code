@@ -148,6 +148,8 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
           clearedDraftSnapshot &&
         appAtomRegistry.get(fanoutSelectionsAtom) === submittedSelections;
       setThreadError(threadId, null);
+      // Fork: the draft's CLI Proxy account goes only to targets on the instance it was picked for.
+      const accountChoice = clearedDraftSnapshot?.accountChoice;
       const starts = Promise.all(
         targets.map(async (target) => {
           const started = await startFanoutThread({
@@ -186,6 +188,9 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                       branch,
                       worktreePath: null,
                       createdAt: createdAt,
+                      ...(accountChoice?.instanceId === target.selection.instanceId
+                        ? { accountChoice }
+                        : {}),
                     },
                     prepareWorktree: {
                       projectCwd: project.workspaceRoot,

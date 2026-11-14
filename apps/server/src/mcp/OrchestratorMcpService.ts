@@ -65,6 +65,7 @@ import {
   latestProviderTurnForAttempt,
   resolveProjectProviderInstanceEnabled,
   SECRET_REQUEST_UNSAVED_NOTE,
+  threadAccountChoiceFor,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
@@ -117,6 +118,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ThreadAccountService from "../usage/ThreadAccountService.ts";
 import {
   clientModeCeiling,
   type McpInvocationScope,
@@ -295,6 +297,8 @@ function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): Orchestrato
       ? {}
       : { webhookSignature: task.webhook.hasSecret ? "set" : "none" }),
     ...(task.blockedByPolicy === undefined ? {} : { blockedByPolicy: task.blockedByPolicy }),
+    ...(task.followLatestModel ? { followLatestModel: true } : {}),
+    modelSelection: task.modelSelection,
   };
 }
 
@@ -841,6 +845,20 @@ function threadBackgroundWork(
   };
 }
 
+// Fork: a choice made for another provider instance no longer applies.
+function accountOf(thread: OrchestrationV2ThreadProjection["thread"], email: string | undefined) {
+  const choice = threadAccountChoiceFor(thread.accountChoice, thread.modelSelection.instanceId);
+  return choice
+    ? {
+        account: {
+          account: choice.account,
+          ...(email === undefined ? {} : { email }),
+          waitWhenOut: choice.stall,
+        },
+      }
+    : {};
+}
+
 function threadPullRequests(
   links: OrchestrationV2ThreadShell["pullRequests"],
   includeLinks = true,
@@ -923,6 +941,7 @@ function threadDetail(
   shell: OrchestrationV2ThreadShell,
   nowMs: number,
   firstPage: boolean,
+  accountEmail: string | undefined,
 ): OrchestratorMcpThreadDetail {
   const latest = ThreadManagementService.latestRun(projection);
   const active = ThreadManagementService.latestActiveRun(projection);
@@ -971,6 +990,7 @@ function threadDetail(
     ...threadSnooze(shell, nowMs),
     ...threadStall(shell),
     ...threadBackgroundWork(shell),
+    ...accountOf(projection.thread, accountEmail),
     createdAt: DateTime.formatIso(projection.thread.createdAt),
     updatedAt: DateTime.formatIso(projection.thread.updatedAt),
   };
@@ -1210,6 +1230,7 @@ const make = Effect.gen(function* () {
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
+  const threadAccounts = yield* ThreadAccountService.ThreadAccounts;
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -1465,11 +1486,18 @@ const make = Effect.gen(function* () {
   };
 
   const resolveTarget = Effect.fn("OrchestratorMcpService.resolveTarget")(function* (input: {
-    readonly parent: Pick<OrchestrationV2ThreadProjection, "thread">;
+    readonly parent: {
+      readonly thread: Pick<
+        OrchestrationV2ThreadProjection["thread"],
+        "modelSelection" | "projectId"
+      >;
+    };
     readonly target: OrchestratorMcpTarget | undefined;
     readonly providers: ReadonlyArray<ServerProvider>;
     /** Receipt replays bypass current settings because they start no work. Dispatch must reuse the checked command ID. */
     readonly skipProjectEnablementFilter?: boolean;
+    /** What the provider is refused for, in the error. */
+    readonly work?: string;
   }): Effect.fn.Return<ResolvedTarget, OrchestratorMcpFailure> {
     const requestedInstanceId = input.target?.providerInstanceId;
     const requestedDriver = input.target?.driverKind;
@@ -1541,7 +1569,7 @@ const make = Effect.gen(function* () {
     if (constraints.length > 0) {
       return yield* failure(
         "provider_unavailable",
-        `Provider ${instanceId} cannot run a child task: ${constraints.join(" ")}`,
+        `Provider ${instanceId} cannot run ${input.work ?? "a child task"}: ${constraints.join(" ")}`,
       );
     }
 
@@ -2156,6 +2184,28 @@ const make = Effect.gen(function* () {
     return task;
   });
 
+  // Fork: a task's model is checked as a child's target is, so a bad pick fails here, not each run.
+  const scheduledTaskModel = Effect.fn("OrchestratorMcpService.scheduledTaskModel")(function* (
+    projectId: ProjectId,
+    current: ModelSelection,
+    requested: ModelSelection | null | undefined,
+  ) {
+    if (requested === undefined) return current;
+    if (requested === null)
+      return yield* projectDefaultModelSelection(yield* requireProject(projectId));
+    const target = yield* resolveTargetRechecking({
+      parent: { thread: { modelSelection: current, projectId } },
+      target: {
+        providerInstanceId: requested.instanceId,
+        model: requested.model,
+        ...(requested.options === undefined ? {} : { options: requested.options }),
+      },
+      providers: yield* loadProviders,
+      work: "scheduled tasks",
+    });
+    return target.modelSelection;
+  });
+
   return OrchestratorMcpService.of({
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope, ["runs"]);
@@ -2173,8 +2223,13 @@ const make = Effect.gen(function* () {
             : "bindToCurrentThread binds to this thread, which belongs to a different project.",
         );
       }
-      const modelSelection =
-        parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project));
+      const modelSelection = yield* scheduledTaskModel(
+        projectId,
+        parent?.thread.modelSelection ??
+          input.modelSelection ??
+          (yield* projectDefaultModelSelection(project)),
+        input.modelSelection,
+      );
       const derivedTitle = input.prompt.split("\n")[0]?.trim() ?? "";
       const title =
         input.title ?? (derivedTitle.length > 0 ? derivedTitle.slice(0, 80) : "Scheduled task");
@@ -2192,6 +2247,9 @@ const make = Effect.gen(function* () {
             : "new_thread",
         workspaceStrategy: yield* scheduledTaskWorkspaceStrategy(bindToCurrentThread, projectId),
         modelSelection,
+        ...(input.followLatestModel === undefined
+          ? {}
+          : { followLatestModel: input.followLatestModel }),
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
         createdBy: "agent",
@@ -2296,7 +2354,14 @@ const make = Effect.gen(function* () {
                   ? "new_thread"
                   : "continue",
           workspaceStrategy,
-          modelSelection: existing.modelSelection,
+          modelSelection: yield* scheduledTaskModel(
+            existing.projectId,
+            existing.modelSelection,
+            input.modelSelection,
+          ),
+          ...(input.followLatestModel === undefined
+            ? {}
+            : { followLatestModel: input.followLatestModel }),
           runtimeMode: existing.runtimeMode,
           interactionMode: existing.interactionMode,
           createdBy: existing.createdBy,
@@ -3261,6 +3326,9 @@ const make = Effect.gen(function* () {
         input.afterPosition === undefined &&
           input.beforePosition === undefined &&
           input.itemId === undefined,
+        target.thread.accountChoice
+          ? yield* threadAccounts.emailOf(target.thread.accountChoice.account)
+          : undefined,
       );
       const recentRuns = target.runs
         .toSorted((left, right) => right.ordinal - left.ordinal)

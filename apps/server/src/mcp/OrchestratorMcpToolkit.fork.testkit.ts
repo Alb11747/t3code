@@ -151,6 +151,7 @@ export function scheduledTaskFromUpsert(input: ScheduledTaskUpsertInput): Schedu
           : input.schedule,
     projectId: input.projectId,
     threadId: input.threadId ?? null,
+    ...(input.threadMode === undefined ? {} : { threadMode: input.threadMode }),
     workspaceStrategy: input.workspaceStrategy,
     modelSelection: input.modelSelection,
     runtimeMode: input.runtimeMode,

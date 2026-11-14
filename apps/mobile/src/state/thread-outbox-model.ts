@@ -16,6 +16,7 @@ import {
   ProjectId,
   ProviderInteractionMode,
   RuntimeMode,
+  ThreadAccountChoice,
   ThreadId,
   type ModelSelection as ModelSelectionType,
   type ProjectId as ProjectIdType,
@@ -23,6 +24,7 @@ import {
   type RuntimeMode as RuntimeModeType,
   type ServerProvider,
   type ServerProviderModel,
+  type ThreadAccountChoice as ThreadAccountChoiceType,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
@@ -45,6 +47,7 @@ const QueuedThreadCreationSchema = Schema.Struct({
   worktreePath: Schema.NullOr(Schema.String),
   startFromOrigin: Schema.optional(Schema.Boolean),
   pullRequestReference: Schema.optional(Schema.String),
+  accountChoice: Schema.optional(ThreadAccountChoice),
 });
 
 export const QueuedThreadMessageSchema = Schema.Struct({
@@ -78,6 +81,7 @@ export interface QueuedThreadCreation {
   readonly worktreePath: string | null;
   readonly startFromOrigin?: boolean;
   readonly pullRequestReference?: string;
+  readonly accountChoice?: ThreadAccountChoiceType;
 }
 
 export interface QueuedThreadMessage {

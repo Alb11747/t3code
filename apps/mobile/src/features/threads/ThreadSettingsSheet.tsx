@@ -60,6 +60,7 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { AppBar } from "../../components/ui/AppBar";
 import { ProviderIcon } from "../../components/ProviderIcon";
+import { ThreadAccountSection } from "./ThreadAccountSection";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { cn } from "../../lib/cn";
 import { useReduceMotionEnabled } from "../../lib/appState";
@@ -277,6 +278,8 @@ type ThreadSettingsSessionProps = {
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  /** Fork: the existing thread's CLI Proxy account section. */
+  readonly accountSection?: ReactNode;
 };
 
 /** The composer draft the sheet edits: the thread's own, or a queued message being edited. */
@@ -288,6 +291,7 @@ export type ExistingThreadSettingsRouteParams = {
 
 type ThreadSettingsSessionValue = {
   readonly environmentId: EnvironmentId | null;
+  readonly accountSection?: ReactNode;
   readonly providerInstanceId?: ProviderInstanceId;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly favoriteKeys: ReadonlySet<string>;
@@ -641,6 +645,7 @@ function ThreadSettingsSessionProvider(
     toggleProvider,
     toggleFavorite,
     workspaceScan,
+    accountSection: props.accountSection,
   } satisfies ThreadSettingsSessionValue;
 
   return (
@@ -924,6 +929,8 @@ function ThreadSettingsOptionsItem(props: {
           />
         </Animated.View>
       </Animated.View>
+
+      {session.accountSection}
 
       <Text className="px-5 pb-2 pt-7 text-sm font-t3-medium text-foreground-muted">Catalog</Text>
       <View className="mx-4 overflow-hidden rounded-2xl bg-grouped-card">
@@ -1421,6 +1428,14 @@ export function ExistingThreadSettingsRouteScreen({
       }}
       runtimeMode={draftSettings.runtimeMode ?? selectedThread.runtimeMode}
       onUpdateRuntimeMode={(runtimeMode) => updateComposerDraftSettings(threadKey, { runtimeMode })}
+      accountSection={
+        <ThreadAccountSection
+          environmentId={selectedThread.environmentId}
+          threadId={selectedThread.id}
+          modelSelection={modelSelection}
+          choice={selectedThread.accountChoice ?? null}
+        />
+      }
       onClose={() => navigation.goBack()}
     />
   );
@@ -1430,6 +1445,8 @@ export function ExistingThreadSettingsRouteScreen({
 export function NewTaskThreadSettingsRouteScreen() {
   const flow = useNewTaskFlow();
   const navigation = useNavigation<NativeStackNavigationProp<Record<string, object | undefined>>>();
+  const { draftKey } = flow;
+  const accountChoice = useComposerDraftSettings(draftKey).accountChoice ?? null;
   const optionDescriptors = resolveProviderOptionDescriptors({
     capabilities: flow.selectedModelOption?.capabilities,
     selections: flow.selectedModel?.options,
@@ -1451,6 +1468,21 @@ export function NewTaskThreadSettingsRouteScreen() {
       onUpdateOptionSelections={flow.setSelectedModelOptions}
       runtimeMode={flow.runtimeMode}
       onUpdateRuntimeMode={flow.setRuntimeMode}
+      {...(flow.selectedEnvironmentId && flow.selectedModel && draftKey
+        ? {
+            accountSection: (
+              <ThreadAccountSection
+                environmentId={flow.selectedEnvironmentId}
+                threadId={null}
+                modelSelection={flow.selectedModel}
+                choice={accountChoice}
+                onDraftChange={(choice) =>
+                  updateComposerDraftSettings(draftKey, { accountChoice: choice ?? undefined })
+                }
+              />
+            ),
+          }
+        : {})}
       onClose={() => navigation.goBack()}
     />
   );

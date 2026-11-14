@@ -41,6 +41,7 @@ import {
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { UsageLimitsPooled } from "./UsageLimitsPooled";
+import { routesThreads, UsageRouting } from "./UsageRouting";
 import { PROVIDER_PRESENTATION } from "./usageProviders";
 
 const PACE: Record<LimitPace, { readonly label: string; readonly icon: typeof GaugeIcon }> = {
@@ -390,5 +391,20 @@ export function UsageLimitsSection({
       ];
     }),
   );
-  return <UsageLimitsPooled presentations={selected} now={now} />;
+  const routedSources = [...selected].flatMap(([environmentId, presentation]) =>
+    (presentation.serverConfig?.usageLimitSources ?? []).filter(routesThreads).map((source) => ({
+      environmentId,
+      source,
+      label:
+        selected.size > 1 ? `${presentation.entry.target.label} · ${source.label}` : source.label,
+    })),
+  );
+  return (
+    <div className="flex flex-col gap-8">
+      <UsageLimitsPooled presentations={selected} now={now} />
+      {routedSources.map((entry) => (
+        <UsageRouting key={`${entry.environmentId}:${entry.source.id}`} {...entry} />
+      ))}
+    </div>
+  );
 }

@@ -28,6 +28,7 @@ import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   RunId,
   ThreadId,
+  UsageLimitSourceId,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2ShellSnapshot,
   type ModelSelection,
@@ -754,6 +755,28 @@ describe("composerDraftStore context persistence", () => {
       vi.unstubAllGlobals();
       vi.resetModules();
     }
+  });
+
+  it("keeps a draft whose only setting is its account choice through hydration", () => {
+    const choice = {
+      sourceId: UsageLimitSourceId.make("hub"),
+      account: "account-0123456789abcdef",
+      stall: true,
+    };
+    const merge = useComposerDraftStore.persist.getOptions().merge!;
+    const reload = () =>
+      merge(
+        JSON.parse(
+          JSON.stringify(partializeComposerDraftStoreState(useComposerDraftStore.getState())),
+        ),
+        useComposerDraftStore.getInitialState(),
+      ).draftsByThreadKey[scopedThreadKey(threadRef)];
+
+    useComposerDraftStore.getState().setAccountChoice(threadRef, choice);
+    expect(reload()?.accountChoice).toEqual(choice);
+
+    useComposerDraftStore.getState().setAccountChoice(threadRef, null);
+    expect(reload()).toBeUndefined();
   });
 });
 

@@ -82,8 +82,16 @@ export const ProviderUsageLimitsUpdate = Schema.Struct({
 });
 export type ProviderUsageLimitsUpdate = typeof ProviderUsageLimitsUpdate.Type;
 
+/** Fork: a CLIProxyAPI quota router's name for one account, as AgentBridge also derives it. */
+export const RouterAccountAlias = TrimmedNonEmptyString.check(
+  Schema.isPattern(/^account-[0-9a-f]{16}$/),
+);
+export type RouterAccountAlias = typeof RouterAccountAlias.Type;
+
 export const UsageLimitSourceAccount = Schema.Struct({
   id: TrimmedNonEmptyString,
+  /** Fork: the quota router's alias for this account, which its pins and steers name. */
+  routerAlias: Schema.optional(RouterAccountAlias),
   driver: ProviderDriverKind,
   email: Schema.optional(TrimmedNonEmptyString),
   plan: Schema.optional(TrimmedNonEmptyString),

@@ -666,6 +666,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.issue-watch.wake":
     case "thread.issue-watch.sync":
     case "thread.pull-request-watch.checks-reopen":
+    case "thread.account-choice.set":
     case "thread.pull-request.sync":
     case "thread.title.regeneration.complete":
     case "thread.project.adopt-folder":
@@ -4355,6 +4356,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Thread ${command.threadId} branch changed before the metadata update could be applied.`,
       });
     }
+    // Never would make the mark inert while the menu showed it set.
+    if (
+      command.type === "thread.metadata.update" &&
+      command.compactBeforeCacheExpires === "once" &&
+      thread.compactBeforeCacheExpires === false
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Thread ${command.threadId} is set to never compact before its cache expires.`,
+      });
+    }
     if (command.type === "thread.metadata.update" && command.expectedEmpty === true) {
       const records = yield* projectionStore
         .getThreadRecords(command.threadId, ["runs"])
@@ -4945,7 +4958,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 }),
             ...(command.compactBeforeCacheExpires === undefined
               ? {}
-              : { compactBeforeCacheExpires: command.compactBeforeCacheExpires }),
+              : command.compactBeforeCacheExpires === "once"
+                ? { compactOnceRequestedAt: DateTime.formatIso(now) }
+                : {
+                    compactBeforeCacheExpires: command.compactBeforeCacheExpires,
+                    compactOnceRequestedAt: null,
+                  }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
             ...(command.limitRecovery !== undefined &&
             limitRecovery?.snooze === true &&
@@ -15663,6 +15681,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             effects,
           );
         }
+        break;
+      }
+      case "thread.account-choice.set": {
+        const thread = yield* projectionStore
+          .getThread(command.threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+            ),
+          );
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: thread.id,
+          providerInstanceId: thread.providerInstanceId,
+          occurredAt: yield* DateTime.now,
+          payload: {
+            ...thread,
+            accountChoice: command.accountChoice,
+            ...(command.accountMovedAt === undefined
+              ? {}
+              : { accountMovedAt: command.accountMovedAt }),
+          },
+        });
         break;
       }
       case "thread.guest-share.open":

@@ -460,6 +460,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["usage quota rate limit reset recover continue"],
   },
   {
+    id: "agents-redeem-reset-credits",
+    title: "Let agents redeem reset credits",
+    to: "/settings/threads",
+    scope: "environment-defaults",
+    searchTerms: ["usage quota rate limit reset credit redeem agent mcp"],
+  },
+  {
     id: "working-shelf",
     title: msg("Working section"),
     to: "/settings/general",
@@ -650,14 +657,17 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Compact idle threads",
     to: "/settings/providers",
     scope: "environment-defaults",
-    searchTerms: ["claude context compaction idle cache tokens usage summary resume"],
+    searchTerms: [
+      "claude context compaction idle cache tokens usage summary resume",
+      "smart waiting threads cache expires watch subagent scheduled wake",
+    ],
   },
   {
     id: "smart-idle-compaction",
     title: "Only compact waiting threads",
     to: "/settings/providers",
     scope: "environment-defaults",
-    searchTerms: ["smart adaptive claude compaction cache expires watch subagent scheduled wake"],
+    searchTerms: ["smart claude compaction provider override cache expires waiting"],
   },
   {
     id: "compact-snoozed-threads",

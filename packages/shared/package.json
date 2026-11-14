@@ -59,6 +59,10 @@
       "types": "./src/model.ts",
       "import": "./src/model.ts"
     },
+    "./latestModel": {
+      "types": "./src/latestModel.ts",
+      "import": "./src/latestModel.ts"
+    },
     "./advertisedEndpoint": {
       "types": "./src/advertisedEndpoint.ts",
       "import": "./src/advertisedEndpoint.ts"

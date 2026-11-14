@@ -19,6 +19,8 @@ import {
   RunId,
   NonNegativeInt,
   ProjectId,
+  RouterAccountAlias,
+  ThreadAccountError,
 } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Schema from "effect/Schema";
@@ -28,10 +30,11 @@ import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as ThreadAccountService from "../../../usage/ThreadAccountService.ts";
 
 const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   description:
-    "Pin, snooze, settle, archive, or mark a thread unread. Omit `threadId` for this thread. `snooze` needs `snoozedUntil`. Settling this thread applies at turn end. A failed turn or queued message leaves it active.",
+    "Pin, snooze, settle, archive, or mark a thread unread. Omit `threadId` for this thread. `snooze` needs `snoozedUntil`; `snooze_until_reset` wakes it when its next account has quota again. Settling this thread applies at turn end. A failed turn or queued message leaves it active.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
@@ -39,6 +42,7 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
       "pin",
       "unpin",
       "snooze",
+      "snooze_until_reset",
       "unsnooze",
       "settle",
       "unsettle",
@@ -49,15 +53,17 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
     snoozedUntil: Schema.optional(IsoDateTime),
   }),
   success: Schema.Union([
+    Schema.Struct({ ...OrchestrationV2DispatchCommandResult.fields, snoozedUntil: IsoDateTime }),
     OrchestrationV2DispatchCommandResult,
     Schema.Struct({ settlesWhenTurnEnds: Schema.Literal(true) }),
   ]),
-  failure: OrchestratorMcpFailure,
+  failure: Schema.Union([OrchestratorMcpFailure, ThreadAccountError]),
   failureMode: "return" as const,
   dependencies: [
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
     SecureRandom.SecureRandom,
+    ThreadAccountService.ThreadAccounts,
   ],
 })
   .annotate(Tool.Title, "Organize a thread")
@@ -145,28 +151,51 @@ const PendingRequestTool = Tool.make("t3_pending_request", {
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
 
+const CompactBeforeCacheExpiresValue = Schema.NullOr(
+  Schema.Union([Schema.Boolean, Schema.Literal("once")]),
+);
 const threadConfiguration = Schema.Struct({
   threadId: ThreadId,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
-  compactBeforeCacheExpires: Schema.NullOr(Schema.Boolean),
+  compactBeforeCacheExpires: CompactBeforeCacheExpiresValue,
+  // Fork: CLI Proxy quota-router accounts, present when the provider routes through one.
+  account: Schema.optional(
+    Schema.NullOr(Schema.Struct({ account: RouterAccountAlias, waitWhenOut: Schema.Boolean })),
+  ),
+  accounts: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        account: RouterAccountAlias,
+        email: Schema.optional(Schema.String),
+        plan: Schema.optional(Schema.String),
+        next: Schema.optional(Schema.Boolean),
+        owner: Schema.optional(Schema.Boolean),
+      }),
+    ),
+  ),
 });
-const CompactBeforeCacheExpires = Schema.NullOr(Schema.Boolean).annotate({
+const CompactBeforeCacheExpires = CompactBeforeCacheExpiresValue.annotate({
   description:
-    "Claude: true compacts this thread before its cache expires while idle, for waits over an hour; false never; null follows settings.",
+    'Claude: true compacts this thread before its cache expires while idle, for waits over an hour; false never; null follows settings. "once": compact if nobody replies before the cache expires after this turn; use it when ending a turn that waits on the user (question, review, decision) with a large context.',
 });
 const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   ...commandTool,
   description:
-    "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`, or `compactBeforeCacheExpires`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`.",
+    "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`, or `compactBeforeCacheExpires`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`. Behind a CLI Proxy hub, the read lists `accounts`; `account` (email or alias) sends the thread's requests to one (null: automatic), and `waitWhenOut` waits for it instead of falling back. Switching rewrites the context cache once. Moving off an `owner` account drops the conversation's earlier thinking and needs `dropThinking: true`; tell the user and get their yes first.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
     modelSelection: Schema.optional(ModelSelection),
     compactBeforeCacheExpires: Schema.optional(CompactBeforeCacheExpires),
+    account: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+    waitWhenOut: Schema.optional(Schema.Boolean),
+    dropThinking: Schema.optional(Schema.Boolean),
   }),
   success: Schema.Union([threadConfiguration, OrchestrationV2DispatchCommandResult]),
+  failure: Schema.Union([OrchestratorMcpFailure, ThreadAccountError]),
+  dependencies: [...commandTool.dependencies, ThreadAccountService.ThreadAccounts],
 }).annotate(Tool.Destructive, true);
 
 const ThreadTransferTool = Tool.make("t3_thread_transfer", {

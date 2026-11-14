@@ -28,6 +28,7 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
+import { modelFamilyName } from "@t3tools/shared/latestModel";
 import { resolvePastedPath } from "@t3tools/shared/path";
 import {
   DEFAULT_WEBHOOK_PROMPT,
@@ -670,6 +671,7 @@ function TaskForm({
   const config = useEnvironmentServerConfig(environmentId);
   const destinationLabel = useScheduledTaskDestinationLabel(environmentId, draft.threadId);
   const modelOptions = buildModelOptions(config, null, undefined, draft.projectId);
+  const modelFamily = draft.modelSelection ? modelFamilyName(draft.modelSelection.model) : null;
   // Existing webhook tasks keep the option so they can still switch to a timer.
   const webhookDenial = managedCapabilityDenial(config?.managedPolicy, "webhookTasks");
   const canOperate = useAtomValue(
@@ -771,6 +773,7 @@ function TaskForm({
       prompt: draft.prompt.trim(),
       projectId: draft.projectId,
       modelSelection: withImplicitFastModeSelection(draft.modelSelection, config?.providers ?? []),
+      followLatestModel: modelFamily !== null && draft.followLatestModel,
       schedule,
       enabled: draft.enabled,
       threadId: draft.threadId,
@@ -861,7 +864,14 @@ function TaskForm({
           {promptField}
         </SettingsSection>
 
-        <SettingsSection title="Context">
+        <SettingsSection
+          title="Context"
+          footer={
+            draft.threadId === null
+              ? undefined
+              : "Runs use the thread's current model, so this one applies only if the task starts a new thread. A check script can choose a model per run."
+          }
+        >
           <SelectRow
             label="Project"
             value={
@@ -909,6 +919,21 @@ function TaskForm({
             onPress={() => navigation.navigate("SettingsScheduledTaskModel")}
             disabled={saving || dictationPending || environmentUnavailable}
           />
+          <View className="min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3">
+            <Text textRole="body" className="min-w-0 flex-1 text-foreground">
+              {modelFamily === null
+                ? "Use the newest model of this family"
+                : `Use the newest ${modelFamily} model`}
+            </Text>
+            <ThemedSwitch
+              accessibilityLabel="Use the newest model of this family"
+              value={modelFamily !== null && draft.followLatestModel}
+              disabled={
+                modelFamily === null || saving || dictationPending || environmentUnavailable
+              }
+              onValueChange={(followLatestModel) => setDraft({ ...draft, followLatestModel })}
+            />
+          </View>
         </SettingsSection>
 
         <SettingsSection

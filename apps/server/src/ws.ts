@@ -6,6 +6,7 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as ClaudeKeepWarmActions from "./orchestration-v2/ClaudeKeepWarmActions.ts";
 import * as UsageResetSnoozeService from "./usage/UsageResetSnoozeService.ts";
+import * as ThreadAccountService from "./usage/ThreadAccountService.ts";
 import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
 
@@ -1501,6 +1502,7 @@ export const layerWsRpc = (
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const keepWarmActions = yield* ClaudeKeepWarmActions.make;
       const usageResetSnooze = yield* UsageResetSnoozeService.make;
+      const threadAccounts = yield* ThreadAccountService.ThreadAccounts;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
         yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
@@ -2167,6 +2169,9 @@ export const layerWsRpc = (
                           runtimeMode: input.runtimeMode,
                           interactionMode: input.interactionMode,
                           workspaceStrategy: input.workspaceStrategy,
+                          ...(input.accountChoice === undefined
+                            ? {}
+                            : { accountChoice: input.accountChoice }),
                           ...(input.initialMessage === undefined
                             ? {}
                             : {
@@ -2578,38 +2583,13 @@ export const layerWsRpc = (
           providerMaintenanceRunner.updateProvider(input),
         [WS_METHODS.claudeKeepWarmAction]: (input) => keepWarmActions.run(input),
         [WS_METHODS.providerResolveUsageResetSnooze]: (input) => usageResetSnooze.resolve(input),
-        [WS_METHODS.providerConsumeResetCredit]:
-          /* Request instrumentation already owns the span; keep this helper in that context. */
-          Effect.fnUntraced(function* (input) {
-            if ("sourceId" in input) return yield* usageLimitSources.consumeResetCredit(input);
-            const instance = yield* providerInstances.getInstance(input.instanceId);
-            if (instance === undefined || !instance.enabled) {
-              return yield* new ProviderSetupError({
-                instanceId: input.instanceId,
-                operation: "consume-reset-credit",
-                detail: instance ? "This provider is disabled." : "Provider instance not found.",
-              });
-            }
-            if (instance.consumeResetCredit === undefined) {
-              return yield* new ProviderSetupError({
-                instanceId: input.instanceId,
-                operation: "consume-reset-credit",
-                detail: "This provider does not bank reset credits.",
-              });
-            }
-            const outcome = yield* instance.consumeResetCredit(input.creditId).pipe(
-              Effect.mapError(
-                (error) =>
-                  new ProviderSetupError({
-                    instanceId: input.instanceId,
-                    operation: "consume-reset-credit",
-                    detail: error.detail,
-                    cause: error,
-                  }),
-              ),
-            );
-            return { outcome };
-          }),
+        [WS_METHODS.threadAccountState]: (input) => threadAccounts.state(input),
+        [WS_METHODS.threadAccountPreview]: (input) => threadAccounts.preview(input),
+        [WS_METHODS.threadAccountSet]: (input) => threadAccounts.set(input),
+        [WS_METHODS.threadAccountSteer]: (input) => threadAccounts.steer(input),
+        [WS_METHODS.threadAccountRouting]: (input) => threadAccounts.routing(input),
+        [WS_METHODS.providerConsumeResetCredit]: (input) =>
+          threadAccounts.consumeResetCredit(input),
         [WS_METHODS.providerAuthStart]: (input) => providerAuth.start(input, currentSessionId),
         [WS_METHODS.providerAuthRespond]: (input) =>
           Effect.annotateCurrentSpan({ instanceId: input.instanceId }).pipe(

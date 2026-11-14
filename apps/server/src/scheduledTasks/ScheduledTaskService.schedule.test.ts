@@ -18,6 +18,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -41,6 +42,7 @@ it.effect("recalculates zone edits, preserves omitted zones and clears explicit 
         isScratchProject: () => Effect.succeed(false),
       }),
       Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({}),
       Layer.mock(SecretRequests.SecretRequests)({}),
     );
     yield* Effect.gen(function* () {
@@ -134,6 +136,7 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
         isScratchProject: () => Effect.succeed(false),
       }),
       Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({}),
       Layer.mock(SecretRequests.SecretRequests)({}),
     );
     yield* Effect.gen(function* () {
@@ -182,6 +185,7 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
         isScratchProject: () => Effect.succeed(false),
       }),
       Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({}),
       Layer.mock(SecretRequests.SecretRequests)({}),
     );
     yield* Effect.gen(function* () {
@@ -237,6 +241,7 @@ it.effect("keeps the task list order when a toggle or edit rewrites updated_at",
         isScratchProject: () => Effect.succeed(false),
       }),
       Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({}),
       Layer.mock(SecretRequests.SecretRequests)({}),
     );
     yield* Effect.gen(function* () {
@@ -292,6 +297,7 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
     }>({ runs: [activeRun], messages: [] });
     const runDueWork = yield* Ref.make<Effect.Effect<void>>(Effect.void);
     const layerDependencies = Layer.mergeAll(
+      Layer.mock(ProviderRegistry.ProviderRegistry)({}),
       NodeCrypto.layer,
       ManagedPolicy.layerTest(),
       // Capture the poll pass so the test drives each due interval directly.
@@ -448,6 +454,7 @@ it.effect(
           isScratchProject: () => Effect.succeed(false),
         }),
         Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
       );
       yield* Effect.gen(function* () {
@@ -499,6 +506,7 @@ it.effect("a fixed-time slot missed while the server was off shows on the task",
     yield* TestClock.setTime(DateTime.toEpochMillis(at(8)));
     const launches = yield* Ref.make(0);
     const layerDependencies = Layer.mergeAll(
+      Layer.mock(ProviderRegistry.ProviderRegistry)({}),
       NodeCrypto.layer,
       Scheduler.layer,
       ManagedPolicy.layerTest(),
@@ -576,6 +584,7 @@ it.effect(
       const releaseSlow = yield* Deferred.make<void>();
       const lastProcessed = yield* Deferred.make<void>();
       const layerDependencies = Layer.mergeAll(
+        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
         NodeCrypto.layer,
         Scheduler.layer,
         ManagedPolicy.layerTest(),

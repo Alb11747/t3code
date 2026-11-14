@@ -63,6 +63,8 @@ interface ComposerPrimaryActionsProps {
   onInterrupt: () => void;
   compactBeforeSendTokens?: number | null;
   hideCompactToggle?: boolean;
+  /** Fork: where the thread continues after compacting, when that moves its account. */
+  compactAccountNote?: string | null;
   keepFullHistory?: boolean;
   onToggleKeepFullHistory?: () => void;
 }
@@ -245,6 +247,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   onInterrupt,
   compactBeforeSendTokens = null,
   hideCompactToggle = false,
+  compactAccountNote = null,
   keepFullHistory = false,
   onToggleKeepFullHistory,
 }: ComposerPrimaryActionsProps) {
@@ -497,6 +500,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
               : `Next send compacts ${compactTokens} tokens first.`}
           </div>
           <div>{keepFullHistory ? "Click to compact first" : "Click to keep full history"}</div>
+          {compactAccountNote ? <div>{compactAccountNote}</div> : null}
         </TooltipPopup>
       </Tooltip>
       {children}

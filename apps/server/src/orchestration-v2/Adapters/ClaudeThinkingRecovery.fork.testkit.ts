@@ -277,5 +277,59 @@ export function runClaudeThinkingRecoverySuite<E>(input: {
           }),
         ),
     );
+
+    it.effect("drops moved thinking on ordinary turns until the move no longer applies", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* input.makeHarness({
+            CLAUDE_CODE_EXTRA_BODY: '{"metadata":{"user_id":"fixture"}}',
+          });
+          const now = yield* DateTime.now;
+          const turn = (ordinal: number, dropMismatchedThinking: boolean) => ({
+            ...input.makeTurn({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make(`moved-thinking-${ordinal}`),
+              text: `Request ${ordinal}.`,
+              attachments: [],
+              providerTurnOrdinal: ordinal,
+              nativeThreadHasTurns: true,
+            }),
+            ...(dropMismatchedThinking ? { dropMismatchedThinking } : {}),
+          });
+          const finish = (uuid: string) =>
+            Effect.gen(function* () {
+              yield* harness.offerAndWait(input.makeResult({ uuid, result: "Done." }));
+              assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+            });
+
+          yield* harness.runtime.startTurn(turn(1, true));
+          const moved = harness.getOpenedOptions();
+          assert.deepInclude(decodeJson(moved?.env?.CLAUDE_CODE_EXTRA_BODY ?? "{}"), {
+            thinking: {
+              type: "adaptive",
+              display: "summarized",
+              block_binding: { prefix_mismatch_behavior: "drop_block" },
+            },
+          });
+          // Unlike the retry, the user's own prompt is sent.
+          assert.include(String(harness.offeredMessages[0]?.message.content), "Request 1.");
+          yield* finish("moved-1");
+
+          yield* harness.runtime.startTurn(turn(2, true));
+          assert.strictEqual(harness.getOpenedOptions(), moved);
+          yield* finish("moved-2");
+
+          yield* harness.runtime.startTurn(turn(3, false));
+          const compacted = harness.getOpenedOptions();
+          assert.notStrictEqual(compacted, moved);
+          assert.equal(
+            compacted?.env?.CLAUDE_CODE_EXTRA_BODY,
+            '{"metadata":{"user_id":"fixture"}}',
+          );
+        }),
+      ),
+    );
   });
 }

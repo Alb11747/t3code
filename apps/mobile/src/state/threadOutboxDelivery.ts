@@ -464,6 +464,9 @@ export async function restoreRejectedQueuedMessage(
       ...(queuedMessage.runtimeMode ? { runtimeMode: queuedMessage.runtimeMode } : {}),
       ...(queuedMessage.interactionMode ? { interactionMode: queuedMessage.interactionMode } : {}),
       ...(queuedMessage.freshContext ? { freshContext: true } : {}),
+      ...(queuedMessage.creation?.accountChoice
+        ? { accountChoice: queuedMessage.creation.accountChoice }
+        : {}),
       ...(queuedMessage.creation
         ? {
             workspaceSelection: {
@@ -1131,6 +1134,7 @@ export function createThreadOutboxDelivery(): {
         worktreePath: workspace.worktreePath,
         startFromOrigin: workspace.startFromOrigin ?? false,
         worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
+        ...(creation.accountChoice ? { accountChoice: creation.accountChoice } : {}),
       }),
     });
     if (AsyncResult.isFailure(deliveryResult) && !hasAccess()) return true;
