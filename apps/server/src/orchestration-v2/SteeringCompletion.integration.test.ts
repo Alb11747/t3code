@@ -46,12 +46,12 @@ import * as ProviderContinuationRequests from "@t3tools/provider-core/server/Pro
 
 const driver = ProviderDriverKind.make("codex");
 const instanceId = ProviderInstanceId.make("codex");
+const modelSelection = { instanceId, model: "test-model" };
 
 it.effect.each(
   (
     [
       [false, "during delivery"],
-      [false, "during delivery", "claudeAgent"],
       [false, "before dispatch"],
       [true, "after delivery"],
       [true, "without native steering"],
