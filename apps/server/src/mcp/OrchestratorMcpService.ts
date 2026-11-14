@@ -287,6 +287,7 @@ function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): Orchestrato
       : { webhookSignature: task.webhook.hasSecret ? "set" : "none" }),
     ...(task.blockedByPolicy === undefined ? {} : { blockedByPolicy: task.blockedByPolicy }),
     ...(task.followLatestModel ? { followLatestModel: true } : {}),
+    modelSelection: task.modelSelection,
   };
 }
 
@@ -1335,7 +1336,12 @@ const make = Effect.gen(function* () {
   };
 
   const resolveTarget = Effect.fn("OrchestratorMcpService.resolveTarget")(function* (input: {
-    readonly parent: Pick<OrchestrationV2ThreadProjection, "thread">;
+    readonly parent: {
+      readonly thread: Pick<
+        OrchestrationV2ThreadProjection["thread"],
+        "modelSelection" | "projectId"
+      >;
+    };
     readonly target: OrchestratorMcpTarget | undefined;
     readonly providers: ReadonlyArray<ServerProvider>;
     /** Receipt replays bypass current settings because they start no work. Dispatch must reuse the checked command ID. */
@@ -2003,6 +2009,27 @@ const make = Effect.gen(function* () {
     return task;
   });
 
+  // Fork: a task's model is checked as a child's target is, so a bad pick fails here, not each run.
+  const scheduledTaskModel = Effect.fn("OrchestratorMcpService.scheduledTaskModel")(function* (
+    projectId: ProjectId,
+    current: ModelSelection,
+    requested: ModelSelection | null | undefined,
+  ) {
+    if (requested === undefined) return current;
+    if (requested === null)
+      return yield* projectDefaultModelSelection(yield* requireProject(projectId));
+    const target = yield* resolveTargetRechecking({
+      parent: { thread: { modelSelection: current, projectId } },
+      target: {
+        providerInstanceId: requested.instanceId,
+        model: requested.model,
+        ...(requested.options === undefined ? {} : { options: requested.options }),
+      },
+      providers: yield* loadProviders,
+    });
+    return target.modelSelection;
+  });
+
   return OrchestratorMcpService.of({
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope, ["runs"]);
@@ -2020,8 +2047,13 @@ const make = Effect.gen(function* () {
             : "bindToCurrentThread binds to this thread, which belongs to a different project.",
         );
       }
-      const modelSelection =
-        parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project));
+      const modelSelection = yield* scheduledTaskModel(
+        projectId,
+        parent?.thread.modelSelection ??
+          input.modelSelection ??
+          (yield* projectDefaultModelSelection(project)),
+        input.modelSelection,
+      );
       const derivedTitle = input.prompt.split("\n")[0]?.trim() ?? "";
       const title =
         input.title ?? (derivedTitle.length > 0 ? derivedTitle.slice(0, 80) : "Scheduled task");
@@ -2146,7 +2178,11 @@ const make = Effect.gen(function* () {
                   ? "new_thread"
                   : "continue",
           workspaceStrategy,
-          modelSelection: existing.modelSelection,
+          modelSelection: yield* scheduledTaskModel(
+            existing.projectId,
+            existing.modelSelection,
+            input.modelSelection,
+          ),
           ...(input.followLatestModel === undefined
             ? {}
             : { followLatestModel: input.followLatestModel }),

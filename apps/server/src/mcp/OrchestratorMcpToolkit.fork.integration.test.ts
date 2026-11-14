@@ -1151,15 +1151,26 @@ describe("orchestrator MCP toolkit", () => {
               tasks: [{ scheduledTaskId, boundThreadId: parentThreadId }],
             });
 
+            const scheduledModel = { instanceId: claudeInstanceId, model: claudeModel };
             const scheduledUpdateCall = yield* invoke("schedule_task", {
               scheduledTaskId,
               enabled: false,
+              freshSession: true,
+              modelSelection: scheduledModel,
             });
             expect(scheduledUpdateCall.isError).toBe(false);
             expect(scheduledUpdateCall.structuredContent).toMatchObject({
               scheduledTaskId,
               enabled: false,
+              freshSession: true,
+              modelSelection: scheduledModel,
             });
+            const unlistedModelCall = yield* invoke("schedule_task", {
+              scheduledTaskId,
+              modelSelection: { instanceId: claudeInstanceId, model: "claude-unlisted-1" },
+            });
+            expect(unlistedModelCall.isError).toBe(true);
+            expect((yield* Ref.get(scheduledStore))[0]?.modelSelection).toEqual(scheduledModel);
 
             const scheduledDeleteCall = yield* invoke("delete_scheduled_task", { scheduledTaskId });
             expect(scheduledDeleteCall.isError).toBe(false);

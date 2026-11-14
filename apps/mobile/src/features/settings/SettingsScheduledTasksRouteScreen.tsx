@@ -864,7 +864,14 @@ function TaskForm({
           {promptField}
         </SettingsSection>
 
-        <SettingsSection title="Context">
+        <SettingsSection
+          title="Context"
+          footer={
+            draft.threadId === null
+              ? undefined
+              : "Runs use the thread's current model, so this one applies only if the task starts a new thread."
+          }
+        >
           <SelectRow
             label="Project"
             value={

@@ -45,6 +45,7 @@ import {
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
+import { ModelSelection } from "./modelSelection.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000));
@@ -706,6 +707,13 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
 });
 export type OrchestratorMcpCapabilitiesResult = typeof OrchestratorMcpCapabilitiesResult.Type;
 
+const OrchestratorMcpScheduledTaskModel = Schema.optional(
+  Schema.NullOr(ModelSelection).annotate({
+    description:
+      "From `orchestrator_capabilities`. Default: your thread's model; null: the project's. A bound thread runs on its own model.",
+  }),
+);
+
 export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   projectId: OrchestratorMcpProjectTarget,
@@ -731,6 +739,8 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
         "Runs use the newest model of the task's family, e.g. gpt-6.2-sol for gpt-6.1-sol.",
     }),
   ),
+  // Fork: the model runs start new threads on.
+  modelSelection: OrchestratorMcpScheduledTaskModel,
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -765,6 +775,7 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
     description: "Present when an administrator's policy stops this task from running.",
   }),
   followLatestModel: Schema.optionalKey(Schema.Boolean),
+  modelSelection: Schema.optional(ModelSelection),
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 
@@ -798,6 +809,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   bindToCurrentThread: Schema.optional(Schema.Boolean),
   freshSession: Schema.optional(Schema.Boolean),
   followLatestModel: Schema.optional(Schema.Boolean),
+  modelSelection: OrchestratorMcpScheduledTaskModel,
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;
