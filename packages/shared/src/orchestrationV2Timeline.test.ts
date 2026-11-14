@@ -14,7 +14,6 @@ type VisibilityInput = Parameters<typeof createOrchestrationV2TurnItemVisibility
 
 const ordinaryStatuses = [
   "preparing",
-  "queued",
   "starting",
   "running",
   "waiting",
@@ -74,28 +73,6 @@ describe.each([
     ).toBe(true);
   });
 
-  it("hides queued user messages once their run is cancelled", () => {
-    expect(
-      isVisible({
-        item: { type: "user_message", inputIntent: "queued_turn", runId, nodeId },
-        runs: [{ id: runId, status: "cancelled" }],
-        attempts: [],
-        items: [{ type: "user_message", inputIntent: "queued_turn", runId, nodeId }],
-      }),
-    ).toBe(false);
-  });
-
-  it("keeps non-queued user messages on cancelled runs", () => {
-    expect(
-      isVisible({
-        item: { type: "user_message", inputIntent: "turn_start", runId, nodeId },
-        runs: [{ id: runId, status: "cancelled" }],
-        attempts: [],
-        items: [{ type: "user_message", inputIntent: "turn_start", runId, nodeId }],
-      }),
-    ).toBe(true);
-  });
-
   it("does not hide an interruption because another attempt was superseded", () => {
     expect(
       isVisible({
@@ -115,10 +92,8 @@ describe.each([
   });
 
   it.each([
-    ...ordinaryStatuses.map((status) => ({
-      status,
-      hidden: status === "queued" ? ["queued"] : [],
-    })),
+    ...ordinaryStatuses.map((status) => ({ status, hidden: [] })),
+    { status: "queued", hidden: ["queued"] },
     { status: "cancelled", hidden: ["queued"] },
     {
       status: "rolled_back",
@@ -242,7 +217,7 @@ describe.each([
 
 describe("indexed timeline visibility", () => {
   it.each([
-    ...ordinaryStatuses.flatMap(
+    ...[...ordinaryStatuses, "queued" as const].flatMap(
       (status) =>
         [
           {

@@ -39,6 +39,7 @@ import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ClaudeKeepWarm from "../../provider/ClaudeKeepWarm.ts";
+import * as ProviderInstallationGate from "../../provider/ProviderInstallationGate.ts";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 
 type HarnessServices =
@@ -112,7 +113,7 @@ export interface ClaudeAdapterForkSuiteInput<HarnessError, CaptureError> {
   ) => Effect.Effect<
     { readonly apiTimeoutEnvironment: ReadonlyArray<string | undefined> },
     CaptureError,
-    HarnessServices
+    HarnessServices | ProviderInstallationGate.ProviderInstallationGate
   >;
   readonly claudeSdkFrame: (frame: unknown) => SDKMessage;
   readonly makeAssistantTextFrame: (input: {
@@ -451,6 +452,7 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
+            ProviderInstallationGate.layer,
             NodeServices.layer,
             NodeCrypto.layer,
           ),
@@ -487,6 +489,7 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
+            ProviderInstallationGate.layer,
             NodeServices.layer,
             NodeCrypto.layer,
           ),
@@ -709,6 +712,7 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
+            ProviderInstallationGate.layer,
             NodeServices.layer,
             NodeCrypto.layer,
           ),
@@ -974,6 +978,7 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
           Layer.mergeAll(
             IdAllocator.layer,
             McpProviderSessions.layer,
+            ProviderInstallationGate.layer,
             NodeServices.layer,
             NodeCrypto.layer,
           ),

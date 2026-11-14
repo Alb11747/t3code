@@ -1,20 +1,9 @@
-import * as NodeServices from "@effect/platform-node/NodeServices";
-import { CodexSettings } from "@t3tools/contracts";
-
-import * as Effect from "effect/Effect";
-
-import * as FileSystem from "effect/FileSystem";
-
-import * as Schema from "effect/Schema";
-
 import { assert, it } from "@effect/vitest";
 
-import * as Path from "effect/Path";
-import * as CodexSchema from "effect-codex-app-server/schema";
-import { execScriptSource, writeFakeCli } from "@t3tools/provider-testing/fakeCli";
 import {
   applyPreferredCodexDefaultModel,
-  checkCodexProviderStatus,
+  codexCustomEndpoint,
+  codexRoutesSpendNativeQuota,
   mapCodexModelCapabilities,
 } from "./CodexProvider.ts";
 
@@ -28,6 +17,7 @@ it("maps current Codex model capability fields", () => {
     id: "gpt-test",
     isDefault: true,
     model: "gpt-test",
+    availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] },
     defaultServiceTier: "flex",
     serviceTiers: [
       {
@@ -76,6 +66,16 @@ it("maps current Codex model capability fields", () => {
         },
       ],
       currentValue: "flex",
+    },
+    {
+      id: "cyberAccessProgram",
+      label: "Cyber Access",
+      type: "select",
+      options: [
+        { id: "standard", label: "Standard", isDefault: true },
+        { id: "daybreakBlue", label: "Daybreak Blue" },
+      ],
+      currentValue: "standard",
     },
   ]);
 });
@@ -170,87 +170,35 @@ it("ignores custom models that shadow a preferred slug", () => {
   assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-5.4");
 });
 
-const encodeProbeAccount = Schema.encodeSync(
-  Schema.fromJsonString(CodexSchema.V2GetAccountResponse),
-);
-
-const probeUsage = (account: CodexSchema.V2GetAccountResponse, usageReadFails = false) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-usage-probe-" });
-    const methodsPath = path.join(directory, "methods.log");
-    const binaryPath = writeFakeCli({
-      directory,
-      name: "codex",
-      source: execScriptSource({
-        scriptPath: path.resolve(__dirname, "fixtures/codex-usage-probe.mjs"),
-        expectedArgs: ["app-server"],
-      }),
-      env: {
-        CODEX_PROBE_ACCOUNT: encodeProbeAccount(account),
-        CODEX_PROBE_METHODS: methodsPath,
-        CODEX_PROBE_USAGE_ERROR: String(usageReadFails),
-      },
-    });
-    const provider = yield* checkCodexProviderStatus(
-      decodeCodexSettings({ binaryPath, homePath: directory }),
-      undefined,
-      {
-        ...process.env,
-        T3CODE_CODEX_LAUNCH_ARGS: "",
-      },
+it("reports native quota only for an OpenAI login on a native route", () => {
+  const chatgpt = { type: "chatgpt", email: "a@example.com", planType: "pro" } as const;
+  const hub = {
+    model_provider: "hub",
+    model_providers: { hub: { base_url: "https://hub.example.com/v1" } },
+  };
+  const cases = [
+    ["default route", chatgpt, true, {}, true],
+    ["openai base url", chatgpt, true, { openai_base_url: "https://chatgpt.com/x" }, true],
+    ["openai proxy url", chatgpt, true, { openai_base_url: "https://proxy.example.com" }, false],
+    ["custom provider", chatgpt, true, hub, false],
+    ["unknown provider id", chatgpt, true, { model_provider: "missing" }, false],
+    ["unreadable config", chatgpt, true, null, false],
+    ["login not required", chatgpt, false, {}, false],
+    ["api key", { type: "apiKey" }, true, {}, false],
+  ] as const;
+  for (const [name, account, requiresOpenaiAuth, config, expected] of cases) {
+    assert.strictEqual(
+      codexRoutesSpendNativeQuota({ account, requiresOpenaiAuth }, config),
+      expected,
+      name,
     );
-    const methods = (yield* fs.readFileString(methodsPath)).trim().split("\n");
-    return { provider, methods };
-  });
-
-it.effect.each([
-  ["custom providers without an OpenAI account", { account: null, requiresOpenaiAuth: false }],
-  ["API-key accounts", { account: { type: "apiKey" }, requiresOpenaiAuth: true }],
-] as const)("skips unsupported native usage reads for %s", ([, account]) =>
-  Effect.gen(function* () {
-    const { provider, methods } = yield* Effect.scoped(probeUsage(account, true));
-    assert.equal(provider.status, "ready");
-    assert.equal(provider.usageLimits?.unavailable?.reason, "unsupported");
-    assert.deepStrictEqual(
-      provider.models.map((model) => model.slug),
-      ["gpt-test"],
-    );
-    assert.include(methods, "skills/list");
-    assert.notInclude(methods, "account/rateLimits/read");
-  }).pipe(Effect.provide(NodeServices.layer)),
-);
-
-const chatgptAccount = {
-  account: { type: "chatgpt", email: "test@example.com", planType: "pro" },
-  requiresOpenaiAuth: true,
-} as const;
-
-it.effect("still reads native usage for ChatGPT accounts", () =>
-  Effect.gen(function* () {
-    const { provider, methods } = yield* Effect.scoped(probeUsage(chatgptAccount));
-    assert.equal(provider.status, "ready");
-    assert.include(methods, "account/rateLimits/read");
-    assert.equal(provider.usageLimits?.unavailable, undefined);
-    assert.equal(provider.usageLimits?.windows[0]?.usedPercent, 42);
-  }).pipe(Effect.provide(NodeServices.layer)),
-);
-
-it.effect("preserves genuine ChatGPT usage-read failures without losing models or readiness", () =>
-  Effect.gen(function* () {
-    const { provider, methods } = yield* Effect.scoped(probeUsage(chatgptAccount, true));
-    assert.equal(provider.status, "ready");
-    assert.include(methods, "account/rateLimits/read");
-    assert.deepStrictEqual(
-      provider.models.map((model) => model.slug),
-      ["gpt-test"],
-    );
-    assert.equal(provider.usageLimits?.unavailable?.reason, "probeFailed");
-    assert.equal(
-      provider.usageLimits?.unavailable?.message,
-      "Codex could not read usage (JSON-RPC -32600).",
-    );
-  }).pipe(Effect.provide(NodeServices.layer)),
-);
-const decodeCodexSettings = Schema.decodeSync(CodexSettings);
+  }
+  // The custom endpoint is what a usage-limit hub is matched against.
+  assert.strictEqual(codexCustomEndpoint(hub), "https://hub.example.com");
+  assert.strictEqual(
+    codexCustomEndpoint({ openai_base_url: "http://127.0.0.1:8317/v1" }),
+    "http://127.0.0.1:8317",
+  );
+  assert.strictEqual(codexCustomEndpoint({ openai_base_url: "https://chatgpt.com/x" }), undefined);
+  assert.strictEqual(codexCustomEndpoint({}), undefined);
+});

@@ -138,7 +138,7 @@ export const verifyKeepWarmCompaction = Effect.fn("verifyKeepWarmCompaction")(fu
     occurredAt: now,
     payload: { ...childRun, status: "completed", startedAt: now, completedAt: now },
   });
-  yield* orchestrator.recoverDelegatedTask(childThreadId, childRun.id);
+  yield* orchestrator.recoverDelegatedTask(childThreadId, { sourceRunId: childRun.id });
   const finished = yield* orchestrator.getThreadProjection(parentThreadId);
   assert.equal(finished.subagents.find((row) => row.id === task.id)?.status, "completed");
   assert.notEqual(

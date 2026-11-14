@@ -12,6 +12,7 @@
         // CodeRabbit loads its configuration by filename.
         ".coderabbit.config.ts",
         ".github/scripts/thread-transfer-report.cjs",
+        ".github/scripts/pr-limits.cjs",
       ],
       "vite": { "entry": [".github/**/*.test.cjs"] },
       "vitest": { "entry": [".github/**/*.test.cjs"] },
@@ -58,8 +59,6 @@
         "scripts/update-test-shard-weights.ts",
         "scripts/verify-background-live.ts",
         "src/provider/testFixtures/*.mjs",
-        // The Codex account probe launches this fixture by file path.
-        "src/provider/fixtures/codex-usage-probe.mjs",
         // graphqlgen reads its config.
         "graphql.config.ts",
       ],
