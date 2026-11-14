@@ -89,6 +89,9 @@ set the same `timeZone` in a fixed-time schedule, such as
 `{type:"fixed_time", timeOfDay:"04:00", timeZone:"UTC"}` for 04:00 UTC daily.
 Choose **Once** to run a task a single time at a date and time in your own time
 zone. If the environment is offline then, the task runs when it is back.
+Turn on **Use the newest … model** under the model to keep a task on the latest
+release of its model family: a task set to GPT-6.1 Sol runs on GPT-6.2 Sol once
+that model appears, and a task posting into a thread moves that thread too.
 
 Under **Destination**, choose where runs go. **New thread each run** keeps every
 run separate. The two one-thread choices start a thread on the first run and post

@@ -26,6 +26,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -343,6 +344,7 @@ it.effect.each(deliveries)(
                       isScratchProject: () => Effect.succeed(false),
                     }),
                   ),
+                  Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
                   Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
                   Layer.provide(
                     CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),

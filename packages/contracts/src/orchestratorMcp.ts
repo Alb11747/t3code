@@ -718,6 +718,13 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
         "Runs share one thread but each starts a fresh session without earlier runs' context. Unbound: the first run makes the thread.",
     }),
   ),
+  // Fork: follow the newest model of the task's family.
+  followLatestModel: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Runs use the newest model of the task's family, e.g. gpt-6.2-sol for gpt-6.1-sol.",
+    }),
+  ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -751,6 +758,7 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   blockedByPolicy: Schema.optional(Schema.String).annotate({
     description: "Present when an administrator's policy stops this task from running.",
   }),
+  followLatestModel: Schema.optionalKey(Schema.Boolean),
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 
@@ -783,6 +791,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   enabled: Schema.optional(Schema.Boolean),
   bindToCurrentThread: Schema.optional(Schema.Boolean),
   freshSession: Schema.optional(Schema.Boolean),
+  followLatestModel: Schema.optional(Schema.Boolean),
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;

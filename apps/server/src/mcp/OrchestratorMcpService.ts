@@ -285,6 +285,7 @@ function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): Orchestrato
       ? {}
       : { webhookSignature: task.webhook.hasSecret ? "set" : "none" }),
     ...(task.blockedByPolicy === undefined ? {} : { blockedByPolicy: task.blockedByPolicy }),
+    ...(task.followLatestModel ? { followLatestModel: true } : {}),
   };
 }
 
@@ -2027,6 +2028,9 @@ const make = Effect.gen(function* () {
             : "new_thread",
         workspaceStrategy: yield* scheduledTaskWorkspaceStrategy(bindToCurrentThread, projectId),
         modelSelection,
+        ...(input.followLatestModel === undefined
+          ? {}
+          : { followLatestModel: input.followLatestModel }),
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
         createdBy: "agent",
@@ -2132,6 +2136,9 @@ const make = Effect.gen(function* () {
                   : "continue",
           workspaceStrategy,
           modelSelection: existing.modelSelection,
+          ...(input.followLatestModel === undefined
+            ? {}
+            : { followLatestModel: input.followLatestModel }),
           runtimeMode: existing.runtimeMode,
           interactionMode: existing.interactionMode,
           createdBy: existing.createdBy,

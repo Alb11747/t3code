@@ -86,6 +86,7 @@ import {
   clampManagedRuntimeMode,
   managedCapabilityDenial,
 } from "@t3tools/contracts";
+import { modelFamilyName } from "@t3tools/shared/latestModel";
 import { resolvePastedPath } from "@t3tools/shared/path";
 import { useManagedPolicy } from "~/state/managedPolicy";
 import { ManagedNotice } from "../ManagedPolicy";
@@ -126,6 +127,7 @@ import { ToggleGroup, Toggle } from "../ui/toggle-group";
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from "../ui/empty";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { Badge } from "../ui/badge";
+import { Checkbox } from "../ui/checkbox";
 import { Button } from "../ui/button";
 import {
   Combobox,
@@ -195,6 +197,7 @@ const EMPTY_DRAFT: DraftState = {
   runtimeMode: "full-access",
   interactionMode: "default",
   baseModelSelection: null,
+  followLatestModel: false,
   signatureEnabled: false,
   ...WEBHOOK_SIGNATURE_DEFAULTS,
   signatureSecret: "",
@@ -1464,6 +1467,7 @@ function ScheduledTaskEditorForm({
   const activeInstanceId =
     activeSelection?.instanceId ?? firstInstance?.instanceId ?? ("" as ProviderInstanceId);
   const activeModel = activeSelection?.model ?? "";
+  const activeModelFamily = modelFamilyName(activeModel);
   const modelOptionsByInstance = getCustomModelOptionsByInstance(
     settings,
     providers,
@@ -1579,6 +1583,7 @@ function ScheduledTaskEditorForm({
       ...(offersThreadModes ? { threadMode: draft.threadMode } : {}),
       workspaceStrategy: workspaceStrategyFromDraft(draft, noProject),
       modelSelection,
+      followLatestModel: activeModelFamily !== null && draft.followLatestModel,
       // Tasks have no mode picker; a mode above the administrator's ceiling would fail every run.
       runtimeMode:
         clampManagedRuntimeMode(environment?.serverConfig?.managedPolicy, draft.runtimeMode) ??
@@ -1856,6 +1861,18 @@ function ScheduledTaskEditorForm({
                 }
               />
             </div>
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Checkbox
+                checked={activeModelFamily !== null && draft.followLatestModel}
+                disabled={saving || !connected || activeModelFamily === null}
+                onCheckedChange={(checked) =>
+                  setDraft((current) => ({ ...current, followLatestModel: checked === true }))
+                }
+              />
+              {activeModelFamily === null
+                ? "Use the newest model of this family"
+                : `Use the newest ${activeModelFamily} model`}
+            </label>
           </Field>
 
           <div className="space-y-3">

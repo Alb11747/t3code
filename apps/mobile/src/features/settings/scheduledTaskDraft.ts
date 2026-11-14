@@ -210,6 +210,8 @@ export type ScheduledTaskDraft = {
   readonly threadId: ThreadId | null;
   readonly modelSelection: ModelSelection | null;
   readonly modelSelectionIsExplicit: boolean;
+  /** Fork: runs move to the newest model of the selected family. */
+  readonly followLatestModel: boolean;
   readonly schedule: ScheduleDraft;
   readonly threadMode: ScheduledTaskThreadMode;
   readonly workspace: Workspace;
@@ -231,6 +233,7 @@ function draftSignature(draft: ScheduledTaskDraft): string {
     [...(draft.modelSelection?.options ?? [])]
       .sort((a, b) => a.id.localeCompare(b.id))
       .map((option) => [option.id, option.value]),
+    draft.followLatestModel,
     draft.schedule.mode,
     draft.schedule.timeOfDay,
     draft.schedule.runAt,
@@ -302,6 +305,7 @@ export function createDraft(
     threadId: null,
     modelSelection,
     modelSelectionIsExplicit: false,
+    followLatestModel: false,
     schedule: DEFAULT_SCHEDULE,
     threadMode: "new_thread",
     workspace: "worktree",
@@ -322,6 +326,7 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     threadId: task.threadId,
     modelSelection: task.modelSelection,
     modelSelectionIsExplicit: true,
+    followLatestModel: task.followLatestModel === true,
     schedule: scheduleDraftForTask(task),
     threadMode: scheduledTaskThreadMode(task),
     workspace: task.workspaceStrategy.type,

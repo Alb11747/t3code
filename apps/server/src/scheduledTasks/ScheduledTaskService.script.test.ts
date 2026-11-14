@@ -15,6 +15,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import * as TaskScripts from "./ScheduledTaskScript.ts";
@@ -87,6 +88,7 @@ const harness = Effect.gen(function* () {
           isScratchProject: () => Effect.succeed(false),
         }),
         Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.succeed(TaskScripts.ScheduledTaskScripts, {
           evaluate: (scriptInput) =>

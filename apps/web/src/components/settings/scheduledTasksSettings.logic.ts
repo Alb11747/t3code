@@ -138,6 +138,8 @@ export interface DraftState {
   readonly interactionMode: ProviderInteractionMode;
   /** Retain the source selection's provider options when the picker leaves instanceId:model unchanged. */
   readonly baseModelSelection: ModelSelection | null;
+  /** Fork: runs move to the newest model of the selected family. */
+  readonly followLatestModel: boolean;
   readonly signatureEnabled: boolean;
   readonly signatureHeader: string;
   readonly signatureEncoding: "hex" | "base64";
@@ -332,6 +334,7 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     runtimeMode: task.runtimeMode,
     interactionMode: task.interactionMode,
     baseModelSelection: task.modelSelection,
+    followLatestModel: task.followLatestModel === true,
     ...(schedule.type === "webhook" && schedule.signature !== null
       ? {
           signatureEnabled: true,
