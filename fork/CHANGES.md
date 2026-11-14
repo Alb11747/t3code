@@ -10,8 +10,6 @@ than the fork's fix. Keep each entry on a single line; the sync script deletes
 the line of a change whose upstream PR merged. Closing an issue alone does not
 revert a patch. See `fork/README.md` for how to add or drop an entry.
 
-- `fix(dev): dev runner ignores the live server's port and network env`: `vp run dev` started from an agent shell no longer picks up the parent T3 server's inherited `T3CODE_PORT`, `T3CODE_HOST` or `T3CODE_LAN`, so it keeps the worktree's derived port instead of colliding on 3773 and does not bind every interface; `--port` and `--host` still set them explicitly, and `T3CODE_PORT_OFFSET`/`T3CODE_DEV_INSTANCE` still select ports. Dev tooling only. Issue: https://github.com/pingdotgg/t3code/issues/35999. PR: none yet
-
 - `fix(dev): dev runner refuses the live ~/.t3 home`: `vp run dev`, `dev:server` and `dev:desktop` exit with an error naming the path when the chosen home is the live `~/.t3` (symlinks resolved), whether from an inherited `T3CODE_HOME` (as in a T3 agent shell in the main checkout) or `--home-dir`, since a dev server there opens the real `~/.t3/userdata`. Worktrees, other homes and the no-home default (`~/.t3/dev`) are unaffected; `--allow-live-home` overrides. Dev tooling only. Issue: none. PR: none yet (fork-only safety check)
 
 - `fix(server): a slow remote fetch no longer fails worktree creation at 30s`: the remote fetch before a start-from-origin worktree gets a five-minute bound instead of the 30-second Git default, so a slow but healthy fetch finishes and a hung one still fails clearly. Carries juliusmarminge's maintainer takeover of watson's fix. Issue: https://github.com/pingdotgg/t3code/issues/10916. PR: https://github.com/pingdotgg/t3code/pull/24604
