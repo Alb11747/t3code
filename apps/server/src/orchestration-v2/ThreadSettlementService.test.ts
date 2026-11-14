@@ -344,10 +344,14 @@ describe("resolveAutoSettlementAt", () => {
     ).toEqual(at(-1_000));
   });
 
-  it("applies every rule to an Always thread even when Settings turn them off", () => {
+  it("settles a When done thread as soon as its latest run completes", () => {
     const input = {
       thread: shell({
-        latestUserMessageAt: at(-8 * DAY_MS),
+        status: "completed",
+        latestUserMessageAt: at(-2 * 60 * 1_000),
+        latestRunId: RunId.make("run-1"),
+        latestRunStartedAt: at(-2 * 60 * 1_000),
+        latestRunCompletedAt: at(-1_000),
         autoSettleAlwaysAt: at(-DAY_MS),
         linkedPullRequest: {
           projectId: ProjectId.make("project-1"),
@@ -362,33 +366,16 @@ describe("resolveAutoSettlementAt", () => {
       autoSettleOnMerge: false,
       autoSettleKeepPullRequests: true,
     };
-    expect(ThreadSettlementService.resolveAutoSettlementAt(input)).toEqual(at(-8 * DAY_MS));
-    expect(
-      ThreadSettlementService.resolveAutoSettlementAt({
-        ...input,
-        thread: { ...input.thread, latestUserMessageAt: at(-6 * DAY_MS) },
-      }),
-    ).toBeNull();
-    expect(
-      ThreadSettlementService.resolveAutoSettlementAt({
-        ...input,
-        thread: { ...input.thread, latestUserMessageAt: at(-2 * DAY_MS) },
-        autoSettleAfterDays: 1,
-      }),
-    ).toEqual(at(-2 * DAY_MS));
-    expect(
-      ThreadSettlementService.resolveAutoSettlementAt({
-        ...input,
-        thread: { ...input.thread, latestUserMessageAt: at(-2 * 60 * 60 * 1_000) },
-        pullRequest: { state: "merged", mergedAt: DateTime.formatIso(at(-1)) },
-      }),
-    ).toEqual(at(-2 * 60 * 60 * 1_000));
-    expect(
-      ThreadSettlementService.resolveAutoSettlementAt({
-        ...input,
-        thread: { ...input.thread, pinnedAt: at(-DAY_MS) },
-      }),
-    ).toBeNull();
+    expect(ThreadSettlementService.resolveAutoSettlementAt(input)).toEqual(at(-1_000));
+    for (const thread of [
+      { ...input.thread, autoSettleAlwaysAt: null },
+      { ...input.thread, status: "failed" as const },
+      { ...input.thread, status: "interrupted" as const },
+      { ...input.thread, status: "idle" as const, latestRunId: null },
+      { ...input.thread, pinnedAt: at(-DAY_MS) },
+    ]) {
+      expect(ThreadSettlementService.resolveAutoSettlementAt({ ...input, thread })).toBeNull();
+    }
   });
 
   it("settles on merge only after the user's last action and preserves the activity time", () => {
@@ -936,11 +923,16 @@ describe("ThreadSettlementServiceV2 worker", () => {
     ),
   );
 
-  it.effect("settles only Always threads while every settlement rule is off", () =>
+  it.effect("settles only When done threads while every settlement rule is off", () =>
     Effect.scoped(
       Effect.gen(function* () {
         yield* TestClock.setTime(Date.parse(NOW));
+        // Finished a minute ago, so only When done can settle it.
         const always = makeThread("always", {
+          status: "completed",
+          latestRunId: RunId.make("run-always"),
+          latestUserMessageAt: DateTime.makeUnsafe("2026-08-28T11:58:00.000Z"),
+          latestRunCompletedAt: DateTime.makeUnsafe("2026-08-28T11:59:00.000Z"),
           autoSettleAlwaysAt: DateTime.makeUnsafe("2026-08-21T00:00:00.000Z"),
         });
         const follow = makeThread("follow-settings");

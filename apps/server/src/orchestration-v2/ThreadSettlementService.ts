@@ -6,7 +6,6 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
   CommandId,
-  DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   isOrchestrationV2WorkActive,
   type ThreadId,
   type OrchestrationV2DomainEvent,
@@ -203,11 +202,6 @@ export function resolveAutoSettlementAt(input: {
   readonly autoSettleKeepPullRequests?: boolean;
 }): DateTime.Utc | null {
   const { thread } = input;
-  // Always applies every rule, with the default window where Settings turn inactivity off.
-  const always = thread.autoSettleAlwaysAt != null;
-  const autoSettleAfterDays = always
-    ? (input.autoSettleAfterDays ?? DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)
-    : input.autoSettleAfterDays;
   let pullRequest = input.pullRequest;
   const links = settlementPullRequestLinks(thread.pullRequests ?? []);
   if (links.some((link) => link.snapshot === null)) return null;
@@ -237,10 +231,11 @@ export function resolveAutoSettlementAt(input: {
       toMillis(thread.latestRunStartedAt),
       toMillis(thread.latestRunCompletedAt),
     ]) ?? DateTime.toEpochMillis(thread.createdAt);
-  if (
-    pullRequest !== null &&
-    pullRequestSettles(thread, pullRequest, always || input.autoSettleOnMerge)
-  ) {
+  // When done: settle once the latest run completes; failed or stopped runs stay visible.
+  if (thread.autoSettleAlwaysAt != null && thread.status === "completed") {
+    return DateTime.makeUnsafe(activityAtMs);
+  }
+  if (pullRequest !== null && pullRequestSettles(thread, pullRequest, input.autoSettleOnMerge)) {
     return DateTime.makeUnsafe(activityAtMs);
   }
   const hasPullRequest =
@@ -248,14 +243,14 @@ export function resolveAutoSettlementAt(input: {
     pullRequest !== null ||
     thread.linkedPullRequest != null ||
     thread.branchPullRequest != null;
-  if (!always && input.autoSettleKeepPullRequests === true && hasPullRequest) return null;
-  if (autoSettleAfterDays === null) return null;
+  if (input.autoSettleKeepPullRequests === true && hasPullRequest) return null;
+  if (input.autoSettleAfterDays === null) return null;
   const snoozedUntilMs = toMillis(thread.snoozedUntil);
   const timerWakeAtMs =
     snoozedUntilMs !== null && snoozedUntilMs <= input.nowMs ? snoozedUntilMs : null;
   const inactivityAtMs =
     latestMillis([activityAtMs, toMillis(thread.lastSnoozeWakeAt), timerWakeAtMs]) ?? activityAtMs;
-  return inactivityAtMs < input.nowMs - autoSettleAfterDays * DAY_MS
+  return inactivityAtMs < input.nowMs - input.autoSettleAfterDays * DAY_MS
     ? DateTime.makeUnsafe(inactivityAtMs)
     : null;
 }
@@ -329,7 +324,7 @@ export const make = Effect.gen(function* () {
     threadId?: ThreadId,
   ) {
     const settings = yield* settingsService.getSettings;
-    // With every rule off, only threads set to Always can settle.
+    // With every rule off, only When done threads can settle.
     const threads = yield* projections.getSettlementCandidates(threadId, {
       alwaysOnly: !autoSettlementConfigured(settings),
     });
@@ -655,6 +650,7 @@ export const make = Effect.gen(function* () {
       case "thread.pull-request-synced":
       case "provider-session.detached":
       case "run.background-work-cancelled":
+      case "thread.auto-settle-set":
         return enqueueThread(event.threadId);
       // Sweep only when the work can have ended: progress updates cannot settle anything.
       case "subagent.updated":

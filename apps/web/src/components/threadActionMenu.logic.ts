@@ -86,7 +86,7 @@ export interface ThreadActionMenuState {
   readonly isPinned: boolean;
   readonly isSettled: boolean;
   readonly autoSettleEnabled: boolean;
-  /** Undefined when the server cannot force auto-settle on for one thread. */
+  /** Undefined when the server has no per-thread When done. */
   readonly autoSettleAlways?: boolean | undefined;
   /** Undefined when the server has no per-thread idle compaction. */
   readonly compactBeforeCacheExpires?: boolean | null | undefined;
@@ -233,7 +233,7 @@ export function buildThreadActionMenuItems(
                 : [
                     {
                       id: "auto-settle:always" as const,
-                      label: "Always",
+                      label: "When done",
                       checked: state.autoSettleAlways,
                     },
                   ]),

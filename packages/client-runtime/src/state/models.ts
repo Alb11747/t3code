@@ -346,7 +346,7 @@ export function presentThreadShell(
     limitRecovery: thread.limitRecovery ?? null,
     pinnedAt: nullableIso(thread.pinnedAt ?? null),
     autoSettleDisabledAt: nullableIso(thread.autoSettleDisabledAt ?? null),
-    // Servers without per-thread Always omit the field.
+    // Servers without per-thread When done omit the field.
     ...(thread.autoSettleAlwaysAt === undefined
       ? {}
       : { autoSettleAlwaysAt: nullableIso(thread.autoSettleAlwaysAt) }),

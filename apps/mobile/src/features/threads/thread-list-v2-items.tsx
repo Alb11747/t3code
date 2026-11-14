@@ -931,13 +931,13 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                       ? "on"
                       : "off",
                 },
-                // Servers without per-thread Always omit the field.
+                // Servers without per-thread When done omit the field.
                 ...(thread.autoSettleAlwaysAt === undefined
                   ? []
                   : [
                       {
                         id: "auto-settle:always",
-                        title: "Always",
+                        title: "When done",
                         state: thread.autoSettleAlwaysAt == null ? "off" : "on",
                       } satisfies MenuAction,
                     ]),
