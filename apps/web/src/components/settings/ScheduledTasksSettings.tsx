@@ -20,7 +20,6 @@ import type {
   ProjectId,
   ScheduledTask,
   ScheduledTaskId,
-  ScheduledTaskSchedule,
   ScheduledTaskThreadMode,
   ScheduledTaskUpsertInput,
   ScheduledTaskWebhookDeliverySummary,
@@ -35,6 +34,7 @@ import {
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
 import { availableScratchWorkspaceRoot } from "@t3tools/client-runtime/operations/projects";
+import { scheduleTimeZoneLabel } from "@t3tools/client-runtime/scheduled-task-time-zone";
 import {
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   MAX_WEBHOOK_FILTERS,
@@ -112,9 +112,11 @@ import {
   webhookDeliveryLabel,
   matchesScheduledTaskScope,
   scheduleFromDraft,
+  scheduleLabel,
   scheduledTaskDefaultModel,
   scheduledTaskDefaultProjectId,
   scheduledTaskProjectChoices,
+  WEEKDAY_LABELS,
   taskToDraft,
   workspaceStrategyFromDraft,
   unbindDraftFromThread,
@@ -156,6 +158,7 @@ import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { searchableSetting } from "./settingsSearch";
 import {
   SettingsPageContainer,
   SettingsRow,
@@ -164,7 +167,6 @@ import {
 } from "./settingsLayout";
 
 const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
-const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 const WEEKDAY_SHORT = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] as const;
 const NO_PROJECT_VALUE = "no-project";
 
@@ -337,30 +339,6 @@ function splitModelKey(value: string): ModelSelection | null {
   };
 }
 
-const ONCE_FORMATTER = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
-
-export function scheduleLabel(schedule: ScheduledTaskSchedule): string {
-  if (schedule.type === "webhook") return "On webhook";
-  if (schedule.type === "once") return `Once, ${ONCE_FORMATTER.format(new Date(schedule.runAt))}`;
-  if (schedule.type === "interval") {
-    const minutes = schedule.everyMs / 60_000;
-    return Number.isInteger(minutes)
-      ? `Every ${minutes} min`
-      : `Every ${Math.round(schedule.everyMs / 1000)} sec`;
-  }
-  const weekdays = schedule.weekdays ?? [];
-  const days =
-    weekdays.length === 0
-      ? "Daily"
-      : weekdays.length === 5 && weekdays.every((day) => day >= 1 && day <= 5)
-        ? "Weekdays"
-        : weekdays.map((day) => WEEKDAY_LABELS[day]).join(", ");
-  return `${days} at ${schedule.timeOfDay} (${schedule.timeZone ?? "server local"})`;
-}
-
 /** formatRelativeTime handles only the past; upcoming runs need future labels. */
 function relativeLabel(value: string | null, nowMs: number): string {
   if (!value) return "Not scheduled";
@@ -473,7 +451,7 @@ export function ScheduledTasksSettings(target: {
   return (
     <SettingsPageContainer>
       <SettingsSection
-        title="Scheduled tasks"
+        {...searchableSetting("scheduled-tasks")}
         variant="plain"
         headerAction={
           <Button
@@ -567,6 +545,7 @@ function ScheduledTaskEnvironmentList({
     return {
       environment,
       connected: index >= 0,
+      timeZone: data?.timeZone,
       tasks: data?.tasks.filter((task) =>
         matchesScheduledTaskScope(scope, environment.environmentId, task.projectId),
       ),
@@ -601,7 +580,7 @@ function ScheduledTaskEnvironmentList({
 
   return (
     <SettingsGroup>
-      {populated.map(({ environment, tasks }) => {
+      {populated.map(({ environment, tasks, timeZone }) => {
         const { primary, secondary } = settingsScopeEnvironmentLabels(environment, environments);
         return (
           <div key={environment.environmentId} className="divide-y divide-border/50">
@@ -625,6 +604,7 @@ function ScheduledTaskEnvironmentList({
                 key={task.id}
                 environmentId={environment.environmentId}
                 task={task}
+                timeZone={timeZone}
                 onEdit={() => onEdit(environment.environmentId, task)}
               />
             ))}
@@ -749,6 +729,7 @@ function ScheduledTaskEnvironmentSection({
                 key={task.id}
                 environmentId={environment.environmentId}
                 task={task}
+                timeZone={tasksQuery.data?.timeZone}
                 onEdit={() => onEdit(environment.environmentId, task)}
               />
             ))
@@ -762,10 +743,12 @@ function ScheduledTaskEnvironmentSection({
 function ScheduledTaskRow({
   environmentId,
   task,
+  timeZone,
   onEdit,
 }: {
   readonly environmentId: EnvironmentId;
   readonly task: ScheduledTask;
+  readonly timeZone: string | undefined;
   readonly onEdit: () => void;
 }) {
   const canOperate = useAtomValue(
@@ -810,7 +793,7 @@ function ScheduledTaskRow({
       status={
         <div className="flex flex-wrap items-center gap-2">
           <span>
-            {scheduleLabel(task.schedule)} ·{" "}
+            {scheduleLabel(task.schedule, timeZone, task.nextRunAt)} ·{" "}
             {task.blockedByPolicy !== undefined ? (
               task.blockedByPolicy
             ) : !task.enabled ? (
@@ -1445,6 +1428,7 @@ function ScheduledTaskEditorForm({
     draft.editingId !== null &&
     tasksQuery.data !== null &&
     !tasksQuery.data.tasks.some((entry) => entry.id === draft.editingId);
+  const runAtZone = scheduleTimeZoneLabel(tasksQuery.data?.timeZone);
   const liveTask = tasksQuery.data
     ? (tasksQuery.data.tasks.find((entry) => entry.id === draft.editingId) ?? null)
     : task;
@@ -2170,6 +2154,9 @@ function ScheduledTaskEditorForm({
                   <Input
                     type="time"
                     id="scheduled-task-time"
+                    aria-describedby={
+                      runAtZone === undefined ? undefined : "scheduled-task-time-zone"
+                    }
                     nativeInput
                     className="w-32"
                     value={draft.timeOfDay}
@@ -2177,6 +2164,11 @@ function ScheduledTaskEditorForm({
                       setDraft((current) => ({ ...current, timeOfDay: event.target.value }))
                     }
                   />
+                  {runAtZone === undefined ? null : (
+                    <span id="scheduled-task-time-zone" className="text-xs text-muted-foreground">
+                      {runAtZone}
+                    </span>
+                  )}
                   <span className="text-xs text-muted-foreground">on</span>
                 </div>
                 <ToggleGroup

@@ -14,7 +14,6 @@ type VisibilityInput = Parameters<typeof createOrchestrationV2TurnItemVisibility
 
 const ordinaryStatuses = [
   "preparing",
-  "queued",
   "starting",
   "running",
   "waiting",
@@ -115,10 +114,8 @@ describe.each([
   });
 
   it.each([
-    ...ordinaryStatuses.map((status) => ({
-      status,
-      hidden: status === "queued" ? ["queued"] : [],
-    })),
+    ...ordinaryStatuses.map((status) => ({ status, hidden: [] })),
+    { status: "queued", hidden: ["queued"] },
     { status: "cancelled", hidden: ["queued"] },
     {
       status: "rolled_back",
@@ -242,7 +239,7 @@ describe.each([
 
 describe("indexed timeline visibility", () => {
   it.each([
-    ...ordinaryStatuses.flatMap(
+    ...[...ordinaryStatuses, "queued" as const].flatMap(
       (status) =>
         [
           {

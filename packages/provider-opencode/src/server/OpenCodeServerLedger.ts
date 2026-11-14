@@ -19,6 +19,7 @@ const OpenCodeServerEntryFields = {
   pgid: Schema.Int,
   pid: Schema.Int,
   startTime: Schema.String,
+  command: Schema.optionalKey(Schema.String),
   port: Schema.Int,
   stateDir: Schema.String,
   owner: ProcessIdentity,
@@ -37,6 +38,7 @@ const RecordedOpenCodeServerEntry = Schema.Union([
     ...OpenCodeServerEntryFields,
     version: Schema.Literal(1),
     command: Schema.String,
+    args: Schema.optionalKey(Schema.Array(Schema.String)),
   }),
 ]);
 const decodeEntry = Schema.decodeUnknownOption(Schema.fromJsonString(RecordedOpenCodeServerEntry));
@@ -85,9 +87,8 @@ const parseDarwinPs = (output: string): ReadonlyArray<ObservedProcess> =>
     ];
   });
 
-// A wrapper's forked child shows the wrapper's command line until it execs, so
-// a full command recorded then would never match again. The serve arguments
-// survive the exec and still identify the server.
+// A wrapper's forked child keeps the wrapper's command line until it execs; the
+// serve arguments survive the exec, so they identify the server either way.
 const runsServe = (observed: ObservedProcess, args: ReadonlyArray<string>) =>
   observed.command.endsWith(` ${args.join(" ")}`);
 
@@ -211,7 +212,7 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
         leader !== undefined && !leader.zombie && leader.pgid === pgid
           ? [leader]
           : (yield* observeGroup(pgid)).filter((candidate) => !candidate.zombie);
-      const member = members.find((candidate) => runsServe(candidate, server.args));
+      const member = members.find((candidate) => runsServe(candidate, server.args)) ?? members[0];
       if (owner === undefined || member === undefined) {
         if (groupExists(pgid)) {
           yield* Effect.logWarning(
@@ -227,6 +228,7 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
         pgid,
         pid: member.pid,
         startTime: member.startTime,
+        command: member.command,
         args: server.args,
         port: server.port,
         stateDir: input.stateDir,
@@ -255,8 +257,8 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
   );
 
   // Signals only a group whose recorded member still has the same pid, start
-  // time, and group and matches the recorded command identity, so a recycled
-  // pid is never touched. Version-1 entries retain their full-command check.
+  // time, and group and still has the same command line or serve arguments, so
+  // a recycled pid is never touched.
   const stopOrphan = Effect.fn("OpenCodeServerLedger.stopOrphan")(function* (
     entry: typeof RecordedOpenCodeServerEntry.Type,
   ) {
@@ -266,7 +268,8 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
       observed.zombie ||
       observed.startTime !== entry.startTime ||
       observed.pgid !== entry.pgid ||
-      !(entry.version === 1 ? observed.command === entry.command : runsServe(observed, entry.args))
+      (observed.command !== entry.command &&
+        (entry.args === undefined || !runsServe(observed, entry.args)))
     ) {
       return;
     }

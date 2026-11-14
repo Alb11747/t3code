@@ -6,6 +6,7 @@ import {
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpScheduleTaskInput,
   OrchestratorMcpUpdateScheduledTaskInput,
+  OrchestratorMcpThreadWaitResult,
 } from "./orchestratorMcp.ts";
 
 const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
@@ -14,6 +15,7 @@ const decodeScheduleTaskInput = Schema.decodeUnknownSync(OrchestratorMcpSchedule
 const decodeUpdateScheduledTaskInput = Schema.decodeUnknownSync(
   OrchestratorMcpUpdateScheduledTaskInput,
 );
+const decodeThreadWaitResult = Schema.decodeUnknownSync(OrchestratorMcpThreadWaitResult);
 
 describe("orchestrator MCP contracts", () => {
   it.each([
@@ -97,5 +99,18 @@ describe("orchestrator MCP contracts", () => {
         pendingApproval: { ...pendingApproval, kind: "user_input" },
       }),
     ).toThrow();
+  });
+
+  it("decodes a running-task next written by another version", () => {
+    const next = "Completion wakes this thread, so end your turn. Do not wait on it or poll it.";
+    expect(
+      decodeThreadWaitResult({
+        threadId: "thread-child-1",
+        runId: "run-child-1",
+        status: "running",
+        timedOut: true,
+        next,
+      }).next,
+    ).toBe(next);
   });
 });
