@@ -1,5 +1,6 @@
 import type {
   OrchestrationV2PendingBackgroundTask,
+  OrchestrationV2TaskBackgroundWork,
   OrchestrationV2IssueWatch,
   OrchestrationV2ProviderThread,
   OrchestrationV2Run,
@@ -107,6 +108,17 @@ function backgroundWorkKindHoldsCompletion(kind: PendingBackgroundWorkTask["kind
     case "background_task":
       return true;
   }
+}
+
+/** What a parent is told about its child's background work; task ids mean nothing to it. */
+export function taskBackgroundWork(
+  tasks: ReadonlyArray<Pick<PendingBackgroundWorkTask, "kind" | "description" | "awaited">>,
+): Array<OrchestrationV2TaskBackgroundWork> {
+  return tasks.map(({ kind, description, awaited }) => ({
+    kind,
+    ...(description === undefined ? {} : { description }),
+    ...(awaited === true ? { awaited } : {}),
+  }));
 }
 
 const PULL_REQUEST_WATCH_TASK_ID = "pull-request-watch:";

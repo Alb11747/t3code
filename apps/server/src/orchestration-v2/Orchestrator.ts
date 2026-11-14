@@ -61,6 +61,7 @@ import {
   type OrchestrationV2ThreadShellSnapshot,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2Subagent,
+  type OrchestrationV2TaskBackgroundWork,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
   latestProviderTurnForAttempt,
@@ -90,6 +91,7 @@ import {
   backgroundWorkHoldsCompletion,
   derivePendingBackgroundWork,
   pendingBackgroundTurnItems,
+  taskBackgroundWork,
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -702,6 +704,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "delegated_task.request":
     case "delegated_task.remote.request":
     case "delegated_task.remote.complete":
+    case "delegated_task.remote.followup":
     case "delegated_task.remote.stop":
     case "delegated_task.wake-policy":
     case "delegated_task.completion-delivery.acknowledge":
@@ -890,6 +893,21 @@ function legacyPullRequestLink(
 
 const DELEGATED_RESULT_INLINE_BYTES = 16_000;
 
+const BACKGROUND_WORK_NOTE_ENTRIES = 5;
+
+/** Says what a finished child left running, so its parent does not read the turn as its last. */
+function backgroundWorkNote(work: ReadonlyArray<OrchestrationV2TaskBackgroundWork>): string {
+  if (work.length === 0) return "";
+  const entries = work.slice(0, BACKGROUND_WORK_NOTE_ENTRIES).map((entry) => {
+    const description = entry.description?.replaceAll(/\s+/g, " ").replaceAll("`", "'").trim();
+    if (description === undefined || description.length === 0) return entry.kind;
+    const shown = description.length > 80 ? `${description.slice(0, 79)}…` : description;
+    return `\`${shown}\` (${entry.kind})`;
+  });
+  const omitted = work.length - entries.length;
+  return `; background work still running: ${[...entries, ...(omitted > 0 ? [`${omitted} more`] : [])].join(", ")}`;
+}
+
 function delegatedCompletionWakeDetail(
   taskIds: ReadonlyArray<string>,
   tasks: ReadonlyArray<OrchestrationV2Subagent>,
@@ -898,7 +916,7 @@ function delegatedCompletionWakeDetail(
   return taskIds
     .map((taskId) => {
       const task = tasks.find((candidate) => candidate.id === taskId);
-      const label = `Delegated task ${taskId}${task?.title == null ? "" : ` (${task.title})`}${task === undefined ? " reached a terminal state" : ` [${task.status}]`}`;
+      const label = `Delegated task ${taskId}${task?.title == null ? "" : ` (${task.title})`}${task === undefined ? " reached a terminal state" : ` [${task.status}${backgroundWorkNote(task.backgroundWork ?? [])}]`}`;
       if (task?.result != null) {
         const detail = `${label}:\n${task.result}`;
         const bytes = Buffer.byteLength(detail);
@@ -9998,8 +10016,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const now = message.createdAt;
     const adapter = yield* providerAdapters.get(run.providerInstanceId);
     const taskId = idAllocator.derive.delegatedTaskNode({ commandId: command.commandId });
+    const { backgroundWork: _originalWork, ...originalTask } = original;
     const task: OrchestrationV2Subagent = {
-      ...original,
+      ...originalTask,
       createdBy: command.createdBy,
       driver: adapter.driver,
       id: taskId,
@@ -10340,6 +10359,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       remoteChild,
       status: command.status,
       result: command.result,
+      ...(command.backgroundWork === undefined || command.backgroundWork.length === 0
+        ? {}
+        : { backgroundWork: command.backgroundWork }),
       completedAt: now,
       updatedAt: now,
     };
@@ -10442,6 +10464,140 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     yield* emitRemoteStopOwed(events, command, task, task.remoteChild);
+  });
+
+  /**
+   * A later turn of a remote task's thread there, recorded as a follow-up task as a child
+   * here's later turns are, under the parent's latest run. The source task hands its follower
+   * over to it: nothing is left to follow or stop there for the source.
+   */
+  const dispatchRemoteDelegatedTaskFollowup = Effect.fn(
+    "orchestrationV2.dispatch.remoteDelegatedTaskFollowup",
+  )(function* (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "delegated_task.remote.followup" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const parent = yield* projectionStore
+      .getThreadRecords(
+        command.parentThreadId,
+        ["runs", "subagents", "providerTurns", "attempts", "turnItems"],
+        { subagentIds: [command.taskId], turnItemTypes: ["subagent"] },
+      )
+      .pipe(mapDispatchError(command));
+    const source = parent.subagents.find(
+      (candidate) =>
+        candidate.id === command.taskId &&
+        candidate.origin === "app_owned" &&
+        candidate.remoteChild !== undefined &&
+        candidate.result !== null,
+    );
+    const owner = followUpOwnerRun(parent.runs);
+    if (source?.remoteChild === undefined || owner === null || owner.rootNodeId === null) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Delegated task ${command.taskId} is not a finished remote task of thread ${command.parentThreadId}.`,
+      });
+    }
+    if (source.remoteChild.stoppedThere === true) return;
+    const now = yield* DateTime.now;
+    const taskId = idAllocator.derive.delegatedTaskNode({ commandId: command.commandId });
+    const { backgroundWork: _sourceWork, ...sourceTask } = source;
+    const { stoppedThere: _stopped, stopCount: _stops, ...remote } = source.remoteChild;
+    const remoteChild = { ...remote, runId: command.remoteRunId };
+    const common = {
+      threadId: command.parentThreadId,
+      runId: owner.id,
+      nodeId: taskId,
+      driver: source.driver,
+      providerInstanceId: source.providerInstanceId,
+      occurredAt: now,
+    };
+    const emitEvent = emit(events, command);
+    yield* emitEvent({
+      ...common,
+      type: "node.updated",
+      payload: {
+        id: taskId,
+        threadId: command.parentThreadId,
+        runId: owner.id,
+        parentNodeId: owner.rootNodeId,
+        rootNodeId: owner.rootNodeId,
+        kind: "subagent",
+        status: "running",
+        countsForRun: false,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: null,
+        startedAt: now,
+        completedAt: null,
+      },
+    });
+    yield* emitEvent({
+      ...common,
+      type: "subagent.updated",
+      payload: {
+        ...sourceTask,
+        id: taskId,
+        runId: owner.id,
+        parentNodeId: owner.rootNodeId,
+        remoteChild,
+        completionWake: "always",
+        completionDelivery: { state: "pending", observedByRunId: null },
+        status: "running",
+        result: null,
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+      },
+    });
+    yield* emitEvent({
+      ...common,
+      type: "turn-item.updated",
+      payload: {
+        id: idAllocator.derive.delegatedTaskTurnItem({ commandId: command.commandId }),
+        threadId: command.parentThreadId,
+        runId: owner.id,
+        nodeId: taskId,
+        providerThreadId: owner.providerThreadId,
+        providerTurnId: providerTurnForRun(parent, owner)?.id ?? null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: yield* nextTurnItemOrdinal(parent),
+        status: "running",
+        title: source.title ?? remote.title ?? null,
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+        type: "subagent",
+        subagentId: taskId,
+        origin: "app_owned",
+        driver: source.driver,
+        providerInstanceId: source.providerInstanceId,
+        childThreadId: null,
+        remoteChild,
+        prompt: source.prompt,
+        result: null,
+      },
+    });
+    yield* emitEvent({
+      type: "subagent.updated",
+      threadId: command.parentThreadId,
+      ...(source.runId === null ? {} : { runId: source.runId }),
+      nodeId: source.id,
+      driver: source.driver,
+      occurredAt: now,
+      payload: {
+        ...source,
+        remoteChild: { ...source.remoteChild, stoppedThere: true },
+        updatedAt: now,
+      },
+    });
   });
 
   const emitRemoteStopOwed = Effect.fn("orchestrationV2.dispatch.remoteStopOwed")(function* (
@@ -14915,17 +15071,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ]);
         return;
       }
-      // A follow-up ends with the work it awaits, as the original task does. A cancelled task
-      // does not wait for the background work its cancel is stopping.
+      // A follow-up ends with the work it awaits, as the original task does; an `every_turn`
+      // one only with background work. A cancelled task does not wait for the background
+      // work its cancel is stopping.
+      const awaitsBackgroundWork =
+        options.task.cancelledRunId === undefined &&
+        childControls.providerThreads.some((thread) =>
+          backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []),
+        );
       if (
         outcome === "completed" &&
-        (options.task.id === forkedFrom.nodeId || options.task.notifyParent === "settled") &&
-        delegatedTaskAwaitsWork(
-          taskRuns,
-          options.task.cancelledRunId === undefined
-            ? childControls
-            : { subagents: childControls.subagents, providerThreads: [] },
-        )
+        (((options.task.id === forkedFrom.nodeId || options.task.notifyParent === "settled") &&
+          delegatedTaskAwaitsWork(
+            taskRuns,
+            options.task.cancelledRunId === undefined
+              ? childControls
+              : { subagents: childControls.subagents, providerThreads: [] },
+          )) ||
+          awaitsBackgroundWork)
       )
         return;
       if (
@@ -15002,11 +15165,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const parentTurnItem = parentProjection.turnItems.find(
         (candidate) => candidate.type === "subagent" && candidate.subagentId === task.id,
       );
+      const { backgroundWork: _earlierWork, ...unfinished } = task;
+      const backgroundWork = taskBackgroundWork(
+        (yield* projectionStore.getThreadShell(childThreadId))?.pendingBackgroundTasks ?? [],
+      );
       const updatedTask: OrchestrationV2Subagent = {
-        ...task,
+        ...unfinished,
         providerThreadId: childRun.providerThreadId,
         status: terminalStatus,
         result: result.text,
+        ...(backgroundWork.length === 0 ? {} : { backgroundWork }),
         completedAt: now,
         updatedAt: now,
         // The cancelling parent gets no wake, and the task records the run it settled from.
@@ -16067,6 +16235,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "delegated_task.remote.stop":
         yield* dispatchRemoteDelegatedTaskStop(command, events);
+        break;
+      case "delegated_task.remote.followup":
+        yield* dispatchRemoteDelegatedTaskFollowup(command, events);
         break;
       case "delegated_task.wake-policy":
         updateDelegatedCompletionOnlyRunId = yield* dispatchDelegatedTaskWakePolicy(

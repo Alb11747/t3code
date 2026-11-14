@@ -8,6 +8,7 @@ import {
   MessageId,
   type ModelSelection,
   NodeId,
+  type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2Run,
   ProjectId,
   ProviderDriverKind,
@@ -141,6 +142,8 @@ interface BoxThread {
   readonly sent: Ref.Ref<ReadonlyArray<string>>;
   /** Runs as the launch there is answered, before the laptop hears back. */
   readonly afterLaunch: Ref.Ref<Effect.Effect<void>>;
+  /** Tracked background work the thread there still runs. */
+  readonly backgroundWork: Ref.Ref<ReadonlyArray<OrchestrationV2PendingBackgroundTask>>;
 }
 
 const makeBoxThread = Effect.gen(function* () {
@@ -179,6 +182,7 @@ const makeBoxThread = Effect.gen(function* () {
     releaseStop: yield* Deferred.make<void>(),
     sent: yield* Ref.make<ReadonlyArray<string>>([]),
     afterLaunch: yield* Ref.make<Effect.Effect<void>>(Effect.void),
+    backgroundWork: yield* Ref.make<ReadonlyArray<OrchestrationV2PendingBackgroundTask>>([]),
   } satisfies BoxThread;
 });
 
@@ -234,6 +238,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
       return {
         ...liveThreadShell(threadId, { runtimeMode: "full-access" }),
         projectId: boxProject,
+        pendingBackgroundTasks: yield* Ref.get(thread.backgroundWork),
         ...(linkOrigin === null ? {} : { linkOrigin }),
       };
     });
@@ -1476,6 +1481,76 @@ it.effect("a task whose thread there waits on its own task ends with the answer 
         status: "completed",
         result: "The review found two issues; both are fixed.",
       });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a task whose thread there still runs background work reports its later turn", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const polls = yield* Queue.unbounded<void>();
+      const nextPoll = yield* Queue.unbounded<void>();
+      const a = yield* makeLaptop(database, offers).pipe(
+        Effect.provideService(
+          RemoteDelegation.LaterTurnPoll,
+          Queue.offer(polls, undefined).pipe(Effect.andThen(Queue.take(nextPoll))),
+        ),
+      );
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const delegated = yield* delegateToBox(a);
+
+      // The run there ends while the check it started keeps running.
+      yield* Ref.set(thread.backgroundWork, [
+        { taskId: "check", kind: "command", description: "vp run check:changed" },
+      ]);
+      yield* Ref.set(thread.reply, "The check is still running; I'll report when it exits.");
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+      expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
+        status: "completed",
+        result: "The check is still running; I'll report when it exits.",
+        backgroundWork: [{ kind: "command", description: "vp run check:changed" }],
+      });
+
+      // The check's end wakes the thread there, and that later turn reaches the parent here.
+      yield* Queue.take(polls);
+      yield* Ref.set(thread.backgroundWork, []);
+      yield* Ref.set(thread.laterReply, "The check passed.");
+      yield* Deferred.succeed(thread.laterFinished, undefined);
+      yield* Queue.offer(nextPoll, undefined);
+      const followup = yield* a.orchestrator
+        .streamStoredEventsFrom({
+          threadId: parentThreadId,
+          afterSequence: 0,
+          eventType: "subagent.updated",
+        })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "subagent.updated" &&
+              stored.event.payload.id !== delegated.taskId &&
+              stored.event.payload.result !== null,
+          ),
+          Stream.runHead,
+          Effect.map((stored) =>
+            Option.isSome(stored) && stored.value.event.type === "subagent.updated"
+              ? stored.value.event.payload
+              : undefined,
+          ),
+        );
+      expect(followup).toMatchObject({ status: "completed", result: "The check passed." });
+      expect(followup?.remoteChild?.runId).toBe(boxLaterRunId);
+      const source = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+        (task) => task.id === delegated.taskId,
+      );
+      expect(source?.remoteChild?.stoppedThere).toBe(true);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

@@ -13,6 +13,7 @@ import {
   MessageId,
   type ModelSelection,
   NodeId,
+  type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
   ProjectId,
   ProviderDriverKind,
@@ -3548,6 +3549,192 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
         const finished = yield* followup.readFollowup;
         assert.equal(finished.status, "completed");
         assert.equal(finished.result, "FINAL-D");
+      }),
+    );
+
+    it.effect("holds a wake turn that ends on awaited work until the next wake finishes it", () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const now = yield* DateTime.now;
+        const parentThreadId = ThreadId.make("thread:awaited-wake-parent");
+        const projectId = ProjectId.make("project:awaited-wake");
+        const parentRunId = RunId.make("run:awaited-wake-parent");
+        const rootNodeId = NodeId.make("node:awaited-wake-parent");
+        yield* seedParentWithTerminalTask({
+          threadId: parentThreadId,
+          projectId,
+          runId: parentRunId,
+          rootNodeId,
+          taskId: NodeId.make("node:awaited-wake-seed"),
+          deliveryState: "acknowledged",
+          now,
+        });
+        const child = yield* seedRestartCancelledChild({
+          parentThreadId,
+          projectId,
+          parentRunId,
+          rootNodeId,
+          name: "awaited-wake-child",
+          completionWake: "always",
+          continuationPending: false,
+          runStatus: "completed",
+          now,
+        });
+        yield* orchestrator.recoverDelegatedTasks;
+        yield* orchestrator.dispatch({
+          type: "delegated_task.completion-delivery.acknowledge",
+          commandId: CommandId.make("command:awaited-wake-ack"),
+          parentThreadId,
+          taskId: child.taskId,
+          observedByRunId: parentRunId,
+        });
+        const providerThread = {
+          id: ProviderThreadId.make("provider-thread:awaited-wake-child"),
+          driver,
+          providerInstanceId: modelSelection.instanceId,
+          providerSessionId: null,
+          appThreadId: child.childThreadId,
+          ownerNodeId: null,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+          status: "idle" as const,
+          firstRunOrdinal: 1,
+          lastRunOrdinal: 1,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        const wake = Effect.fn("wake")(function* (key: string) {
+          const messageId = MessageId.make(`message:awaited-wake-${key}`);
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            createdBy: "agent",
+            creationSource: "provider",
+            commandId: CommandId.make(`command:awaited-wake-${key}`),
+            threadId: child.childThreadId,
+            messageId,
+            text: "Background activity updated",
+            notification: {
+              source: { kind: "command" },
+              outcome: "completed",
+              summary: `Command "build ${key}" finished`,
+            },
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+          });
+          return (yield* orchestrator.getThreadProjection(child.childThreadId)).runs.find(
+            (row) => row.userMessageId === messageId,
+          )!;
+        });
+        const finish = (
+          run: OrchestrationV2Run,
+          text: string,
+          pendingBackgroundTasks: OrchestrationV2ProviderThread["pendingBackgroundTasks"],
+        ) =>
+          eventSink.write({
+            commandId: reconcileCommandId(`awaited-wake-finished-${run.id}`),
+            events: [
+              {
+                id: EventId.make(`event:awaited-wake-roster-${run.id}`),
+                type: "provider-thread.updated",
+                threadId: child.childThreadId,
+                driver,
+                providerInstanceId: modelSelection.instanceId,
+                occurredAt: now,
+                payload: { ...providerThread, pendingBackgroundTasks },
+              },
+              {
+                id: EventId.make(`event:awaited-wake-result-${run.id}`),
+                type: "message.updated",
+                threadId: child.childThreadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: {
+                  id: MessageId.make(`message:awaited-wake-result-${run.id}`),
+                  threadId: child.childThreadId,
+                  runId: run.id,
+                  nodeId: null,
+                  role: "assistant",
+                  text,
+                  attachments: [],
+                  streaming: false,
+                  createdBy: "agent",
+                  creationSource: "server",
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              },
+              {
+                id: EventId.make(`event:awaited-wake-run-${run.id}`),
+                type: "run.updated",
+                threadId: child.childThreadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: { ...run, status: "completed", startedAt: now, completedAt: now },
+              },
+            ],
+          });
+        const followupOf = (run: OrchestrationV2Run) =>
+          orchestrator
+            .getThreadProjection(parentThreadId)
+            .pipe(
+              Effect.map((projection) =>
+                projection.subagents.find((task) => task.id === run.delegatedTaskId)!,
+              ),
+            );
+
+        // Under every_turn too, a turn that ends waiting on marked work is not an answer.
+        const first = yield* wake("first");
+        yield* finish(first, "The rebuild is running; I'll continue when it completes.", [
+          { taskId: "rebuild", kind: "command", awaited: true },
+        ]);
+        yield* orchestrator.recoverDelegatedTasks;
+        const held = yield* followupOf(first);
+        assert.isNull(held.result);
+        assert.notEqual(held.completionDelivery?.state, "claimed");
+
+        // The wake the work's end starts joins the held follow-up instead of opening another.
+        const second = yield* wake("second");
+        assert.equal(second.delegatedTaskId, first.delegatedTaskId);
+        // Work it leaves running unmarked does not hold the answer; the notice names it.
+        yield* finish(second, "The rebuild passed.", [
+          { taskId: "dev", kind: "command", description: "vp run dev" },
+        ]);
+        yield* orchestrator.recoverDelegatedTasks;
+        const released = yield* followupOf(second);
+        assert.equal(released.status, "completed");
+        assert.equal(released.result, "The rebuild passed.");
+        assert.equal(released.completionDelivery?.state, "claimed");
+        assert.deepEqual(released.backgroundWork, [{ kind: "command", description: "vp run dev" }]);
+        const delivery = (yield* orchestrator.getThreadProjection(parentThreadId)).runs.find(
+          (row) => row.id === parentRunId,
+        )?.delegatedCompletion?.delivery;
+        assert.isDefined(delivery ?? undefined);
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("command:awaited-wake-delivery"),
+          threadId: parentThreadId,
+          messageId: delivery!.messageId,
+          text: "Delegated task reached a terminal state.",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "agent",
+          creationSource: "server",
+          delegatedCompletion: {
+            parentRunId,
+            generation: delivery!.generation,
+            taskIds: delivery!.taskIds,
+          },
+        });
+        const notice = (yield* orchestrator.getThreadProjection(parentThreadId)).messages.find(
+          (message) => message.id === delivery!.messageId,
+        );
+        assert.include(
+          notice?.text ?? "",
+          "[completed; background work still running: `vp run dev` (command)]:\nThe rebuild passed.",
+        );
       }),
     );
 

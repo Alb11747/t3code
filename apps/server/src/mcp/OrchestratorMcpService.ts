@@ -68,7 +68,10 @@ import {
   threadAccountChoiceFor,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
-import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  backgroundWorkHoldsCompletion,
+  taskBackgroundWork,
+} from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { threadPullRequestUpdatedAtMs } from "@t3tools/shared/threadPullRequests";
@@ -245,6 +248,14 @@ const isThreadManagementError = Schema.is(ThreadManagementService.ThreadManageme
 
 function failure(code: OrchestratorMcpFailure["code"], message: string): OrchestratorMcpFailure {
   return new OrchestratorMcpFailure({ code, message });
+}
+
+/** Background work as the optional result field carries it: absent when there is none. */
+function backgroundWorkField(tasks: Parameters<typeof taskBackgroundWork>[0]): {
+  readonly backgroundWork?: ReturnType<typeof taskBackgroundWork>;
+} {
+  const backgroundWork = taskBackgroundWork(tasks);
+  return backgroundWork.length === 0 ? {} : { backgroundWork };
 }
 
 function threadManagementFailure(error: unknown): OrchestratorMcpFailure {
@@ -1794,6 +1805,9 @@ const make = Effect.gen(function* () {
       status,
       workState,
       hasPendingChildRuns: hasPendingChildRuns(childProjection, childRun),
+      ...backgroundWorkField(
+        childControls.providerThreads.flatMap((thread) => thread.pendingBackgroundTasks ?? []),
+      ),
       providerInstanceId: modelSelection.instanceId,
       model: modelSelection.model,
       executedModel: runExecutedModel(childControls, executionRun),
@@ -1987,6 +2001,7 @@ const make = Effect.gen(function* () {
       status,
       workState: terminal ? "result_available" : "working",
       hasPendingChildRuns: false,
+      ...(task.backgroundWork === undefined ? {} : { backgroundWork: task.backgroundWork }),
       providerInstanceId: task.providerInstanceId,
       model: task.model,
       executedModel: null,
@@ -3521,6 +3536,14 @@ const make = Effect.gen(function* () {
           : {
               resultRun: { runId: result.resultRun.id, status: runOutcome(result.resultRun) },
             }),
+        // What a follower of a remote task reads to know the thread may report again.
+        ...(input.untilDelegatedWorkSettled === true && !result.timedOut
+          ? backgroundWorkField(
+              (yield* threadManagement
+                .getThreadShell(input.threadId)
+                .pipe(Effect.mapError(threadManagementFailure)))?.pendingBackgroundTasks ?? [],
+            )
+          : {}),
       } satisfies OrchestratorMcpThreadWaitResult;
     }),
     interruptThread: Effect.fn("OrchestratorMcpService.interruptThread")(function* (scope, input) {

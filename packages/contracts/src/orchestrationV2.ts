@@ -964,6 +964,15 @@ export const OrchestrationV2DelegatedTaskNotifyParent = Schema.Literals(["every_
 export type OrchestrationV2DelegatedTaskNotifyParent =
   typeof OrchestrationV2DelegatedTaskNotifyParent.Type;
 
+/** Background work a delegated child still had running, as its parent is told about it. */
+export const OrchestrationV2TaskBackgroundWork = Schema.Struct({
+  kind: Schema.Literals(["command", "monitor", "subagent", "background_task"]),
+  description: Schema.optional(Schema.String),
+  /** The child marked it as work it waits on. */
+  awaited: Schema.optional(Schema.Literal(true)),
+});
+export type OrchestrationV2TaskBackgroundWork = typeof OrchestrationV2TaskBackgroundWork.Type;
+
 export const OrchestrationV2Subagent = Schema.Struct({
   id: NodeId,
   threadId: ThreadId,
@@ -999,6 +1008,8 @@ export const OrchestrationV2Subagent = Schema.Struct({
   progress: Schema.optional(Schema.String),
   workflow: Schema.optional(OrchestrationV2SubagentWorkflow),
   result: Schema.NullOr(Schema.String),
+  /** App-owned tasks: the child's tracked background work still running when `result` was recorded. */
+  backgroundWork: Schema.optional(Schema.Array(OrchestrationV2TaskBackgroundWork)),
   startedAt: Schema.NullOr(Schema.DateTimeUtc),
   completedAt: Schema.NullOr(Schema.DateTimeUtc),
   updatedAt: Schema.DateTimeUtc,
@@ -3803,6 +3814,21 @@ const OrchestrationV2InternalCommand = Schema.Union([
     stoppedThere: Schema.optional(Schema.Literals(["ran-out", "stopped"])),
     /** The stop generation this report acknowledges; absent for the original unnumbered stop. */
     stopCount: Schema.optional(NonNegativeInt),
+    /** Tracked background work the thread there still had when its run ended. */
+    backgroundWork: Schema.optional(Schema.Array(OrchestrationV2TaskBackgroundWork)),
+  }),
+  /**
+   * Records a later turn of a remote task's thread there as a follow-up task here, as a child
+   * here's later turns are: the source task's result stood while that thread still ran tracked
+   * background work. Nothing is left to follow for the source task afterwards.
+   */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.followup"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    /** The later run there the follow-up carries. */
+    remoteRunId: RunId,
   }),
   /**
    * Owes a stop to the thread there of a remote task that already has its result, as Stop on

@@ -666,7 +666,8 @@ export interface ProjectionStoreV2Shape {
   /**
    * Delegated tasks in a linked environment with work left for this one: no
    * result yet, or cancelled or stopped here without that stop reaching there,
-   * including a Stop after the task had its result.
+   * including a Stop after the task had its result, or a result whose thread
+   * there still ran tracked background work.
    */
   readonly getOpenRemoteDelegatedTasks: Effect.Effect<
     ReadonlyArray<{ readonly parentThreadId: ThreadId; readonly taskId: NodeId }>,
@@ -8343,6 +8344,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             AND json_type(payload_json, '$.remoteChild.stoppedThere') IS NOT 'true'
           )
           OR json_type(payload_json, '$.remoteChild.stoppedThere') = 'false'
+          -- A result whose thread there still ran tracked work: its later turns are followed.
+          OR (
+            json_array_length(payload_json, '$.backgroundWork') > 0
+            AND json_type(payload_json, '$.remoteChild.stoppedThere') IS NOT 'true'
+          )
         )
     `.pipe(
       Effect.map((rows) =>

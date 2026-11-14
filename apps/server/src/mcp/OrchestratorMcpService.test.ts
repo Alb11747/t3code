@@ -351,104 +351,130 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
-  it.effect("reports a held settled follow-up as waiting for children, without acknowledging", () =>
-    Effect.gen(function* () {
-      const parentThreadId = ThreadId.make("thread:mcp-settled-parent");
-      const childThreadId = ThreadId.make("thread:mcp-settled-child");
-      const taskId = NodeId.make("node:mcp-settled-task");
-      const childRunId = RunId.make("run:mcp-settled-child");
-      const dispatched = yield* Ref.make(0);
-      const parentProjection = {
-        thread: { id: parentThreadId },
-        runs: [],
-        contextTransfers: [],
-        subagents: [
-          {
-            id: taskId,
+  it.effect.each(["settled", "every_turn"] as const)(
+    "reports a held %s follow-up as waiting for children, without acknowledging",
+    (notifyParent) =>
+      Effect.gen(function* () {
+        const parentThreadId = ThreadId.make("thread:mcp-settled-parent");
+        const childThreadId = ThreadId.make("thread:mcp-settled-child");
+        const taskId = NodeId.make("node:mcp-settled-task");
+        const childRunId = RunId.make("run:mcp-settled-child");
+        const dispatched = yield* Ref.make(0);
+        const parentProjection = {
+          thread: { id: parentThreadId },
+          runs: [],
+          contextTransfers: [],
+          subagents: [
+            {
+              id: taskId,
+              threadId: parentThreadId,
+              origin: "app_owned",
+              childThreadId,
+              driver: "codex",
+              model: "gpt-5.6-terra",
+              notifyParent,
+              status: "running",
+              result: null,
+              completionDelivery: { state: "pending" },
+            },
+          ],
+        } as unknown as OrchestrationV2ThreadProjection;
+        const childProjection = {
+          thread: { id: childThreadId, title: "Child" },
+          runs: [
+            {
+              id: childRunId,
+              ordinal: 2,
+              status: "completed",
+              delegatedTaskId: taskId,
+              startedAt: DateTime.makeUnsafe("2026-10-03T10:00:00Z"),
+              completedAt: DateTime.makeUnsafe("2026-10-03T10:10:00Z"),
+            },
+          ],
+          contextTransfers: [],
+          messages: [
+            {
+              id: MessageId.make("message:mcp-settled-turn"),
+              runId: childRunId,
+              role: "assistant",
+              text: "The player is running.",
+              createdAt: DateTime.makeUnsafe("2026-10-03T10:10:00Z"),
+              updatedAt: DateTime.makeUnsafe("2026-10-03T10:10:00Z"),
+            },
+          ],
+          // Under settled, the child's own delegation is still running; under every_turn,
+          // only the background work it waits on holds the turn.
+          subagents: notifyParent === "settled" ? [{ status: "running" }] : [],
+          providerThreads: [
+            {
+              pendingBackgroundTasks: [
+                ...(notifyParent === "settled"
+                  ? []
+                  : [
+                      {
+                        taskId: "rebuild",
+                        kind: "command",
+                        description: "vp build",
+                        awaited: true,
+                      },
+                    ]),
+                { taskId: "dev", kind: "command", description: "vp run dev" },
+              ],
+            },
+          ],
+          providerTurns: [],
+          runtimeRequests: [],
+          turnItems: [],
+        } as unknown as OrchestrationV2ThreadProjection;
+        const layerDependencies = Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadRecords: (threadId) =>
+              Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
+            delegatedTaskResultPending: () => Effect.succeed(false),
+            dispatch: () =>
+              Ref.update(dispatched, (count) => count + 1).pipe(Effect.as({} as never)),
+          }),
+          ServerSettings.layerTest(),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+            list: () => Effect.succeed([]),
+          }),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+        const scope: McpInvocationScope = {
+          environmentId: EnvironmentId.make("environment:mcp-settled"),
+          requestNamespace: "provider-session:mcp-settled",
+          thread: {
             threadId: parentThreadId,
-            origin: "app_owned",
-            childThreadId,
-            driver: "codex",
-            model: "gpt-5.6-terra",
-            notifyParent: "settled",
-            status: "running",
-            result: null,
-            completionDelivery: { state: "pending" },
+            providerSessionId: "provider-session:mcp-settled",
+            providerInstanceId: ProviderInstanceId.make("codex"),
           },
-        ],
-      } as unknown as OrchestrationV2ThreadProjection;
-      const childProjection = {
-        thread: { id: childThreadId, title: "Child" },
-        runs: [
-          {
-            id: childRunId,
-            ordinal: 2,
-            status: "completed",
-            delegatedTaskId: taskId,
-            startedAt: DateTime.makeUnsafe("2026-10-03T10:00:00Z"),
-            completedAt: DateTime.makeUnsafe("2026-10-03T10:10:00Z"),
-          },
-        ],
-        contextTransfers: [],
-        messages: [
-          {
-            id: MessageId.make("message:mcp-settled-turn"),
-            runId: childRunId,
-            role: "assistant",
-            text: "The player is running.",
-            createdAt: DateTime.makeUnsafe("2026-10-03T10:10:00Z"),
-            updatedAt: DateTime.makeUnsafe("2026-10-03T10:10:00Z"),
-          },
-        ],
-        // The child's own delegation is still running.
-        subagents: [{ status: "running" }],
-        providerThreads: [],
-        providerTurns: [],
-        runtimeRequests: [],
-        turnItems: [],
-      } as unknown as OrchestrationV2ThreadProjection;
-      const layerDependencies = Layer.mergeAll(
-        NodeServices.layer,
-        NodeCrypto.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
-          getThreadRecords: (threadId) =>
-            Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
-          delegatedTaskResultPending: () => Effect.succeed(false),
-          dispatch: () => Ref.update(dispatched, (count) => count + 1).pipe(Effect.as({} as never)),
-        }),
-        ServerSettings.layerTest(),
-        Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
-        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
-          list: () => Effect.succeed([]),
-        }),
-        Layer.mock(ProjectService.ProjectService)({}),
-        Layer.mock(SecretRequests.SecretRequests)({}),
-        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-      );
-      const scope: McpInvocationScope = {
-        environmentId: EnvironmentId.make("environment:mcp-settled"),
-        requestNamespace: "provider-session:mcp-settled",
-        thread: {
-          threadId: parentThreadId,
-          providerSessionId: "provider-session:mcp-settled",
-          providerInstanceId: ProviderInstanceId.make("codex"),
-        },
-        client: undefined,
-        capabilities: new Set(["orchestration"]),
-        issuedAt: 1,
-      };
+          client: undefined,
+          capabilities: new Set(["orchestration"]),
+          issuedAt: 1,
+        };
 
-      yield* Effect.gen(function* () {
-        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-        const held = yield* service.taskStatus(scope, taskId);
-        assert.equal(held.status, "running");
-        assert.equal(held.workState, "waiting_for_children");
-        assert.isNull(held.summary);
-        assert.equal(held.latestTerminalSummary, "The player is running.");
-        assert.equal(yield* Ref.get(dispatched), 0);
-      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
-    }),
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const held = yield* service.taskStatus(scope, taskId);
+          assert.equal(held.status, "running");
+          assert.equal(held.workState, "waiting_for_children");
+          assert.isNull(held.summary);
+          assert.equal(held.latestTerminalSummary, "The player is running.");
+          assert.deepEqual(held.backgroundWork, [
+            ...(notifyParent === "settled"
+              ? []
+              : [{ kind: "command" as const, description: "vp build", awaited: true as const }]),
+            { kind: "command", description: "vp run dev" },
+          ]);
+          assert.equal(yield* Ref.get(dispatched), 0);
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+      }),
   );
 
   it.effect("tells the parent to end its turn only while its task still runs", () =>

@@ -13,6 +13,7 @@ import {
   type OrchestratorMcpThreadTimelineItem,
   type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2Subagent,
+  type OrchestrationV2TaskBackgroundWork,
   type ProjectId,
   type ProviderInstanceId,
   ProviderDriverKind,
@@ -68,6 +69,17 @@ export const FollowRetrySchedule = Context.Reference<Schedule.Schedule<unknown>>
       ),
   },
 );
+
+/**
+ * How a follower waits between looks at a finished task's thread there that still runs only
+ * work a wait there does not hold for, such as a dev server; tests step it by hand.
+ */
+export const LaterTurnPoll = Context.Reference<Effect.Effect<void>>(
+  "t3/peer/RemoteDelegation/LaterTurnPoll",
+  { defaultValue: () => Effect.sleep(Duration.seconds(30)) },
+);
+/** A finished task's thread there is followed for later turns at most this long. */
+const LATER_TURN_FOLLOW_LIMIT = Duration.hours(24);
 
 type ThreadScope = McpInvocationContext.McpThreadInvocationScope;
 
@@ -146,6 +158,7 @@ const isFinal = (error: OrchestratorMcpFailure) =>
 
 const make = Effect.gen(function* () {
   const followRetry = yield* FollowRetrySchedule;
+  const laterTurnPoll = yield* LaterTurnPoll;
   const forwarding = yield* PeerForwarding.PeerForwarding;
   const links = yield* PeerLinks.PeerLinks;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -531,6 +544,7 @@ const make = Effect.gen(function* () {
     result: string,
     stoppedThere: "ran-out" | "stopped" | undefined,
     stopCount?: number,
+    backgroundWork?: ReadonlyArray<OrchestrationV2TaskBackgroundWork>,
   ) {
     const attempt = yield* random.uuidV4();
     yield* threads
@@ -543,6 +557,7 @@ const make = Effect.gen(function* () {
         result,
         ...(stoppedThere === undefined ? {} : { stoppedThere }),
         ...(stopCount === undefined ? {} : { stopCount }),
+        ...(backgroundWork === undefined || backgroundWork.length === 0 ? {} : { backgroundWork }),
       })
       .pipe(
         Effect.catch((error) =>
@@ -774,6 +789,13 @@ const make = Effect.gen(function* () {
         );
         return yield* settled(parentThreadId, taskId);
       }
+      if (
+        remote.stoppedThere !== true &&
+        task.status === "completed" &&
+        (task.backgroundWork?.length ?? 0) > 0
+      ) {
+        return yield* followLaterTurn(parentThreadId, task, remote, scope, sequence);
+      }
       return true;
     }
     const endedHere = threads
@@ -848,14 +870,109 @@ const make = Effect.gen(function* () {
         ? waited.resultRun
         : { runId: waited.runId, status: waited.status };
     const result = yield* lastReply(scope, remote, resultRun.runId, resultRun.status === "failed");
+    // Tracked work left running there wakes that thread again, so its later turns are
+    // followed; a peer that does not report it leaves the task done, as before.
+    const backgroundWork =
+      terminalStatus(resultRun.status) === "completed" ? (waited.backgroundWork ?? []) : [];
     yield* complete(
       parentThreadId,
       taskId,
       terminalStatus(resultRun.status),
       result ?? noReply,
-      "ran-out",
+      backgroundWork.length === 0 ? "ran-out" : undefined,
+      undefined,
+      backgroundWork,
     );
-    return yield* settled(parentThreadId, taskId);
+    return backgroundWork.length === 0 ? yield* settled(parentThreadId, taskId) : false;
+  });
+
+  /**
+   * One look for a later turn of a finished task's thread there. A later run becomes a
+   * follow-up task, followed as its own; the task ends here once that thread has nothing
+   * left that could wake it, or after LATER_TURN_FOLLOW_LIMIT.
+   */
+  const followLaterTurn = Effect.fn("RemoteDelegation.followLaterTurn")(function* (
+    parentThreadId: ThreadId,
+    task: OrchestrationV2Subagent,
+    remote: OrchestrationV2RemoteTaskChild,
+    scope: ThreadScope,
+    sequence: number,
+  ) {
+    const done = complete(
+      parentThreadId,
+      task.id,
+      terminalStatus(task.status),
+      task.result ?? noReply,
+      "ran-out",
+    ).pipe(Effect.andThen(settled(parentThreadId, task.id)));
+    const now = yield* DateTime.now;
+    if (
+      task.completedAt !== null &&
+      Duration.isGreaterThan(
+        Duration.millis(DateTime.toEpochMillis(now) - DateTime.toEpochMillis(task.completedAt)),
+        LATER_TURN_FOLLOW_LIMIT,
+      )
+    ) {
+      return yield* done;
+    }
+    // A Stop or cancel here records `stoppedThere`, which ends this look early.
+    const stoppedHere = threads
+      .streamStoredEventsFrom({
+        threadId: parentThreadId,
+        afterSequence: sequence,
+        eventType: "subagent.updated",
+      })
+      .pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "subagent.updated" &&
+            stored.event.payload.id === task.id &&
+            stored.event.payload.remoteChild?.stoppedThere !== undefined,
+        ),
+        Stream.runHead,
+        Effect.flatMap((ended) =>
+          Option.isSome(ended) ? Effect.succeed({ endedHere: true } as const) : Effect.never,
+        ),
+      );
+    const waited = yield* forwarding
+      .waitForThread(scope, remote.environmentId, {
+        threadId: remote.threadId,
+        timeoutMs: FOLLOW_WAIT_MS,
+        untilDelegatedWorkSettled: true,
+      })
+      .pipe(Effect.raceFirst(stoppedHere));
+    if ("endedHere" in waited || waited.timedOut) return false;
+    const latest = waited.resultRun?.runId ?? waited.runId;
+    if (latest === null || latest === remote.runId) {
+      if ((waited.backgroundWork ?? []).length === 0) return yield* done;
+      yield* laterTurnPoll;
+      return false;
+    }
+    const recorded = yield* threads.dispatch({
+      type: "delegated_task.remote.followup",
+      commandId: CommandId.make(`command:remote-task-followup:${task.id}:${latest}`),
+      parentThreadId,
+      taskId: task.id,
+      remoteRunId: latest,
+    });
+    const followup =
+      recorded.storedEvents.find(
+        (stored) =>
+          stored.event.type === "subagent.updated" &&
+          stored.event.payload.id !== task.id &&
+          stored.event.payload.remoteChild?.runId === latest,
+      )?.event.nodeId ??
+      // A replayed record made the follow-up the first time.
+      (yield* threads.getThreadRecords(parentThreadId, ["subagents"])).subagents.find(
+        (candidate) =>
+          candidate.id !== task.id &&
+          candidate.remoteChild?.threadId === remote.threadId &&
+          candidate.remoteChild.runId === latest,
+      )?.id;
+    if (followup != null) {
+      yield* followOne(parentThreadId, followup).pipe(Effect.forkIn(followers));
+    }
+    return true;
   });
 
   /**

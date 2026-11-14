@@ -42,6 +42,7 @@ import {
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
   OrchestrationV2RunStatus,
+  OrchestrationV2TaskBackgroundWork,
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
@@ -214,6 +215,12 @@ export const ORCHESTRATOR_MCP_RUNNING_TASK_NEXT =
 // A string, not a literal: linked environments on other versions send their own wording.
 const OrchestratorMcpRunningTaskNext = Schema.String;
 
+// Optional: absent when there is none, and from linked environments on older versions.
+const OrchestratorMcpBackgroundWork = Schema.Array(OrchestrationV2TaskBackgroundWork).annotate({
+  description:
+    "Background work the thread still runs (a command, Monitor or subagent). Its harness wakes it when each ends, so a finished turn may not be its last. `awaited`: it waits on that work.",
+});
+
 // Optional: linked environments on older versions omit it.
 const OrchestratorMcpExecutedModel = Schema.NullOr(Schema.String).annotate({
   description:
@@ -234,6 +241,7 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   status: OrchestratorMcpDelegatedTaskStatus,
   workState: Schema.Literals(["working", "waiting_for_children", "result_available"]),
   hasPendingChildRuns: Schema.Boolean,
+  backgroundWork: Schema.optional(OrchestratorMcpBackgroundWork),
   latestTerminalRunId: Schema.NullOr(RunId),
   latestTerminalStatus: Schema.NullOr(OrchestratorMcpTerminalDelegatedTaskStatus),
   latestTerminalSummary: Schema.NullOr(Schema.String),
@@ -626,6 +634,7 @@ export const OrchestratorMcpThreadWaitResult = Schema.Struct({
   next: Schema.optional(OrchestratorMcpRunningTaskNext),
   /** With untilDelegatedWorkSettled, once settled: the run whose reply is the thread's result. */
   resultRun: Schema.optional(Schema.Struct({ runId: RunId, status: OrchestrationV2RunStatus })),
+  backgroundWork: Schema.optional(OrchestratorMcpBackgroundWork),
 });
 export type OrchestratorMcpThreadWaitResult = typeof OrchestratorMcpThreadWaitResult.Type;
 
