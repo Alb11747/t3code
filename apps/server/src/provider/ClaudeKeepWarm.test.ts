@@ -190,6 +190,41 @@ it.effect("treats a router without the control endpoint as holding nothing", () 
   }).pipe(Effect.provide(layer), Effect.scoped);
 });
 
+it.effect.each([
+  { name: "the alias a 0.28.0 router publishes", held: "account-aaaaaaaaaaaaaaaa" },
+  { name: "the legacy alias it has not renamed yet", held: "account-d35f1b129b54c235" },
+])("names a hold's account by $name", ({ held }) => {
+  const { layer } = fixture({
+    status: 200,
+    body: {
+      accounts: [
+        {
+          account: "account-aaaaaaaaaaaaaaaa",
+          provider: "claude",
+          auth_index: "7",
+          legacy_account: "account-d35f1b129b54c235",
+        },
+      ],
+      held: [
+        {
+          session: "root",
+          account: held,
+          kind: "keep_warm",
+          release_at: "2026-11-03T13:59:00Z",
+          reset_at: "2026-11-03T15:00:00Z",
+        },
+      ],
+    },
+  });
+  return Effect.gen(function* () {
+    const keepWarm = yield* ClaudeKeepWarm.ClaudeKeepWarm;
+    const stalled = fakeSession("root", 1);
+    yield* keepWarm.register(stalled.session);
+    yield* TestClock.adjust("30 seconds");
+    assert.deepEqual(stalled.shown, [{ ...hold, account: WARM }]);
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
 it.effect("runs keep-warm actions against the stalled turn", () => {
   const control: Parameters<typeof fixture>[0] = {
     status: 200,

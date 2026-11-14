@@ -84,7 +84,7 @@ export const make = Effect.gen(function* () {
       if (hub === null) return;
       yield* sources.pin(hub, {
         sessions: [session],
-        account: choice.account,
+        account: yield* sources.sendAlias(choice.sourceId, hub, choice.account, { session }),
         stall: choice.stall,
         expiresAt: controlExpiry(yield* DateTime.now),
         // Each pin replaces the last; a plain one would end the move that subagents still follow.
@@ -110,15 +110,20 @@ export const make = Effect.gen(function* () {
       Object.entries(settings.usageLimitSources),
       ([sourceId, config]) =>
         Effect.gen(function* () {
-          const accounts = Object.values(config.steers ?? {}).filter(
-            (account): account is string => account !== undefined,
+          const steers = Object.entries(config.steers ?? {}).filter(
+            (entry): entry is [string, string] => entry[1] !== undefined,
           );
-          if (!config.enabled || accounts.length === 0) return;
+          if (!config.enabled || steers.length === 0) return;
           const hub = yield* sources.hub(sourceId as UsageLimitSourceId);
           if (hub === null) return;
-          yield* Effect.forEach(accounts, (account) => sources.steer(hub, account, expiresAt), {
-            discard: true,
-          });
+          yield* Effect.forEach(
+            steers,
+            ([provider, account]) =>
+              sources
+                .sendAlias(sourceId as UsageLimitSourceId, hub, account, { provider })
+                .pipe(Effect.flatMap((alias) => sources.steer(hub, alias, expiresAt))),
+            { discard: true },
+          );
         }).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("Could not renew a quota-router steer.", { cause }),

@@ -165,16 +165,46 @@ describe("quota-router account controls", () => {
     }),
   );
 
-  it.effect("names each hub account by the router's alias", () =>
+  it.effect.each([
+    {
+      // HMAC-SHA256("management-secret", '["claude","7"]'), as AgentBridge derives it.
+      name: "computes legacy aliases for a router that publishes none",
+      listing: undefined,
+      aliases: ["account-de21b724378312e0", "account-69e27c40424fa28a"],
+    },
+    {
+      name: "takes published aliases and computes none for an unlisted account",
+      listing: [
+        {
+          account: "account-aaaaaaaaaaaaaaaa",
+          provider: "claude",
+          auth_index: "7",
+          legacy_account: "account-de21b724378312e0",
+        },
+        // Another provider's slot with the same index is a different account.
+        { account: "account-bbbbbbbbbbbbbbbb", provider: "codex", auth_index: "8" },
+      ],
+      aliases: ["account-aaaaaaaaaaaaaaaa", undefined],
+    },
+    {
+      name: "leaves aliases unknown until the router has listed its accounts",
+      listing: null,
+      aliases: [undefined, undefined],
+    },
+  ])("$name", ({ listing, aliases }) =>
     Effect.gen(function* () {
       const test = routerHub(({ path }) =>
         path.endsWith("/auth-files")
-          ? { files: [{ id: "a.json", auth_index: "7", provider: "claude", email: "a@x.test" }] }
+          ? {
+              files: [
+                { id: "a.json", auth_index: "7", provider: "claude", email: "a@x.test" },
+                { id: "b.json", auth_index: "8", provider: "claude", email: "b@x.test" },
+              ],
+            }
           : { status_code: 500, body: "" },
       );
-      const [account] = yield* (yield* test.api).readAccounts(hub);
-      // HMAC-SHA256("management-secret", '["claude","7"]'), as AgentBridge derives it.
-      expect(account?.routerAlias).toBe("account-de21b724378312e0");
+      const accounts = yield* (yield* test.api).readAccounts(hub, Effect.succeed(listing));
+      expect(accounts.map((account) => account.routerAlias)).toEqual(aliases);
     }),
   );
 });

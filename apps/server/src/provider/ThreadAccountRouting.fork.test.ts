@@ -1,12 +1,22 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
-import { type OrchestrationV2TurnItem, UsageLimitSourceError } from "@t3tools/contracts";
+import {
+  type OrchestrationV2TurnItem,
+  UsageLimitSourceError,
+  UsageLimitSourceId,
+} from "@t3tools/contracts";
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import { HttpClient, HttpClientResponse } from "effect/http";
 
+import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import type { RouterListing } from "../usage/cliproxyApi.ts";
 import * as UsageLimitSources from "../usage/UsageLimitSources.ts";
 import * as ThreadAccountRouting from "./ThreadAccountRouting.ts";
 
@@ -79,6 +89,7 @@ function prepareTurn(input: {
         ServerSettings.ServerSettingsService.layerTest({}),
         Layer.mock(UsageLimitSources.UsageLimitSources)({
           hub: () => Effect.succeed({ url: "http://hub.test", managementKey: "key" }),
+          sendAlias: (_sourceId, _hub, alias) => Effect.succeed(alias),
           pin: (_hub, pin) =>
             Effect.sync(() => void pins.push(pin)).pipe(
               Effect.andThen(input.pin ?? Effect.undefined),
@@ -144,4 +155,130 @@ describe("ThreadAccountRouting.prepareTurn", () => {
       expect(result.drops).toBe(drops);
     }),
   );
+});
+
+// HMAC-SHA256("management-secret", '["claude","7"]'): the slot's alias before quota router 0.28.0.
+const LEGACY = "account-de21b724378312e0";
+const CURRENT = "account-aaaaaaaaaaaaaaaa";
+const SPARE = "account-bbbbbbbbbbbbbbbb";
+const HUB = UsageLimitSourceId.make("hub");
+
+// A hub with two Claude slots whose router lists `router.listing` (omitted when undefined).
+function aliasHub(router: { listing: RouterListing; pins?: ReadonlyArray<unknown> }) {
+  const pins: Array<unknown> = [];
+  const http = HttpClient.make((request) =>
+    Effect.sync(() => {
+      const path = new URL(request.url).pathname;
+      const body =
+        request.body._tag === "Uint8Array"
+          ? JSON.parse(new TextDecoder().decode(request.body.body))
+          : undefined;
+      if (path.endsWith("/control/pin")) pins.push(body.account);
+      const answer = path.endsWith("/auth-files")
+        ? {
+            files: [
+              { id: "a.json", auth_index: "7", provider: "claude", email: "a@x.test" },
+              { id: "b.json", auth_index: "8", provider: "claude", email: "b@x.test" },
+            ],
+          }
+        : path.endsWith("/control")
+          ? {
+              pins: router.pins ?? [],
+              ...(router.listing === undefined ? {} : { accounts: router.listing }),
+            }
+          : path.endsWith("/api-call")
+            ? { status_code: 500, body: "" }
+            : { pins: [] };
+      return HttpClientResponse.fromWeb(request, Response.json(answer));
+    }),
+  );
+  const layer = Layer.mergeAll(
+    ServerSettings.ServerSettingsService.layerTest({
+      usageLimitSources: {
+        [HUB]: {
+          kind: "cliproxy",
+          url: "http://hub.test",
+          managementKey: "management-secret",
+          enabled: true,
+        },
+      },
+    }),
+    Layer.succeed(SecretResolver.SecretResolver, {
+      label: (provider) => Effect.succeed(provider),
+      read: (references) => Effect.succeed(references.map(() => undefined)),
+      invalidate: () => Effect.void,
+    }),
+    Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+      shouldRunScopeWork: () => Effect.succeed(false),
+    }),
+    Layer.succeed(HttpClient.HttpClient, http),
+    NodeCrypto.layer,
+  );
+  return { pins, layer };
+}
+
+const aliasesOf = (sources: UsageLimitSources.UsageLimitSources["Service"]) =>
+  sources.current.pipe(
+    Effect.map((snapshots) => snapshots[0]?.accounts.map((account) => account.routerAlias)),
+  );
+
+describe("router account aliases", () => {
+  it.effect(
+    "re-pins a legacy choice by its new alias, and by its legacy one after a rollback",
+    () => {
+      const router: { listing: RouterListing; pins?: ReadonlyArray<unknown> } = {
+        listing: [
+          { account: CURRENT, provider: "claude", auth_index: "7", legacy_account: LEGACY },
+          { account: SPARE, provider: "claude", auth_index: "8" },
+        ],
+      };
+      const hub = aliasHub(router);
+      return Effect.gen(function* () {
+        const sources = yield* UsageLimitSources.make;
+        const routing = yield* ThreadAccountRouting.make.pipe(
+          Effect.provideService(UsageLimitSources.UsageLimitSources, sources),
+        );
+        const turn = (account: string) =>
+          routing.prepareTurn({
+            appThread: { id: "thread-1", accountChoice: { ...CHOICE, account } } as never,
+            providerThread: {
+              driver: "claudeAgent",
+              providerInstanceId: "claude",
+              nativeThreadRef: { nativeId: "native" },
+            } as never,
+            loadCompactions: Effect.succeed([]),
+          });
+        yield* sources.refresh;
+        expect(yield* aliasesOf(sources)).toEqual([CURRENT, SPARE]);
+        yield* turn(LEGACY);
+        // A router rolled back to 0.27.0 resolves only legacy aliases.
+        router.listing = undefined;
+        yield* sources.refresh;
+        expect(yield* aliasesOf(sources)).toEqual([LEGACY, "account-69e27c40424fa28a"]);
+        yield* turn(CURRENT);
+        // It matches a pin it already lists by that pin's alias, here the one it loaded.
+        router.pins = [{ session: "claude:native", account: CURRENT }];
+        yield* turn(CURRENT);
+        expect(hub.pins).toEqual([CURRENT, LEGACY, CURRENT]);
+      }).pipe(Effect.provide(hub.layer), Effect.scoped);
+    },
+  );
+
+  it.effect("names a newly listed account once a control read sees it", () => {
+    const router: { listing: RouterListing } = { listing: null };
+    const hub = aliasHub(router);
+    return Effect.gen(function* () {
+      const sources = yield* UsageLimitSources.make;
+      yield* sources.refresh;
+      expect(yield* aliasesOf(sources)).toEqual([undefined, undefined]);
+      router.listing = [{ account: CURRENT, provider: "claude", auth_index: "7" }];
+      yield* sources.control(HUB, { url: "http://hub.test", managementKey: "management-secret" });
+      const renamed = yield* sources.streamChanges.pipe(
+        Stream.map((snapshots) => snapshots[0]?.accounts.map((account) => account.routerAlias)),
+        Stream.filter((aliases) => aliases?.[0] === CURRENT),
+        Stream.runHead,
+      );
+      expect(renamed._tag).toBe("Some");
+    }).pipe(Effect.provide(hub.layer), Effect.scoped);
+  });
 });

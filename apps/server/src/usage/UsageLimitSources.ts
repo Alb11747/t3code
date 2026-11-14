@@ -17,8 +17,10 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
@@ -28,7 +30,12 @@ import * as SecretResolverLayer from "../secrets/SecretResolver.ts";
 import { resolveSettingsSecrets } from "../secrets/settingsSecretValue.ts";
 import * as Settings from "../serverSettings.ts";
 import { windowLimitsModel } from "../provider/claudeUsageLimits.ts";
-import { type CliproxyApi, type CliproxyHub, makeCliproxyApi } from "./cliproxyApi.ts";
+import {
+  type CliproxyApi,
+  type CliproxyHub,
+  makeCliproxyApi,
+  type RouterListing,
+} from "./cliproxyApi.ts";
 
 export class UsageLimitSources extends Context.Service<
   UsageLimitSources,
@@ -48,9 +55,32 @@ export class UsageLimitSources extends Context.Service<
     }) => Effect.Effect<{ readonly resetsAt: string | null } | null>;
     /** Fork: the enabled source's hub with its management key, or null. */
     readonly hub: (sourceId: UsageLimitSourceId) => Effect.Effect<CliproxyHub | null>;
+    /** Fork: the router's controls; a changed account listing re-reads the source's accounts. */
+    readonly control: (
+      sourceId: UsageLimitSourceId,
+      hub: CliproxyHub,
+    ) => ReturnType<CliproxyApi["control"]>;
+    /**
+     * Fork: maps an alias T3 stored, was given or read from the router to the one the source's
+     * router uses now: legacy to current, or current to legacy after a rollback. Others pass.
+     */
+    readonly routerAlias: (
+      sourceId: UsageLimitSourceId,
+    ) => Effect.Effect<(alias: string) => string>;
+    /**
+     * Fork: `routerAlias` for the account of a pin (by session), steer (by provider) or end to
+     * send, except that a router rolled back from 0.28.0 matches the controls it lists by alias,
+     * so an existing one for the same account is sent with the alias it lists.
+     */
+    readonly sendAlias: (
+      sourceId: UsageLimitSourceId,
+      hub: CliproxyHub,
+      alias: string,
+      control: { readonly session: string } | { readonly provider: string } | "end",
+    ) => Effect.Effect<string>;
   } & Pick<
     CliproxyApi,
-    "nextPick" | "control" | "pin" | "unpin" | "steer" | "unsteer" | "margin" | "subscriptionEnd"
+    "nextPick" | "pin" | "unpin" | "steer" | "unsteer" | "margin" | "subscriptionEnd"
   >
 >()("t3/usage/UsageLimitSources") {}
 
@@ -82,7 +112,34 @@ export const make = Effect.gen(function* () {
     const resolved = yield* resolveSettingsSecrets(secrets, UsageLimitSourceConfig, config);
     return settingsSecretLiteral(resolved.managementKey);
   });
+  const scope = yield* Scope.Scope;
   const stateRef = yield* Ref.make<ReadonlyArray<UsageLimitSourceSnapshot>>([]);
+  // Fork: each source's last account listing from its router, and every current-to-legacy alias
+  // pair it has published, so a router rolled back to before 0.28.0 still gets legacy aliases.
+  // In memory: after a restart, a rolled-back router's stored new aliases are unknown to it.
+  const routerNames = new Map<
+    UsageLimitSourceId,
+    { readonly listing: RouterListing; readonly legacyOf: ReadonlyMap<string, string> }
+  >();
+  // Whether the listing changed from an earlier one.
+  const observe = (sourceId: UsageLimitSourceId, listing: RouterListing) => {
+    const previous = routerNames.get(sourceId);
+    const legacyOf = new Map(previous?.legacyOf);
+    for (const entry of listing ?? []) {
+      if (entry.legacy_account) legacyOf.set(entry.account, entry.legacy_account);
+    }
+    routerNames.set(sourceId, { listing, legacyOf });
+    return previous !== undefined && !Equal.equals(previous.listing, listing);
+  };
+  // A failed read keeps the last listing; a hub never read (or without a router) computes aliases.
+  const listingOf = (sourceId: UsageLimitSourceId, hub: CliproxyHub) =>
+    api.control(hub).pipe(
+      Effect.option,
+      Effect.map((control) => {
+        if (Option.isSome(control)) observe(sourceId, control.value.accounts);
+        return routerNames.get(sourceId)?.listing;
+      }),
+    );
   const changes = yield* Effect.acquireRelease(
     PubSub.unbounded<ReadonlyArray<UsageLimitSourceSnapshot>>(),
     PubSub.shutdown,
@@ -105,9 +162,8 @@ export const make = Effect.gen(function* () {
     if (managementKey.length === 0) {
       return { ...base, accounts: [], error: missingManagementKey(config) };
     }
-    const accounts = yield* api
-      .readAccounts({ url: config.url, managementKey })
-      .pipe(Effect.result);
+    const hub = { url: config.url, managementKey };
+    const accounts = yield* api.readAccounts(hub, listingOf(id, hub)).pipe(Effect.result);
     if (accounts._tag === "Failure") {
       yield* Effect.logDebug("usage limit source read failed", { id, cause: accounts.failure });
       return { ...base, accounts: [], error: accounts.failure.detail };
@@ -180,6 +236,51 @@ export const make = Effect.gen(function* () {
     return { url: config.url, managementKey };
   });
 
+  const control = Effect.fn("UsageLimitSources.control")(function* (
+    sourceId: UsageLimitSourceId,
+    config: CliproxyHub,
+  ) {
+    const value = yield* api.control(config);
+    if (observe(sourceId, value.accounts)) yield* Effect.forkIn(refresh, scope);
+    return value;
+  });
+
+  const routerAlias = (sourceId: UsageLimitSourceId) =>
+    Effect.sync(() => {
+      const names = routerNames.get(sourceId);
+      const listing = names?.listing;
+      return (alias: string) =>
+        listing === undefined
+          ? (names?.legacyOf.get(alias) ?? alias)
+          : (listing?.find((entry) => entry.legacy_account === alias)?.account ?? alias);
+    });
+
+  const sendAlias = Effect.fn("UsageLimitSources.sendAlias")(function* (
+    sourceId: UsageLimitSourceId,
+    config: CliproxyHub,
+    alias: string,
+    kind: Parameters<UsageLimitSources["Service"]["sendAlias"]>[3],
+  ) {
+    const rename = yield* routerAlias(sourceId);
+    const target = rename(alias);
+    const names = routerNames.get(sourceId);
+    if (names === undefined || names.listing !== undefined || names.legacyOf.size === 0) {
+      return target;
+    }
+    const current = yield* control(sourceId, config).pipe(Effect.option);
+    if (Option.isNone(current)) return target;
+    const { pins, steers, ends } = current.value;
+    const listed =
+      kind === "end"
+        ? (ends ?? [])
+        : "session" in kind
+          ? (pins ?? []).filter(
+              (pin) => pin.session.replace(/^(claude|codex):/, "") === kind.session,
+            )
+          : (steers ?? []).filter((steer) => steer.provider === kind.provider);
+    return listed.find((entry) => rename(entry.account) === target)?.account ?? target;
+  });
+
   const nextPickReset = Effect.fn("UsageLimitSources.nextPickReset")(function* (
     input: Parameters<UsageLimitSources["Service"]["nextPickReset"]>[0],
   ) {
@@ -225,7 +326,9 @@ export const make = Effect.gen(function* () {
     hub,
     // Fork: the quota router's controls.
     nextPick: api.nextPick,
-    control: api.control,
+    control,
+    routerAlias,
+    sendAlias,
     pin: api.pin,
     unpin: api.unpin,
     steer: api.steer,

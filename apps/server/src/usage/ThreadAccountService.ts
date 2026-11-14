@@ -42,6 +42,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -254,21 +255,29 @@ export const make = Effect.gen(function* () {
     sourceId?: UsageLimitSourceId,
     provider?: RouterProvider,
   ) {
-    const candidates = (yield* sources.current).flatMap((source) =>
-      sourceId !== undefined && source.id !== sourceId
-        ? []
-        : source.accounts
-            .filter(
-              (account) =>
-                account.routerAlias !== undefined &&
-                (provider === undefined || routerProviderOf(account.driver) === provider),
-            )
-            .map((account) => ({ source, account })),
+    const searched = (yield* sources.current).filter(
+      (source) => sourceId === undefined || source.id === sourceId,
     );
-    if (candidates.filter((entry) => entry.account.routerAlias === name).length > 1) {
+    const candidates = searched.flatMap((source) =>
+      source.accounts
+        .filter(
+          (account) =>
+            account.routerAlias !== undefined &&
+            (provider === undefined || routerProviderOf(account.driver) === provider),
+        )
+        .map((account) => ({ source, account })),
+    );
+    // Only the hub whose router renamed a legacy alias knows it.
+    const renamed = new Set(
+      (yield* Effect.forEach(searched, (source) => sources.routerAlias(source.id)))
+        .map((rename) => rename(name))
+        .filter((alias) => alias !== name),
+    );
+    const alias = renamed.size === 1 ? [...renamed][0]! : name;
+    if (candidates.filter((entry) => entry.account.routerAlias === alias).length > 1) {
       return yield* fail("Several CLI Proxy hubs list that account.");
     }
-    const found = yield* named(candidates, name, (entry) => entry.account, "on a CLI Proxy hub");
+    const found = yield* named(candidates, alias, (entry) => entry.account, "on a CLI Proxy hub");
     const hub = yield* sources.hub(found.source.id);
     if (hub === null) return yield* fail("That CLI Proxy hub is disabled or has no key.");
     return { ...found, alias: found.account.routerAlias as RouterAccountAlias, hub };
@@ -327,11 +336,13 @@ export const make = Effect.gen(function* () {
 
   const forgetPicks = Effect.sync(() => pickReads.clear());
 
-  const aliasIn = (target: Target) => {
+  // Router answers can still use an alias it renamed, until it lists its accounts.
+  const aliasIn = Effect.fn("ThreadAccounts.aliasIn")(function* (target: Target) {
+    const rename = yield* sources.routerAlias(target.source.id);
     const known = new Set(target.accounts.map((account) => account.routerAlias));
     return (value: string | null | undefined) =>
-      value && known.has(value) ? (value as RouterAccountAlias) : null;
-  };
+      value && known.has(rename(value)) ? (rename(value) as RouterAccountAlias) : null;
+  });
 
   const preview = Effect.fn("ThreadAccounts.preview")(function* (
     input: ThreadAccountPreviewInput,
@@ -348,7 +359,7 @@ export const make = Effect.gen(function* () {
       input.fresh === true,
     );
     if (pick === null) return null;
-    const alias = aliasIn(target);
+    const alias = yield* aliasIn(target);
     return {
       account: alias(pick.account),
       current: alias(pick.current),
@@ -367,14 +378,14 @@ export const make = Effect.gen(function* () {
     const session = input.threadId
       ? yield* sessionOf(input.threadId, input.modelSelection)
       : undefined;
-    const alias = aliasIn(target);
     const [pick, control] = yield* Effect.all(
       [
         sharedPick(target, { session, model: input.modelSelection.model }, "next", false),
-        api.control(target.hub).pipe(Effect.option),
+        api.control(target.source.id, target.hub).pipe(Effect.option),
       ],
       { concurrency: "unbounded" },
     );
+    const alias = yield* aliasIn(target);
     const routerSteer =
       control._tag === "Some"
         ? control.value.steers?.find((steer) => steer.provider === target.routerProvider)?.account
@@ -431,15 +442,17 @@ export const make = Effect.gen(function* () {
       return;
     }
     if (target === null) return yield* fail(NOT_ROUTED);
+    const rename = yield* sources.routerAlias(target.source.id);
     const account = (yield* named(
       target.accounts,
-      input.account,
+      rename(input.account),
       (entry) => entry,
       "on this thread's CLI Proxy hub",
     )).routerAlias as RouterAccountAlias;
     // Changing only the account keeps the stored wait-when-out setting.
     const current = threadAccountChoiceFor(thread.accountChoice, target.instanceId);
-    const stall = input.stall ?? (current?.account === account ? current.stall : false);
+    const stall =
+      input.stall ?? (current && rename(current.account) === account ? current.stall : false);
     let moved = false;
     if (session) {
       const pick = yield* api.nextPick(target.hub, {
@@ -447,7 +460,7 @@ export const make = Effect.gen(function* () {
         session,
         model: thread.modelSelection.model,
       });
-      moved = !!pick?.owner && pick.owner !== account;
+      moved = !!pick?.owner && rename(pick.owner) !== account;
       if (moved && input.dropThinking !== true) {
         return yield* new ThreadAccountError({
           detail: `${THREAD_ACCOUNT_MOVE_WARNING} Confirm with dropThinking: true to switch.`,
@@ -456,7 +469,7 @@ export const make = Effect.gen(function* () {
       }
       yield* api.pin(target.hub, {
         sessions: [session],
-        account,
+        account: yield* sources.sendAlias(target.source.id, target.hub, account, { session }),
         stall,
         expiresAt: controlExpiry(now),
         move: moved,
@@ -530,7 +543,11 @@ export const make = Effect.gen(function* () {
         if (provider === undefined) {
           return yield* fail("That account is not a Claude or Codex account.");
         }
-        yield* api.steer(located.hub, located.alias, controlExpiry(yield* DateTime.now));
+        yield* api.steer(
+          located.hub,
+          yield* sources.sendAlias(located.source.id, located.hub, located.alias, { provider }),
+          controlExpiry(yield* DateTime.now),
+        );
         return yield* saveSteer(located.source.id, provider, located.alias);
       }
       const provider = input.provider;
@@ -565,14 +582,20 @@ export const make = Effect.gen(function* () {
         ? null
         : ((yield* named(
             target.accounts,
-            input.account,
+            (yield* sources.routerAlias(target.source.id))(input.account),
             (entry) => entry,
             "on this provider's CLI Proxy hub",
           )).routerAlias as RouterAccountAlias);
     if (account === null) {
       yield* api.unsteer(target.hub, target.routerProvider);
     } else {
-      yield* api.steer(target.hub, account, controlExpiry(yield* DateTime.now));
+      yield* api.steer(
+        target.hub,
+        yield* sources.sendAlias(target.source.id, target.hub, account, {
+          provider: target.routerProvider,
+        }),
+        controlExpiry(yield* DateTime.now),
+      );
     }
     yield* saveSteer(target.source.id, target.routerProvider, account);
   });
@@ -584,7 +607,7 @@ export const make = Effect.gen(function* () {
     if (hub === null) return null;
     const [control, threads, settings] = yield* Effect.all(
       [
-        api.control(hub),
+        api.control(input.sourceId, hub),
         projections
           .getThreadsWithAccountChoices(input.sourceId)
           .pipe(Effect.mapError(() => fail("Could not read the threads' account choices."))),
@@ -619,17 +642,23 @@ export const make = Effect.gen(function* () {
       const thread = stored ? { id: stored.id, title: stored.title } : (known.get(session) ?? null);
       return { thread, session: thread ? null : session.slice(0, 8) };
     };
-    const alias = (value: string | undefined) =>
-      value !== undefined && isRouterAccountAlias(value) ? value : null;
+    // Stored choices, saved steers and a router's answers before it lists its accounts can
+    // still name an account by an alias the router renamed.
+    const rename = yield* sources.routerAlias(input.sourceId);
+    const alias = (value: string | undefined) => {
+      const renamed = value === undefined ? undefined : rename(value);
+      return renamed !== undefined && isRouterAccountAlias(renamed) ? renamed : null;
+    };
 
     const listed = new Set<string>();
     const pins: Array<NonNullable<ThreadAccountRouting>["pins"][number]> = [];
     for (const pin of control.pins ?? []) {
-      if (!isRouterAccountAlias(pin.account)) continue;
+      const account = alias(pin.account);
+      if (account === null) continue;
       listed.add(bareSession(pin.session));
       const expiresAt = isoOf(pin.expires_at);
       pins.push({
-        account: pin.account,
+        account,
         stall: pin.stall ?? false,
         active: true,
         ...(expiresAt ? { expiresAt } : {}),
@@ -640,7 +669,7 @@ export const make = Effect.gen(function* () {
       const choice = threadAccountChoiceFor(thread.accountChoice, thread.modelSelection.instanceId);
       if (listed.has(session) || !choice) continue;
       pins.push({
-        account: choice.account,
+        account: alias(choice.account) ?? choice.account,
         stall: choice.stall,
         active: false,
         thread: { id: thread.id, title: thread.title },
@@ -648,12 +677,13 @@ export const make = Effect.gen(function* () {
       });
     }
     const routerSteers = (control.steers ?? []).flatMap((steer) => {
-      if (!isRouterProvider(steer.provider) || !isRouterAccountAlias(steer.account)) return [];
+      const account = alias(steer.account);
+      if (!isRouterProvider(steer.provider) || account === null) return [];
       const expiresAt = isoOf(steer.expires_at);
       return [
         {
           provider: steer.provider,
-          account: steer.account,
+          account,
           active: true,
           ...(expiresAt ? { expiresAt } : {}),
         },
@@ -664,7 +694,11 @@ export const make = Effect.gen(function* () {
         (entry): entry is [RouterProvider, RouterAccountAlias] =>
           entry[1] !== undefined && !routerSteers.some((steer) => steer.provider === entry[0]),
       )
-      .map(([provider, account]) => ({ provider, account, active: false }));
+      .map(([provider, account]) => ({
+        provider,
+        account: alias(account) ?? account,
+        active: false,
+      }));
     // A conversation's subagents share its session, so one row per session, account and kind.
     const held = new Map<string, NonNullable<NonNullable<ThreadAccountRouting>["held"]>[number]>();
     for (const hold of control.held ?? []) {
@@ -695,9 +729,8 @@ export const make = Effect.gen(function* () {
     });
     const ends = (control.ends ?? []).flatMap((end) => {
       const endsAt = isoOf(end.ends_at);
-      return endsAt === undefined || !isRouterAccountAlias(end.account)
-        ? []
-        : [{ account: end.account, endsAt }];
+      const account = alias(end.account);
+      return endsAt === undefined || account === null ? [] : [{ account, endsAt }];
     });
     const result: ThreadAccountRouting = {
       steers: [...routerSteers, ...savedSteers],
@@ -779,7 +812,14 @@ export const make = Effect.gen(function* () {
           ? { afterCompaction: afterCompaction.account }
           : {}),
         owner: picked?.owner ?? null,
-        chosen: chosen ? { account: chosen.account, waitWhenOut: chosen.stall } : null,
+        chosen: chosen
+          ? {
+              account: (yield* sources.routerAlias(chosen.sourceId))(
+                chosen.account,
+              ) as RouterAccountAlias,
+              waitWhenOut: chosen.stall,
+            }
+          : null,
       },
     };
   });
@@ -822,7 +862,11 @@ export const make = Effect.gen(function* () {
       return yield* fail("`endsAt` must be an ISO date and time.");
     }
     const located = yield* locate(input.account);
-    yield* api.subscriptionEnd(located.hub, located.alias, endsAt);
+    yield* api.subscriptionEnd(
+      located.hub,
+      yield* sources.sendAlias(located.source.id, located.hub, located.alias, "end"),
+      endsAt,
+    );
   });
 
   const consumeResetCredit = Effect.fn("ThreadAccounts.consumeResetCredit")(function* (
@@ -887,6 +931,44 @@ export const make = Effect.gen(function* () {
     return yield* usageResetSnooze.resolve({ threadId, modelSelection: thread.modelSelection });
   });
 
+  // Clients find a thread's choice among the hub's accounts by alias, so once a router renames
+  // them (0.28.0 aliases, or a rollback), each stored choice on that hub takes the new alias.
+  const renameChoices = Effect.fn("ThreadAccounts.renameChoices")(function* (
+    sourceId: UsageLimitSourceId,
+  ) {
+    const threads = yield* projections.getThreadsWithAccountChoices(sourceId);
+    const rename = yield* sources.routerAlias(sourceId);
+    for (const thread of threads) {
+      const choice = thread.accountChoice;
+      if (!choice) continue;
+      const account = rename(choice.account) as RouterAccountAlias;
+      if (account === choice.account) continue;
+      yield* orchestrator.dispatch({
+        type: "thread.account-choice.set",
+        commandId: CommandId.make(
+          `thread-account-alias:${thread.id}:${DateTime.toEpochMillis(yield* DateTime.now)}`,
+        ),
+        threadId: thread.id,
+        accountChoice: { ...choice, account },
+      });
+    }
+  });
+  yield* sources.streamChanges.pipe(
+    Stream.map((snapshots) =>
+      snapshots.map((source) => [source.id, source.accounts.map((account) => account.routerAlias)]),
+    ),
+    Stream.changes,
+    Stream.runForEach((aliases) =>
+      Effect.forEach(
+        aliases,
+        ([sourceId]) =>
+          renameChoices(sourceId as UsageLimitSourceId).pipe(Effect.ignoreCause({ log: true })),
+        { discard: true },
+      ),
+    ),
+    Effect.forkScoped,
+  );
+
   const asThreadAccountError = <A, E extends { readonly message: string }, R>(
     effect: Effect.Effect<A, E, R>,
   ) =>
@@ -910,15 +992,14 @@ export const make = Effect.gen(function* () {
     consumeResetCredit,
     redeem: (input: ThreadAccountRedeemInput) => asThreadAccountError(redeem(input)),
     usageResetAt: (threadId: ThreadId) => asThreadAccountError(usageResetAt(threadId)),
-    emailOf: (alias: RouterAccountAlias) =>
-      sources.current.pipe(
-        Effect.map(
-          (snapshots) =>
-            snapshots
-              .flatMap((source) => source.accounts)
-              .find((account) => account.routerAlias === alias)?.email,
-        ),
-      ),
+    emailOf: Effect.fn("ThreadAccounts.emailOf")(function* (alias: RouterAccountAlias) {
+      for (const source of yield* sources.current) {
+        const renamed = (yield* sources.routerAlias(source.id))(alias);
+        const account = source.accounts.find((entry) => entry.routerAlias === renamed);
+        if (account !== undefined) return account.email;
+      }
+      return undefined;
+    }),
   } satisfies (typeof ThreadAccounts)["Service"];
 });
 

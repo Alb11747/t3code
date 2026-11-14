@@ -4,9 +4,11 @@ import type {
   ServerProvider,
   UsageLimitSourceSnapshot,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -21,6 +23,10 @@ import * as UsageLimitSources from "./UsageLimitSources.ts";
 const OWNER = "account-1111111111111111";
 const OTHER = "account-2222222222222222";
 const ELSEWHERE = "account-3333333333333333";
+// The aliases routers before 0.28.0 gave OWNER and OTHER.
+const LEGACY_OWNER = "account-aaaaaaaaaaaaaaa1";
+const LEGACY_OTHER = "account-aaaaaaaaaaaaaaa2";
+const RENAMED = { [LEGACY_OWNER]: OWNER, [LEGACY_OTHER]: OTHER };
 const NOW = Date.parse("2026-11-14T12:00:00.000Z");
 const threadId = "thread-1" as never;
 
@@ -74,6 +80,9 @@ function testLayer(input: {
   readonly redemptions?: Array<unknown>;
   readonly picks?: Array<unknown>;
   readonly oldRouter?: boolean;
+  // What the hub's router calls an alias now, as UsageLimitSources.routerAlias answers.
+  readonly renamed?: Record<string, string>;
+  readonly dispatched?: Deferred.Deferred<void>;
 }) {
   return Layer.mergeAll(
     Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
@@ -92,6 +101,9 @@ function testLayer(input: {
     }),
     Layer.mock(UsageLimitSources.UsageLimitSources)({
       current: Effect.succeed(snapshots),
+      streamChanges: Stream.make(snapshots),
+      routerAlias: () => Effect.succeed((alias) => input.renamed?.[alias] ?? alias),
+      sendAlias: (_sourceId, _hub, alias) => Effect.succeed(input.renamed?.[alias] ?? alias),
       hub: () => Effect.succeed({ url: "http://hub.test", managementKey: "key" }),
       nextPick: (_hub, request) =>
         Effect.sync(() => {
@@ -137,7 +149,11 @@ function testLayer(input: {
         Effect.sync(() => {
           input.commands?.push(command);
           return { sequence: input.commands?.length ?? 0 } as never;
-        }),
+        }).pipe(
+          Effect.tap(() =>
+            input.dispatched ? Deferred.succeed(input.dispatched, undefined) : Effect.void,
+          ),
+        ),
     }),
     Layer.mock(ProjectionStore.ProjectionStoreV2)({
       getThreadsWithAccountChoices: () => Effect.succeed((input.storedThreads ?? []) as never),
@@ -174,6 +190,7 @@ function setAccount(input: {
   readonly dropThinking?: boolean;
   readonly heldRunId?: string;
   readonly accountChoice?: unknown;
+  readonly renamed?: Record<string, string>;
 }) {
   const pins: Array<Parameters<UsageLimitSources.UsageLimitSources["Service"]["pin"]>[1]> = [];
   const commands: OrchestrationV2ServerCommand[] = [];
@@ -239,14 +256,21 @@ describe("ThreadAccountService.set", () => {
       account: OTHER,
       stall: true,
     },
+    {
+      name: "keeps it for a choice stored under the account's legacy alias",
+      account: OTHER,
+      stored: LEGACY_OTHER,
+      stall: true,
+    },
     { name: "falls back by default on a newly chosen account", account: OWNER, stall: false },
-  ])("$name", ({ account, stall }) =>
+  ])("$name", ({ account, stored, stall }) =>
     Effect.gen(function* () {
       const { pins } = yield* setAccount({
         owner: null,
         account,
         stall: undefined,
-        accountChoice: { sourceId: "hub", account: OTHER, stall: true },
+        accountChoice: { sourceId: "hub", account: stored ?? OTHER, stall: true },
+        renamed: RENAMED,
       });
       expect(pins).toMatchObject([{ account, stall }]);
     }),
@@ -254,6 +278,7 @@ describe("ThreadAccountService.set", () => {
 
   it.effect.each([
     { name: "an alias", account: OTHER, pinned: OTHER },
+    { name: "an alias the router renamed", account: LEGACY_OTHER, pinned: OTHER },
     { name: "an email in any case", account: "Spare@Example.COM", pinned: OTHER },
     { name: "a unique local part", account: "spare", pinned: OTHER },
     { name: "a full email whose local part is shared", account: "work@example.com", pinned: OWNER },
@@ -271,7 +296,7 @@ describe("ThreadAccountService.set", () => {
     },
   ])("resolves $name to an account", ({ account, pinned, error }) =>
     Effect.gen(function* () {
-      const { result, pins } = yield* setAccount({ owner: null, account });
+      const { result, pins } = yield* setAccount({ owner: null, account, renamed: RENAMED });
       if (error === undefined) {
         expect(pins).toMatchObject([{ account: pinned }]);
       } else {
@@ -366,7 +391,8 @@ describe("ThreadAccountService.routing", () => {
                 stall: true,
                 expires_at: "2026-11-20T00:00:00Z",
               },
-              { session: "outside1-session", account: OWNER },
+              // Answered before the router first listed its accounts.
+              { session: "outside1-session", account: LEGACY_OWNER },
               { session: "claude:native-3", account: OWNER },
             ],
             steers: [{ provider: "claude", account: OWNER, expires_at: "2026-11-20T00:00:00Z" }],
@@ -383,7 +409,7 @@ describe("ThreadAccountService.routing", () => {
                 actor: "T3 Code",
               },
             ],
-            ends: [{ account: OTHER, provider: "claude", ends_at: "2026-12-01T00:00:00Z" }],
+            ends: [{ account: LEGACY_OTHER, provider: "claude", ends_at: "2026-12-01T00:00:00Z" }],
           },
           knownSessions: [{ nativeId: "native-3", id: "thread-3", title: "Pinned elsewhere" }],
           storedThreads: [
@@ -397,15 +423,62 @@ describe("ThreadAccountService.routing", () => {
               id: "thread-2",
               title: "Expired",
               modelSelection,
-              accountChoice: { sourceId: "hub", account: OWNER, stall: false },
+              // Stored before the router renamed its accounts.
+              accountChoice: { sourceId: "hub", account: LEGACY_OWNER, stall: false },
             },
           ],
           nativeIds: { "thread-1": "native-1", "thread-2": "native-2" },
-          settings: { usageLimitSources: { hub: { steers: { claude: OWNER, codex: OTHER } } } },
+          settings: {
+            usageLimitSources: { hub: { steers: { claude: OWNER, codex: LEGACY_OTHER } } },
+          },
+          renamed: RENAMED,
         }),
       ),
     ),
   );
+});
+
+describe("ThreadAccountService stored aliases", () => {
+  it.effect("gives stored choices the alias the router renamed theirs to", () => {
+    const commands: OrchestrationV2ServerCommand[] = [];
+    const dispatched = Deferred.makeUnsafe<void>();
+    return Effect.gen(function* () {
+      yield* ThreadAccountService.make;
+      yield* Deferred.await(dispatched);
+      // A choice under neither alias may name an account that returns, so it stays.
+      expect(commands).toEqual([
+        {
+          type: "thread.account-choice.set",
+          commandId: expect.stringMatching(/^thread-account-alias:thread-2:/),
+          threadId: "thread-2",
+          accountChoice: { sourceId: "hub", account: OWNER, stall: true, instanceId: "claude" },
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        testLayer({
+          commands,
+          dispatched,
+          renamed: RENAMED,
+          storedThreads: [
+            {
+              id: "thread-1",
+              accountChoice: { sourceId: "hub", account: ELSEWHERE, stall: false },
+            },
+            {
+              id: "thread-2",
+              accountChoice: {
+                sourceId: "hub",
+                account: LEGACY_OWNER,
+                stall: true,
+                instanceId: "claude",
+              },
+            },
+          ],
+        }),
+      ),
+    );
+  });
 });
 
 describe("ThreadAccountService agent controls", () => {

@@ -10,25 +10,19 @@ import {
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Mac from "effect/crypto/Mac";
 import * as Effect from "effect/Effect";
-import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
 import * as Settings from "../serverSettings.ts";
 import * as SecretResolverLayer from "../secrets/SecretResolver.ts";
 import { resolveSettingsSecrets } from "../secrets/settingsSecretValue.ts";
-import { makeCliproxyApi } from "../usage/cliproxyApi.ts";
+import { makeCliproxyApi, type RouterListing } from "../usage/cliproxyApi.ts";
 
 // A CLIProxyAPI quota router holds requests marked with this header when their Claude account is
 // nearly out of its 5-hour window, forwarding each just before the prompt cache would expire.
 const KEEP_WARM_HEADER = "X-T3-Keep-Warm: 1";
 const POLL_INTERVAL = "30 seconds";
-const encodeAliasInput = Schema.encodeEffect(
-  Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
-);
 const READ_TTL_MS = 10_000;
 // The router re-places a switched conversation's held requests within milliseconds of the command.
 const SWITCH_SETTLE = "1 second";
@@ -98,7 +92,6 @@ export const make = Effect.gen(function* () {
   const api = yield* makeCliproxyApi;
   const settingsService = yield* Settings.ServerSettingsService;
   const secrets = yield* SecretResolver.SecretResolver;
-  const mac = yield* Mac.Mac;
   const sessions = new Set<ClaudeKeepWarmSession>();
   // The router names accounts by alias only; emails come from the hub's account list. Keyed per
   // hub, since two hubs sharing a management key give different accounts the same alias.
@@ -127,19 +120,20 @@ export const make = Effect.gen(function* () {
     Effect.map((configs) => configs.filter((config) => config.managementKey.length > 0)),
   );
 
-  // The router's alias: "account-" plus 16 hex of HMAC-SHA256, keyed by the management key, over
-  // JSON.stringify([provider, auth_index]). An alias without an email keeps naming itself.
+  // An alias without an email keeps naming itself.
   const nameAccounts = Effect.fn("ClaudeKeepWarm.nameAccounts")(function* (
     config: { readonly url: string; readonly managementKey: string },
     aliases: ReadonlyArray<string>,
+    listing: RouterListing,
   ) {
-    const utf8 = (value: string) => new TextEncoder().encode(value);
-    const key = yield* Mac.key(Mac.hmacSha256, utf8(config.managementKey));
     for (const file of yield* api.authFiles(config)) {
-      const signed = yield* encodeAliasInput([file.provider, file.auth_index]);
-      const signature = yield* mac.sign(key, utf8(signed));
-      const alias = `account-${Hex.encode(signature).slice(0, 16)}`;
-      if (file.email) accountNames.set(nameKey(config, alias), file.email);
+      const alias = yield* api.routerAliasOf(config, file, listing);
+      if (alias === undefined || !file.email) continue;
+      // Until the router has renamed its stored controls, a hold can name the legacy alias.
+      const legacy = listing?.find((entry) => entry.account === alias)?.legacy_account;
+      for (const name of legacy ? [alias, legacy] : [alias]) {
+        accountNames.set(nameKey(config, name), file.email);
+      }
     }
     for (const alias of aliases) {
       if (!accountNames.has(nameKey(config, alias)))
@@ -151,12 +145,12 @@ export const make = Effect.gen(function* () {
     readonly url: string;
     readonly managementKey: string;
   }) {
-    const holds = yield* api.keepWarmHolds(config);
+    const { holds, listing } = yield* api.keepWarmHolds(config);
     const unnamed = holds.flatMap(({ account }) =>
       account === undefined || accountNames.has(nameKey(config, account)) ? [] : [account],
     );
     if (unnamed.length > 0) {
-      yield* nameAccounts(config, unnamed).pipe(
+      yield* nameAccounts(config, unnamed, listing).pipe(
         Effect.catchCause((cause) =>
           Effect.logDebug("claude keep-warm account names unavailable", { cause }),
         ),
@@ -263,7 +257,9 @@ export const make = Effect.gen(function* () {
     const held = yield* Effect.forEach(accepted, (config) => api.keepWarmHolds(config), {
       concurrency: "unbounded",
     }).pipe(
-      Effect.map((perSource) => perSource.flat().some((hold) => hold.session === session)),
+      Effect.map((perSource) =>
+        perSource.some(({ holds }) => holds.some((hold) => hold.session === session)),
+      ),
       Effect.result,
     );
     cached = null;

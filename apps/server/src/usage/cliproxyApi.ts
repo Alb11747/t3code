@@ -193,7 +193,26 @@ const Control = Schema.Struct({
       ),
     ),
   ),
+  // Quota router 0.28: its alias for each host auth slot; null until it has listed them.
+  accounts: Schema.optional(
+    Schema.NullOr(
+      Schema.Array(
+        Schema.Struct({
+          account: Schema.String,
+          provider: Schema.String,
+          auth_index: Schema.optional(Schema.String),
+          legacy_account: Schema.optional(Schema.String),
+        }),
+      ),
+    ),
+  ),
 });
+
+/**
+ * A router's `accounts` from GET control: a list names every account, null means it has not
+ * listed them yet, and undefined (routers before 0.28.0) means T3 computes the legacy aliases.
+ */
+export type RouterListing = (typeof Control.Type)["accounts"];
 
 // Fork: quota-router 0.22 previews the account its next pick for a session would use.
 const NextPick = Schema.Struct({
@@ -595,12 +614,18 @@ export const makeCliproxyApi = Effect.gen(function* () {
     return response.body;
   });
 
-  // The router's alias: "account-" plus 16 hex of HMAC-SHA256, keyed by the management key, over
-  // JSON.stringify([provider, auth_index]).
-  const accountAlias = Effect.fn("CliproxyApi.accountAlias")(function* (
+  // A router before 0.28.0 names an account "account-" plus 16 hex of HMAC-SHA256, keyed by the
+  // management key, over JSON.stringify([provider, auth_index]); later ones publish their aliases.
+  const routerAliasOf = Effect.fn("CliproxyApi.routerAliasOf")(function* (
     hub: CliproxyHub,
     account: AuthFile,
+    listing: RouterListing,
   ) {
+    if (listing !== undefined) {
+      return listing?.find(
+        (entry) => entry.provider === account.provider && entry.auth_index === account.auth_index,
+      )?.account;
+    }
     const utf8 = (value: string) => new TextEncoder().encode(value);
     const key = yield* Mac.key(Mac.hmacSha256, utf8(hub.managementKey));
     const signed = yield* encodeAliasInput([account.provider, account.auth_index]);
@@ -611,32 +636,43 @@ export const makeCliproxyApi = Effect.gen(function* () {
     hub: CliproxyHub,
     account: AuthFile,
     provider: HubProvider,
+    listing: Effect.Effect<RouterListing>,
   ) {
     const checkedAt = DateTime.formatIso(yield* DateTime.now);
     const call: HubCall = (url, data) =>
       apiCall(hub, account, provider.header(account, platform, architecture), url, data);
-    const reading = yield* provider.read({ account, call, checkedAt }).pipe(
-      Effect.provideService(Digest.Digest, digest),
-      Effect.orElseSucceed(() => ({
-        ...listedIdentity(account),
-        usageLimits: makeUnavailableUsageLimits({
-          checkedAt,
-          reason: "probeFailed",
-          message: "The hub could not read this account's usage.",
-        }),
-      })),
+    const [reading, routerAlias] = yield* Effect.all(
+      [
+        provider.read({ account, call, checkedAt }).pipe(
+          Effect.provideService(Digest.Digest, digest),
+          Effect.orElseSucceed(() => ({
+            ...listedIdentity(account),
+            usageLimits: makeUnavailableUsageLimits({
+              checkedAt,
+              reason: "probeFailed",
+              message: "The hub could not read this account's usage.",
+            }),
+          })),
+        ),
+        listing.pipe(
+          Effect.flatMap((names) => routerAliasOf(hub, account, names)),
+          Effect.orElseSucceed(() => undefined),
+        ),
+      ],
+      { concurrency: "unbounded" },
     );
-    const routerAlias = yield* accountAlias(hub, account).pipe(Effect.option);
     return {
       id: account.id,
       driver: provider.driver,
-      ...(Option.isSome(routerAlias) ? { routerAlias: routerAlias.value } : {}),
+      ...(routerAlias === undefined ? {} : { routerAlias }),
       ...reading,
     };
   });
 
+  /** `listing` is the router's account listing, read only when the hub lists an account. */
   const readAccounts = Effect.fn("CliproxyApi.readAccounts")(function* (
     hub: CliproxyHub,
+    listing: Effect.Effect<RouterListing> = Effect.undefined,
   ): Effect.fn.Return<ReadonlyArray<UsageLimitSourceAccount>, UsageLimitSourceError> {
     const accounts = yield* authFiles(hub).pipe(
       Effect.mapError((error) =>
@@ -645,12 +681,13 @@ export const makeCliproxyApi = Effect.gen(function* () {
           : new UsageLimitSourceError({ detail: "The hub could not list accounts." }),
       ),
     );
+    const names = yield* Effect.cached(listing);
     return yield* Effect.forEach(
       accounts.flatMap((account) => {
         const provider = HUB_PROVIDERS.get(account.provider);
         return provider && !account.disabled ? [{ account, provider }] : [];
       }),
-      ({ account, provider }) => readAccount(hub, account, provider),
+      ({ account, provider }) => readAccount(hub, account, provider, names),
       { concurrency: 4 },
     );
   });
@@ -714,18 +751,20 @@ export const makeCliproxyApi = Effect.gen(function* () {
     );
   });
   // Quota-router control: `held` also lists stall pins (kind "pin", or no kind from older routers).
+  // `listing` comes from the same read, to name the holds' accounts.
   const keepWarmHolds = Effect.fn("CliproxyApi.keepWarmHolds")(function* (config: CliproxyHub) {
     const control = yield* management(config, "control").pipe(Effect.flatMap(decodeControl));
     // Go writes RFC3339 with nanoseconds or offsets; clients compare ISO strings.
     const iso = (value: string | null | undefined) =>
       value ? Option.getOrNull(Option.map(DateTime.make(value), DateTime.formatIso)) : null;
-    return (control.held ?? []).flatMap((held) => {
+    const holds = (control.held ?? []).flatMap((held) => {
       const releaseAt = iso(held.release_at);
       const resetAt = iso(held.reset_at);
       return held.kind === "keep_warm" && releaseAt !== null && resetAt !== null
         ? [{ session: held.session, account: held.account, releaseAt, resetAt }]
         : [];
     });
+    return { holds, listing: control.accounts };
   });
 
   /**
@@ -947,6 +986,7 @@ export const makeCliproxyApi = Effect.gen(function* () {
 
   return {
     readAccounts,
+    routerAliasOf,
     consume,
     authFiles,
     keepWarmHolds,
