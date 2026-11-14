@@ -1,6 +1,7 @@
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import { threadShowsKeepWarmStall } from "@t3tools/client-runtime/state/claudeKeepWarm";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
@@ -684,6 +685,7 @@ type ThreadStatusInput = Pick<
   | "latestRun"
   | "runtime"
   | "keepWarmStalled"
+  | "stalledSubagentThreadIds"
 > & {
   lastVisitedAt?: string | null | undefined;
   pendingBackgroundTasks?: SidebarThreadSummary["pendingBackgroundTasks"] | undefined;
@@ -1210,6 +1212,13 @@ export function resolveWorkingStartedAt(
   return resolveThreadWorkingStartedAt(thread);
 }
 
+const STALLING_PILL: ThreadStatusPill = {
+  label: "Stalling",
+  colorClass: "text-warning-foreground",
+  dotClass: "bg-warning",
+  pulse: false,
+};
+
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
 }): ThreadStatusPill | null {
@@ -1246,14 +1255,7 @@ export function resolveThreadStatusPill(input: {
     (thread.runtime?.status === "running" && thread.blockedOnThreadWait !== true) ||
     thread.runtime?.status === "waiting"
   ) {
-    if (thread.keepWarmStalled) {
-      return {
-        label: "Stalling",
-        colorClass: "text-warning-foreground",
-        dotClass: "bg-warning",
-        pulse: false,
-      };
-    }
+    if (threadShowsKeepWarmStall(thread, false)) return STALLING_PILL;
     return {
       label: "Working",
       colorClass: "text-sky-600 dark:text-sky-300/80",
@@ -1279,6 +1281,7 @@ export function resolveThreadStatusPill(input: {
     (thread.runtime?.status === "running" && thread.blockedOnThreadWait === true) ||
     backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
   ) {
+    if (threadShowsKeepWarmStall(thread, true)) return STALLING_PILL;
     return {
       label: "Waiting",
       colorClass: "text-sidebar-muted-foreground",

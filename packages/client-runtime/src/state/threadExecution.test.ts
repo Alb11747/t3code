@@ -784,4 +784,29 @@ describe("presentPendingBackgroundWork", () => {
     ]);
     expect(presentation?.items[0]?.label).toBe("mv a.ts b.ts\ncat > b.ts <<'EOF'\nexport {};\nEOF");
   });
+
+  it("names a held subagent's stall instead of the wait", () => {
+    const child = ThreadId.make("child");
+    const review = {
+      taskId: "review",
+      kind: "subagent" as const,
+      description: "Review",
+      childThreadId: child,
+      awaited: true as const,
+    };
+    const lint = {
+      ...review,
+      taskId: "lint",
+      description: "Lint",
+      childThreadId: ThreadId.make("lint"),
+    };
+    expect(presentPendingBackgroundWork([review])?.title).toBe("Waiting · Review");
+    expect(presentPendingBackgroundWork([review], [child])).toMatchObject({
+      title: "Stalling · Review",
+      stalledCount: 1,
+    });
+    expect(presentPendingBackgroundWork([review, lint], [child])?.title).toBe(
+      "Waiting on 2 subagents · 1 stalling",
+    );
+  });
 });

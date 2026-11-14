@@ -9,7 +9,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { SubagentTooltipContent } from "./SubagentTooltipContent";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef, scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { environmentThreadDetails } from "../../state/threads";
+import { environmentThreadDetails, environmentThreadShells } from "../../state/threads";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import * as DateTime from "effect/DateTime";
@@ -453,9 +453,18 @@ function SubagentTimelineLink(props: {
               params: buildThreadRouteParams(scopeThreadRef(remote.environmentId, remote.threadId)),
             })
         : null;
+  // A finished notification keeps its outcome; only the live entry reads the child's stall.
+  const stalled = useAtomValue(
+    environmentThreadShells.quietThreadShellAtom(props.parentRef),
+    (shell) =>
+      props.event === undefined &&
+      threadId !== null &&
+      shell?.stalledSubagentThreadIds?.includes(threadId) === true,
+  );
   const liveStatus = agent?.status ?? props.status;
   const status = props.event ? props.event.status : liveStatus;
-  const statusLabel = props.event?.label ?? subagentStatusVisual(liveStatus).label;
+  const statusLabel =
+    props.event?.label ?? (stalled ? "Stalling" : subagentStatusVisual(liveStatus).label);
   const result = (agent?.result ?? props.result)?.trim();
   const progress = (agent?.progress ?? props.progress)?.trim();
   const settled = SETTLED_SUBAGENT_STATUSES.has(status ?? liveStatus);
@@ -554,6 +563,7 @@ function SubagentTimelineLink(props: {
           model={agent?.model ?? null}
           modelSelection={agent?.modelSelection}
           status={liveStatus}
+          stalled={stalled}
           result={agent?.result ?? props.result}
           progress={agent?.progress ?? props.progress}
         />
@@ -567,6 +577,7 @@ function SubagentTimelineTooltip(
     model: string | null;
     modelSelection: OrchestrationV2Subagent["modelSelection"];
     elapsed: ReactNode;
+    stalled: boolean;
   },
 ) {
   const environmentId = props.parentRef.environmentId;
@@ -593,6 +604,7 @@ function SubagentTimelineTooltip(
       driver={props.driver}
       elapsed={props.elapsed}
       status={props.status}
+      stalled={props.stalled}
       result={props.result}
       progress={props.progress}
       parentThread={parent}

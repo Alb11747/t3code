@@ -143,6 +143,12 @@ type RemoteSubagent = OrchestrationV2Subagent & {
 /** A task delegated to a linked environment has no thread here, so it gets its own row kind. */
 type LineageRow = ThreadRelationshipWalkRow | { readonly remote: RemoteSubagent };
 
+/** The panel heading with its live counts, such as "Lineage · 1 running · 1 stalling". */
+const lineageHeading = (title: string, running: number, stalled: number) =>
+  [title, running > 0 ? `${running} running` : null, stalled > 0 ? `${stalled} stalling` : null]
+    .filter((part) => part !== null)
+    .join(" · ");
+
 const lineageRowStatus = (row: LineageRow) =>
   "remote" in row ? row.remote.status : row.edge.status;
 
@@ -429,6 +435,7 @@ export function ThreadRelationshipsPanel(props: {
 }) {
   const ref = scopeThreadRef(props.environmentId, props.threadId);
   const projection = useThreadProjection(ref)?.projection ?? null;
+  const stalledSubagentIds = useQuietThreadShell(ref)?.stalledSubagentThreadIds;
   const providersByEnvironment = useEnvironmentProviders();
   const settings = useAtomValue(serverEnvironment.settingsValueAtom(props.environmentId));
   const relationshipShells = useThreadRelationshipShells(ref);
@@ -537,9 +544,16 @@ export function ThreadRelationshipsPanel(props: {
           ? subagentsByThreadId.get(row.threadId)
           : undefined;
       const workflowGroup = agent === undefined ? undefined : workflowGroupsById.get(agent.id);
-      return workflowGroup === undefined
+      const status = workflowGroup?.workflow.status ?? row.edge.status;
+      // Held children, and children waiting on a held subagent, read as stalled, not running.
+      const stalled =
+        status === "running" &&
+        !isParentThreadRelationship(row.edge, props.threadId) &&
+        (graph.nodes.get(row.threadId)?.thread?.keepWarmStalled === true ||
+          stalledSubagentIds?.includes(row.threadId) === true);
+      return status === row.edge.status && !stalled
         ? row
-        : { ...row, edge: { ...row.edge, status: workflowGroup.workflow.status } };
+        : { ...row, edge: { ...row.edge, status: stalled ? "stalled" : status } };
     });
   const canMerge = mergeTargetThreadId !== null && latestMergeBackRun !== null;
   const unlistedThreadIds = relationshipRows
@@ -606,6 +620,7 @@ export function ThreadRelationshipsPanel(props: {
     (projection?.subagents.filter(
       (agent) => agent.childThreadId === null && agent.status === "running",
     ).length ?? 0) + active.filter(({ edge }) => edge.status === "running").length;
+  const stalledCount = active.filter(({ edge }) => edge.status === "stalled").length;
 
   // A linked environment's agent may have delegated this thread from there.
   const delegatedFrom = currentThread?.delegatedFrom;
@@ -623,6 +638,7 @@ export function ThreadRelationshipsPanel(props: {
       (canDetach && sideChats.length > 0));
   const sideChatsVisible = props.showSideChats && sideChats.length > 0;
   const runningSideChats = sideChats.filter(({ edge }) => edge.status === "running").length;
+  const stalledSideChats = sideChats.filter(({ edge }) => edge.status === "stalled").length;
 
   if (!lineageVisible && !sideChatsVisible) {
     return null;
@@ -724,10 +740,15 @@ export function ThreadRelationshipsPanel(props: {
     const isSubagent = edge.kind === "subagent";
     const isMergeTarget = threadId === mergeTargetThreadId;
     const isParent = isParentThreadRelationship(edge, props.threadId);
-    const rowStatus =
+    const relationStatus =
       (isParent && threadId === parentRef?.threadId
         ? (node?.thread?.activityRunStatus ?? parentNativeStatus)
         : undefined) ?? threadRelationshipRowStatus(graph, { threadId, edge });
+    const rowStatus =
+      isParent && relationStatus === "running" && node?.thread?.keepWarmStalled === true
+        ? "stalled"
+        : relationStatus;
+    const stalled = rowStatus === "stalled";
     const RelationshipIcon = isParent
       ? CornerLeftUpIcon
       : isSubagent
@@ -795,6 +816,7 @@ export function ThreadRelationshipsPanel(props: {
         driver={providerDriver}
         elapsed={<AgentElapsed agent={agent} />}
         status={agent.status}
+        stalled={stalled}
         result={agent.result}
         progress={agent.progress}
         parentThread={currentThread ?? undefined}
@@ -822,7 +844,10 @@ export function ThreadRelationshipsPanel(props: {
         {agent ? null : (
           <ArrowRightIcon className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
         )}
-        {agent && !failed && (deriveSubagentElapsedMs(agent, 0) !== null || canStopWorkflow) ? (
+        {agent &&
+        !failed &&
+        !stalled &&
+        (deriveSubagentElapsedMs(agent, 0) !== null || canStopWorkflow) ? (
           <span
             className={`shrink-0 text-2xs font-normal tabular-nums text-muted-foreground ${canStopWorkflow ? "min-w-6 text-end" : ""} ${trailingVisibilityClass}`}
           >
@@ -833,7 +858,7 @@ export function ThreadRelationshipsPanel(props: {
             className={
               workflowGroup
                 ? "sr-only"
-                : `shrink-0 text-2xs ${failed ? "text-destructive" : "text-muted-foreground"} ${trailingVisibilityClass}`
+                : `shrink-0 text-2xs ${failed ? "text-destructive" : stalled ? "text-warning-foreground" : "text-muted-foreground"} ${trailingVisibilityClass}`
             }
           >
             {threadRelationshipStatusLabel(rowStatus)}
@@ -972,7 +997,7 @@ export function ThreadRelationshipsPanel(props: {
       {lineageVisible ? (
         <ThreadDetailsSection
           headingId="thread-details-lineage-heading"
-          title={runningCount > 0 ? `Lineage · ${runningCount} running` : "Lineage"}
+          title={lineageHeading("Lineage", runningCount, stalledCount)}
           // A lone "Previous agents" row names itself; the heading returns for status or actions.
           showHeading={
             runningCount > 0 ||
@@ -1042,7 +1067,7 @@ export function ThreadRelationshipsPanel(props: {
       {sideChatsVisible ? (
         <ThreadDetailsSection
           headingId="thread-details-side-chats-heading"
-          title={runningSideChats > 0 ? `Side chats · ${runningSideChats} running` : "Side chats"}
+          title={lineageHeading("Side chats", runningSideChats, stalledSideChats)}
           data-thread-side-chats-panel
         >
           <ThreadLineageGroup

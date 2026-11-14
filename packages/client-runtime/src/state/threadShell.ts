@@ -16,6 +16,7 @@ import { Atom } from "effect/reactivity";
 
 import type { EnvironmentThreadShell, PendingSubagentRequest } from "./models.ts";
 import { presentThreadShell, threadRuntimeIsActive } from "./models.ts";
+import { stalledSubagentsByThread } from "./claudeKeepWarm.ts";
 import { hiddenThreadKeys, NO_HIDDEN_THREADS } from "./threadTagFilter.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
 import {
@@ -152,6 +153,18 @@ function pendingSubagentRequestsByThread(
   return requests.size === 0 ? EMPTY_SUBAGENT_REQUESTS : requests;
 }
 
+const sameStalledSubagents = (
+  left: ReadonlyMap<ThreadId, ReadonlyArray<ThreadId>>,
+  right: ReadonlyMap<ThreadId, ReadonlyArray<ThreadId>>,
+) =>
+  left.size === right.size &&
+  [...right].every(([threadId, ids]) => arrayElementsEqual(left.get(threadId) ?? [], ids));
+
+interface ChildRollups {
+  readonly requests: ReadonlyMap<ThreadId, PendingSubagentRequest>;
+  readonly stalled: ReadonlyMap<ThreadId, ReadonlyArray<ThreadId>>;
+}
+
 const sameRequests = (
   left: ReadonlyMap<ThreadId, RolledUpRequest>,
   right: ReadonlyMap<ThreadId, RolledUpRequest>,
@@ -185,6 +198,10 @@ function sameApartFromStreaming(
   if (
     previous.environmentId !== next.environmentId ||
     previous.pendingSubagentRequest !== next.pendingSubagentRequest ||
+    !arrayElementsEqual(
+      previous.stalledSubagentThreadIds ?? [],
+      next.stalledSubagentThreadIds ?? [],
+    ) ||
     !threadRuntimeIsActive(next.runtime)
   ) {
     return false;
@@ -226,18 +243,19 @@ export function createEnvironmentThreadShellAtoms(input: {
   const scopedThread = (
     environmentId: EnvironmentId,
     thread: OrchestrationV2ThreadShell,
-    subagentRequests: ReadonlyMap<ThreadId, PendingSubagentRequest>,
+    rollups: ChildRollups,
   ) => {
     let byEnvironment = scopedThreads.get(thread);
     if (byEnvironment === undefined) {
       byEnvironment = new Map();
       scopedThreads.set(thread, byEnvironment);
     }
-    const request = subagentRequests.get(thread.id) ?? null;
-    const key = request === null ? environmentId : `${environmentId}:${request}`;
+    const request = rollups.requests.get(thread.id) ?? null;
+    const stalled = rollups.stalled.get(thread.id);
+    const key = `${environmentId}:${request ?? ""}:${stalled?.join(",") ?? ""}`;
     let value = byEnvironment.get(key);
     if (value === undefined) {
-      value = presentThreadShell(environmentId, thread, request);
+      value = presentThreadShell(environmentId, thread, request, stalled);
       byEnvironment.set(key, value);
     }
     return value;
@@ -355,6 +373,24 @@ export function createEnvironmentThreadShellAtoms(input: {
     }).pipe(Atom.withLabel(`environment-pending-subagent-requests:${environmentId}`));
   });
 
+  // Held subagents roll up their parent chain within an environment, like approvals.
+  const stalledSubagentsAtom = Atom.family((environmentId: EnvironmentId) => {
+    let previous: ReadonlyMap<ThreadId, ReadonlyArray<ThreadId>> = new Map();
+    return Atom.make((get) => {
+      const next = stalledSubagentsByThread(get(environmentThreadsAtom(environmentId)));
+      if (sameStalledSubagents(previous, next)) return previous;
+      previous = next;
+      return next;
+    }).pipe(Atom.withLabel(`environment-stalled-subagents:${environmentId}`));
+  });
+
+  const childRollupsAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get): ChildRollups => ({
+      requests: get(pendingSubagentRequestsAtom(environmentId)),
+      stalled: get(stalledSubagentsAtom(environmentId)),
+    })).pipe(Atom.withLabel(`environment-child-rollups:${environmentId}`)),
+  );
+
   const environmentThreadRefsAtom = Atom.family((environmentId: EnvironmentId) => {
     let previous: ReadonlyArray<ScopedThreadRef> = [];
     return Atom.make((get) => {
@@ -419,11 +455,7 @@ export function createEnvironmentThreadShellAtoms(input: {
       const source = get(environmentThreadIndexAtom(ref.environmentId)).get(ref.threadId) ?? null;
       return source === null
         ? null
-        : scopedThread(
-            ref.environmentId,
-            source,
-            get(pendingSubagentRequestsAtom(ref.environmentId)),
-          );
+        : scopedThread(ref.environmentId, source, get(childRollupsAtom(ref.environmentId)));
     }).pipe(Atom.withLabel(`environment-thread-shell:${key}`));
   });
 
@@ -484,9 +516,7 @@ export function createEnvironmentThreadShellAtoms(input: {
           seen.add(childKey);
           pending.push(childKey);
           if (subagentRequest(thread) !== null || sideChatRequest(thread) !== null) {
-            next.push(
-              scopedThread(environmentId, thread, get(pendingSubagentRequestsAtom(environmentId))),
-            );
+            next.push(scopedThread(environmentId, thread, get(childRollupsAtom(environmentId))));
           }
         }
       }
@@ -520,10 +550,8 @@ export function createEnvironmentThreadShellAtoms(input: {
         previous = EMPTY_THREAD_SHELLS;
         return previous;
       }
-      const subagentRequests = get(pendingSubagentRequestsAtom(ref.environmentId));
-      const next = sideChats.map((thread) =>
-        scopedThread(ref.environmentId, thread, subagentRequests),
-      );
+      const rollups = get(childRollupsAtom(ref.environmentId));
+      const next = sideChats.map((thread) => scopedThread(ref.environmentId, thread, rollups));
       if (
         previous.length === next.length &&
         previous.every(
@@ -555,7 +583,7 @@ export function createEnvironmentThreadShellAtoms(input: {
           ) ?? EMPTY_SCOPED_THREAD_REFS;
         if (refs.length === 0) continue;
         const threads = get(environmentThreadIndexAtom(projectRef.environmentId));
-        const subagentRequests = get(pendingSubagentRequestsAtom(projectRef.environmentId));
+        const rollups = get(childRollupsAtom(projectRef.environmentId));
         for (const ref of refs) {
           const key = threadKey(ref);
           if (seen.has(key)) {
@@ -564,7 +592,7 @@ export function createEnvironmentThreadShellAtoms(input: {
           seen.add(key);
           const thread = threads.get(ref.threadId);
           if (thread !== undefined) {
-            next.push(scopedThread(ref.environmentId, thread, subagentRequests));
+            next.push(scopedThread(ref.environmentId, thread, rollups));
           }
         }
       }
@@ -593,9 +621,9 @@ export function createEnvironmentThreadShellAtoms(input: {
   const threadShellsAtom = Atom.make((get) => {
     const next: EnvironmentThreadShell[] = [];
     for (const environmentId of enabledEnvironmentIds(get(input.catalogValueAtom))) {
-      const subagentRequests = get(pendingSubagentRequestsAtom(environmentId));
+      const rollups = get(childRollupsAtom(environmentId));
       for (const thread of get(environmentThreadsAtom(environmentId))) {
-        next.push(scopedThread(environmentId, thread, subagentRequests));
+        next.push(scopedThread(environmentId, thread, rollups));
       }
     }
     if (arrayElementsEqual(previousThreadShells, next)) {
@@ -708,7 +736,7 @@ export function createEnvironmentThreadShellAtoms(input: {
     const underParent = get(delegatedUnderParentAtom);
     const hidden = get(hiddenThreadKeysAtom);
     for (const environmentId of enabledEnvironmentIds(get(input.catalogValueAtom))) {
-      const subagentRequests = get(pendingSubagentRequestsAtom(environmentId));
+      const rollups = get(childRollupsAtom(environmentId));
       for (const thread of get(environmentThreadsAtom(environmentId))) {
         if (
           thread.archivedAt !== null ||
@@ -717,7 +745,7 @@ export function createEnvironmentThreadShellAtoms(input: {
         ) {
           continue;
         }
-        next.push(scopedThread(environmentId, thread, subagentRequests));
+        next.push(scopedThread(environmentId, thread, rollups));
       }
     }
     if (arrayElementsEqual(previousNavigationShells, next)) return previousNavigationShells;

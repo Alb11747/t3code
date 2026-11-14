@@ -566,6 +566,8 @@ export interface PendingBackgroundWorkPresentation {
   readonly title: string;
   readonly items: ReadonlyArray<PendingBackgroundWorkItem>;
   readonly waiting: boolean;
+  /** Subagent tasks whose child is held by a keep-warm stall, directly or below it. */
+  readonly stalledCount: number;
 }
 
 function joinWithAnd(parts: ReadonlyArray<string>): string {
@@ -595,6 +597,7 @@ export function isBackgroundWorkStopPending(
 
 export function presentPendingBackgroundWork(
   tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
+  stalledSubagentThreadIds: ReadonlyArray<ThreadId> = [],
 ): PendingBackgroundWorkPresentation | null {
   if (tasks.length === 0) return null;
   const waiting = backgroundWorkHoldsCompletion(tasks);
@@ -624,16 +627,22 @@ export function presentPendingBackgroundWork(
       (left, right) =>
         BACKGROUND_WORK_KINDS[left.kind].order - BACKGROUND_WORK_KINDS[right.kind].order,
     );
+  const stalledCount = items.filter(
+    (item) =>
+      item.childThreadId !== undefined && stalledSubagentThreadIds.includes(item.childThreadId),
+  ).length;
   const [only] = items;
   if (items.length === 1 && only !== undefined) {
     const noun = BACKGROUND_WORK_KINDS[only.kind].singular;
     const named = only.label !== noun;
     const title = named
-      ? `${waiting ? "Waiting" : "Running"} · ${only.label}`
-      : waiting
-        ? `Waiting on a ${noun}`
-        : `Running a ${noun}`;
-    return { title, items, waiting };
+      ? `${stalledCount > 0 ? "Stalling" : waiting ? "Waiting" : "Running"} · ${only.label}`
+      : stalledCount > 0
+        ? `Waiting on a stalled ${noun}`
+        : waiting
+          ? `Waiting on a ${noun}`
+          : `Running a ${noun}`;
+    return { title, items, waiting, stalledCount };
   }
   const counts = new Map<BackgroundWorkKind, number>();
   for (const item of items) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
@@ -641,7 +650,13 @@ export function presentPendingBackgroundWork(
     const { singular, plural } = BACKGROUND_WORK_KINDS[kind];
     return `${count} ${count === 1 ? singular : plural}`;
   });
-  return { title: `${waiting ? "Waiting on" : "Running"} ${joinWithAnd(groups)}`, items, waiting };
+  const title = `${waiting ? "Waiting on" : "Running"} ${joinWithAnd(groups)}`;
+  return {
+    title: stalledCount > 0 ? `${title} · ${stalledCount} stalling` : title,
+    items,
+    waiting,
+    stalledCount,
+  };
 }
 
 export interface ProviderGoalPresentation {

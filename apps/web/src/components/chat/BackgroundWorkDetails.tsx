@@ -22,6 +22,7 @@ export function BackgroundWorkDetails(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
+  readonly stalledSubagentThreadIds?: ReadonlyArray<ThreadId> | undefined;
   readonly turnItems: ThreadStructure["turnItems"];
   readonly onOpenThread: (threadId: ThreadId) => void;
 }) {
@@ -59,7 +60,11 @@ export function BackgroundWorkDetails(props: {
                   <div className="flex items-baseline justify-between gap-3">
                     <h3 className="font-medium">{title}</h3>
                     <span className="shrink-0 text-xs text-muted-foreground">
-                      {task.awaited ? "Waiting" : "Running"}
+                      {childThreadId && props.stalledSubagentThreadIds?.includes(childThreadId)
+                        ? "Stalling"
+                        : task.awaited
+                          ? "Waiting"
+                          : "Running"}
                     </span>
                   </div>
                   {command ? (

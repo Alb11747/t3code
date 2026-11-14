@@ -27,6 +27,7 @@ import type {
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentThreadSearchMatch } from "@t3tools/client-runtime/state/thread-search";
+import { threadShowsKeepWarmStall } from "@t3tools/client-runtime/state/claudeKeepWarm";
 import {
   formatWorkingDurationLabel,
   resolveThreadWorkingStartedAt,
@@ -787,7 +788,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const workingLabel = STATUS_LABEL_BY_STATUS[status];
   const showsWoke = status === "ready" && props.wokeAt !== null;
   const statusLabel =
-    (status === "working" && thread.keepWarmStalled
+    ((status === "working" || status === "waiting") &&
+    threadShowsKeepWarmStall(thread, status === "waiting")
       ? {
           label: "Stalling",
           icon: "pause" as const,

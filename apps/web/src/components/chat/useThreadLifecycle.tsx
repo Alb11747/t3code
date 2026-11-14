@@ -615,6 +615,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
         environmentId,
         threadId: activeThread.id,
         tasks: activeBackgroundTasks,
+        stalledSubagentThreadIds: activeThreadShell?.stalledSubagentThreadIds,
         turnItems,
         // Interrupt stops the active run first, not this work; the composer owns that Stop.
         stopDisabled: runIsLive || !canOperateThread || isStoppingBackgroundWork,

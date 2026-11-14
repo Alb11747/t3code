@@ -441,12 +441,21 @@ describe("resolveThreadStatusPill", () => {
       label: "Waiting",
       pulse: false,
     });
+    const stalledChild = { stalledSubagentThreadIds: [ThreadId.make("child")] };
+    expect(resolveThreadStatusPill({ thread: { ...blocked, ...stalledChild } })).toMatchObject({
+      label: "Stalling",
+      pulse: false,
+    });
 
     const resumed = { ...blocked, blockedOnThreadWait: false };
     expect(resolveSidebarThreadStatus(resumed)).toBe("working");
     expect(resolveThreadStatusPill({ thread: resumed })).toMatchObject({
       label: "Working",
       pulse: true,
+    });
+    // Its own work comes first once it stops waiting on the held child.
+    expect(resolveThreadStatusPill({ thread: { ...resumed, ...stalledChild } })).toMatchObject({
+      label: "Working",
     });
   });
 

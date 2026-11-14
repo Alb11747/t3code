@@ -17,6 +17,7 @@ import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import * as DateTime from "effect/DateTime";
 import {
   CircleDashedIcon,
+  CirclePauseIcon,
   CircleStopIcon,
   GitBranchIcon,
   MessageCircleIcon,
@@ -172,6 +173,7 @@ export function backgroundWorkNowItem(input: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
+  readonly stalledSubagentThreadIds?: ReadonlyArray<ThreadId> | undefined;
   readonly turnItems: ThreadStructure["turnItems"];
   readonly stopDisabled: boolean;
   readonly stopping: boolean;
@@ -179,7 +181,7 @@ export function backgroundWorkNowItem(input: {
   readonly onOpenThread: (threadId: ThreadId) => void;
 }): ThreadNowItem | null {
   const { onOpenThread } = input;
-  const presentation = presentPendingBackgroundWork(input.tasks);
+  const presentation = presentPendingBackgroundWork(input.tasks, input.stalledSubagentThreadIds);
   if (presentation === null) return null;
   const rows = presentation.items.map((task) => {
     const itemKey =
@@ -216,11 +218,22 @@ export function backgroundWorkNowItem(input: {
   const startedAtMs = only?.startedAtMs ?? null;
   return {
     id: `background-work:${input.threadId}`,
-    icon: rows.every(isCommand) ? <TerminalIcon /> : <CircleDashedIcon />,
+    icon: rows.every(isCommand) ? (
+      <TerminalIcon />
+    ) : presentation.stalledCount > 0 ? (
+      <CirclePauseIcon />
+    ) : (
+      <CircleDashedIcon />
+    ),
     title:
       only && typeof only.label !== "string" && only.task.label !== only.task.kind ? (
         <>
-          {presentation.waiting ? "Waiting" : "Running"} · {only.label}
+          {presentation.stalledCount > 0
+            ? "Stalling"
+            : presentation.waiting
+              ? "Waiting"
+              : "Running"}{" "}
+          · {only.label}
         </>
       ) : (
         presentation.title
@@ -254,6 +267,7 @@ export function backgroundWorkNowItem(input: {
           environmentId={input.environmentId}
           threadId={input.threadId}
           tasks={input.tasks}
+          stalledSubagentThreadIds={input.stalledSubagentThreadIds}
           turnItems={input.turnItems}
           onOpenThread={onOpenThread}
         />

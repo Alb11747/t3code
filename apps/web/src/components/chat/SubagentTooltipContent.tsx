@@ -19,6 +19,7 @@ import {
   BotIcon,
   CheckIcon,
   CircleDashedIcon,
+  CirclePauseIcon,
   CircleXIcon,
   FolderIcon,
   GitBranchIcon,
@@ -47,6 +48,8 @@ export function SubagentTooltipContent(props: {
   parentProject?: Pick<OrchestrationProjectShell, "workspaceRoot"> | undefined;
   childProject?: Pick<OrchestrationProjectShell, "id" | "title" | "workspaceRoot"> | undefined;
   status: OrchestrationV2TurnItemStatus;
+  /** Held by a keep-warm stall, directly or through a subagent below it. */
+  stalled?: boolean | undefined;
   result?: string | null | undefined;
   progress?: string | null | undefined;
 }) {
@@ -110,13 +113,14 @@ export function SubagentTooltipContent(props: {
   const showInstanceBadge = entry !== undefined && shouldShowInstanceBadge(entry, entries);
   const working = ["running", "in_progress", "pending", "waiting"].includes(props.status);
   const failed = ["failed", "error"].includes(props.status);
-  const StatusIcon = working
+  const RunStatusIcon = working
     ? CircleDashedIcon
     : failed
       ? CircleXIcon
       : props.status === "completed"
         ? CheckIcon
         : CircleDashedIcon;
+  const StatusIcon = props.stalled ? CirclePauseIcon : RunStatusIcon;
   return (
     <ThreadHoverCard title={props.title}>
       <div className="flex min-w-0 items-center gap-2">
@@ -160,10 +164,11 @@ export function SubagentTooltipContent(props: {
                 : props.status === "completed"
                   ? "text-success"
                   : "text-muted-foreground",
+            props.stalled && "text-warning-foreground",
           )}
         >
           <StatusIcon aria-hidden className="size-3 shrink-0" />
-          {props.status.replaceAll("_", " ")}
+          {props.stalled ? "Stalling" : props.status.replaceAll("_", " ")}
         </span>
         {props.elapsed}
       </div>

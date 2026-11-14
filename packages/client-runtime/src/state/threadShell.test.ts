@@ -343,6 +343,52 @@ describe("v2 thread shell lists", () => {
     registry.dispose();
   });
 
+  it("rolls a held subagent up its parent chain, but not a held side chat", () => {
+    const { registry, threads, snapshotAtom } = makeHarness();
+    const child = {
+      ...v2ThreadShell,
+      id: ThreadId.make("review"),
+      status: "running" as const,
+      activityRunStatus: "running" as const,
+      lineage: {
+        ...v2ThreadShell.lineage,
+        parentThreadId: v2ThreadShell.id,
+        relationshipToParent: "subagent" as const,
+      },
+    };
+    const grandchild = {
+      ...child,
+      id: ThreadId.make("review-helper"),
+      lineage: { ...child.lineage, parentThreadId: child.id },
+    };
+    const sideChat = {
+      ...child,
+      id: ThreadId.make("side-chat"),
+      keepWarmStalled: true,
+      lineage: { ...child.lineage, relationshipToParent: "fork" as const, sideChat: true },
+    };
+    const root = threads.threadShellAtom({ environmentId, threadId: v2ThreadShell.id });
+    const middle = threads.threadShellAtom({ environmentId, threadId: child.id });
+    const disposeRoot = registry.mount(root);
+    const disposeMiddle = registry.mount(middle);
+    registry.set(snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [v2ThreadShell, child, { ...grandchild, keepWarmStalled: true }, sideChat],
+    });
+    expect(registry.get(root)?.stalledSubagentThreadIds).toEqual([child.id]);
+    expect(registry.get(middle)?.stalledSubagentThreadIds).toEqual([grandchild.id]);
+
+    registry.set(snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [v2ThreadShell, child, grandchild, sideChat],
+    });
+    expect(registry.get(root)?.stalledSubagentThreadIds).toEqual([]);
+    expect(registry.get(middle)?.stalledSubagentThreadIds).toEqual([]);
+    disposeMiddle();
+    disposeRoot();
+    registry.dispose();
+  });
+
   it("lists a task a linked environment runs for a listed thread under that thread", () => {
     const { registry, threads, snapshotAtom, catalogValueAtom } = makeHarness([
       environmentId,

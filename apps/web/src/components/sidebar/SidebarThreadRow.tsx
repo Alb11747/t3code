@@ -21,6 +21,7 @@ import {
   resolveThreadActivityTimestamp,
 } from "@t3tools/client-runtime/state/thread-sort";
 import { type EnvironmentThreadSearchMatch } from "@t3tools/client-runtime/state/thread-search";
+import { threadShowsKeepWarmStall } from "@t3tools/client-runtime/state/claudeKeepWarm";
 import {
   formatWorkingDurationLabel,
   resolveThreadProviderStack,
@@ -289,6 +290,10 @@ function SidebarThreadTooltip({
         {thread.keepWarmStalled ? (
           <div className="text-warning-foreground">
             Stalled to keep cache warm until the usage reset.
+          </div>
+        ) : (thread.stalledSubagentThreadIds?.length ?? 0) > 0 ? (
+          <div className="text-warning-foreground">
+            A subagent is stalled to keep cache warm until the usage reset.
           </div>
         ) : null}
         {projectDisplayName ? (
@@ -765,14 +770,15 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     isActive: props.isActive,
     isSelected,
   });
+  const stallingStatus = {
+    label: "Stalling",
+    icon: "stalling" as const,
+    className: "text-warning-foreground",
+  };
   const topStatus =
     status === "preparing" || status === "working"
-      ? status === "working" && thread.keepWarmStalled
-        ? {
-            label: "Stalling",
-            icon: "stalling" as const,
-            className: "text-warning-foreground",
-          }
+      ? status === "working" && threadShowsKeepWarmStall(thread, false)
+        ? stallingStatus
         : {
             label:
               status === "preparing"
@@ -784,11 +790,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             className: "text-info-foreground",
           }
       : status === "waiting"
-        ? {
-            label: "Waiting",
-            icon: "waiting" as const,
-            className: "text-muted-foreground",
-          }
+        ? threadShowsKeepWarmStall(thread, true)
+          ? stallingStatus
+          : {
+              label: "Waiting",
+              icon: "waiting" as const,
+              className: "text-muted-foreground",
+            }
         : status === "approval"
           ? {
               label: "Approval",

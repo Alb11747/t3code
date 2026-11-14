@@ -755,6 +755,7 @@ function ThreadDetailBody(
   };
   const pendingBackgroundWork = presentPendingBackgroundWork(
     props.selectedThread.pendingBackgroundTasks,
+    props.selectedThread.stalledSubagentThreadIds,
   );
   const extensionStatus = props.extensionStatuses?.length
     ? {

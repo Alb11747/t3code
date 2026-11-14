@@ -161,6 +161,8 @@ export interface EnvironmentThreadShell {
   readonly runtime: ThreadRuntimeSummary | null;
   readonly blockedOnThreadWait?: boolean;
   readonly keepWarmStalled?: boolean;
+  /** Direct subagents held by a keep-warm stall, or with a held subagent below them. */
+  readonly stalledSubagentThreadIds?: ReadonlyArray<ThreadId>;
   readonly latestUserMessageAt: string | null;
   readonly latestUserAuthoredMessageAt?: string | null;
   readonly hasPendingApprovals: boolean;
@@ -269,10 +271,13 @@ export function scopeProject(
 
 export type PendingSubagentRequest = "approval" | "user_input";
 
+const NO_STALLED_SUBAGENTS: ReadonlyArray<ThreadId> = Object.freeze([]);
+
 export function presentThreadShell(
   environmentId: EnvironmentId,
   thread: OrchestrationV2ThreadShell,
   pendingSubagentRequest: PendingSubagentRequest | null = null,
+  stalledSubagentThreadIds: ReadonlyArray<ThreadId> = NO_STALLED_SUBAGENTS,
 ): EnvironmentThreadShell {
   const updatedAt = iso(thread.updatedAt);
   const latestRun =
@@ -325,6 +330,7 @@ export function presentThreadShell(
     runtime,
     blockedOnThreadWait: thread.blockedOnThreadWait ?? false,
     keepWarmStalled: thread.keepWarmStalled ?? false,
+    stalledSubagentThreadIds,
     latestUserMessageAt: nullableIso(thread.latestUserMessageAt),
     ...(thread.latestUserAuthoredMessageAt === undefined
       ? {}

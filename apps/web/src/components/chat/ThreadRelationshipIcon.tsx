@@ -18,6 +18,8 @@ export function threadRelationshipStatusLabel(status: string | null): string {
     case "waiting":
     case "blocked":
       return "Waiting";
+    case "stalled":
+      return "Stalling";
     case "completed":
       return "Done";
     case "failed":
@@ -91,7 +93,9 @@ export function ThreadRelationshipIcon({
               ? "bg-destructive"
               : status === "completed"
                 ? "bg-success"
-                : "bg-muted-foreground/45",
+                : status === "stalled"
+                  ? "bg-warning"
+                  : "bg-muted-foreground/45",
         )}
         aria-hidden="true"
       />
