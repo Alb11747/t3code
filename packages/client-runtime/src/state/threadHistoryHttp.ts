@@ -10,7 +10,7 @@ import {
   withOrchestrationProtocolHeader,
 } from "./environmentHttpAuth.ts";
 
-const DEFAULT_THREAD_HISTORY_TIMEOUT_MS = 30_000;
+const DEFAULT_THREAD_HISTORY_TIMEOUT_MS = 6_000;
 
 export const fetchEnvironmentThreadHistoryPage = Effect.fn(
   "clientRuntime.state.fetchEnvironmentThreadHistoryPage",
