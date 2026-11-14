@@ -22,6 +22,7 @@ import {
   readResponseSubagents,
   useAssistantMessageText,
   useProject,
+  useRunServedModelNote,
   useThreadShell,
 } from "../../state/entities";
 import { MessageCopyButton } from "./MessageCopyButton";
@@ -220,6 +221,10 @@ function AssistantMessageMeta({
   alwaysVisible?: boolean;
 }) {
   const ctx = use(TimelineRowCtx);
+  const servedModelNote = useRunServedModelNote(
+    ctx.threadRef,
+    projectedItem?.item.type === "assistant_message" ? projectedItem.item.runId : null,
+  );
 
   return (
     <div
@@ -255,6 +260,9 @@ function AssistantMessageMeta({
           </TooltipPopup>
         </Tooltip>
       )}
+      {servedModelNote ? (
+        <p className="min-w-0 truncate text-muted-foreground text-xs">{servedModelNote}</p>
+      ) : null}
     </div>
   );
 }

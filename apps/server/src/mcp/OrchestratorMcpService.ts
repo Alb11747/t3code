@@ -333,11 +333,14 @@ function listCapabilityModels(input: {
     | { readonly hiddenModels: ReadonlyArray<string>; readonly modelOrder: ReadonlyArray<string> }
     | undefined;
   readonly isPinned: (model: ServerProviderModel) => boolean;
+  readonly isInherited: (model: ServerProviderModel) => boolean;
   readonly searchTerms: ReadonlyArray<string>;
 }) {
   const rank = new Map(input.preferences?.modelOrder.map((slug, index) => [slug, index]));
   const visible = input.provider.models
     .filter((model) => model.isCustom || !input.preferences?.hiddenModels.includes(model.slug))
+    // Fork: a retired ID a CLI Proxy hub answers with another model is not a model of its own.
+    .filter((model) => model.servedBy === undefined || input.isInherited(model))
     .toSorted((a, b) => (rank.get(a.slug) ?? rank.size) - (rank.get(b.slug) ?? rank.size));
   const { instanceId, driver, displayName } = input.provider;
   const providerText = `${instanceId} ${driver} ${displayName ?? ""}`.toLowerCase();
@@ -2610,13 +2613,16 @@ const make = Effect.gen(function* () {
             enabledForCaller ? provider : { ...provider, enabled: false },
             orchestrationCapableInstanceIds.has(provider.instanceId),
           );
+          const isInherited = (model: ServerProviderModel) =>
+            inherited?.instanceId === provider.instanceId && inherited.model === model.slug;
           const { listed, omitted } = listCapabilityModels({
             provider,
             preferences: settings.providerModelPreferences?.[provider.instanceId],
             searchTerms,
+            isInherited,
             isPinned: (model) =>
               model.isCustom ||
-              (inherited?.instanceId === provider.instanceId && inherited.model === model.slug) ||
+              isInherited(model) ||
               (settings.favorites ?? []).some(
                 (favorite) =>
                   favorite.provider === provider.instanceId && favorite.model === model.slug,
@@ -2628,11 +2634,15 @@ const make = Effect.gen(function* () {
             displayName: provider.displayName ?? null,
             models: listed.map((model) => {
               const options = model.capabilities?.optionDescriptors ?? [];
+              const label =
+                model.name.toLowerCase() === model.slug.toLowerCase() ? undefined : model.name;
               return {
                 id: model.slug,
-                ...(model.name.toLowerCase() === model.slug.toLowerCase()
-                  ? {}
-                  : { label: model.name }),
+                ...(model.servedBy !== undefined
+                  ? { label: `${label ?? model.slug}, answered by ${model.servedBy}` }
+                  : label === undefined
+                    ? {}
+                    : { label }),
                 ...(options.length === 0 ? {} : { options: options.map(capabilityModelOption) }),
               };
             }),

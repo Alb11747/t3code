@@ -26,6 +26,7 @@ import * as Stream from "effect/Stream";
 import * as Semaphore from "effect/Semaphore";
 
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
+import * as HubModelAliases from "./HubModelAliases.ts";
 import * as ModelManifest from "./ModelManifest.ts";
 import { applyProviderCompatibility } from "./providerCompatibility.ts";
 import * as ServerConfig from "../config.ts";
@@ -390,6 +391,7 @@ export const layer = Layer.effect(
     const config = yield* ServerConfig.ServerConfig;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const hubModelAliases = yield* HubModelAliases.HubModelAliases;
 
     const changesPubSub = yield* Effect.acquireRelease(
       PubSub.unbounded<ReadonlyArray<ServerProvider>>(),
@@ -473,8 +475,14 @@ export const layer = Layer.effect(
         manifest.compatibility,
         ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
       );
+    // Fork: cached `servedBy` marks may be stale; the hub's current aliases restore them.
     const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(
-      bootProviders.map((provider) => classifyCompatibility(provider, initialManifest)),
+      bootProviders.map((provider) =>
+        HubModelAliases.withServedModels(
+          classifyCompatibility(provider, initialManifest),
+          undefined,
+        ),
+      ),
     );
     const workspaceRefreshesRef = yield* Ref.make<
       ReadonlyMap<ProviderInstance, ReadonlyMap<string, Deferred.Deferred<void>>>
@@ -532,6 +540,7 @@ export const layer = Layer.effect(
       },
     ) {
       const manifest = yield* manifestService.current;
+      const servedModels = yield* hubModelAliases.current;
       const nextProvidersWithUpdateState = yield* Effect.forEach(
         nextProviders,
         applyProviderUpdateState,
@@ -560,7 +569,10 @@ export const layer = Layer.effect(
 
           const providers = orderProviderSnapshots(
             [...mergedProviders.values()].map((provider) =>
-              classifyCompatibility(provider, manifest),
+              HubModelAliases.withServedModels(
+                classifyCompatibility(provider, manifest),
+                servedModels.get(provider.instanceId),
+              ),
             ),
           );
           const providersToPersist = providers.filter((provider) =>
@@ -1008,6 +1020,10 @@ export const layer = Layer.effect(
       Stream.fromSubscription(instanceChanges),
       () => syncLiveSourcesAndContinue,
     ).pipe(Effect.forkScoped);
+    // Fork: re-mark models when a hub's aliases change; publishes only if a mark moved.
+    yield* Stream.runForEach(hubModelAliases.changes, () => upsertProviders([])).pipe(
+      Effect.forkScoped,
+    );
 
     const recoverRefreshFailure = Effect.fn("recoverRefreshFailure")(function* (
       cause: Cause.Cause<unknown>,

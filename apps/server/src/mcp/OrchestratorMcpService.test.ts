@@ -1806,7 +1806,9 @@ describe("OrchestratorMcpService provider resolution", () => {
           }),
           model("gpt-5", { name: "Code Legacy", isLegacy: true }),
           model("gpt-4", { isLegacy: true }),
-          model("gpt-3", { name: "GPT-3", isLegacy: true }),
+          model("gpt-3", { name: "GPT-3", isLegacy: true, servedBy: "gpt-6" }),
+          // A CLI Proxy hub answers this retired ID with gpt-6, so it is not offered.
+          model("gpt-5.9", { name: "GPT 5.9", servedBy: "gpt-6" }),
           model("my-alpha", { isCustom: true }),
         ],
       },
@@ -1945,7 +1947,8 @@ describe("OrchestratorMcpService provider resolution", () => {
             ],
           },
           { id: "gpt-4" },
-          { id: "gpt-3" },
+          // The caller's own retired model stays listed, saying what answers it.
+          { id: "gpt-3", label: "gpt-3, answered by gpt-6" },
           { id: "my-alpha" },
         ]);
       }),

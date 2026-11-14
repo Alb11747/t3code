@@ -16,6 +16,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { servedByNote } from "@t3tools/client-runtime/served-model";
 import { Badge } from "../ui/badge";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -259,8 +260,12 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   const allModelNames = selectedEntries
     ? selectedEntries.map((selection) => selection.fullLabel).join(", ") || "Choose models"
     : undefined;
+  // Fork: a retired ID the CLI Proxy hub answers with another model says which one.
+  const servedBy =
+    !selectedEntries && props.triggerLabel === undefined ? selectedModel?.servedBy : undefined;
   const triggerTooltipContent = [
     props.triggerLabel ?? allModelNames ?? triggerLabel,
+    servedBy ? servedByNote(servedBy) : undefined,
     props.triggerDetail,
     shortcutLabel,
   ]
@@ -432,6 +437,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             <Badge variant="outline" size="sm">
               Unavailable
             </Badge>
+          ) : null}
+          {servedBy ? (
+            <span className="shrink-0 text-muted-foreground text-xs">{servedByNote(servedBy)}</span>
           ) : null}
         </span>
       </PopoverTrigger>

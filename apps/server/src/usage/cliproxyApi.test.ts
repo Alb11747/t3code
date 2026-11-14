@@ -6,7 +6,7 @@ import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 
-import { makeCliproxyApi } from "./cliproxyApi.ts";
+import { makeCliproxyApi, modelAliasMap } from "./cliproxyApi.ts";
 
 const config = {
   kind: "cliproxy",
@@ -782,4 +782,27 @@ describe("quota-router next-pick preview", () => {
       expect(yield* api.nextPickReset(config, { provider: "codex" })).toBeNull();
     }),
   );
+});
+
+describe("hub model aliases", () => {
+  it("maps each channel's retired IDs to the model that answers them", () => {
+    expect(
+      modelAliasMap({
+        "oauth-model-alias": {
+          Claude: [
+            { name: "claude-opus-5-5", alias: "claude-opus-4-7" },
+            // The proxy keeps the first target for an ID and skips self-aliases.
+            { name: "claude-sonnet-5-5", alias: "claude-opus-4-7" },
+            { name: "claude-fable-5-2", alias: "claude-fable-5-2" },
+          ],
+          codex: [{ name: "gpt-6.1-sol", alias: "gpt-6-sol" }],
+          gemini: null,
+        },
+      }),
+    ).toEqual({
+      claude: { "claude-opus-4-7": "claude-opus-5-5" },
+      codex: { "gpt-6-sol": "gpt-6.1-sol" },
+    });
+    expect(modelAliasMap({ "oauth-model-alias": null })).toEqual({});
+  });
 });

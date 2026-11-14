@@ -335,6 +335,37 @@ describe("instance-scoped model selection", () => {
     ).toEqual(["claude-sonnet-4-6", "openai/gpt-5.5"]);
   });
 
+  it("offers a model the hub answers with another only while it is the selection", () => {
+    const claude = provider({
+      instanceId: "claudeAgent",
+      models: ["claude-opus-5-5", "claude-opus-4-7"],
+    });
+    const providers = [
+      {
+        ...claude,
+        models: claude.models.map((model) =>
+          model.slug === "claude-opus-4-7" ? { ...model, servedBy: "claude-opus-5-5" } : model,
+        ),
+      },
+    ];
+    const [entry] = deriveProviderInstanceEntries(providers);
+    const settings = settingsWithProviderInstances();
+    const slugs = (selected?: string) =>
+      getAppModelOptionsForInstance(settings, entry!, selected).map((option) => option.slug);
+
+    expect(slugs()).toEqual(["claude-opus-5-5"]);
+    expect(slugs("claude-opus-4-7")).toEqual(["claude-opus-5-5", "claude-opus-4-7"]);
+    // A thread already on the retired ID keeps it rather than silently switching models.
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make("claudeAgent"),
+        settings,
+        providers,
+        "claude-opus-4-7",
+      ),
+    ).toBe("claude-opus-4-7");
+  });
+
   it("falls back when the selected model is hidden", () => {
     const providers = [
       provider({

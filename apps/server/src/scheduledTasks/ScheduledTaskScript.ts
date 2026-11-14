@@ -505,6 +505,7 @@ export const layer = Layer.effect(
                 resolveLatestFamilyModel(model.slug, provider.models) === model.slug
                   ? { latest: true }
                   : {}),
+                ...(model.servedBy === undefined ? {} : { servedBy: model.servedBy }),
                 ...(Object.keys(options).length === 0 ? {} : { options }),
               };
             }),

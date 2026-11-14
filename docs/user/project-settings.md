@@ -204,8 +204,9 @@ task's last check shows the model a script picked.
 
 The script receives `ctx` with the current time, the task, its prompt, `model`
 (what this run uses unless the script picks one), `providers` (each enabled
-provider with its models, their family and whether each is the newest of it,
-and the CLI Proxy hub its accounts are under), usage for
+provider with its models, their family, whether each is the newest of it and,
+for a retired ID, the model a CLI Proxy hub answers it with, and the CLI Proxy hub
+its accounts are under), usage for
 every account the environment knows about (5-hour and weekly windows, reset
 credits and Codex usage credits, including CLI Proxy accounts), the thread the
 task posts into (whether it is running, its latest activity, its context size

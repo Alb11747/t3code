@@ -1,5 +1,6 @@
 import { pipe } from "effect/Function";
 import * as DocumentText from "../../provider/DocumentText.ts";
+import * as HubModelAliases from "../../provider/HubModelAliases.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
@@ -1845,6 +1846,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
   adapterOptions: CodexAdapterV2Options,
 ) {
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+  const hubModelAliases = yield* HubModelAliases.HubModelAliases;
   const readMcpSession = (threadId: ThreadId | null) =>
     threadId === null ? Effect.undefined : mcpSessions.read(threadId, adapterOptions.instanceId);
   const { clientFactory, digest, fileSystem, idAllocator, serverConfig } = adapterOptions;
@@ -7187,7 +7189,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 nativeThreadId != null &&
                 (goalsByNativeThread.get(nativeThreadId)?.status === "active" ||
                   (activation !== undefined && !activation.stopped));
-              const executedModel = reportedTurnModel(nativeThreadId ?? "", input.nativeTurnId);
+              const reportedModel = reportedTurnModel(nativeThreadId ?? "", input.nativeTurnId);
+              // Fork: Codex reports a served model only through `openai-model` reroutes, so a model
+              // a CLI Proxy hub aliases is taken from the hub's alias map at completion.
+              const servedBy = HubModelAliases.servedByOf(
+                (yield* hubModelAliases.current).get(adapterOptions.instanceId),
+                reportedModel ??
+                  (input.context.subagent === null
+                    ? input.context.input.modelSelection.model
+                    : undefined),
+              );
+              const executedModel = servedBy ?? reportedModel;
               const completedTurn: OrchestrationV2ProviderTurn = {
                 id: input.context.providerTurnId,
                 providerThreadId: input.context.providerThread.id,

@@ -1,4 +1,5 @@
 import { type ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts";
+import { servedByNote } from "@t3tools/client-runtime/served-model";
 import { memo } from "react";
 import { CheckIcon, StarIcon } from "lucide-react";
 import { getDisplayModelName } from "./providerIconUtils";
@@ -30,6 +31,8 @@ export const ModelListRow = memo(function ModelListRow(props: {
   showInstanceBadge: boolean;
   showNewBadge?: boolean;
   unavailable?: boolean;
+  /** Fork: the model a CLI Proxy hub answers this retired ID with. */
+  servedBy?: string | undefined;
   jumpLabel?: string | null;
   disabledReason?: string | null;
   onToggleFavorite: (instanceId: ProviderInstanceId, slug: string) => void;
@@ -97,6 +100,11 @@ export const ModelListRow = memo(function ModelListRow(props: {
           <Badge variant="outline" size="sm">
             Unavailable
           </Badge>
+        ) : null}
+        {props.servedBy ? (
+          <span className="min-w-0 shrink truncate text-xs text-muted-foreground/70">
+            {servedByNote(props.servedBy)}
+          </span>
         ) : null}
       </div>
 

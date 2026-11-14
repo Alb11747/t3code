@@ -2,6 +2,7 @@ import {
   OrchestrationV2AppThread,
   OrchestrationV2TurnItem,
   type OrchestrationV2ThreadProjection,
+  type RunId,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -13,6 +14,7 @@ import {
   getUserQueuedThreadRuns,
   type ThreadQueueWorkflowState,
 } from "./threadWorkflows.ts";
+import { runServedModelNote } from "../servedModel.ts";
 import { deriveThreadTurnSubagents, type ThreadTurnSubagents } from "./threadSubagents.ts";
 import {
   deriveUsageLimitNoticeRows,
@@ -397,6 +399,17 @@ export function createEnvironmentThreadDetailAtoms<E>(
     }).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-thread-assistant-message-text:${key}`));
   });
 
+  // Fork: a string, so a meta row re-renders only when its run's served-model note changes.
+  const runServedModelNoteAtomFamily = Atom.family((key: string) => {
+    const separator = key.lastIndexOf("\u0000");
+    const thread = key.slice(0, separator);
+    const runId = key.slice(separator + 1) as RunId;
+    return Atom.make((get) => {
+      const structure = get(quietThreadAtomFamily(thread));
+      return structure === null ? null : runServedModelNote(structure.projection, runId);
+    }).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-thread-run-served-model:${key}`));
+  });
+
   const queueWorkflowAtomFamily = Atom.family((key: string) => {
     let previous: Pick<
       OrchestrationV2ThreadProjection,
@@ -626,6 +639,8 @@ export function createEnvironmentThreadDetailAtoms<E>(
       timelineVisibleTurnItemsAtomFamily(threadKey(ref)),
     assistantMessageTextAtom: (ref: ScopedThreadRef, itemId: string) =>
       assistantMessageTextAtomFamily(`${threadKey(ref)}\u0000${itemId}`),
+    runServedModelNoteAtom: (ref: ScopedThreadRef, runId: RunId) =>
+      runServedModelNoteAtomFamily(`${threadKey(ref)}\u0000${runId}`),
     statusAtom: (ref: ScopedThreadRef) => statusAtomFamily(threadKey(ref)),
     sequenceAtom: (ref: ScopedThreadRef) => sequenceAtomFamily(threadKey(ref)),
     errorAtom: (ref: ScopedThreadRef) => errorAtomFamily(threadKey(ref)),

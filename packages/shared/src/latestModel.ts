@@ -36,17 +36,19 @@ const isNewer = (a: ModelFamilyVersion, b: ModelFamilyVersion) =>
 
 /**
  * The newest model in `models` of the slug's family when it is newer than the slug, or when the
- * slug is no longer listed (a model that was withdrawn); otherwise the slug itself.
+ * slug is no longer listed (a model that was withdrawn); otherwise the slug itself. A retired ID a
+ * proxy answers with another model (`servedBy`) is neither a family member nor listed.
  */
 export function resolveLatestFamilyModel(
   slug: string,
-  models: ReadonlyArray<{ readonly slug: string }>,
+  models: ReadonlyArray<{ readonly slug: string; readonly servedBy?: string | undefined }>,
 ): string {
   const current = parseModelFamily(slug);
   if (current === null) return slug;
   let best: { readonly slug: string; readonly version: ModelFamilyVersion } | null = null;
   let listed = false;
   for (const model of models) {
+    if (model.servedBy !== undefined) continue;
     listed ||= model.slug === slug;
     const candidate = parseModelFamily(model.slug);
     if (

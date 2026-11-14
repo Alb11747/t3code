@@ -84,6 +84,8 @@ import * as SecretResolver from "./secrets/SecretResolver.ts";
 import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceRegistryHydration.ts";
 import * as ProjectSettingsOverrideSweep from "./provider/ProjectSettingsOverrideSweep.ts";
 import * as ClaudeKeepWarm from "./provider/ClaudeKeepWarm.ts";
+import * as HubModelAliases from "./provider/HubModelAliases.ts";
+import * as HubModelAliasSync from "./usage/HubModelAliasSync.ts";
 import * as ThreadAccountRouting from "./provider/ThreadAccountRouting.ts";
 import * as ThreadAccountService from "./usage/ThreadAccountService.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
@@ -720,6 +722,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ).pipe(Layer.provide(DelegatedTaskQuestionReactor.layer), Layer.provide(ProjectionStoreV2.layer)),
   ProviderUsageLimitsIngestion.layer,
   ThreadAccountService.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
+  HubModelAliasSync.layer,
   layerProviderInstallationRefresh,
   ProviderInstallation.layer,
   ReplayMarkers.layer,
@@ -748,7 +751,9 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ),
   // Provided below provider hydration so Claude adapters and the WebSocket routes share it.
   Layer.provideMerge(ClaudeKeepWarm.layer),
-  Layer.provideMerge(ProviderInstallationGate.layer),
+  // Fork: the registry and Codex adapters read hub model aliases that HubModelAliasSync writes.
+  // Merged with the gate because `pipe` takes at most 20 steps.
+  Layer.provideMerge(Layer.mergeAll(ProviderInstallationGate.layer, HubModelAliases.layer)),
   // Provider hydration builds the Claude runner, which reports agents to the same scanner the
   // terminal and preview layers share.
   Layer.provideMerge(layerPortScanner),

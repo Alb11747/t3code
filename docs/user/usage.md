@@ -234,6 +234,18 @@ Agents can also redeem a banked reset credit for you, but only after you turn on
 should redeem only when you ask it to or its instructions allow it, and a redeemed reset cannot be
 taken back.
 
+### Models the hub answers with another model
+
+A hub can route a retired model ID to a newer model (CLIProxyAPI's `oauth-model-alias`), so a
+request for Claude Opus 4.7 is answered by Claude Opus 5.5. When T3 Code holds the management key
+of the one hub a Claude or Codex provider routes through, model pickers (composer, Settings,
+scheduled tasks, mobile) and the model list agents read leave such IDs out. A thread, task or
+setting already on one keeps it, and its picker says **Answered by …** so you can switch to the
+real model. **Use the newest … model** never picks a retired ID. When a reply came from another
+model than its turn asked for, the reply's details say so, for example **Claude Opus 5.5, asked for
+Claude Opus 4.7**; for Codex, which does not report the model that answered, T3 Code takes it from
+the hub's alias list at the time of the turn.
+
 ## Subscription usage widget
 
 Add **Subscription usage** from your iOS or Android widget gallery to see remaining Codex and

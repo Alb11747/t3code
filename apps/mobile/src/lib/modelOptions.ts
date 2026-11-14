@@ -23,6 +23,7 @@ import {
 } from "@t3tools/shared/model";
 import { resolveModelShortName } from "@t3tools/client-runtime/provider-clients";
 import { resolveProvidersForCwd } from "@t3tools/client-runtime/providerSkills";
+import { servedByNote } from "@t3tools/client-runtime/served-model";
 
 export type ModelOption = {
   readonly key: string;
@@ -268,7 +269,10 @@ export function resolveDefaultableModelSelection(
   }
   const provider = config.providers.find((candidate) => candidate.instanceId === usable.instanceId);
   const model = provider?.models.find((candidate) => candidate.slug === usable.model);
-  return provider?.driver !== "antigravity" && model?.isLegacy === true ? null : usable;
+  return provider?.driver !== "antigravity" &&
+    (model?.isLegacy === true || model?.servedBy !== undefined)
+    ? null
+    : usable;
 }
 
 export function resolveNewTaskModelSelection(input: {
@@ -367,8 +371,11 @@ export function buildModelOptions(
     const preferences = config?.settings?.providerModelPreferences?.[provider.instanceId];
     const hiddenModels = new Set(preferences?.hiddenModels ?? []);
     const order = new Map((preferences?.modelOrder ?? []).map((slug, index) => [slug, index]));
+    // Fork: a retired ID a CLI Proxy hub answers with another model returns below only while selected.
     const models = provider.models.filter(
-      (model) => includeHidden || model.isCustom || !hiddenModels.has(model.slug),
+      (model) =>
+        (model.isCustom || model.servedBy === undefined) &&
+        (includeHidden || model.isCustom || !hiddenModels.has(model.slug)),
     );
     if (order.size > 0)
       models.sort((a, b) => (order.get(a.slug) ?? Infinity) - (order.get(b.slug) ?? Infinity));
@@ -448,7 +455,7 @@ export function buildModelOptions(
         key,
         label: model?.name ?? fallbackModelSelection.model,
         ...(shortName ? { shortName } : {}),
-        subtitle: model?.subProvider ?? "",
+        subtitle: model?.servedBy ? servedByNote(model.servedBy) : (model?.subProvider ?? ""),
         providerKey: fallbackModelSelection.instanceId,
         providerLabel,
         providerDriver,

@@ -11,6 +11,7 @@ export type ModelEsque = {
   badge?: "new" | undefined;
   isLegacy?: boolean | undefined;
   isUnavailable?: boolean | undefined;
+  servedBy?: string | undefined;
 };
 
 function escapeRegExp(value: string): string {

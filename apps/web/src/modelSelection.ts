@@ -71,6 +71,7 @@ export interface AppModelOption {
   isDefault?: boolean;
   isLegacy?: boolean;
   isUnavailable?: boolean;
+  servedBy?: string;
 }
 
 function appendUnavailableDynamicModelSelection(
@@ -110,8 +111,15 @@ function toAppModelOption(
   if (model.badge) option.badge = model.badge;
   if (model.isDefault) option.isDefault = true;
   if (model.isLegacy) option.isLegacy = true;
+  if (model.servedBy) option.servedBy = model.servedBy;
   return option;
 }
+
+// Fork: a retired ID a CLI Proxy hub answers with another model is offered only while selected.
+const isOfferedModel = (
+  model: ServerProvider["models"][number],
+  selectedModel: string | null | undefined,
+) => !model.isCustom && (model.servedBy === undefined || model.slug === selectedModel);
 
 function readInstanceModelPreferences(
   settings: UnifiedSettings,
@@ -171,7 +179,7 @@ function getAppModelOptions(
   const rawModels = getProviderModels(providers, provider);
   // Server custom-model snapshots can lag removals; rebuild custom rows from settings.
   const options: AppModelOption[] = rawModels
-    .filter((model) => !model.isCustom)
+    .filter((model) => isOfferedModel(model, selectedModel))
     .map((model) => toAppModelOption(model, provider));
   const seen = new Set(options.map((option) => option.slug));
   const builtInModelSlugs = new Set(
@@ -211,9 +219,11 @@ export function getAppModelOptionsForInstance(
   settings: UnifiedSettings,
   entry: ProviderInstanceEntry,
   selectedModel?: string | null,
+  /** A stored model to keep offering though the hub answers it with another; see isOfferedModel. */
+  storedModel: string | null | undefined = selectedModel,
 ): AppModelOption[] {
   const options: AppModelOption[] = entry.models
-    .filter((model) => !model.isCustom)
+    .filter((model) => isOfferedModel(model, storedModel))
     .map((model) => toAppModelOption(model, entry.driverKind));
   const seen = new Set(options.map((option) => option.slug));
   const builtInModelSlugs = new Set(
@@ -277,6 +287,7 @@ export function resolveAppModelSelectionForInstance(
     settings,
     entry,
     resolutionOptions?.preserveUnavailableSelection ? selectedModel : null,
+    selectedModel,
   );
   const resolvedSelection = resolveSelectableModel(entry.driverKind, selectedModel, options);
   if (resolvedSelection) {
@@ -374,6 +385,7 @@ function getTextGenerationModelOptionsForInstance(
   settings: UnifiedSettings,
   entry: ProviderInstanceEntry,
   selectedModel?: string | null,
+  storedModel: string | null | undefined = selectedModel,
 ): AppModelOption[] {
   const unsupported = new Set(
     entry.models
@@ -381,7 +393,7 @@ function getTextGenerationModelOptionsForInstance(
       .map((model) => model.slug),
   );
   // Filter after custom entries are rebuilt so a display-name override cannot restore a model.
-  return getAppModelOptionsForInstance(settings, entry, selectedModel).filter(
+  return getAppModelOptionsForInstance(settings, entry, selectedModel, storedModel).filter(
     (option) => !unsupported.has(option.slug),
   );
 }
@@ -430,7 +442,7 @@ export function resolveAppModelSelectionState(
   if (entry) {
     const selectedModel = selectedEntry ? selection.model : null;
     // Use the cheap generation default; the catalog default is the expensive chat flagship.
-    const options = getTextGenerationModelOptionsForInstance(settings, entry);
+    const options = getTextGenerationModelOptionsForInstance(settings, entry, null, selectedModel);
     const model =
       resolveSelectableModel(entry.driverKind, selectedModel, options) ??
       resolveSelectableModel(

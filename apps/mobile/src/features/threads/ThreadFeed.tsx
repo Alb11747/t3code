@@ -251,6 +251,7 @@ import {
   resolveThreadLink,
   useLiveThreadLinkLabels,
   useQuietThreadShell,
+  useRunServedModelNote,
   useThreadChipIcons,
 } from "../../state/entities";
 import { useEnvironmentPresentation } from "../../state/presentation";
@@ -1667,6 +1668,23 @@ function RunFoldButton({
   );
 }
 
+// Fork: says which model answered when it was not the one the run asked for.
+function RunServedModelNote(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly runId: RunId | null | undefined;
+}) {
+  const note = useRunServedModelNote(
+    scopeThreadRef(props.environmentId, props.threadId),
+    props.runId,
+  );
+  return note ? (
+    <Text className="min-w-0 shrink text-xs text-foreground-secondary" numberOfLines={1}>
+      {note}
+    </Text>
+  ) : null;
+}
+
 function renderFeedEntry(
   info: { item: ThreadFeedRow; index: number },
   props: Pick<
@@ -2373,6 +2391,11 @@ function renderFeedEntry(
             <Text className="font-t3-medium text-xs tabular-nums text-foreground-secondary">
               {timestampLabel}
             </Text>
+            <RunServedModelNote
+              environmentId={props.environmentId}
+              threadId={props.threadId}
+              runId={message.runId}
+            />
           </View>
         ) : null}
       </Animated.View>

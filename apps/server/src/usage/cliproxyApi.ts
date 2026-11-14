@@ -228,7 +228,38 @@ const NextPick = Schema.Struct({
   switch_below_context_tokens: Schema.optional(Schema.NullOr(Schema.Number)),
 });
 
+// The proxy returns JSON null, not {}, when it has no aliases.
+const ModelAliasList = Schema.Struct({
+  "oauth-model-alias": Schema.NullOr(
+    Schema.Record(
+      Schema.String,
+      Schema.NullOr(Schema.Array(Schema.Struct({ name: Schema.String, alias: Schema.String }))),
+    ),
+  ),
+});
 const decodeAuthFiles = Schema.decodeUnknownEffect(AuthFiles);
+const decodeModelAliasList = Schema.decodeUnknownEffect(ModelAliasList);
+
+/**
+ * Retired ID -> served model, per channel, from `oauth-model-alias`. Matching is exact, as the
+ * proxy's is apart from case; entries naming themselves or a second target for one ID are dropped.
+ */
+export const modelAliasMap = (
+  list: (typeof ModelAliasList)["Type"],
+): Record<string, Record<string, string>> => {
+  const out: Record<string, Record<string, string>> = {};
+  for (const [channel, entries] of Object.entries(list["oauth-model-alias"] ?? {})) {
+    const aliases: Record<string, string> = {};
+    for (const entry of entries ?? []) {
+      const alias = entry.alias.trim();
+      const name = entry.name.trim();
+      if (alias === "" || name === "" || alias === name || Object.hasOwn(aliases, alias)) continue;
+      aliases[alias] = name;
+    }
+    if (Object.keys(aliases).length > 0) out[channel.trim().toLowerCase()] = aliases;
+  }
+  return out;
+};
 const decodeControl = Schema.decodeUnknownEffect(Control);
 const decodeNextPick = Schema.decodeUnknownEffect(NextPick);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -984,9 +1015,21 @@ export const makeCliproxyApi = Effect.gen(function* () {
     );
   });
 
+  const modelAliases = Effect.fn("CliproxyApi.modelAliases")(function* (hub: CliproxyHub) {
+    const response = yield* management(hub, "oauth-model-alias");
+    return modelAliasMap(
+      yield* decodeModelAliasList(response).pipe(
+        Effect.mapError(
+          () => new UsageLimitSourceError({ detail: "The hub returned unexpected model aliases." }),
+        ),
+      ),
+    );
+  });
+
   return {
     readAccounts,
     routerAliasOf,
+    modelAliases,
     consume,
     authFiles,
     keepWarmHolds,

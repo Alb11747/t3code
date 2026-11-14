@@ -121,14 +121,22 @@ it.effect("reads a management key from its secret provider", () => {
       Stream.runHead,
       Effect.flatMap(Effect.fromOption),
     );
-    expect(snapshots.map(({ id, error }) => ({ id, error }))).toEqual([
-      { id: "resolved-hub", error: undefined },
+    expect(snapshots.map(({ id, error, modelAliases }) => ({ id, error, modelAliases }))).toEqual([
+      {
+        id: "resolved-hub",
+        error: undefined,
+        modelAliases: { codex: { "gpt-6-sol": "gpt-6.1-sol" } },
+      },
       {
         id: "unresolved-hub",
         error: "Could not read the management key from its secret provider.",
+        modelAliases: undefined,
       },
     ]);
-    expect(authorizations).toEqual(["Bearer resolved-key"]);
+    expect(authorizations.toSorted()).toEqual([
+      "Bearer resolved-key /v0/management/auth-files",
+      "Bearer resolved-key /v0/management/oauth-model-alias",
+    ]);
   }).pipe(
     Effect.provide([
       ServerSettings.layerTest({
@@ -164,8 +172,20 @@ it.effect("reads a management key from its secret provider", () => {
         HttpClient.HttpClient,
         HttpClient.make((request) =>
           Effect.sync(() => {
-            authorizations.push(request.headers.authorization);
-            return HttpClientResponse.fromWeb(request, Response.json({ files: [] }));
+            const path = new URL(request.url).pathname;
+            authorizations.push(`${request.headers.authorization} ${path}`);
+            return HttpClientResponse.fromWeb(
+              request,
+              Response.json(
+                path.endsWith("oauth-model-alias")
+                  ? {
+                      "oauth-model-alias": {
+                        codex: [{ name: "gpt-6.1-sol", alias: "gpt-6-sol", fork: true }],
+                      },
+                    }
+                  : { files: [] },
+              ),
+            );
           }),
         ),
       ),

@@ -110,6 +110,10 @@ export const UsageLimitSourceSnapshot = Schema.Struct({
   checkedAt: IsoDateTime,
   accounts: ForwardCompatibleArray(UsageLimitSourceAccount),
   error: Schema.optional(TrimmedNonEmptyString),
+  /** Fork: the hub's `oauth-model-alias`, by router channel (`claude`, `codex`): retired ID -> model. */
+  modelAliases: Schema.optional(
+    Schema.Record(Schema.String, Schema.Record(Schema.String, TrimmedNonEmptyString)),
+  ),
 });
 export type UsageLimitSourceSnapshot = typeof UsageLimitSourceSnapshot.Type;
 

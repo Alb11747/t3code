@@ -22,8 +22,10 @@ import * as Layer from "effect/Layer";
 import type * as Path from "effect/Path";
 import * as Random from "effect/Random";
 import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
+import * as HubModelAliases from "../../provider/HubModelAliases.ts";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
 import type { withCodexReplayChildMetadata } from "./CodexAdapterV2.testkit.ts";
 
@@ -506,6 +508,67 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
           McpProviderSessions.layer,
           NodeServices.layer,
           NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
+  it.effect("records the model a CLI Proxy hub answers an aliased request with", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "hub-alias-thread";
+      const nativeTurnId = "hub-alias-turn";
+      const prompt = "Say hi.";
+      const transcript = makeCodexReplayTranscript({
+        scenario: "hub-aliased-model",
+        entries: [
+          ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
+          {
+            type: "emit_inbound",
+            frame: {
+              method: "turn/completed",
+              params: {
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+              },
+            },
+          },
+        ],
+      });
+      const harness = yield* makeCodexReplayHarness(transcript);
+      yield* harness.runtime.startTurn(
+        makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("hub-alias-attempt"),
+          text: prompt,
+        }),
+      );
+      yield* harness.firstTerminal;
+      const completed = harness.events.findLast(
+        (event) =>
+          event.type === "provider_turn.updated" && event.providerTurn.status === "completed",
+      );
+      assert.equal(
+        completed?.type === "provider_turn.updated" ? completed.providerTurn.model : null,
+        "gpt-6.1-sol",
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+          // The test turn asks for gpt-5.4 on the default instance.
+          Layer.succeed(HubModelAliases.HubModelAliases, {
+            current: Effect.succeed(
+              new Map([[CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID, { "gpt-5.4": "gpt-6.1-sol" }]]),
+            ),
+            changes: Stream.empty,
+            set: () => Effect.void,
+          }),
         ),
       ),
     ),

@@ -147,6 +147,19 @@ export const make = Effect.gen(function* () {
     PubSub.shutdown,
   );
 
+  // Fork: each hub's `oauth-model-alias` map, read like the router listing: bounded, and a failed
+  // or slow read keeps the last map, so one bad read does not reshuffle model pickers.
+  const modelAliasMaps = new Map<UsageLimitSourceId, UsageLimitSourceSnapshot["modelAliases"]>();
+  const modelAliasesOf = (sourceId: UsageLimitSourceId, hub: CliproxyHub) =>
+    api.modelAliases(hub).pipe(
+      Effect.timeout(LISTING_TIMEOUT),
+      Effect.option,
+      Effect.map((read) => {
+        if (Option.isSome(read)) modelAliasMaps.set(sourceId, read.value);
+        return modelAliasMaps.get(sourceId);
+      }),
+    );
+
   const readSource = Effect.fn("UsageLimitSources.readSource")(function* (
     id: UsageLimitSourceId,
     config: UsageLimitSourceConfig,
@@ -165,12 +178,19 @@ export const make = Effect.gen(function* () {
       return { ...base, accounts: [], error: missingManagementKey(config) };
     }
     const hub = { url: config.url, managementKey };
-    const accounts = yield* api.readAccounts(hub, listingOf(id, hub)).pipe(Effect.result);
+    const [accounts, modelAliases] = yield* Effect.all(
+      [api.readAccounts(hub, listingOf(id, hub)).pipe(Effect.result), modelAliasesOf(id, hub)],
+      { concurrency: 2 },
+    );
     if (accounts._tag === "Failure") {
       yield* Effect.logDebug("usage limit source read failed", { id, cause: accounts.failure });
       return { ...base, accounts: [], error: accounts.failure.detail };
     }
-    return { ...base, accounts: accounts.success };
+    return {
+      ...base,
+      accounts: accounts.success,
+      ...(modelAliases === undefined ? {} : { modelAliases }),
+    };
   });
 
   const publish = Effect.fn("UsageLimitSources.publish")(function* (

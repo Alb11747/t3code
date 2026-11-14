@@ -2,7 +2,10 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { modelFamilyName, resolveLatestFamilyModel } from "./latestModel.ts";
 
-const slugs = (...values: string[]) => values.map((slug) => ({ slug }));
+const slugs = (...values: string[]): Array<{ slug: string; servedBy?: string }> =>
+  values.map((slug) => ({ slug }));
+// A retired ID a proxy answers with another model, listed beside the real ones.
+const alias = (slug: string, servedBy: string) => ({ slug, servedBy });
 
 describe("resolveLatestFamilyModel", () => {
   it.each([
@@ -17,6 +20,8 @@ describe("resolveLatestFamilyModel", () => {
     ["codex-auto-review", slugs("codex-auto-review-2"), "codex-auto-review"],
     ["gpt-image-2", slugs("gpt-image-3"), "gpt-image-2"],
     ["gpt-6.1-sol", [], "gpt-6.1-sol"],
+    ["gpt-6.1-sol", [...slugs("gpt-6.1-sol"), alias("gpt-6.2-sol", "gpt-6.1-sol")], "gpt-6.1-sol"],
+    ["gpt-6-sol", [alias("gpt-6-sol", "gpt-6.1-sol"), ...slugs("gpt-6.1-sol")], "gpt-6.1-sol"],
   ])("%s resolves to the newest of its family", (slug, models, expected) => {
     expect(resolveLatestFamilyModel(slug, models)).toBe(expected);
   });

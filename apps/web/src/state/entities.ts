@@ -25,6 +25,7 @@ import type {
   OrchestrationV2ThreadProjection,
   OrchestrationV2ThreadShell,
   NodeId,
+  RunId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -70,6 +71,9 @@ const EMPTY_CHECKPOINT_SUMMARIES_ATOM = Atom.make<ReadonlyArray<ThreadCheckpoint
 ).pipe(Atom.withLabel("web-thread-checkpoint-summaries:empty"));
 const EMPTY_ASSISTANT_MESSAGE_TEXT_ATOM = Atom.make<string | null>(null).pipe(
   Atom.withLabel("web-assistant-message-text:empty"),
+);
+const EMPTY_RUN_SERVED_MODEL_NOTE_ATOM = Atom.make<string | null>(null).pipe(
+  Atom.withLabel("web-run-served-model-note:empty"),
 );
 const EMPTY_LAST_VISITED_AT_ATOM = Atom.make<DateTime.Utc | null>(null).pipe(
   Atom.withLabel("web-thread-last-visited:empty"),
@@ -255,6 +259,18 @@ export function useAssistantMessageText(
     ref === null || itemId === undefined
       ? EMPTY_ASSISTANT_MESSAGE_TEXT_ATOM
       : environmentThreadDetails.assistantMessageTextAtom(ref, itemId),
+  );
+}
+
+/** Fork: "<model>, asked for <model>" when another model answered the run; see servedModelNote. */
+export function useRunServedModelNote(
+  ref: ScopedThreadRef | null,
+  runId: RunId | null | undefined,
+): string | null {
+  return useAtomValue(
+    ref === null || runId == null
+      ? EMPTY_RUN_SERVED_MODEL_NOTE_ATOM
+      : environmentThreadDetails.runServedModelNoteAtom(ref, runId),
   );
 }
 

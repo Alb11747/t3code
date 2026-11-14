@@ -88,6 +88,8 @@ export const ServerProviderModel = Schema.Struct({
   // False when the provider can run this model in sessions but not for
   // application text generation. Absent means supported.
   supportsTextGeneration: Schema.optional(Schema.Boolean),
+  /** Fork: the model a CLI Proxy hub answers this retired ID with (its `oauth-model-alias`). */
+  servedBy: Schema.optional(TrimmedNonEmptyString),
   capabilities: Schema.NullOr(ModelCapabilities),
 });
 export type ServerProviderModel = typeof ServerProviderModel.Type;
