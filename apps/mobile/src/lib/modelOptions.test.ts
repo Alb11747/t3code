@@ -522,6 +522,14 @@ describe("mobile model options", () => {
               isLegacy: true,
               capabilities: null,
             },
+            {
+              slug: "gpt-5.5-sol",
+              name: "GPT-5.5 Sol",
+              isCustom: false,
+              isLegacy: true,
+              servedBy: "gpt-5.6-sol",
+              capabilities: null,
+            },
           ],
         },
       ],
@@ -529,9 +537,12 @@ describe("mobile model options", () => {
 
     const current = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" };
     const legacy = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" };
+    // A CLI Proxy hub still answers this retired ID, so a stored default stays on it.
+    const served = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5-sol" };
 
     expect(resolveDefaultableModelSelection(config, current, null)).toBe(current);
     expect(resolveDefaultableModelSelection(config, legacy, null)).toBeNull();
+    expect(resolveDefaultableModelSelection(config, served, null)).toBe(served);
     expect(resolveDefaultableModelSelection(null, legacy, null)).toBe(legacy);
   });
 

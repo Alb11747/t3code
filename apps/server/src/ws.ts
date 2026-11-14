@@ -2439,7 +2439,12 @@ export const layerWsRpc = (
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(function* (input) {
             if (input.modelCatalogOnly === true) {
-              yield* providerRegistry.refreshModelCatalog;
+              // Fork: an opened picker also re-reads hub model aliases (one GET per hub, at most
+              // once a minute), so a retired ID shows as such without the full usage refresh.
+              yield* Effect.all(
+                [providerRegistry.refreshModelCatalog, usageLimitSources.refreshModelAliases],
+                { concurrency: 2, discard: true },
+              );
               return { providers: [] };
             }
             if (input.refreshModels) {

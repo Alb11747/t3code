@@ -325,3 +325,54 @@ it.effect("the reset fallback refreshes its hub, and a stalled hub cannot hold t
     expect(yield* Fiber.join(stalled)).toBeNull();
   }),
 );
+
+it.effect("keeps a hub's model aliases when its account read fails", () =>
+  Effect.gen(function* () {
+    const sources = yield* UsageLimitSources.make;
+    const [snapshot] = yield* sources.streamChanges.pipe(
+      Stream.filter((next) => next.length > 0),
+      Stream.runHead,
+      Effect.flatMap(Effect.fromOption),
+    );
+    expect(snapshot?.error).toBeDefined();
+    expect(snapshot?.modelAliases).toEqual({ codex: { "gpt-6-sol": "gpt-6.1-sol" } });
+  }).pipe(
+    Effect.provide([
+      ServerSettings.layerTest({
+        usageLimitSources: {
+          [UsageLimitSourceId.make("hub")]: {
+            kind: "cliproxy",
+            url: "https://hub.test",
+            managementKey: "key",
+            enabled: true,
+          },
+        },
+      }),
+      Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+        shouldRunScopeWork: () => Effect.succeed(false),
+      }),
+      Layer.succeed(SecretResolver.SecretResolver, {
+        label: (provider) => Effect.succeed(provider),
+        read: (references) => Effect.succeed(references.map(() => undefined)),
+        invalidate: () => Effect.void,
+      }),
+      Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.sync(() =>
+            new URL(request.url).pathname.endsWith("oauth-model-alias")
+              ? HttpClientResponse.fromWeb(
+                  request,
+                  Response.json({
+                    "oauth-model-alias": { codex: [{ name: "gpt-6.1-sol", alias: "gpt-6-sol" }] },
+                  }),
+                )
+              : HttpClientResponse.fromWeb(request, new Response("down", { status: 503 })),
+          ),
+        ),
+      ),
+      NodeCrypto.layer,
+    ]),
+    Effect.scoped,
+  ),
+);

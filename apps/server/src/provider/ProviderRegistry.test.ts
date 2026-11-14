@@ -56,6 +56,7 @@ import { BUNDLED_CLAUDE_MODEL_CATALOG } from "./ClaudeModelCatalog.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as AntigravityInstallation from "./AntigravityInstallation.ts";
+import * as HubModelAliases from "./HubModelAliases.ts";
 import * as ModelManifest from "./ModelManifest.ts";
 import { applyProviderCompatibility } from "./providerCompatibility.ts";
 import * as ResetCreditCoordinator from "./resetCreditCoordinator.ts";
@@ -2358,6 +2359,100 @@ it.layer(
             ["/project/finalize"],
           );
         }).pipe(Effect.provide(runtimeServices));
+      }),
+    );
+
+    it.effect("re-marks and publishes models when a hub's aliases change", () =>
+      Effect.gen(function* () {
+        const driver = ProviderDriverKind.make("codex");
+        const instanceId = ProviderInstanceId.make("codex");
+        const model = (slug: string) => ({ slug, name: slug, isCustom: false, capabilities: null });
+        const provider = {
+          instanceId,
+          driver,
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-11-14T00:00:00.000Z",
+          version: "1.0.0",
+          models: [model("gpt-6.1-sol"), model("gpt-6-sol")],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const instance: ProviderInstance = {
+          instanceId,
+          driverKind: driver,
+          continuationIdentity: { driverKind: driver, continuationKey: "codex:instance:codex" },
+          displayName: undefined,
+          enabled: true,
+          snapshot: {
+            resolveMaintenance: () =>
+              Effect.succeed(
+                makeManualOnlyProviderMaintenanceCapabilities({
+                  provider: driver,
+                  packageName: null,
+                }),
+              ),
+            getSnapshot: Effect.succeed(provider),
+            refresh: Effect.succeed(provider),
+            streamChanges: Stream.empty,
+            applyUsageLimits: () => Effect.void,
+          },
+          orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+          textGeneration: {} as ProviderInstance["textGeneration"],
+        };
+        const layerInstanceRegistry = Layer.succeed(
+          ProviderInstanceRegistry.ProviderInstanceRegistry,
+          {
+            getInstance: (requestedId) =>
+              Effect.succeed(requestedId === instanceId ? instance : undefined),
+            listInstances: Effect.succeed([instance]),
+            listUnavailable: Effect.succeed([]),
+            streamChanges: Stream.empty,
+            subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+          },
+        );
+        const scope = yield* Scope.make();
+        yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+        const runtimeServices = yield* Layer.build(
+          ProviderRegistry.layer.pipe(
+            Layer.provide(layerUnusedMutator),
+            Layer.provideMerge(layerInstanceRegistry),
+            Layer.provideMerge(HubModelAliases.layer),
+            Layer.provideMerge(
+              ServerConfig.layerTest(process.cwd(), {
+                prefix: "t3-provider-registry-hub-aliases-",
+              }),
+            ),
+            Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+          ),
+        ).pipe(Scope.provide(scope));
+
+        yield* Effect.gen(function* () {
+          const registry = yield* ProviderRegistry.ProviderRegistry;
+          const aliases = yield* HubModelAliases.HubModelAliases;
+          const servedBy = (providers: ReadonlyArray<ServerProvider>) =>
+            providers[0]?.models.find((entry) => entry.slug === "gpt-6-sol")?.servedBy;
+          const published = (expected: string | undefined) =>
+            registry.streamChanges.pipe(
+              Stream.filter((providers) => servedBy(providers) === expected),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkScoped({ startImmediately: true }),
+            );
+
+          const marked = yield* published("gpt-6.1-sol");
+          yield* aliases.set(new Map([[instanceId, { "gpt-6-sol": "gpt-6.1-sol" }]]));
+          yield* Fiber.join(marked);
+          assert.strictEqual(servedBy(yield* registry.getProviders), "gpt-6.1-sol");
+
+          // The hub allows the ID again for a while: the mark goes with the alias.
+          const cleared = yield* published(undefined);
+          yield* aliases.set(new Map());
+          yield* Fiber.join(cleared);
+          assert.strictEqual(servedBy(yield* registry.getProviders), undefined);
+        }).pipe(Effect.provide(runtimeServices), Effect.scoped);
       }),
     );
 

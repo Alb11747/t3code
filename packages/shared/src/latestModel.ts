@@ -34,6 +34,13 @@ export function modelFamilyName(slug: string): string | null {
 const isNewer = (a: ModelFamilyVersion, b: ModelFamilyVersion) =>
   a.major > b.major || (a.major === b.major && a.minor > b.minor);
 
+/** Whether `candidate` is a newer release of `slug`'s family, as a proxy's retired-ID alias is. */
+export function isNewerOfFamily(candidate: string, slug: string): boolean {
+  const current = parseModelFamily(slug);
+  const next = parseModelFamily(candidate);
+  return current !== null && next?.family === current.family && isNewer(next, current);
+}
+
 /**
  * The newest model in `models` of the slug's family when it is newer than the slug, or when the
  * slug is no longer listed (a model that was withdrawn); otherwise the slug itself. A retired ID a

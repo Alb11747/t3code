@@ -26,6 +26,7 @@ import {
   makeSubagentConversationArtifacts,
   endOrphanedNativeSubagent,
   endRunlessRootTurns,
+  withExecutedModelNote,
 } from "@t3tools/provider-core/server/subagentProjection";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -480,6 +481,12 @@ it("orders a task's assistant messages by turn item, not by timestamps", () => {
       run,
     ).text,
     "Requested model gpt-5.4; the provider reported running gpt-5.4-mini.\n\nAll steps passed.",
+  );
+  // A newer release of the family is a CLI Proxy hub answering a retired ID: no note.
+  assert.equal(withExecutedModelNote("Done.", "gpt-6-sol", "gpt-6.1-sol"), "Done.");
+  assert.equal(
+    withExecutedModelNote("Done.", "gpt-6.1-sol", "gpt-6-sol"),
+    "Requested model gpt-6.1-sol; the provider reported running gpt-6-sol.\n\nDone.",
   );
 });
 

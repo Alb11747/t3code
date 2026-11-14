@@ -7189,16 +7189,22 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 nativeThreadId != null &&
                 (goalsByNativeThread.get(nativeThreadId)?.status === "active" ||
                   (activation !== undefined && !activation.stopped));
+              const rerouted =
+                reroutedTurnModels.has(input.nativeTurnId) ||
+                reroutedThreads.has(nativeThreadId ?? "");
               const reportedModel = reportedTurnModel(nativeThreadId ?? "", input.nativeTurnId);
               // Fork: Codex reports a served model only through `openai-model` reroutes, so a model
-              // a CLI Proxy hub aliases is taken from the hub's alias map at completion.
-              const servedBy = HubModelAliases.servedByOf(
-                (yield* hubModelAliases.current).get(adapterOptions.instanceId),
-                reportedModel ??
-                  (input.context.subagent === null
-                    ? input.context.input.modelSelection.model
-                    : undefined),
-              );
+              // a CLI Proxy hub aliases is taken from the hub's alias map at completion. After a
+              // reroute the model is the reroute's, or unknown; the alias map says nothing then.
+              const servedBy = rerouted
+                ? undefined
+                : HubModelAliases.servedByOf(
+                    (yield* hubModelAliases.current).get(adapterOptions.instanceId),
+                    reportedModel ??
+                      (input.context.subagent === null
+                        ? input.context.input.modelSelection.model
+                        : undefined),
+                  );
               const executedModel = servedBy ?? reportedModel;
               const completedTurn: OrchestrationV2ProviderTurn = {
                 id: input.context.providerTurnId,

@@ -475,23 +475,24 @@ export function scheduledTaskDefaultModel(
   );
   const configured = resolveProjectSettings(settings, project?.id ?? null, project).settings
     .defaultModelSelection;
-  // Fork: a retired ID a CLI Proxy hub answers with another model is no default either.
-  const isCurrent = (model: ProviderInstanceEntry["models"][number] | undefined) =>
-    model?.isLegacy !== true && model?.servedBy === undefined;
+  // Fork: a stored default on a retired ID a CLI Proxy hub answers with another model is kept,
+  // legacy or not (its picker says what answers it), but such an ID is never the fallback.
+  const keeps = (model: ProviderInstanceEntry["models"][number] | undefined) =>
+    model?.isLegacy !== true || model.servedBy !== undefined;
   for (const selection of [configured, settings.defaultModelSelection]) {
     if (
       selection &&
       available.some(
         (entry) =>
           entry.instanceId === selection.instanceId &&
-          isCurrent(entry.models.find((model) => model.slug === selection.model)),
+          keeps(entry.models.find((model) => model.slug === selection.model)),
       )
     )
       return selection;
   }
   const models = available.flatMap((entry) =>
     entry.models
-      .filter((model) => isCurrent(model))
+      .filter((model) => !model.isLegacy && model.servedBy === undefined)
       .map((model) => ({ instanceId: entry.instanceId, model })),
   );
   const fallback = models.find(({ model }) => model.isDefault) ?? models[0];

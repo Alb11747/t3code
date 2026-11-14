@@ -269,8 +269,10 @@ export function resolveDefaultableModelSelection(
   }
   const provider = config.providers.find((candidate) => candidate.instanceId === usable.instanceId);
   const model = provider?.models.find((candidate) => candidate.slug === usable.model);
+  // Fork: a retired ID a CLI Proxy hub still answers stays the default; its row says what answers it.
   return provider?.driver !== "antigravity" &&
-    (model?.isLegacy === true || model?.servedBy !== undefined)
+    model?.isLegacy === true &&
+    model.servedBy === undefined
     ? null
     : usable;
 }

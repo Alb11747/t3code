@@ -513,15 +513,33 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
     ),
   );
 
-  it.effect("records the model a CLI Proxy hub answers an aliased request with", () =>
+  it.effect.each([
+    ["records the model a CLI Proxy hub answers an aliased request with", false, "gpt-6.1-sol"],
+    ["leaves the model unknown after a reroute", true, undefined],
+  ] as const)("%s", ([, rerouted, expected]) =>
     Effect.gen(function* () {
       const nativeThreadId = "hub-alias-thread";
       const nativeTurnId = "hub-alias-turn";
       const prompt = "Say hi.";
+      const reroute: ReplayEntry = {
+        type: "emit_inbound",
+        frame: {
+          method: "model/rerouted",
+          // An earlier turn's reroute leaves the thread's model unknown until new settings.
+          params: {
+            threadId: nativeThreadId,
+            turnId: "earlier-turn",
+            fromModel: "gpt-5.4",
+            toModel: "gpt-5.2",
+            reason: "highRiskCyberActivity",
+          },
+        },
+      };
       const transcript = makeCodexReplayTranscript({
         scenario: "hub-aliased-model",
         entries: [
           ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
+          ...(rerouted ? [reroute] : []),
           {
             type: "emit_inbound",
             frame: {
@@ -551,7 +569,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
       );
       assert.equal(
         completed?.type === "provider_turn.updated" ? completed.providerTurn.model : null,
-        "gpt-6.1-sol",
+        expected,
       );
     }).pipe(
       Effect.scoped,

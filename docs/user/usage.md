@@ -237,14 +237,16 @@ taken back.
 ### Models the hub answers with another model
 
 A hub can route a retired model ID to a newer model (CLIProxyAPI's `oauth-model-alias`), so a
-request for Claude Opus 4.7 is answered by Claude Opus 5.5. When T3 Code holds the management key
-of the one hub a Claude or Codex provider routes through, model pickers (composer, Settings,
-scheduled tasks, mobile) and the model list agents read leave such IDs out. A thread, task or
-setting already on one keeps it, and its picker says **Answered by …** so you can switch to the
-real model. **Use the newest … model** never picks a retired ID. When a reply came from another
-model than its turn asked for, the reply's details say so, for example **Claude Opus 5.5, asked for
-Claude Opus 4.7**; for Codex, which does not report the model that answered, T3 Code takes it from
-the hub's alias list at the time of the turn.
+request for Claude Opus 4.7 is answered by Claude Opus 5.5. When a Claude or Codex provider's
+custom endpoint is a hub T3 Code holds the management key for (the endpoint's scheme, host and
+port must match the hub URL you entered), model pickers (composer, Settings, scheduled tasks, mobile) and the model
+list agents read leave such IDs out. A thread, task or default already on one keeps it, and its
+picker says **Answered by …** so you can switch to the real model. **Use the newest … model**
+never picks a retired ID. When a reply came from another model than its turn asked for, the
+reply's details say so, for example **Claude Opus 5.5, asked for Claude Opus 4.7**; for Codex,
+which does not report the model that answered, T3 Code takes it from the hub's alias list when
+the turn completes. T3 Code reads the alias list with the hub's usage, so a change on the hub shows
+after the next usage refresh, or within a minute of opening a model picker.
 
 ## Subscription usage widget
 

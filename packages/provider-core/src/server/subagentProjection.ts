@@ -20,6 +20,7 @@ import type {
 } from "@t3tools/contracts";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import { isNewerOfFamily } from "@t3tools/shared/latestModel";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import { isOrchestrationV2WorkActive, latestProviderTurnForAttempt } from "@t3tools/contracts";
@@ -177,13 +178,19 @@ export function makeSubagentConversationArtifacts(input: {
   return { message, turnItem };
 }
 
-/** A delegated result, led by a note when the provider reported running another model than requested. */
+/**
+ * A delegated result, led by a note when the provider reported running another model than
+ * requested. Fork: a newer release of the requested family is what a CLI Proxy hub answers a
+ * retired ID with, so it gets no note; `executedModel` on thread reads still shows it.
+ */
 export function withExecutedModelNote(
   result: string,
   requestedModel: string,
   executedModel: string | null | undefined,
 ): string {
-  return executedModel == null || executedModel === requestedModel
+  return executedModel == null ||
+    executedModel === requestedModel ||
+    isNewerOfFamily(executedModel, requestedModel)
     ? result
     : `Requested model ${requestedModel}; the provider reported running ${executedModel}.\n\n${result}`;
 }

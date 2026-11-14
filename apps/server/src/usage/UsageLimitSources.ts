@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -43,6 +44,11 @@ export class UsageLimitSources extends Context.Service<
     readonly current: Effect.Effect<ReadonlyArray<UsageLimitSourceSnapshot>>;
     readonly streamChanges: Stream.Stream<ReadonlyArray<UsageLimitSourceSnapshot>>;
     readonly refresh: Effect.Effect<void>;
+    /**
+     * Fork: re-reads only each hub's model aliases, at most once a minute, for an opened model
+     * picker; the full refresh's per-account usage reads cost far more.
+     */
+    readonly refreshModelAliases: Effect.Effect<void>;
     readonly consumeResetCredit: (
       input: UsageLimitSourceConsumeResetCreditInput,
     ) => Effect.Effect<ProviderConsumeResetCreditResult, UsageLimitSourceError>;
@@ -182,15 +188,12 @@ export const make = Effect.gen(function* () {
       [api.readAccounts(hub, listingOf(id, hub)).pipe(Effect.result), modelAliasesOf(id, hub)],
       { concurrency: 2 },
     );
+    const aliases = modelAliases === undefined ? {} : { modelAliases };
     if (accounts._tag === "Failure") {
       yield* Effect.logDebug("usage limit source read failed", { id, cause: accounts.failure });
-      return { ...base, accounts: [], error: accounts.failure.detail };
+      return { ...base, accounts: [], error: accounts.failure.detail, ...aliases };
     }
-    return {
-      ...base,
-      accounts: accounts.success,
-      ...(modelAliases === undefined ? {} : { modelAliases }),
-    };
+    return { ...base, accounts: accounts.success, ...aliases };
   });
 
   const publish = Effect.fn("UsageLimitSources.publish")(function* (
@@ -246,6 +249,36 @@ export const make = Effect.gen(function* () {
     yield* publish(previous.map((source) => (source.id === input.sourceId ? snapshot : source)));
     return result;
   }, refreshLock.withPermits(1));
+
+  let aliasesReadAt = Number.NEGATIVE_INFINITY;
+  const refreshModelAliases = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    if (now - aliasesReadAt < 60_000) return;
+    aliasesReadAt = now;
+    const settings = yield* settingsService.getSettings.pipe(
+      Effect.orElseSucceed((): ServerSettings | null => null),
+    );
+    const previous = yield* Ref.get(stateRef);
+    const next = yield* Effect.forEach(
+      previous,
+      (source) =>
+        Effect.gen(function* () {
+          const config = settings?.usageLimitSources[source.id];
+          if (!config?.enabled) return source;
+          const managementKey = yield* readManagementKey(config).pipe(
+            Effect.orElseSucceed(() => ""),
+          );
+          if (managementKey.length === 0) return source;
+          const modelAliases = yield* modelAliasesOf(source.id, {
+            url: config.url,
+            managementKey,
+          });
+          return modelAliases === undefined ? source : { ...source, modelAliases };
+        }),
+      { concurrency: 4 },
+    );
+    yield* publish(next);
+  }).pipe(refreshLock.withPermits(1), Effect.ignoreCause({ log: true }));
 
   const hub = Effect.fn("UsageLimitSources.hub")(function* (sourceId: UsageLimitSourceId) {
     const settings = yield* settingsService.getSettings.pipe(
@@ -337,6 +370,7 @@ export const make = Effect.gen(function* () {
     consumeResetCredit,
     nextPickReset,
     hub,
+    refreshModelAliases,
     // Fork: the quota router's controls.
     nextPick: api.nextPick,
     control,

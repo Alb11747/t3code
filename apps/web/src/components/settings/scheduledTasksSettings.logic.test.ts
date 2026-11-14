@@ -535,6 +535,33 @@ describe("scheduled task model defaults", () => {
       resolve({ ...config, settings: { ...config.settings, defaultModelSelection: null } }, null),
     ).toEqual({ instanceId, model: "catalog-default" });
   });
+  it("keeps a retired default the hub still answers but never falls back to one", () => {
+    const retired = { instanceId, model: "retired-model" };
+    const withRetired = (catalogDefault: boolean) =>
+      ({
+        ...config,
+        settings: { ...config.settings, defaultModelSelection: null },
+        providers: config.providers.map((provider) => ({
+          ...provider,
+          models: [
+            {
+              slug: "retired-model",
+              name: "Retired",
+              isCustom: false,
+              isLegacy: true,
+              servedBy: "first-model",
+              ...(catalogDefault ? { isDefault: true } : {}),
+              capabilities: null,
+            },
+            ...provider.models.map(({ isDefault: _isDefault, ...model }) => model),
+          ],
+        })),
+      }) as unknown as ServerConfig;
+    expect(resolve(withRetired(false), { id: projectId, defaultModelSelection: retired })).toEqual(
+      retired,
+    );
+    expect(resolve(withRetired(true), null)).toEqual({ instanceId, model: "first-model" });
+  });
   it("falls back to the environment default when the project provider is unavailable", () => {
     expect(
       resolve(config, {

@@ -48,14 +48,24 @@ export const servedByOf = (
     ? aliases[slug]
     : undefined;
 
-/** Marks each listed model the hub answers with another model, and clears stale marks. */
+/**
+ * Marks each listed model the hub answers with another model, and clears stale marks. A target the
+ * provider does not list unmarked is skipped: with `fork: false` the proxy renames the model, so the
+ * alias is then the only ID that works.
+ */
 export const withServedModels = (
   provider: ServerProvider,
   aliases: Readonly<Record<string, string>> | undefined,
 ): ServerProvider => {
+  const listed = new Set(
+    provider.models
+      .filter((model) => servedByOf(aliases, model.slug) === undefined)
+      .map((model) => model.slug),
+  );
   let changed = false;
   const models = provider.models.map((model) => {
-    const servedBy = model.isCustom ? undefined : servedByOf(aliases, model.slug);
+    const target = model.isCustom ? undefined : servedByOf(aliases, model.slug);
+    const servedBy = target !== undefined && listed.has(target) ? target : undefined;
     if (model.servedBy === servedBy) return model;
     changed = true;
     if (servedBy === undefined) {

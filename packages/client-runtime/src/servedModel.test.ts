@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { OrchestrationV2ThreadProjection, RunId } from "@t3tools/contracts";
 
-import { runServedModelNote } from "./servedModel.ts";
+import { runServedModelNotes } from "./servedModel.ts";
 
 const runId = "run-1" as RunId;
 const projection = (requested: string, turns: ReadonlyArray<{ ordinal: number; model?: string }>) =>
@@ -14,7 +14,7 @@ const projection = (requested: string, turns: ReadonlyArray<{ ordinal: number; m
     ],
   }) as unknown as Pick<OrchestrationV2ThreadProjection, "runs" | "providerTurns">;
 
-describe("runServedModelNote", () => {
+describe("runServedModelNotes", () => {
   it.each([
     [
       "claude-opus-4-7",
@@ -30,6 +30,6 @@ describe("runServedModelNote", () => {
     ["claude-opus-5-5[1m]", [{ ordinal: 1, model: "claude-opus-5-5" }], null],
     ["gpt-6.1-sol", [{ ordinal: 1 }], null],
   ])("%s with %j reads %s", (requested, turns, expected) => {
-    expect(runServedModelNote(projection(requested, turns), runId)).toBe(expected);
+    expect(runServedModelNotes(projection(requested, turns)).get(runId) ?? null).toBe(expected);
   });
 });

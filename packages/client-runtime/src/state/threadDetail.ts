@@ -14,7 +14,7 @@ import {
   getUserQueuedThreadRuns,
   type ThreadQueueWorkflowState,
 } from "./threadWorkflows.ts";
-import { runServedModelNote } from "../servedModel.ts";
+import { runServedModelNotes } from "../servedModel.ts";
 import { deriveThreadTurnSubagents, type ThreadTurnSubagents } from "./threadSubagents.ts";
 import {
   deriveUsageLimitNoticeRows,
@@ -399,15 +399,25 @@ export function createEnvironmentThreadDetailAtoms<E>(
     }).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-thread-assistant-message-text:${key}`));
   });
 
-  // Fork: a string, so a meta row re-renders only when its run's served-model note changes.
+  // Fork: one pass per thread structure; each meta row reads its string, so it re-renders only
+  // when its run's served-model note changes.
+  const EMPTY_SERVED_MODEL_NOTES: ReadonlyMap<RunId, string> = new Map();
+  const runServedModelNotesAtomFamily = Atom.family((key: string) =>
+    Atom.make((get) => {
+      const structure = get(quietThreadAtomFamily(key));
+      return structure === null
+        ? EMPTY_SERVED_MODEL_NOTES
+        : runServedModelNotes(structure.projection);
+    }).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-thread-served-model-notes:${key}`)),
+  );
   const runServedModelNoteAtomFamily = Atom.family((key: string) => {
     const separator = key.lastIndexOf("\u0000");
     const thread = key.slice(0, separator);
     const runId = key.slice(separator + 1) as RunId;
-    return Atom.make((get) => {
-      const structure = get(quietThreadAtomFamily(thread));
-      return structure === null ? null : runServedModelNote(structure.projection, runId);
-    }).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-thread-run-served-model:${key}`));
+    return Atom.make((get) => get(runServedModelNotesAtomFamily(thread)).get(runId) ?? null).pipe(
+      Atom.setIdleTTL(0),
+      Atom.withLabel(`environment-thread-run-served-model:${key}`),
+    );
   });
 
   const queueWorkflowAtomFamily = Atom.family((key: string) => {
