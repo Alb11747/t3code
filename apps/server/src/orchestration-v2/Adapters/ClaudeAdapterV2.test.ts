@@ -8631,6 +8631,66 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect("forks a busy source only at the boundary turn's own assistant cursor", () =>
+    Effect.gen(function* () {
+      const forkCalls: Array<ClaudeAdapterV2.ClaudeAgentSdkSessionForkInput> = [];
+      const harness = yield* makeWakeHarnessWithOptions({
+        forkSession: (input) =>
+          Effect.sync(() => {
+            forkCalls.push(input);
+            return { sessionId: "forked-from-busy-source" };
+          }),
+      });
+      const now = yield* DateTime.now;
+      const boundaryTurn = (nativeId: string) => ({
+        id: ProviderTurnId.make("provider-turn-claude-busy-boundary"),
+        providerThreadId: harness.providerThread.id,
+        nodeId: NodeId.make("node-claude-busy-boundary"),
+        runAttemptId: RunAttemptId.make("attempt-claude-busy-boundary"),
+        nativeTurnRef: {
+          driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+          nativeId,
+          strength: "weak" as const,
+        },
+        ordinal: 1,
+        status: "completed" as const,
+        startedAt: now,
+        completedAt: now,
+      });
+      const forkBusy = (turn: ReturnType<typeof boundaryTurn>) =>
+        harness.runtime.forkThread({
+          sourceProviderThread: harness.providerThread,
+          sourceProviderTurns: [turn],
+          providerTurnId: turn.id,
+          sourceBusy: true,
+          targetThreadId: ThreadId.make("thread-claude-busy-fork"),
+        });
+
+      const cursor = "00000000-0000-4000-8000-000000000700";
+      yield* forkBusy(boundaryTurn(cursor));
+      assert.deepEqual(
+        forkCalls.map((call) => call.options.upToMessageId),
+        [cursor],
+      );
+
+      // With no cursor and no pinned head, the SDK would copy the running turn as well.
+      const error = yield* forkBusy(boundaryTurn("turn:attempt-claude-busy-boundary")).pipe(
+        Effect.flip,
+      );
+      assert.instanceOf(error, ProviderAdapter.ProviderAdapterForkThreadError);
+      assert.lengthOf(forkCalls, 1);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
   it.effect("keeps an unreported /compact failure's reason on the compaction, not as a reply", () =>
     Effect.gen(function* () {
       const harness = yield* makeWakeHarness;

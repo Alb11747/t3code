@@ -1643,6 +1643,10 @@ effectIt.effect.each([
         expect(harness.forkThread).toHaveBeenCalledWith(
           expect.objectContaining({ providerTurnId: "side-chat-parent-turn-1" }),
         );
+        // Busy forks must not fall back to a head the running turn may extend.
+        expect(harness.forkThread.mock.calls[0]?.[0].sourceBusy).toBe(
+          nativeForkFrom === "busy" ? true : undefined,
+        );
       }
       expect(harness.projection().contextTransfers).toMatchObject([
         { id: "side-chat-fork", status: transferStatus },
