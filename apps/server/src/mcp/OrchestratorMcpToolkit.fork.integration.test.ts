@@ -771,6 +771,26 @@ describe("orchestrator MCP toolkit", () => {
 
             const firstChunk = truncatedResultRead.items[0]!;
             expect(firstChunk.nextTextOffset).toBe(1);
+            const directReadResult =
+              "Claude completed: Complete before a parent reads this child result directly.";
+            const pastEndCall = yield* invoke("t3_thread_read", {
+              threadId: directChildThreadId,
+              itemId: firstChunk.itemId,
+              textOffset: directReadResult.length,
+            });
+            const pastEnd = yield* decodeThreadReadResult(pastEndCall.structuredContent).pipe(
+              Effect.orDie,
+            );
+            expect(pastEnd.items[0]).toMatchObject({
+              text: "",
+              textTruncated: false,
+              nextTextOffset: null,
+            });
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+                (task) => task.id === directRead.task.id,
+              )?.completionDelivery?.state,
+            ).toBe("claimed");
             const remainderCall = yield* invoke("t3_thread_read", {
               threadId: directChildThreadId,
               itemId: firstChunk.itemId,
@@ -781,14 +801,12 @@ describe("orchestrator MCP toolkit", () => {
               Effect.orDie,
             );
             expect(remainder.items[0]?.nextTextOffset).toBeNull();
-            expect(firstChunk.text + (remainder.items[0]?.text ?? "")).toBe(
-              "Claude completed: Complete before a parent reads this child result directly.",
-            );
+            expect(firstChunk.text + (remainder.items[0]?.text ?? "")).toBe(directReadResult);
             expect(
               (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
                 (task) => task.id === directRead.task.id,
               )?.completionDelivery?.state,
-            ).toBe("claimed");
+            ).toBe("acknowledged");
 
             const terminalResultReadCall = yield* invoke("t3_thread_read", {
               threadId: directChildThreadId,

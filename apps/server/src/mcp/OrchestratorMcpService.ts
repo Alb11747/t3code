@@ -3361,13 +3361,7 @@ const make = Effect.gen(function* () {
             );
       // A read past the end of an item's text shows the agent nothing to acknowledge.
       const readPastEnd = (input.textOffset ?? 0) > 0 && items.every((item) => !item.text);
-      if (
-        parent !== undefined &&
-        scope.thread !== undefined &&
-        tasks.length > 0 &&
-        (input.textOffset ?? 0) === 0 &&
-        !readPastEnd
-      ) {
+      if (parent !== undefined && scope.thread !== undefined && tasks.length > 0 && !readPastEnd) {
         for (const task of tasks) {
           const transfer = taskResultTransfer(parent.thread.id, target, task);
           const resultRunId = transfer?.sourcePoint.runId ?? delegatedTaskRun(target, task)?.id;

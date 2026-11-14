@@ -79,6 +79,34 @@ function run(id: string, ordinal: number, status: OrchestrationV2RunStatus) {
 }
 
 describe("thread execution presentation", () => {
+  it("keeps an idle watched thread observable without app-owned runs", () => {
+    const projection = {
+      ...v2Projection,
+      thread: {
+        ...v2Projection.thread,
+        issueWatches: [
+          {
+            host: "github.com",
+            repository: "acme/app",
+            number: 7,
+            url: "https://github.com/acme/app/issues/7",
+            startedAt: "2026-07-28T10:00:00.000Z",
+            commentsThrough: "2026-07-28T10:00:00.000Z",
+            commentIds: [],
+            wakes: 0,
+          },
+        ],
+      },
+    };
+    expect(deriveThreadRuntime(projection)).toMatchObject({ status: "idle", activeRunId: null });
+    expect(
+      deriveThreadRuntime({
+        ...projection,
+        thread: { ...projection.thread, issueWatches: [] },
+      }),
+    ).toBeNull();
+  });
+
   it("shows extension statuses only from the selected provider's current live session", () => {
     const instanceId = v2Projection.thread.modelSelection.instanceId;
     const providerThreadId = ProviderThreadId.make("native-status-thread");
