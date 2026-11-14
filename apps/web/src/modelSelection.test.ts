@@ -355,15 +355,39 @@ describe("instance-scoped model selection", () => {
 
     expect(slugs()).toEqual(["claude-opus-5-5"]);
     expect(slugs("claude-opus-4-7")).toEqual(["claude-opus-5-5", "claude-opus-4-7"]);
-    // A thread already on the retired ID keeps it rather than silently switching models.
+    // A thread already on the retired ID keeps it rather than silently switching models, also
+    // when the user hid that ID from the picker before the hub answered it with another model.
+    const hidden: UnifiedSettings = {
+      ...settings,
+      providerModelPreferences: {
+        [ProviderInstanceId.make("claudeAgent")]: {
+          hiddenModels: ["claude-opus-4-7"],
+          modelOrder: [],
+        },
+      },
+    };
+    for (const current of [settings, hidden]) {
+      for (const preserveUnavailableSelection of [false, true]) {
+        expect(
+          resolveAppModelSelectionForInstance(
+            ProviderInstanceId.make("claudeAgent"),
+            current,
+            providers,
+            "claude-opus-4-7",
+            { preserveUnavailableSelection },
+          ),
+        ).toBe("claude-opus-4-7");
+      }
+    }
     expect(
-      resolveAppModelSelectionForInstance(
-        ProviderInstanceId.make("claudeAgent"),
-        settings,
-        providers,
-        "claude-opus-4-7",
-      ),
-    ).toBe("claude-opus-4-7");
+      getAppModelOptionsForInstance(hidden, entry!, "claude-opus-4-7").map((option) => [
+        option.slug,
+        option.servedBy,
+      ]),
+    ).toEqual([
+      ["claude-opus-5-5", undefined],
+      ["claude-opus-4-7", "claude-opus-5-5"],
+    ]);
   });
 
   it("falls back when the selected model is hidden", () => {

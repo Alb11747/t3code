@@ -141,8 +141,13 @@ function applyInstanceModelPreferences(
   },
 ): AppModelOption[] {
   const hiddenModels = new Set(preferences.hiddenModels);
+  // Fork: a retired ID the hub answers with another model is here only as the stored selection
+  // (see isOfferedModel); hiding it must not silently move that thread to another model.
   return sortModelsForProviderInstance(
-    options.filter((option) => option.isCustom || !hiddenModels.has(option.slug)),
+    options.filter(
+      (option) =>
+        option.isCustom || option.servedBy !== undefined || !hiddenModels.has(option.slug),
+    ),
     { modelOrder: preferences.modelOrder },
   );
 }

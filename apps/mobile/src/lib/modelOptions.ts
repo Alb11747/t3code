@@ -414,6 +414,11 @@ export function buildModelOptions(
     }
   }
 
+  const fallbackModel = fallbackModelSelection
+    ? config?.providers
+        .find((provider) => provider.instanceId === fallbackModelSelection.instanceId)
+        ?.models.find((model) => model.slug === fallbackModelSelection.model)
+    : undefined;
   if (
     fallbackModelSelection &&
     (providerInstanceId === undefined ||
@@ -421,9 +426,9 @@ export function buildModelOptions(
     (!config?.settings?.providerModelPreferences?.[
       fallbackModelSelection.instanceId
     ]?.hiddenModels.includes(fallbackModelSelection.model) ||
-      config?.providers
-        .find((provider) => provider.instanceId === fallbackModelSelection.instanceId)
-        ?.models.find((model) => model.slug === fallbackModelSelection.model)?.isCustom)
+      fallbackModel?.isCustom === true ||
+      // Fork: hiding a retired ID the hub answers must not move a thread already on it.
+      fallbackModel?.servedBy !== undefined)
   ) {
     const key = `${fallbackModelSelection.instanceId}:${fallbackModelSelection.model}`;
     const existing = options.get(key);

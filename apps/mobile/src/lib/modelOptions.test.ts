@@ -801,6 +801,37 @@ describe("synchronized mobile model visibility", () => {
     ).toEqual(["second", "first", "custom"]);
   });
 
+  it("keeps a hidden stored ID the hub answers with another model, saying which", () => {
+    const served = {
+      ...config,
+      providers: config.providers.map((entry) => ({
+        ...entry,
+        models: entry.models.map((model) =>
+          model.slug === "hidden" ? { ...model, servedBy: "first" } : model,
+        ),
+      })),
+    } as unknown as ServerConfig;
+    const options = buildModelOptions(
+      served,
+      { instanceId: provider, model: "hidden" },
+      provider,
+      null,
+    );
+    expect(options.map((option) => option.selection.model)).toEqual([
+      "second",
+      "first",
+      "custom",
+      "hidden",
+    ]);
+    expect(options.find((option) => option.selection.model === "hidden")?.subtitle).toBe(
+      "Answered by first",
+    );
+    // Not selected, it is not offered at all.
+    expect(
+      buildModelOptions(served, null, provider, null).map((option) => option.selection.model),
+    ).toEqual(["second", "first", "custom"]);
+  });
+
   // regression: #16816 sync model favorites and visibility across clients
   it("keeps custom models visible and restores built-in models when the server clears hidden models", () => {
     expect(
