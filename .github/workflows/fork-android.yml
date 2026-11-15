@@ -180,8 +180,13 @@ jobs:
       - name: Publish Android prerelease
         env:
           GH_TOKEN: ${{ github.token }}
+          FORK_DEPLOY_KEY: ${{ secrets.FORK_DEPLOY_KEY }}
         run: |
           set -euo pipefail
+          # An existing tag avoids GitHub's workflow-write check if main changed during the build.
+          [[ -n "$FORK_DEPLOY_KEY" ]] || { echo "::error::Missing FORK_DEPLOY_KEY"; exit 1; }
+          source fork/scripts/deploy-key-env.sh
+          git push "git@github.com:${GITHUB_REPOSITORY}.git" "$GITHUB_SHA:refs/tags/$ANDROID_RELEASE_TAG"
           cat > "$RUNNER_TEMP/android-notes.md" <<EOF
           Standalone **T3 Code Fork** for Android ARM64 phones (Android 7 or newer).
 
@@ -194,6 +199,6 @@ jobs:
           Build: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
           EOF
           gh release create "$ANDROID_RELEASE_TAG" "$RUNNER_TEMP/android-release/"* \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --prerelease --latest=false \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --draft --prerelease --latest=false \
             --title "T3 Code Fork Android $T3CODE_ANDROID_VERSION_CODE" --notes-file "$RUNNER_TEMP/android-notes.md"
           gh release edit "$ANDROID_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
