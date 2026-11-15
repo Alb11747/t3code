@@ -226,8 +226,8 @@ import {
   snoozeWakeLabel,
   type SnoozePreset,
 } from "./Sidebar.snooze";
-import { readUsageResetSnoozeOptions, resolveUsageResetSnooze } from "./usageResetSnooze";
-import { usageResetSnoozeOptionOf } from "@t3tools/client-runtime/usage-reset-snooze";
+import { loadUsageResetSnoozeOptions, usageResetSnoozeChoice } from "./usageResetSnooze";
+import { mergeUsageResetSnoozeOptions } from "@t3tools/client-runtime/usage-reset-snooze";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { deriveProviderEntriesByEnvironment } from "../providerInstances";
 import { useStableCallback } from "../hooks/useStableCallback";
@@ -2353,6 +2353,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         timestampFormat,
         selectedThreads[0]!.environmentId,
       );
+      const usageResetOptionsByThread = canSnoozeSelection
+        ? await loadUsageResetSnoozeOptions(
+            selectedThreads.map((thread) => scopeThreadRef(thread.environmentId, thread.id)),
+          )
+        : [];
       const clicked = await settlePromise(() =>
         api.contextMenu.show(
           [
@@ -2377,16 +2382,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         detail: preset.whenLabel,
                         disabled: !canOperateThreads(selectedThreads),
                       })),
-                      ...readUsageResetSnoozeOptions(
-                        selectedThreads.map((thread) =>
-                          scopeThreadRef(thread.environmentId, thread.id),
-                        ),
-                      ).map((option, index) => ({
-                        id: option.id,
-                        label: option.label,
-                        separatorBefore: index === 0 && snoozePresets.length > 0,
-                        disabled: !canOperateThreads(selectedThreads),
-                      })),
+                      ...mergeUsageResetSnoozeOptions(usageResetOptionsByThread).map(
+                        (option, index) => ({
+                          id: option.id,
+                          label: option.label,
+                          separatorBefore: index === 0 && snoozePresets.length > 0,
+                          disabled: !canOperateThreads(selectedThreads),
+                        }),
+                      ),
                       {
                         id: "snooze:custom",
                         label: "Custom…",
@@ -2434,8 +2437,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       if (clicked.value === "settle" && actionTargets.length === 0) return;
       if (clicked.value !== "mark-unread" && !checkThreadOperations(actionTargets)) return;
       if (clicked.value?.startsWith("snooze:")) {
-        // Each thread's usage resets with the account it last used.
-        const usageReset = usageResetSnoozeOptionOf(clicked.value);
+        // Each thread snoozes until its own account's reset; a thread without that option is skipped.
+        const usageReset = clicked.value.startsWith("snooze:usage-reset");
         const sharedPreset = usageReset
           ? undefined
           : clicked.value === "snooze:custom"
@@ -2450,13 +2453,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           const coSnoozingKeys = new Set(threadKeys);
           clearSelection();
           const outcomes = await Promise.all(
-            selectedThreads.map(async (thread) => {
+            selectedThreads.map(async (thread, index) => {
               const threadRef = scopeThreadRef(thread.environmentId, thread.id);
               const preset =
                 sharedPreset ??
-                (usageReset
-                  ? await resolveUsageResetSnooze(threadRef, usageReset.window)
-                  : undefined);
+                (await usageResetSnoozeChoice(
+                  threadRef,
+                  usageResetOptionsByThread[index]?.find((option) => option.id === clicked.value),
+                ));
               const outcome = preset
                 ? await performSnooze(threadRef, preset, { coSnoozingKeys })
                 : ({ status: "skipped" } as const);
@@ -2666,6 +2670,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 projectRef.projectId === thread.projectId,
             ),
           ) ?? null;
+        const canSnoozeNow = canSnooze(thread, { now: new Date().toISOString() });
+        const [usageResetOptions = []] =
+          configLoaded && !isSnoozed && canSnoozeNow
+            ? await loadUsageResetSnoozeOptions([threadRef])
+            : [];
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             buildThreadActionMenuItems({
@@ -2692,7 +2701,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               compactBeforeCacheExpires: thread.compactBeforeCacheExpires,
               compactOnce: thread.compactOnce,
               isSnoozed,
-              canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
+              canSnoozeNow,
               isRegeneratingTitle,
               isRunning: !threadRuntimeCanArchive(thread.runtime),
               canShareWithGuest: appAtomRegistry.get(
@@ -2707,7 +2716,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 titleRegeneration: configLoaded,
               },
               snoozePresets,
-              usageResetSnoozeOptions: readUsageResetSnoozeOptions([threadRef]),
+              usageResetSnoozeOptions: usageResetOptions,
             }),
             position,
           ),
@@ -2715,12 +2724,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         if (clicked._tag === "Failure" || clicked.value === null) return;
         if (threadActionRequiresOperate(clicked.value) && !checkThreadOperations([thread])) return;
         if (clicked.value?.startsWith("snooze:")) {
-          const usageReset = usageResetSnoozeOptionOf(clicked.value);
+          const usageReset = usageResetOptions.find((option) => option.id === clicked.value);
           const preset =
             clicked.value === "snooze:custom"
               ? await requestCustomSnooze()
               : usageReset
-                ? await resolveUsageResetSnooze(threadRef, usageReset.window)
+                ? await usageResetSnoozeChoice(threadRef, usageReset)
                 : pickSnoozePreset(
                     snoozePresets,
                     clicked.value.slice("snooze:".length),

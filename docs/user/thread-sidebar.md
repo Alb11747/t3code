@@ -373,7 +373,8 @@ several selected threads together. Choose **Wake thread** to bring a thread back
 When the account the thread last used reports a 5-hour and a weekly limit, the
 **Snooze** menu offers **Until usage resets (5h)** and **Until usage resets (Weekly)**,
 which wake the thread when that limit resets on that account. Behind a CLIProxyAPI hub
-running the quota router, that is the account the router has the conversation on.
+running the quota router, that is the account the router has the conversation on. On
+mobile, choose **Until usage resets**, then the limit.
 
 Accounts that report neither limit get one **Until usage resets**, which wakes the
 thread when its account gets quota back: once every blocking limit resets, or at the

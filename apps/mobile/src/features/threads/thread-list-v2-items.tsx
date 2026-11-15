@@ -10,8 +10,11 @@ import {
 } from "./thread-list-v2-row-appearance";
 import { RowPressable } from "../../components/ui/RowPressable";
 import { CustomSnoozeSheet } from "./CustomSnoozeSheet";
-import { resolveUsageResetSnooze, useUsageResetSnoozeOptions } from "./usageResetSnooze";
-import { usageResetSnoozeOptionOf } from "@t3tools/client-runtime/usage-reset-snooze";
+import {
+  chooseUsageResetSnooze,
+  USAGE_RESET_SNOOZE_ACTION,
+  USAGE_RESET_SNOOZE_LABEL,
+} from "./usageResetSnooze";
 import { ThreadContextNoteSheet } from "./ThreadContextNoteSheet";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { threadArrangementOpenAtom } from "../../state/thread-order";
@@ -875,10 +878,6 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     now: props.snoozePresetMinute || snoozeGateNow,
     presets: props.snoozePresets,
   });
-  const usageResetOptions = useUsageResetSnoozeOptions(
-    thread.environmentId,
-    thread.modelSelection.instanceId,
-  );
   const snoozePresetActions = useMemo<MenuAction[]>(
     () => [
       ...snoozePresets.map((preset) => ({
@@ -886,10 +885,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         title: preset.label,
         subtitle: preset.whenLabel,
       })),
-      ...usageResetOptions.map((option) => ({ id: option.id, title: option.label })),
+      { id: USAGE_RESET_SNOOZE_ACTION, title: USAGE_RESET_SNOOZE_LABEL },
       { id: "snooze:custom", title: "Custom…" },
     ],
-    [snoozePresets, usageResetOptions],
+    [snoozePresets],
   );
   const reorderMenuItems = useMemo<MenuAction[]>(
     () =>
@@ -1166,12 +1165,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         setCustomSnoozeOpen(true);
         return;
       }
-      const usageReset = usageResetSnoozeOptionOf(nativeEvent.event);
-      if (usageReset) {
-        void resolveUsageResetSnooze(
+      if (nativeEvent.event === USAGE_RESET_SNOOZE_ACTION) {
+        void chooseUsageResetSnooze(
           { environmentId: thread.environmentId, threadId: thread.id },
           thread.modelSelection,
-          usageReset.window,
         ).then((snoozedUntil) => {
           if (snoozedUntil) handleSnooze(snoozedUntil);
         });

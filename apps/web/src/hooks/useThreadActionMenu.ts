@@ -18,10 +18,9 @@ import { useRouter } from "@tanstack/react-router";
 
 import { pickSnoozePreset, resolveSnoozePresets } from "../components/Sidebar.snooze";
 import {
-  readUsageResetSnoozeOptions,
-  resolveUsageResetSnooze,
+  loadUsageResetSnoozeOptions,
+  usageResetSnoozeChoice,
 } from "../components/usageResetSnooze";
-import { usageResetSnoozeOptionOf } from "@t3tools/client-runtime/usage-reset-snooze";
 import {
   buildThreadActionMenuItems,
   compactBeforeCacheExpiresChoice,
@@ -147,6 +146,12 @@ export function useThreadActionMenu(input: {
       };
       const isRegeneratingTitle = thread.titleRegeneration != null;
       const snoozePresets = resolveSnoozePresets(now, timestampFormat, threadRef.environmentId);
+      const isSnoozed = supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() });
+      const canSnoozeNow = canSnooze(thread, { now: now.toISOString() });
+      const [usageResetOptions = []] =
+        supports.snooze && !isSnoozed && canSnoozeNow
+          ? await loadUsageResetSnoozeOptions([threadRef])
+          : [];
       const items = buildThreadActionMenuItems({
         canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
         canFind: onFind !== undefined,
@@ -159,13 +164,13 @@ export function useThreadActionMenu(input: {
           thread.autoSettleAlwaysAt === undefined ? undefined : thread.autoSettleAlwaysAt != null,
         compactBeforeCacheExpires: thread.compactBeforeCacheExpires,
         compactOnce: thread.compactOnce,
-        isSnoozed: supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() }),
-        canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
+        isSnoozed,
+        canSnoozeNow,
         isRegeneratingTitle,
         isRunning: !threadRuntimeCanArchive(thread.runtime),
         supports,
         snoozePresets,
-        usageResetSnoozeOptions: readUsageResetSnoozeOptions([threadRef]),
+        usageResetSnoozeOptions: usageResetOptions,
         canShareWithGuest,
         canTurnIntoProject: canTurnThreadIntoProject(threadRef),
       });
@@ -183,12 +188,12 @@ export function useThreadActionMenu(input: {
         return;
       }
       if (action.startsWith("snooze:")) {
-        const usageReset = usageResetSnoozeOptionOf(action);
+        const usageReset = usageResetOptions.find((option) => option.id === action);
         const preset =
           action === "snooze:custom"
             ? await requestCustomSnooze()
             : usageReset
-              ? await resolveUsageResetSnooze(threadRef, usageReset.window)
+              ? await usageResetSnoozeChoice(threadRef, usageReset)
               : pickSnoozePreset(
                   snoozePresets,
                   action.slice("snooze:".length),

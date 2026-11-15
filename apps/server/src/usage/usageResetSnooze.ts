@@ -4,7 +4,9 @@ import type {
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
   UsageLimitSourceAccount,
+  UsageResetSnoozeWindow,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import { exhaustedUsageWindow } from "@t3tools/shared/usageLimits";
 
 const MODEL_SCOPED_WINDOW_PREFIX = "seven_day_";
@@ -86,4 +88,32 @@ export function soonestHubReset(
     }
   }
   return best;
+}
+
+const SNOOZE_WINDOW_KINDS = ["session", "weekly"] as const;
+
+/** Each session and weekly window's reset for `model`, by `accountResetAtMs` over that kind alone. */
+export function windowResets(
+  driver: ProviderDriverKind,
+  limits: ServerProviderUsageLimits | undefined,
+  model: string,
+  now: number,
+): ReadonlyArray<UsageResetSnoozeWindow> {
+  if (!limits || limits.unavailable) return [];
+  return SNOOZE_WINDOW_KINDS.flatMap((kind) => {
+    const windows = limits.windows.filter((reading) => reading.kind === kind);
+    const resetsAtMs =
+      windows.length > 0 ? accountResetAtMs(driver, { ...limits, windows }, model, now) : null;
+    if (resetsAtMs === null) return [];
+    const windowDurationMins = windows.find(
+      (reading) => reading.windowDurationMins !== undefined,
+    )?.windowDurationMins;
+    return [
+      {
+        window: kind,
+        resetsAt: DateTime.formatIso(DateTime.makeUnsafe(resetsAtMs)),
+        ...(windowDurationMins === undefined ? {} : { windowDurationMins }),
+      },
+    ];
+  });
 }

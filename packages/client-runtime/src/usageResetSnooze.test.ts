@@ -1,85 +1,80 @@
-import type {
-  ServerProvider,
-  ServerProviderUsageWindow,
-  UsageLimitSourceSnapshots,
-} from "@t3tools/contracts";
+import type { UsageResetSnooze } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  lastUsedAccountWindows,
-  usageResetSnoozeOptionOf,
-  usageResetSnoozeOptions,
-} from "./usageResetSnooze.ts";
+import { mergeUsageResetSnoozeOptions, usageResetSnoozeOptions } from "./usageResetSnooze.ts";
 
-const reading = (
-  kind: ServerProviderUsageWindow["kind"],
-  label: string,
-  windowDurationMins?: number,
-): ServerProviderUsageWindow => ({
-  id: label,
-  kind,
-  label,
-  usedPercent: 10,
-  ...(windowDurationMins ? { windowDurationMins } : {}),
+const answer = (windows?: UsageResetSnooze["windows"]): UsageResetSnooze => ({
+  resetsAt: "2026-11-16T00:00:00.000Z",
+  basis: "account",
+  ...(windows ? { windows } : {}),
 });
-const SESSION = reading("session", "Session", 300);
-const WEEKLY = reading("weekly", "Weekly", 10_080);
-
-const provider = (usageLimits: object | undefined) =>
-  ({ driver: "codex", usageLimits }) as unknown as ServerProvider;
-const hub = (windows: ServerProviderUsageWindow[]) =>
-  [
-    {
-      accounts: [
-        { driver: "claudeAgent", usageLimits: { windows: [reading("other", "Pool")] } },
-        { driver: "codex", usageLimits: { windows } },
-      ],
-    },
-  ] as unknown as UsageLimitSourceSnapshots;
-const labels = (target: ServerProvider, sources: UsageLimitSourceSnapshots = []) =>
-  usageResetSnoozeOptions(lastUsedAccountWindows(target, sources)).map((option) => option.label);
+const SESSION = {
+  window: "session",
+  resetsAt: "2026-11-15T15:00:00.000Z",
+  windowDurationMins: 300,
+} as const;
+const WEEKLY = { window: "weekly", resetsAt: "2026-11-20T00:00:00.000Z" } as const;
 
 describe("usageResetSnoozeOptions", () => {
   it.each([
-    ["both windows", provider({ windows: [WEEKLY, SESSION] }), [], ["(5h)", "(Weekly)"]],
     [
-      "a session of unknown length",
-      provider({ windows: [reading("session", "Session")] }),
-      [],
-      ["(Session)"],
+      "each window of the thread's account",
+      answer([SESSION, WEEKLY]),
+      [
+        {
+          id: "snooze:usage-reset:session",
+          label: "Until usage resets (5h)",
+          snoozedUntil: SESSION.resetsAt,
+        },
+        {
+          id: "snooze:usage-reset:weekly",
+          label: "Until usage resets (Weekly)",
+          snoozedUntil: WEEKLY.resetsAt,
+        },
+      ],
+    ],
+    // An older server sends no windows, and would ignore a requested one.
+    [
+      "one any-reset option for a server without windows",
+      answer(),
+      [
+        {
+          id: "snooze:usage-reset",
+          label: "Until usage resets",
+          snoozedUntil: "2026-11-16T00:00:00.000Z",
+        },
+      ],
     ],
     [
-      "only windows it cannot snooze to",
-      provider({ windows: [reading("monthly", "Monthly")] }),
-      [],
-      [""],
-    ],
-    ["no readings", provider({ windows: [], unavailable: { reason: "unsupported" } }), [], [""]],
-    [
-      "no readings behind a hub",
-      provider({ windows: [], unavailable: { reason: "unsupported" } }),
-      hub([SESSION, WEEKLY]),
-      ["(5h)", "(Weekly)"],
+      "one any-reset option for an account without windows",
+      answer([]),
+      [
+        {
+          id: "snooze:usage-reset",
+          label: "Until usage resets",
+          snoozedUntil: "2026-11-16T00:00:00.000Z",
+        },
+      ],
     ],
     [
-      "its own readings before its hub's",
-      provider({ windows: [WEEKLY] }),
-      hub([SESSION]),
-      ["(Weekly)"],
+      "an option that asks again without an answer",
+      undefined,
+      [{ id: "snooze:usage-reset", label: "Until usage resets" }],
     ],
-  ] as const)("offers %s", (_, target, sources, suffixes) => {
-    expect(labels(target, sources)).toEqual(
-      suffixes.map((suffix) => `Until usage resets${suffix ? ` ${suffix}` : ""}`),
-    );
+  ] as const)("offers %s", (_, input, expected) => {
+    expect(usageResetSnoozeOptions(input)).toEqual(expected);
   });
 
-  it("maps each option's action back to its window", () => {
-    const options = usageResetSnoozeOptions([SESSION, WEEKLY]);
-    expect(options.map((option) => usageResetSnoozeOptionOf(option.id))).toEqual([
-      { window: "session" },
-      { window: "weekly" },
+  it("merges several threads' options once each, any-reset last", () => {
+    const merged = mergeUsageResetSnoozeOptions([
+      usageResetSnoozeOptions(answer()),
+      usageResetSnoozeOptions(answer([WEEKLY])),
+      usageResetSnoozeOptions(answer([SESSION, WEEKLY])),
     ]);
-    expect(usageResetSnoozeOptionOf(usageResetSnoozeOptions([])[0]!.id)).toEqual({});
-    expect(usageResetSnoozeOptionOf("snooze:custom")).toBeUndefined();
+    expect(merged.map((option) => option.id)).toEqual([
+      "snooze:usage-reset:session",
+      "snooze:usage-reset:weekly",
+      "snooze:usage-reset",
+    ]);
   });
 });

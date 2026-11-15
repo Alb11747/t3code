@@ -111,7 +111,8 @@ import {
   ThreadSearchPullRequestNumber,
 } from "../ThreadStatusIndicators";
 import { pickSnoozePreset, resolveSnoozePresets, type SnoozePreset } from "../Sidebar.snooze";
-import { readUsageResetSnoozeOptions, resolveUsageResetSnooze } from "../usageResetSnooze";
+import { loadUsageResetSnoozeOptions, usageResetSnoozeChoice } from "../usageResetSnooze";
+import type { UsageResetSnoozeOption } from "@t3tools/client-runtime/usage-reset-snooze";
 import { useThreadShell } from "../../state/entities";
 import { ProjectFavicon, type ProjectFaviconProject } from "../ProjectFavicon";
 import { ThreadSearchMatchExcerpt } from "../ThreadSearchMatch";
@@ -404,9 +405,19 @@ function SnoozeMenuButton(props: {
     ? // oxlint-disable-next-line react/purity -- Presets are resolved only while the menu is open, so each opening reads a fresh time.
       resolveSnoozePresets(new Date(), timestampFormat, environmentId)
     : [];
-  const usageResetOptions = open ? readUsageResetSnoozeOptions([{ environmentId, threadId }]) : [];
+  // Read from the thread's server on each opening; null while that read is in flight.
+  const [usageResetOptions, setUsageResetOptions] =
+    useState<ReadonlyArray<UsageResetSnoozeOption> | null>(null);
+  const handleOpenChange = (next: boolean) => {
+    onOpenChange(next);
+    if (!next) return;
+    setUsageResetOptions(null);
+    void loadUsageResetSnoozeOptions([{ environmentId, threadId }]).then(([options = []]) =>
+      setUsageResetOptions(options),
+    );
+  };
   return (
-    <Menu open={open} onOpenChange={onOpenChange}>
+    <Menu open={open} onOpenChange={handleOpenChange}>
       <Tooltip>
         <TooltipTrigger
           render={
@@ -442,21 +453,22 @@ function SnoozeMenuButton(props: {
           </MenuItem>
         ))}
         {presets.length > 0 ? <MenuSeparator /> : null}
-        {usageResetOptions.map((option) => (
-          <MenuItem
-            key={option.id}
-            onClick={async (event) => {
-              event.stopPropagation();
-              const choice = await resolveUsageResetSnooze(
-                { environmentId, threadId },
-                option.window,
-              );
-              if (choice) onSnooze(choice);
-            }}
-          >
-            {option.label}
-          </MenuItem>
-        ))}
+        {usageResetOptions === null ? (
+          <MenuItem disabled>Until usage resets</MenuItem>
+        ) : (
+          usageResetOptions.map((option) => (
+            <MenuItem
+              key={option.id}
+              onClick={async (event) => {
+                event.stopPropagation();
+                const choice = await usageResetSnoozeChoice({ environmentId, threadId }, option);
+                if (choice) onSnooze(choice);
+              }}
+            >
+              {option.label}
+            </MenuItem>
+          ))
+        )}
         <MenuItem
           onClick={async (event) => {
             event.stopPropagation();

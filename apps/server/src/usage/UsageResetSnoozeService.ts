@@ -1,5 +1,4 @@
 import {
-  type ServerProviderUsageLimits,
   type UsageResetSnooze,
   UsageResetSnoozeError,
   type UsageResetSnoozeInput,
@@ -10,7 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as UsageLimitSources from "./UsageLimitSources.ts";
-import { accountResetAtMs, soonestHubReset } from "./usageResetSnooze.ts";
+import { accountResetAtMs, soonestHubReset, windowResets } from "./usageResetSnooze.ts";
 
 const ROUTER_PROVIDERS = { claudeAgent: "claude", codex: "codex" } as const;
 
@@ -23,12 +22,6 @@ export const make = Effect.gen(function* () {
   const resolve = Effect.fn("UsageResetSnooze.resolve")(function* (input: UsageResetSnoozeInput) {
     const now = DateTime.toEpochMillis(yield* DateTime.now);
     const { instanceId, model } = input.modelSelection;
-    const { window } = input;
-    // A chosen window counts only its own readings, so the reset is that window's.
-    const scoped = (limits: ServerProviderUsageLimits | undefined) =>
-      limits && window
-        ? { ...limits, windows: limits.windows.filter((reading) => reading.kind === window) }
-        : limits;
     const provider = (yield* providers.getProviders).find(
       (candidate) => candidate.instanceId === instanceId,
     );
@@ -48,17 +41,17 @@ export const make = Effect.gen(function* () {
       provider.auth.type === "customEndpoint" ||
       (own?.unavailable?.reason === "unsupported" && provider.auth.type !== "apiKey");
     if (!behindHub) {
-      const limits = scoped(own);
       const resetsAtMs =
-        limits && limits.windows.length > 0
-          ? accountResetAtMs(provider.driver, limits, model, now)
-          : null;
+        own && own.windows.length > 0 ? accountResetAtMs(provider.driver, own, model, now) : null;
       if (resetsAtMs === null) {
         return yield* new UsageResetSnoozeError({
           detail: "This account has not reported when its usage resets.",
         });
       }
-      return done(resetsAtMs, { basis: "account" });
+      return done(resetsAtMs, {
+        basis: "account",
+        windows: windowResets(provider.driver, own, model, now),
+      });
     }
 
     // Hub settings do not name the provider endpoint they serve, so only a single hub holding
@@ -82,51 +75,47 @@ export const make = Effect.gen(function* () {
         ...(session ? { session } : {}),
       });
       if (pick !== null) {
-        // The router names accounts as it does now; the snapshot's aliases can trail it.
-        const rename = window ? yield* sources.routerAlias(hubs[0]!.id) : undefined;
-        const last = rename
-          ? hubs[0]!.accounts.find(
-              (account) =>
-                account.driver === provider.driver &&
-                account.routerAlias !== undefined &&
-                rename(account.routerAlias) === pick.lastAccount,
-            )
-          : undefined;
-        const resetsAtMs = window
-          ? ((last && accountResetAtMs(provider.driver, scoped(last.usageLimits), model, now)) ??
-            Number.NaN)
-          : pick.resetsAt === null
-            ? Number.NaN
-            : Date.parse(pick.resetsAt);
-        // Never another account's reset: the router named the thread's account.
+        const resetsAtMs = pick.resetsAt === null ? Number.NaN : Date.parse(pick.resetsAt);
+        // Never another account's reset: the router named the account it will use.
         if (!(resetsAtMs > now)) {
           return yield* new UsageResetSnoozeError({
-            detail: window
-              ? "The CLI Proxy account this thread last used has not reported when that limit resets."
-              : "The CLI Proxy account this thread will use has not reported its reset.",
+            detail: "The CLI Proxy account this thread will use has not reported its reset.",
           });
         }
-        return done(resetsAtMs, { basis: "router" });
+        // Windows are those of the account the conversation is on, whose readings the hub has.
+        // The router names accounts as it does now; the snapshot's aliases can trail it.
+        const rename = yield* sources.routerAlias(hubs[0]!.id);
+        const last = hubs[0]!.accounts.find(
+          (account) =>
+            account.driver === provider.driver &&
+            account.routerAlias !== undefined &&
+            rename(account.routerAlias) === pick.lastAccount,
+        );
+        return done(resetsAtMs, {
+          basis: "router",
+          windows: last ? windowResets(provider.driver, last.usageLimits, model, now) : [],
+        });
       }
     }
 
-    const soonest = soonestHubReset(
-      hubs.flatMap((source) =>
-        source.accounts.flatMap((account) =>
-          account.driver === provider.driver
-            ? [{ ...account, usageLimits: scoped(account.usageLimits) ?? account.usageLimits }]
-            : [],
-        ),
-      ),
-      model,
-      now,
+    const candidates = hubs.flatMap((source) =>
+      source.accounts.filter((account) => account.driver === provider.driver),
     );
+    const soonest = soonestHubReset(candidates, model, now);
     if (soonest === null) {
       return yield* new UsageResetSnoozeError({
         detail: "No usage reset time is known for this provider.",
       });
     }
-    return done(soonest.resetsAtMs, { basis: "soonest", accountLabel: soonest.accountLabel });
+    // Only a lone account is surely the thread's, so only its windows can be offered.
+    return done(soonest.resetsAtMs, {
+      basis: "soonest",
+      accountLabel: soonest.accountLabel,
+      windows:
+        candidates.length === 1
+          ? windowResets(provider.driver, candidates[0]!.usageLimits, model, now)
+          : [],
+    });
   });
 
   return { resolve };

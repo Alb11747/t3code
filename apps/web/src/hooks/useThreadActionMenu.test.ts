@@ -105,8 +105,8 @@ vi.mock("../components/Sidebar.snooze", () => ({
   snoozeWakeDescription: () => "later",
 }));
 vi.mock("../components/usageResetSnooze", () => ({
-  readUsageResetSnoozeOptions: () => [],
-  resolveUsageResetSnooze: vi.fn(),
+  loadUsageResetSnoozeOptions: async () => [],
+  usageResetSnoozeChoice: vi.fn(),
 }));
 vi.mock("./useCopyToClipboard", () => ({
   useCopyToClipboard: () => ({ copyToClipboard: () => recordEffect("copy") }),
@@ -186,6 +186,8 @@ describe("thread menu permissions", () => {
 
   it("offers find only to a header that can open it, without task permission", async () => {
     createMenu().openMenu(position);
+    // The menu waits for the thread's usage-reset options before it shows.
+    await vi.waitFor(() => expect(state.show).toHaveBeenCalledOnce());
     expect(state.show.mock.calls[0]![0].some((item) => item.id === "find")).toBe(false);
     state.show.mockResolvedValue("find");
     const onFind = vi.fn(() => recordEffect("find"));

@@ -1,7 +1,6 @@
 import type {
-  ServerProvider,
-  ServerProviderUsageWindow,
-  UsageLimitSourceSnapshots,
+  UsageResetSnooze,
+  UsageResetSnoozeWindow,
   UsageResetWindowKind,
 } from "@t3tools/contracts";
 
@@ -11,67 +10,48 @@ const USAGE_RESET_SNOOZE_ACTION = "snooze:usage-reset";
 export interface UsageResetSnoozeOption {
   readonly id: `${typeof USAGE_RESET_SNOOZE_ACTION}${"" | `:${UsageResetWindowKind}`}`;
   readonly label: string;
-  /** Absent: whenever the account has quota again, for plans that report no windows. */
-  readonly window?: UsageResetWindowKind;
+  /** Absent when the server gave no answer; choosing the option then asks it again. */
+  readonly snoozedUntil?: string;
 }
 
-const WINDOW_KINDS: ReadonlyArray<UsageResetWindowKind> = ["session", "weekly"];
-
-/**
- * The usage readings of the provider's last-used account: its own (behind a Claude gateway, the
- * account that served the last turn), else its hub's accounts', which share one plan in practice.
- */
-export function lastUsedAccountWindows(
-  provider: ServerProvider | undefined,
-  sources: UsageLimitSourceSnapshots,
-): ReadonlyArray<ServerProviderUsageWindow> {
-  if (!provider) return [];
-  const own = provider.usageLimits;
-  if (own && !own.unavailable && own.windows.length > 0) return own.windows;
-  return sources.flatMap((source) =>
-    source.accounts.flatMap((account) =>
-      account.driver === provider.driver && !account.usageLimits.unavailable
-        ? account.usageLimits.windows
-        : [],
-    ),
-  );
-}
-
-const windowName = (reading: ServerProviderUsageWindow) =>
-  reading.kind === "weekly"
+const windowName = (reading: UsageResetSnoozeWindow) =>
+  reading.window === "weekly"
     ? "Weekly"
     : reading.windowDurationMins && reading.windowDurationMins % 60 === 0
       ? `${reading.windowDurationMins / 60}h`
-      : reading.label;
+      : "Session";
 
-/** One option per session and weekly window the readings carry, else one for any reset. */
+/**
+ * A thread's options from its server's answer: one per window of the account it last used, else
+ * one for any reset. Servers without per-window answers send no `windows`, so they get the latter.
+ */
 export function usageResetSnoozeOptions(
-  windows: ReadonlyArray<ServerProviderUsageWindow>,
+  answer: UsageResetSnooze | undefined,
 ): ReadonlyArray<UsageResetSnoozeOption> {
-  const options = WINDOW_KINDS.flatMap((kind): UsageResetSnoozeOption[] => {
-    const reading = windows.find((candidate) => candidate.kind === kind);
-    return reading
-      ? [
-          {
-            id: `${USAGE_RESET_SNOOZE_ACTION}:${kind}`,
-            label: `Until usage resets (${windowName(reading)})`,
-            window: kind,
-          },
-        ]
-      : [];
-  });
-  return options.length > 0
-    ? options
-    : [{ id: USAGE_RESET_SNOOZE_ACTION, label: "Until usage resets" }];
+  const windows = answer?.windows ?? [];
+  if (windows.length > 0) {
+    return windows.map((reading) => ({
+      id: `${USAGE_RESET_SNOOZE_ACTION}:${reading.window}`,
+      label: `Until usage resets (${windowName(reading)})`,
+      snoozedUntil: reading.resetsAt,
+    }));
+  }
+  return [
+    {
+      id: USAGE_RESET_SNOOZE_ACTION,
+      label: "Until usage resets",
+      ...(answer ? { snoozedUntil: answer.resetsAt } : {}),
+    },
+  ];
 }
 
-/** The option a snooze menu action picked, or undefined for other actions. */
-export function usageResetSnoozeOptionOf(
-  action: string,
-): Pick<UsageResetSnoozeOption, "window"> | undefined {
-  if (action === USAGE_RESET_SNOOZE_ACTION) return {};
-  const kind = WINDOW_KINDS.find(
-    (candidate) => action === `${USAGE_RESET_SNOOZE_ACTION}:${candidate}`,
-  );
-  return kind ? { window: kind } : undefined;
+/** Several threads' options for one menu, each once; a thread snoozes by its own option's id. */
+export function mergeUsageResetSnoozeOptions(
+  perThread: ReadonlyArray<ReadonlyArray<UsageResetSnoozeOption>>,
+): ReadonlyArray<UsageResetSnoozeOption> {
+  const byId = new Map<string, UsageResetSnoozeOption>();
+  for (const option of perThread.flat()) if (!byId.has(option.id)) byId.set(option.id, option);
+  const order = (option: UsageResetSnoozeOption) =>
+    option.id === USAGE_RESET_SNOOZE_ACTION ? 1 : 0;
+  return [...byId.values()].sort((a, b) => order(a) - order(b) || a.id.localeCompare(b.id));
 }

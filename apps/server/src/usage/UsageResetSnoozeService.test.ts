@@ -1,10 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
-import type {
-  ServerProvider,
-  UsageLimitSourceSnapshot,
-  UsageResetWindowKind,
-} from "@t3tools/contracts";
+import type { ServerProvider, UsageLimitSourceSnapshot } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
@@ -55,6 +51,12 @@ const hub = [
           windows: [window("five_hour", 20, at(2)), window("seven_day", 30, at(50))],
         },
       },
+      {
+        id: "claude-weekly-only.json",
+        routerAlias: "weekly-only",
+        driver: "claudeAgent",
+        usageLimits: { checkedAt: at(0), windows: [window("seven_day", 30, at(40))] },
+      },
     ],
   },
 ] as unknown as ReadonlyArray<UsageLimitSourceSnapshot>;
@@ -63,7 +65,6 @@ function resolve(input: {
   readonly provider: ServerProvider;
   readonly pick: { readonly resetsAt: string | null; readonly lastAccount?: string } | null;
   readonly hubs?: ReadonlyArray<UsageLimitSourceSnapshot>;
-  readonly window?: UsageResetWindowKind;
 }) {
   const asked: Array<
     Parameters<UsageLimitSources.UsageLimitSources["Service"]["nextPickReset"]>[0]
@@ -75,7 +76,6 @@ function resolve(input: {
       .resolve({
         threadId: "thread-1" as never,
         modelSelection: { instanceId: "claude" as never, model: "claude-opus-5-5" },
-        ...(input.window ? { window: input.window } : {}),
       })
       .pipe(Effect.result);
     return { result, asked };
@@ -147,7 +147,21 @@ describe("UsageResetSnoozeService", () => {
       });
       expect(result).toMatchObject({
         _tag: "Success",
-        success: { resetsAt: at(1), basis: "soonest", accountLabel: "claude-soon" },
+        success: { resetsAt: at(1), basis: "soonest", accountLabel: "claude-soon", windows: [] },
+      });
+    }),
+  );
+
+  it.effect("offers a lone hub account's windows when the hub cannot preview picks", () =>
+    Effect.gen(function* () {
+      const { result } = yield* resolve({
+        provider: claude({ type: "customEndpoint" }, [window("five_hour", 10, at(3))]),
+        pick: null,
+        hubs: [{ ...hub[0]!, accounts: [hub[0]!.accounts[2]!] }],
+      });
+      expect(result).toMatchObject({
+        _tag: "Success",
+        success: { basis: "soonest", windows: [{ window: "weekly", resetsAt: at(40) }] },
       });
     }),
   );
@@ -161,31 +175,44 @@ describe("UsageResetSnoozeService", () => {
       expect(result._tag).toBe("Failure");
     }),
   );
-  it.effect.each([
-    [undefined, at(30)],
-    ["session", at(2)],
-    ["weekly", at(30)],
-  ] as const)("snoozes a native account until its %s window resets", ([kind, expected]) =>
+  it.effect("offers each window of a native account with its own reset", () =>
     Effect.gen(function* () {
       const { result } = yield* resolve({
         provider: claude({}, [window("five_hour", 10, at(2)), window("seven_day", 100, at(30))]),
         pick: null,
-        ...(kind ? { window: kind } : {}),
-      });
-      expect(result).toMatchObject({ _tag: "Success", success: { resetsAt: expected } });
-    }),
-  );
-
-  it.effect("uses the window of the hub account the thread last used", () =>
-    Effect.gen(function* () {
-      const { result } = yield* resolve({
-        provider: claude({ type: "customEndpoint" }, [window("seven_day", 10, at(9))]),
-        pick: { resetsAt: at(4), lastAccount: "last" },
-        window: "weekly",
       });
       expect(result).toMatchObject({
         _tag: "Success",
-        success: { resetsAt: at(50), basis: "router" },
+        success: {
+          resetsAt: at(30),
+          windows: [
+            { window: "session", resetsAt: at(2) },
+            { window: "weekly", resetsAt: at(30) },
+          ],
+        },
+      });
+    }),
+  );
+
+  it.effect.each([
+    [
+      "last",
+      [
+        { window: "session", resetsAt: at(2) },
+        { window: "weekly", resetsAt: at(50) },
+      ],
+    ],
+    // Neither another hub account's windows nor the gateway's streamed readings count.
+    ["weekly-only", [{ window: "weekly", resetsAt: at(40) }]],
+  ] as const)("offers the windows of the hub account %s the thread is on", ([alias, windows]) =>
+    Effect.gen(function* () {
+      const { result } = yield* resolve({
+        provider: claude({ type: "customEndpoint" }, [window("five_hour", 10, at(3))]),
+        pick: { resetsAt: at(4), lastAccount: alias },
+      });
+      expect(result).toMatchObject({
+        _tag: "Success",
+        success: { resetsAt: at(4), basis: "router", windows },
       });
     }),
   );

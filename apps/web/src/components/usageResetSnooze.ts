@@ -1,59 +1,62 @@
-import type { ScopedThreadRef, UsageResetWindowKind } from "@t3tools/contracts";
+import type { ScopedThreadRef, UsageResetSnooze } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   runAtomCommand,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
-  lastUsedAccountWindows,
+  type UsageResetSnoozeOption,
   usageResetSnoozeOptions,
 } from "@t3tools/client-runtime/usage-reset-snooze";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { readThreadShell } from "../state/entities";
-import { environmentPresentations } from "../state/presentation";
 import { serverEnvironment } from "../state/server";
 import { toastManager } from "./ui/toast";
 
-/** The snooze menu's usage-reset options for these threads, from their last-used accounts. */
-export function readUsageResetSnoozeOptions(threadRefs: ReadonlyArray<ScopedThreadRef>) {
-  const providersByEnvironment = appAtomRegistry.get(
-    environmentPresentations.providersByEnvironmentAtom,
-  );
-  return usageResetSnoozeOptions(
-    threadRefs.flatMap((threadRef) => {
-      const instanceId = readThreadShell(threadRef)?.modelSelection.instanceId;
-      const provider = providersByEnvironment
-        .get(threadRef.environmentId)
-        ?.find((candidate) => candidate.instanceId === instanceId);
-      const sources =
-        appAtomRegistry.get(serverEnvironment.configValueAtom(threadRef.environmentId))
-          ?.usageLimitSources ?? [];
-      return lastUsedAccountWindows(provider, sources);
-    }),
-  );
-}
+// A menu waits this long for the server; after it, it offers the option that asks again.
+const ANSWER_WAIT_MS = 1_000;
 
-/** Asks the thread's environment when `window` (else any limit) resets on its account. */
-export async function resolveUsageResetSnooze(
-  threadRef: ScopedThreadRef,
-  window?: UsageResetWindowKind,
-): Promise<{ readonly snoozedUntil: string } | undefined> {
+function askServer(threadRef: ScopedThreadRef) {
   const thread = readThreadShell(threadRef);
   if (!thread) return undefined;
-  const result = await runAtomCommand(
+  return runAtomCommand(
     appAtomRegistry,
     serverEnvironment.resolveUsageResetSnooze,
     {
       environmentId: threadRef.environmentId,
-      input: {
-        threadId: threadRef.threadId,
-        modelSelection: thread.modelSelection,
-        ...(window ? { window } : {}),
-      },
+      input: { threadId: threadRef.threadId, modelSelection: thread.modelSelection },
     },
     { reportFailure: false },
   );
+}
+
+/** Each thread's usage-reset snooze options, from its server, before a snooze menu opens. */
+export function loadUsageResetSnoozeOptions(
+  threadRefs: ReadonlyArray<ScopedThreadRef>,
+): Promise<ReadonlyArray<ReadonlyArray<UsageResetSnoozeOption>>> {
+  return Promise.all(
+    threadRefs.map(async (threadRef) => {
+      const result = await Promise.race([
+        askServer(threadRef),
+        new Promise<undefined>((resolve) => setTimeout(resolve, ANSWER_WAIT_MS)),
+      ]);
+      const answer: UsageResetSnooze | undefined =
+        result?._tag === "Success" ? result.value : undefined;
+      return usageResetSnoozeOptions(answer);
+    }),
+  );
+}
+
+/** When a chosen option wakes the thread, asking again when the menu had no answer. */
+export async function usageResetSnoozeChoice(
+  threadRef: ScopedThreadRef,
+  option: UsageResetSnoozeOption | undefined,
+): Promise<{ readonly snoozedUntil: string } | undefined> {
+  if (!option) return undefined;
+  if (option.snoozedUntil) return { snoozedUntil: option.snoozedUntil };
+  const result = await askServer(threadRef);
+  if (!result) return undefined;
   if (result._tag === "Success") return { snoozedUntil: result.value.resetsAt };
   if (!isAtomCommandInterrupted(result)) {
     const error = squashAtomCommandFailure(result);

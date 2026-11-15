@@ -1,20 +1,16 @@
 import * as Schema from "effect/Schema";
 
-import { IsoDateTime, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { IsoDateTime, NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
 
 /** The usage windows "Snooze until usage resets" offers one option each for. */
 export const UsageResetWindowKind = Schema.Literals(["session", "weekly"]);
 export type UsageResetWindowKind = typeof UsageResetWindowKind.Type;
 
-/**
- * `modelSelection` is the thread's. Without `window`, the reset after which the thread's account
- * has quota again; with it, that window's reset on the account the thread last used.
- */
+/** `modelSelection` is the thread's. */
 export const UsageResetSnoozeInput = Schema.Struct({
   threadId: ThreadId,
   modelSelection: ModelSelection,
-  window: Schema.optional(UsageResetWindowKind),
 });
 export type UsageResetSnoozeInput = typeof UsageResetSnoozeInput.Type;
 
@@ -26,10 +22,23 @@ export type UsageResetSnoozeInput = typeof UsageResetSnoozeInput.Type;
 export const UsageResetSnoozeBasis = Schema.Literals(["account", "router", "soonest"]);
 export type UsageResetSnoozeBasis = typeof UsageResetSnoozeBasis.Type;
 
+/** When one window resets on the account the thread last used. */
+export const UsageResetSnoozeWindow = Schema.Struct({
+  window: UsageResetWindowKind,
+  resetsAt: IsoDateTime,
+  windowDurationMins: Schema.optional(NonNegativeInt),
+});
+export type UsageResetSnoozeWindow = typeof UsageResetSnoozeWindow.Type;
+
+/**
+ * `resetsAt`: when the thread's account has quota again. `windows`: each window's reset on the
+ * account the thread last used, when the server knows that account; older servers omit it.
+ */
 export const UsageResetSnooze = Schema.Struct({
   resetsAt: IsoDateTime,
   basis: UsageResetSnoozeBasis,
   accountLabel: Schema.optional(TrimmedNonEmptyString),
+  windows: Schema.optional(Schema.Array(UsageResetSnoozeWindow)),
 });
 export type UsageResetSnooze = typeof UsageResetSnooze.Type;
 
