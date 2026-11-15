@@ -2,7 +2,6 @@ import {
   type AccountUsageSummary,
   agentsCanRedeemResetCreditsOf,
   CommandId,
-  IDLE_COMPACTION_TEXT,
   MessageId,
   THREAD_ACCOUNT_MOVE_WARNING,
   ThreadAccountError,
@@ -52,11 +51,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ClaudeKeepWarm from "../provider/ClaudeKeepWarm.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
-import {
-  accountMoveDropsThinking,
-  controlExpiry,
-  isCompactionPrompt,
-} from "../provider/ThreadAccountRouting.ts";
+import { controlExpiry } from "../provider/ThreadAccountRouting.ts";
 import * as Settings from "../serverSettings.ts";
 import { routerProviderOf } from "./cliproxyApi.ts";
 import * as UsageLimitSources from "./UsageLimitSources.ts";
@@ -178,11 +173,6 @@ export class ThreadAccounts extends Context.Reference<{
     input: ThreadAccountPreviewInput,
   ) => Effect.Effect<ThreadAccountPreview, ThreadAccountError>;
   readonly set: (input: ThreadAccountSetInput) => Effect.Effect<void, ThreadAccountError>;
-  /** Compacts and continues a moved thread instead of retrying with dropped thinking; else none. */
-  readonly compactForRetry: (command: {
-    readonly commandId: CommandId;
-    readonly threadId: ThreadId;
-  }) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult | undefined, ThreadAccountError>;
   /**
    * The choice a new thread on `instanceId` stores at launch, its turn start pinning it; `account`
    * is an email or alias on that instance's hub.
@@ -226,7 +216,6 @@ export class ThreadAccounts extends Context.Reference<{
     usage: () => Effect.succeed({ agentsCanRedeemResetCredits: false, native: [], hubs: [] }),
     set: () => Effect.fail(fail("Account choice is unavailable.")),
     launchChoice: () => Effect.fail(fail("Account choice is unavailable.")),
-    compactForRetry: () => Effect.undefined,
     steer: () => Effect.fail(fail("Account choice is unavailable.")),
     margin: () => Effect.fail(fail("Account choice is unavailable.")),
     end: () => Effect.fail(fail("Account choice is unavailable.")),
@@ -504,76 +493,6 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  // An approved move compacts once on the new account: that one request drops the old account's
-  // thinking, and the compacted history no longer carries it. The orchestrator puts it first and
-  // stops a live turn, which continues afterwards.
-  const compactAfterMove = Effect.fn("ThreadAccounts.compactAfterMove")(function* (
-    threadId: ThreadId,
-    commandId: string,
-    alwaysContinue: boolean,
-  ) {
-    const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"], {
-      runStatuses: ["queued", "preparing", "starting", "running"],
-    });
-    const { messages } = yield* orchestrator.getThreadRecords(threadId, ["messages"], {
-      messageIds: runs.map((run) => run.userMessageId),
-    });
-    const compacts = (run: (typeof runs)[number]) =>
-      messages.some((message) => message.id === run.userMessageId && isCompactionPrompt(message));
-    // Only a compaction that runs next does the job; a held or later one would wait behind turns that fail.
-    const runsNext = (run: (typeof runs)[number]) =>
-      run.status !== "queued" || (run.queuePosition === 1 && run.queueHeld !== true);
-    if (runs.some((run) => compacts(run) && runsNext(run))) return undefined;
-    const continues = alwaysContinue || runs.some((run) => run.status !== "queued");
-    const compactId = MessageId.make(`${commandId}:compact`);
-    const continueId = `${commandId}:continue`;
-    const compaction = yield* orchestrator.dispatch({
-      type: "message.dispatch",
-      commandId: CommandId.make(compactId),
-      messageId: compactId,
-      threadId,
-      text: IDLE_COMPACTION_TEXT,
-      attachments: [],
-      accountMoveCompaction: true,
-      dispatchMode: { type: "queue_after_active" },
-      createdBy: "user",
-      creationSource: "server",
-    });
-    if (!continues) return compaction;
-    return yield* orchestrator.dispatch({
-      type: "message.dispatch",
-      commandId: CommandId.make(continueId),
-      messageId: MessageId.make(continueId),
-      threadId,
-      afterCompactionMessageId: compactId,
-      text: "Continue where you left off.",
-      attachments: [],
-      accountMoveCompaction: true,
-      dispatchMode: { type: "queue_after_active" },
-      createdBy: "user",
-      creationSource: "server",
-    });
-  });
-
-  // Every turn of a moved thread fails until a compaction succeeds, so retrying with dropped
-  // thinking compacts once and continues instead of fixing one attempt.
-  const compactForRetry = Effect.fn("ThreadAccounts.compactForRetry")(function* (command: {
-    readonly commandId: CommandId;
-    readonly threadId: ThreadId;
-  }) {
-    const records = yield* orchestrator.getThreadRecords(command.threadId, ["turnItems"], {
-      turnItemTypes: ["compaction"],
-    });
-    if (!accountMoveDropsThinking(records.thread.accountMovedAt, records.turnItems)) {
-      return undefined;
-    }
-    return yield* compactAfterMove(
-      command.threadId,
-      `thread-account-retry:${command.commandId}`,
-      true,
-    );
-  });
-
   const set = Effect.fn("ThreadAccounts.set")(function* (input: ThreadAccountSetInput) {
     const thread = yield* threadOf(input.threadId);
     const target = yield* resolveTarget(thread.modelSelection.instanceId);
@@ -624,8 +543,15 @@ export const make = Effect.gen(function* () {
           requiresDropThinking: true,
         });
       }
+      yield* api.pin(target.hub, {
+        sessions: [session],
+        account: rename(account),
+        stall,
+        expiresAt: controlExpiry(now),
+        move: moved,
+      });
     }
-    const choose = orchestrator.dispatch({
+    yield* orchestrator.dispatch({
       type: "thread.account-choice.set",
       commandId,
       threadId: input.threadId,
@@ -637,25 +563,6 @@ export const make = Effect.gen(function* () {
       },
       ...(moved ? { accountMovedAt: DateTime.formatIso(now) } : {}),
     });
-    const pin = session
-      ? api.pin(target.hub, {
-          sessions: [session],
-          account: rename(account),
-          stall,
-          expiresAt: controlExpiry(now),
-          move: moved,
-        })
-      : Effect.void;
-    if (moved) {
-      // The live turn stops before the pin can re-place its held request without drop_block, and
-      // the choice comes first so the compaction's turn start pins and drops for the move.
-      yield* choose;
-      yield* compactAfterMove(input.threadId, commandId, false);
-      yield* pin;
-      return;
-    }
-    yield* pin;
-    yield* choose;
     yield* afterPinChange(input.threadId, true);
   });
 
@@ -1178,7 +1085,6 @@ export const make = Effect.gen(function* () {
     set: (input: ThreadAccountSetInput) =>
       asThreadAccountError(set(input)).pipe(Effect.ensuring(forgetPicks)),
     launchChoice,
-    compactForRetry: (command) => asThreadAccountError(compactForRetry(command)),
     steer: (input: ThreadAccountSteerInput) =>
       asThreadAccountError(steer(input)).pipe(Effect.ensuring(forgetPicks)),
     routing: (input: ThreadAccountRoutingInput) => asThreadAccountError(routing(input)),

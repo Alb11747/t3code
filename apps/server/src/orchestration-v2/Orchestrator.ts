@@ -7333,13 +7333,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       dispatchMode = { type: "queue_after_active" };
     }
     let queuedRunStop:
-      | {
-          readonly runId: RunId | undefined;
-          readonly reason: string;
-          readonly skipsHeldQueue?: true;
-          readonly afterRunId?: RunId;
-          readonly preservesDelegatedTasks?: true;
-        }
+      | { readonly runId: RunId; readonly reason: string; readonly skipsHeldQueue?: true }
       | undefined;
     if (goalCommand !== null) {
       // A goal command never joins a running turn. One that starts or ends goal
@@ -7456,29 +7450,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         };
         dispatchMode = { type: "queue_after_active" };
       }
-    }
-    // Fork: a live turn would resend the old account's thinking on every request, so the move's
-    // compaction stops it (never a compaction) and its continuation follows the compaction. A
-    // waiting run's turn is over, so its background work finishes first.
-    if (command.accountMoveCompaction === true) {
-      const live = projection.runs.findLast(isLiveRun);
-      const liveMessage = projection.messages.find((message) => message.id === live?.userMessageId);
-      const stops =
-        command.afterCompactionMessageId === undefined &&
-        live !== undefined &&
-        (liveMessage === undefined || !isNativeMaintenanceCommand(liveMessage)) &&
-        !(yield* stopReachedRun(command, command.threadId, live.id));
-      queuedRunStop = {
-        runId: stops ? live.id : undefined,
-        reason: "Stopped to compact once on the chosen account.",
-        skipsHeldQueue: true,
-        preservesDelegatedTasks: true,
-      };
-      const compaction = projection.runs.find(
-        (run) => run.status === "queued" && run.userMessageId === command.afterCompactionMessageId,
-      );
-      if (compaction !== undefined) queuedRunStop = { ...queuedRunStop, afterRunId: compaction.id };
-      dispatchMode = { type: "queue_after_active" };
     }
     // Steer mailbox deliveries, delegated task questions, and command notices
     // into an active goal under the thread lock: queued behind a long turn or a
@@ -7963,9 +7934,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : {}),
         queuePosition:
           queuedRunStop !== undefined
-            ? queuedRunStop.afterRunId === undefined
-              ? 1
-              : 2
+            ? 1
             : (steerFollowUpQueuePosition ??
               Math.max(
                 0,
@@ -8155,10 +8124,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           queuedRunId: runId,
           targetRunId: queuedRunStop.runId,
           reason: queuedRunStop.reason,
-          ...(queuedRunStop.afterRunId === undefined
-            ? {}
-            : { afterRunId: queuedRunStop.afterRunId }),
-          ...(queuedRunStop.preservesDelegatedTasks ? { preserveDelegatedTasks: true } : {}),
           now,
         });
       }
@@ -14370,24 +14335,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       readonly queuedRunId: RunId;
       readonly targetRunId: RunId | undefined;
       readonly reason: string;
-      /** A queued run that stays ahead of this one, at the front. */
-      readonly afterRunId?: RunId;
-      readonly preserveDelegatedTasks?: true;
       readonly now: DateTime.Utc;
     }) {
       const { command, events, effects, projection, now, targetRunId } = input;
-      const queued = queuedRunsInDeliveryOrder(projection);
-      const ahead = queued.filter((run) => run.id === input.afterRunId);
-      const others = queued.filter(
-        (run) =>
-          run.id !== input.queuedRunId &&
-          run.id !== input.afterRunId &&
-          !isAutomaticCompletionRun(projection, run),
+      const others = queuedRunsInDeliveryOrder(projection).filter(
+        (run) => run.id !== input.queuedRunId && !isAutomaticCompletionRun(projection, run),
       );
-      // This run takes the position after the runs ahead of it.
-      for (const [index, run] of [...ahead, undefined, ...others].entries()) {
-        if (run === undefined) continue;
-        const queuePosition = index + 1;
+      for (const [index, run] of others.entries()) {
+        const queuePosition = index + 2;
         if (run.queuePosition === queuePosition) continue;
         yield* emit(
           events,
@@ -14413,7 +14368,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             threadId: command.threadId,
             runId: targetRunId,
             reason: input.reason,
-            ...(input.preserveDelegatedTasks ? { preserveDelegatedTasks: true } : {}),
           },
           interruptEvents,
           interruptEffects,

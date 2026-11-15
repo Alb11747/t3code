@@ -424,8 +424,7 @@ function ThreadAccountPickerChip(
             <AlertDialogDescription>
               Earlier thinking will be dropped. It is tied to{" "}
               {owner ? accountLabel(owner) : "the current account"} and the new account cannot read
-              it, so the conversation is compacted once there; a running turn stops and continues
-              afterwards. Messages and files stay in the thread.{" "}
+              it. Messages, tool results and files stay.{" "}
               {contextNote.replace("Switching", "This also")}
             </AlertDialogDescription>
           </AlertDialogHeader>

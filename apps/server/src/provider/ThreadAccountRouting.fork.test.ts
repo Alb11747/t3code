@@ -52,20 +52,6 @@ describe("accountMoveDropsThinking", () => {
   });
 });
 
-describe("isCompactionPrompt", () => {
-  it.each([
-    { text: "/compact", attachments: [], compacts: true },
-    { text: " /compact keep the API notes", attachments: [], compacts: true },
-    { text: "/compactor", attachments: [], compacts: false },
-    { text: "/compact", attachments: [{}], compacts: false },
-  ])(
-    "$text with $attachments.length attachments compacts: $compacts",
-    ({ compacts, ...message }) => {
-      expect(ThreadAccountRouting.isCompactionPrompt(message)).toBe(compacts);
-    },
-  );
-});
-
 type Pin = Parameters<UsageLimitSources.UsageLimitSources["Service"]["pin"]>[1];
 const CHOICE = { sourceId: "hub", account: "account-0123456789abcdef", stall: true };
 
@@ -73,7 +59,6 @@ function prepareTurn(input: {
   readonly accountChoice?: object;
   readonly accountMovedAt?: string;
   readonly instanceId?: string;
-  readonly compacts?: boolean;
   readonly pin?: Effect.Effect<undefined, UsageLimitSourceError>;
 }) {
   const pins: Pin[] = [];
@@ -92,7 +77,6 @@ function prepareTurn(input: {
           providerInstanceId: input.instanceId ?? "claude",
           nativeThreadRef: { nativeId: "native" },
         } as never,
-        compacts: input.compacts ?? false,
         loadCompactions: Effect.succeed([]),
       })
       .pipe(Effect.forkChild);
@@ -138,20 +122,10 @@ describe("ThreadAccountRouting.prepareTurn", () => {
       drops: false,
     },
     {
-      name: "drops moved thinking only in the compaction the move queued",
-      input: {
-        accountChoice: CHOICE,
-        accountMovedAt: "2026-11-14T11:00:00.000Z",
-        compacts: true,
-      },
-      pins: [expect.objectContaining({ account: CHOICE.account, move: true })],
-      drops: true,
-    },
-    {
-      name: "keeps the move but never drops thinking on an ordinary turn before that compaction",
+      name: "keeps the move on the re-pin while moved thinking is still dropped",
       input: { accountChoice: CHOICE, accountMovedAt: "2026-11-14T11:00:00.000Z" },
       pins: [expect.objectContaining({ account: CHOICE.account, move: true })],
-      drops: false,
+      drops: true,
     },
     { name: "makes no router call without a choice", input: {}, pins: [], drops: false },
     {
@@ -184,7 +158,6 @@ describe("ThreadAccountRouting.prepareTurn", () => {
       input: {
         accountChoice: CHOICE,
         accountMovedAt: "2026-11-14T11:00:00.000Z",
-        compacts: true,
         pin: Effect.never,
       },
       pins: [expect.objectContaining({ account: CHOICE.account })],
@@ -300,7 +273,6 @@ describe("router account aliases", () => {
               providerInstanceId: "claude",
               nativeThreadRef: { nativeId: "native" },
             } as never,
-            compacts: false,
             loadCompactions: Effect.succeed([]),
           });
         yield* sources.refresh;

@@ -93,11 +93,7 @@ export function withCreationProvenance(
       const { linkOrigin: _linkOrigin, delegatedFrom: _delegatedFrom, ...rest } = command;
       return { ...rest, ...provenance };
     }
-    case "message.dispatch": {
-      // Fork: only the server queues an account move's compaction ahead of the queue.
-      const { accountMoveCompaction: _accountMoveCompaction, ...rest } = command;
-      return { ...rest, ...provenance };
-    }
+    case "message.dispatch":
     case "thread.fork":
     case "thread.merge_back":
     case "delegated_task.request":
