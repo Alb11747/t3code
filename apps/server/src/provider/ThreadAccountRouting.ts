@@ -27,8 +27,8 @@ export const controlExpiry = (now: DateTime.Utc) =>
   DateTime.formatIso(DateTime.add(now, { milliseconds: CONTROL_LIFETIME_MS }));
 
 /**
- * Whether a turn must drop thinking that an account move left in the conversation: Claude resends
- * the old account's thinking blocks with every request until a compaction replaces the history.
+ * Whether an account move still leaves the old account's thinking in the conversation: Claude
+ * resends those blocks with every request until a compaction replaces the history.
  */
 export function accountMoveDropsThinking(
   accountMovedAt: string | null | undefined,
@@ -48,12 +48,17 @@ export function accountMoveDropsThinking(
 interface PrepareTurnInput<E> {
   readonly appThread: OrchestrationV2AppThread;
   readonly providerThread: OrchestrationV2ProviderThread;
+  /** The turn only compacts, so it is the approved move's one request that drops thinking. */
+  readonly compacts: boolean;
   readonly loadCompactions: Effect.Effect<ReadonlyArray<OrchestrationV2TurnItem>, E>;
 }
 
 /** Fork: applies a thread's quota-router account choice at each turn start; pins expire. */
 export class ThreadAccountRouting extends Context.Reference<{
-  /** Pins the thread's chosen account; returns whether the turn must drop moved thinking. */
+  /**
+   * Pins the thread's chosen account; returns whether the turn must drop moved thinking. Only the
+   * compaction a move queues drops it, once; any other turn fails rather than drop it each request.
+   */
   readonly prepareTurn: <E>(input: PrepareTurnInput<E>) => Effect.Effect<boolean>;
   /** Whether the latest turn could not pin a choice that waits for its account. */
   readonly pinFailed: (threadId: ThreadId) => Effect.Effect<boolean>;
@@ -74,7 +79,7 @@ export const make = Effect.gen(function* () {
   const prepareTurn = Effect.fn("ThreadAccountRouting.prepareTurn")(function* <E>(
     input: PrepareTurnInput<E>,
   ) {
-    const drops =
+    const moved =
       !!input.appThread.accountMovedAt &&
       accountMoveDropsThinking(
         input.appThread.accountMovedAt,
@@ -86,6 +91,7 @@ export const make = Effect.gen(function* () {
       input.providerThread.providerInstanceId,
     );
     const session = input.providerThread.nativeThreadRef?.nativeId;
+    const drops = moved && input.compacts;
     if (!choice || !session || !routerProviderOf(input.providerThread.driver)) {
       failedWaitingPins.delete(input.appThread.id);
       return drops;
@@ -102,7 +108,7 @@ export const make = Effect.gen(function* () {
         stall: choice.stall,
         expiresAt: controlExpiry(yield* DateTime.now),
         // Each pin replaces the last; a plain one would end the move that subagents still follow.
-        move: drops,
+        move: moved,
       });
       failedWaitingPins.delete(input.appThread.id);
     }).pipe(

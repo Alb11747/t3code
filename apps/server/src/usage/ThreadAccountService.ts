@@ -2,6 +2,7 @@ import {
   type AccountUsageSummary,
   agentsCanRedeemResetCreditsOf,
   CommandId,
+  IDLE_COMPACTION_TEXT,
   MessageId,
   THREAD_ACCOUNT_MOVE_WARNING,
   ThreadAccountError,
@@ -493,6 +494,61 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  // An approved move compacts once on the new account: that one request drops the old account's
+  // thinking, and the compacted history no longer carries it. A live turn would resend it on every
+  // request, so it stops and continues after the compaction.
+  const compactAfterMove = Effect.fn("ThreadAccounts.compactAfterMove")(function* (
+    threadId: ThreadId,
+    commandId: string,
+  ) {
+    const live = (yield* orchestrator.getThreadRecords(threadId, ["runs"])).runs.findLast(
+      (run) => run.status === "preparing" || run.status === "starting" || run.status === "running",
+    );
+    const compactId = `${commandId}:compact`;
+    const continueId = `${commandId}:continue`;
+    yield* Effect.forEach(
+      [
+        {
+          type: "message.dispatch",
+          commandId: CommandId.make(compactId),
+          messageId: MessageId.make(compactId),
+          threadId,
+          text: IDLE_COMPACTION_TEXT,
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "server",
+        },
+        ...(live === undefined
+          ? []
+          : ([
+              {
+                type: "message.dispatch",
+                commandId: CommandId.make(continueId),
+                messageId: MessageId.make(continueId),
+                threadId,
+                afterCompactionMessageId: MessageId.make(compactId),
+                text: "Continue where you left off.",
+                attachments: [],
+                dispatchMode: { type: "queue_after_active" },
+                createdBy: "user",
+                creationSource: "server",
+              },
+              {
+                type: "run.interrupt",
+                commandId: CommandId.make(`${continueId}:stop`),
+                threadId,
+                runId: live.id,
+                preserveDelegatedTasks: true,
+                reason: "Stopped to compact once on the chosen account.",
+              },
+            ] as const)),
+      ] as const,
+      (command) => orchestrator.dispatch(command),
+      { discard: true },
+    );
+  });
+
   const set = Effect.fn("ThreadAccounts.set")(function* (input: ThreadAccountSetInput) {
     const thread = yield* threadOf(input.threadId);
     const target = yield* resolveTarget(thread.modelSelection.instanceId);
@@ -563,7 +619,8 @@ export const make = Effect.gen(function* () {
       },
       ...(moved ? { accountMovedAt: DateTime.formatIso(now) } : {}),
     });
-    yield* afterPinChange(input.threadId, true);
+    if (moved) yield* compactAfterMove(input.threadId, commandId);
+    else yield* afterPinChange(input.threadId, true);
   });
 
   const launchChoice = Effect.fn("ThreadAccounts.launchChoice")(function* (input: {

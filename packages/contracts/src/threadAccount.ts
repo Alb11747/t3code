@@ -34,7 +34,7 @@ export const threadAccountChoiceFor = (
 
 /** Shown before, and returned instead of, moving a conversation its account owns. */
 export const THREAD_ACCOUNT_MOVE_WARNING =
-  "This conversation is bound to its current account, so switching drops its earlier thinking (it is tied to that account; messages, tool results and files stay) and re-sends the context as a cold cache write.";
+  "This conversation is bound to its current account, so switching compacts it once on the new account, which drops its earlier thinking (it is tied to that account; messages and files stay in the thread) and re-sends the context as a cold cache write. A running turn stops and continues after the compaction.";
 
 /**
  * `modelSelection` is what the thread's next message would use: the composer's unsent choice, else

@@ -79,6 +79,8 @@ const withCodex = snapshots.map((source) => ({
 function testLayer(input: {
   readonly owner?: string | null;
   readonly heldRunId?: string;
+  // The thread's live run, held or not.
+  readonly liveRunId?: string;
   // A stall pin's hold, on a router that re-places held requests on a pin change or one before.
   readonly heldByPin?: "moves" | "stays";
   readonly shown?: Array<unknown>;
@@ -164,6 +166,10 @@ function testLayer(input: {
             { nativeThreadRef: { nativeId: "older-session" } },
             { nativeThreadRef: null },
           ],
+          runs: [
+            { id: "run-1", status: "completed" },
+            ...(input.liveRunId === undefined ? [] : [{ id: input.liveRunId, status: "running" }]),
+          ],
         } as never),
       resolveMessageProviderThread: (id) =>
         Effect.succeed({
@@ -229,6 +235,7 @@ function setAccount(input: {
   readonly stall?: boolean | undefined;
   readonly dropThinking?: boolean;
   readonly heldRunId?: string;
+  readonly liveRunId?: string;
   readonly heldByPin?: "moves" | "stays";
   readonly accountChoice?: unknown;
   readonly renamed?: Record<string, string>;
@@ -263,20 +270,46 @@ describe("ThreadAccountService.set", () => {
     }),
   );
 
-  it.effect("moves an owned conversation once acknowledged and marks its thinking dropped", () =>
+  it.effect("moves an owned conversation once acknowledged and compacts it once", () =>
     Effect.gen(function* () {
       const { result, pins, commands } = yield* setAccount({ owner: OWNER, dropThinking: true });
       expect(Result.isSuccess(result)).toBe(true);
       expect(pins).toMatchObject([
         { sessions: ["native-session"], account: OTHER, stall: true, move: true },
       ]);
+      // The compaction is the one request that drops the old account's thinking.
       expect(commands).toMatchObject([
         {
           type: "thread.account-choice.set",
           accountChoice: { sourceId: "hub", account: OTHER, stall: true, instanceId: "claude" },
           accountMovedAt: "2026-11-14T12:00:00.000Z",
         },
+        {
+          type: "message.dispatch",
+          text: "/compact",
+          dispatchMode: { type: "queue_after_active" },
+        },
       ]);
+      expect(commands).toHaveLength(2);
+    }),
+  );
+
+  it.effect.each([
+    { name: "a turn a keep-warm hold stalls", heldRunId: "run-7", liveRunId: "run-7" },
+    { name: "a running turn", liveRunId: "run-7" },
+  ])("stops $name, compacts once and continues after a move", (held) =>
+    Effect.gen(function* () {
+      const { commands } = yield* setAccount({ owner: OWNER, dropThinking: true, ...held });
+      const [compact, ...rest] = commands.slice(1);
+      expect(rest).toMatchObject([
+        {
+          type: "message.dispatch",
+          text: "Continue where you left off.",
+          afterCompactionMessageId: compact?.type === "message.dispatch" ? compact.messageId : "",
+        },
+        { type: "run.interrupt", runId: "run-7", preserveDelegatedTasks: true },
+      ]);
+      expect(compact).toMatchObject({ type: "message.dispatch", text: "/compact" });
     }),
   );
 

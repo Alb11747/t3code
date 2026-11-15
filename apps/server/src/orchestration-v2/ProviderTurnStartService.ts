@@ -1772,6 +1772,7 @@ export const layer: Layer.Layer<
       const dropMismatchedThinking = yield* threadAccountRouting.prepareTurn({
         appThread: projection.thread,
         providerThread: runningProviderThread,
+        compacts: isCompactionCommandMessage(message),
         loadCompactions: projectionStore
           .getThreadRecords(projection.thread.id, ["turnItems"], { turnItemTypes: ["compaction"] })
           .pipe(Effect.map((records) => records.turnItems)),
