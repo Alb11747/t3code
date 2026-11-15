@@ -2498,14 +2498,13 @@ export default function ChatView(props: ChatViewProps) {
     pendingHandoffSelectionUsable ? pendingHandoffSelection : null,
     providerStatuses,
   );
-  const compactThreadUnavailable =
+  const compactThreadBlocked =
     !canOperateThread ||
     !activeThread ||
     !activeThreadHasCompactableConversation ||
     !activeProject ||
     !isServerThread ||
     !manualCompactionProviderAvailable ||
-    isWorking ||
     isRevertingCheckpoint ||
     threadDetailLoading ||
     isPreparingWorktree ||
@@ -2513,6 +2512,7 @@ export default function ChatView(props: ChatViewProps) {
     feedbackUploading ||
     pendingApprovals.length > 0 ||
     pendingUserInputs.length > 0;
+  const compactThreadUnavailable = compactThreadBlocked || isWorking;
   const compactDisabled = compactThreadUnavailable;
   const resumeCompactionProviderThread = resolveResumeCompactionProviderThread({
     providerThreads: serverProjection?.providerThreads ?? [],
@@ -2567,6 +2567,12 @@ export default function ChatView(props: ChatViewProps) {
   const freshSessionCommandAvailable =
     freshSessionAvailable && activePendingApproval === null && pendingUserInputs.length === 0;
   const freshSessionArmed = useFreshSessionArmed(routeThreadKey);
+  // Compact and send queues behind a running turn, so a run in progress does not rule it out.
+  const compactAndSendAvailable =
+    !compactThreadBlocked &&
+    pendingHandoff === null &&
+    multipleModelSelections === null &&
+    !(freshSessionAvailable && freshSessionArmed);
   const toggleKeepFullHistory = () => setKeepFullHistory(routeThreadKey, !keepFullHistory);
   const toggleKeepFullHistoryStable = useStableCallback(toggleKeepFullHistory);
   const armFreshSessionStable = useStableCallback(() => armFreshSession(routeThreadKey));
@@ -2984,6 +2990,7 @@ export default function ChatView(props: ChatViewProps) {
     panelAnimationsActive,
     panelAnimationDurationMs,
     keepFullHistory,
+    compactAndSendAvailable,
     freshSessionAvailable: freshSessionCommandAvailable,
     resumeCompaction,
     usageLimitsKey,
@@ -3705,6 +3712,7 @@ export default function ChatView(props: ChatViewProps) {
                                 }
                                 resumeCompaction={resumeCompaction}
                                 keepFullHistory={keepFullHistory}
+                                compactAndSendAvailable={compactAndSendAvailable}
                                 onToggleKeepFullHistory={toggleKeepFullHistoryStable}
                                 sideChatAvailable={sideChat.available}
                                 sideChatDisabledReason={sideChatDisabledReason}

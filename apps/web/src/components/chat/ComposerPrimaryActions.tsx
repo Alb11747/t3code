@@ -15,6 +15,7 @@ import {
   ListPlusIcon,
 } from "lucide-react";
 import { useEnvironmentIdentificationMode } from "~/hooks/useSettings";
+import { readLocalApi } from "~/localApi";
 import { formatContextWindowTokens } from "~/lib/contextWindow";
 import { cn, isMacPlatform } from "~/lib/utils";
 import { useShortcutModifierState } from "../../shortcutModifierState";
@@ -67,6 +68,9 @@ interface ComposerPrimaryActionsProps {
   hideCompactToggle?: boolean;
   keepFullHistory?: boolean;
   onToggleKeepFullHistory?: () => void;
+  /** Offered from the send button's context menu where the thread can compact first. */
+  onCompactAndSend?: (() => void) | undefined;
+  compactAndSendShortcutLabel?: string | null;
 }
 
 const formatPendingPrimaryActionLabel = (input: {
@@ -250,6 +254,8 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   hideCompactToggle = false,
   keepFullHistory = false,
   onToggleKeepFullHistory,
+  onCompactAndSend,
+  compactAndSendShortcutLabel = null,
 }: ComposerPrimaryActionsProps) {
   const [stopPhase, setStopPhase] = useStopPhase({ runId, canInterrupt, canOperateThread });
   const pointerFocusProps = preserveComposerFocusOnPointerDown
@@ -400,6 +406,23 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       : isRunning && !isEditingQueuedMessage && canSteer
         ? `Click to ${followUpBehavior}, ${isMacPlatform(navigator.platform) ? "⌘" : "Ctrl"}-click${alternateShortcutLabel ? ` or ${alternateShortcutLabel}` : ""} to ${alternateAction}`
         : submitLabel);
+  // Already compacting first, the menu would only repeat the button.
+  const compactAndSend =
+    onCompactAndSend !== undefined &&
+    hasSendableContent &&
+    !showResume &&
+    !isEditingQueuedMessage &&
+    !compactsBeforeSend &&
+    submitStatus === null
+      ? onCompactAndSend
+      : null;
+  const openSendMenu = async (position: { x: number; y: number }) => {
+    const action = await readLocalApi()?.contextMenu.show(
+      [{ id: "compact-and-send", label: "Compact and send" }],
+      position,
+    );
+    if (action === "compact-and-send") compactAndSend?.();
+  };
 
   const sendButton = (
     <button
@@ -419,6 +442,19 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
         if (showResume) onResume?.();
         else onSubmitMessage?.(event);
       }}
+      onContextMenu={
+        compactAndSend === null
+          ? undefined
+          : (event) => {
+              event.preventDefault();
+              const bounds = event.currentTarget.getBoundingClientRect();
+              void openSendMenu(
+                event.clientX === 0 && event.clientY === 0
+                  ? { x: bounds.left, y: bounds.top }
+                  : { x: event.clientX, y: event.clientY },
+              );
+            }
+      }
       disabled={
         isSendBusy ||
         isSendDisabled ||
@@ -459,7 +495,15 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   const submit = (
     <Tooltip key="submit">
       <TooltipTrigger render={<span className="inline-flex" />}>{sendButton}</TooltipTrigger>
-      <TooltipPopup>{submitTooltip}</TooltipPopup>
+      <TooltipPopup>
+        <div>{submitTooltip}</div>
+        {compactAndSend ? (
+          <div>
+            Right-click{compactAndSendShortcutLabel ? ` or ${compactAndSendShortcutLabel}` : ""} to
+            compact first
+          </div>
+        ) : null}
+      </TooltipPopup>
     </Tooltip>
   );
   if (compactTokens === null || hideCompactToggle) {

@@ -392,6 +392,8 @@ export interface ChatComposerProps {
   bannerItems: readonly ComposerBannerStackItem[];
   resumeCompaction: ResumeCompaction | null;
   keepFullHistory: boolean;
+  /** Compact and send can run on this thread now. */
+  compactAndSendAvailable: boolean;
   onToggleKeepFullHistory: () => void;
   onUsageLimitsCommand?: (() => void) | undefined;
   sideChatAvailable?: boolean;
@@ -2250,6 +2252,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     );
   };
   const handleSubmitMessageStable = useStableCallback(handleSubmitMessage);
+  const compactAndSendStable = useStableCallback(() => {
+    submitComposer(
+      undefined,
+      resolveComposerDispatchMode({
+        running: turnActive,
+        alternateModifier: false,
+        activeTurnDefault: followUpBehavior,
+        canSteer,
+      }),
+      "compact",
+    );
+  });
   const submitCitationAndSend = () => {
     return submitComposer(
       undefined,
@@ -3781,6 +3795,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     hideCompactToggle={dictationTakesFooter}
                     keepFullHistory={props.keepFullHistory}
                     onToggleKeepFullHistory={props.onToggleKeepFullHistory}
+                    onCompactAndSend={
+                      props.compactAndSendAvailable ? compactAndSendStable : undefined
+                    }
+                    compactAndSendShortcutLabel={shortcutLabelForCommand(
+                      keybindings,
+                      "composer.compactAndSend",
+                      { context: { composerFocus: true, draftThreadRoute: false } },
+                    )}
                   >
                     {speechInput.available ? (
                       <>

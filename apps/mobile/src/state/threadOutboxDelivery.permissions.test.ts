@@ -629,11 +629,16 @@ describe("compaction before a queued send", () => {
     // A restarted app delivers the persisted message again.
     state.cleanups.splice(0).forEach((cleanup) => cleanup());
     await runDrain();
+    const afterCompaction = {
+      commandId: "command",
+      dispatchMode: "queue",
+      afterCompactionMessageId: "message:compact",
+    };
     expect(state.start.mock.calls.map(([call]) => call.input)).toEqual([
       expect.objectContaining(compactTurn),
-      expect.objectContaining({ commandId: "command", dispatchMode: "queue" }),
+      expect.objectContaining(afterCompaction),
       expect.objectContaining(compactTurn),
-      expect.objectContaining({ commandId: "command", dispatchMode: "queue" }),
+      expect.objectContaining(afterCompaction),
     ]);
     expect(remaining()).toEqual([]);
   });

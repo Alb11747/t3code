@@ -289,6 +289,11 @@ Provider commands must start the message to run. T3 Code commands such as
 Send `/compact` in an existing conversation to reduce context usage when the
 provider supports it.
 
+To compact and then send what you typed, right-click the send button on web and
+desktop (or press `mod+Alt+Shift+Enter`), or long-press it on mobile, and choose
+**Compact and send**. Your message runs as the first turn after the compaction,
+and only if it succeeds; while the agent is working, both wait in the queue.
+
 Send `/clear` on its own, or pick it from the slash menu, to start a fresh session
 in the same thread. Your next message goes to a new provider session that doesn't see the
 earlier messages, and the thread marks where it began with **New session**.

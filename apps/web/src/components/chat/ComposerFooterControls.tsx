@@ -221,6 +221,8 @@ export const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryA
   hideCompactToggle: boolean;
   keepFullHistory: boolean;
   onToggleKeepFullHistory: () => void;
+  onCompactAndSend?: (() => void) | undefined;
+  compactAndSendShortcutLabel?: string | null;
 }) {
   return (
     <>
@@ -252,6 +254,8 @@ export const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryA
         hideCompactToggle={props.hideCompactToggle}
         keepFullHistory={props.keepFullHistory}
         onToggleKeepFullHistory={props.onToggleKeepFullHistory}
+        onCompactAndSend={props.onCompactAndSend}
+        compactAndSendShortcutLabel={props.compactAndSendShortcutLabel ?? null}
       >
         {props.children}
       </ComposerPrimaryActions>

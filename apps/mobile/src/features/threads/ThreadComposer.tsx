@@ -94,6 +94,7 @@ import type { RemoteClientConnectionState } from "../../lib/connection";
 import { MOBILE_TYPOGRAPHY } from "../../lib/typography";
 import { Menu } from "../../components/ui/Menu";
 import type { ActiveTurnComposerAction } from "@t3tools/client-runtime/state/composer-dispatch";
+import type { ComposerSendChoice } from "../../state/use-thread-composer-state";
 import type { FollowUpBehavior } from "../../lib/followUpBehavior";
 import {
   resolveComposerSendPresentation,
@@ -217,6 +218,8 @@ export interface ThreadComposerProps {
   readonly selectedThread: EnvironmentThreadShell;
   readonly reportedModelSelection?: ModelSelection | null;
   readonly hasCompactableConversation: boolean;
+  /** The send button's long-press menu offers Compact and send, where the provider compacts. */
+  readonly offersCompactAndSend?: boolean;
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
   readonly onFreshSession?: () => void;
   readonly offersSideChat?: boolean;
@@ -249,7 +252,7 @@ export interface ThreadComposerProps {
   readonly onResumeQueue: (() => Promise<void>) | null;
   /** `stillSendable` reports whether the draft is unchanged after any wait before sending. */
   readonly onSendMessage: (
-    followUp?: ActiveTurnComposerAction,
+    followUp?: ComposerSendChoice,
     stillSendable?: () => boolean,
   ) => Promise<MessageId | null>;
   readonly onShowUsageLimits: (report: UsageLimitsReport | null) => void;
@@ -311,7 +314,8 @@ function SendActionButton(props: {
   readonly accessibilityLabel: string;
   readonly presentation: ComposerSendPresentation;
   readonly disabled: boolean;
-  readonly onSend: (followUp?: ActiveTurnComposerAction) => void;
+  readonly offersCompactAndSend: boolean;
+  readonly onSend: (followUp?: ComposerSendChoice) => void;
 }) {
   const { presentation } = props;
   const button = (
@@ -324,25 +328,37 @@ function SendActionButton(props: {
       onPress={() => props.onSend()}
     />
   );
-  if (!presentation.offersFollowUpChoice || presentation.action === null || props.disabled) {
+  const actions =
+    presentation.offersFollowUpChoice && presentation.action !== null
+      ? [presentation.action, presentation.alternate].filter(
+          (action): action is ActiveTurnComposerAction => action !== null,
+        )
+      : [];
+  if (props.disabled || (actions.length === 0 && !props.offersCompactAndSend)) {
     return button;
   }
-  const actions = [presentation.action, presentation.alternate].filter(
-    (action): action is ActiveTurnComposerAction => action !== null,
-  );
   return (
     <Menu
       accessibilityLabel="Choose how to send this message"
       shouldOpenOnLongPress
-      actions={actions.map((action) => ({
-        id: action,
-        title: FOLLOW_UP_ACTION_LABEL[action],
-        subtitle: FOLLOW_UP_ACTION_SUBTITLE[action],
-        state: action === presentation.action ? ("on" as const) : ("off" as const),
-      }))}
-      onPressAction={({ nativeEvent }) =>
-        props.onSend(nativeEvent.event as ActiveTurnComposerAction)
-      }
+      actions={[
+        ...actions.map((action) => ({
+          id: action,
+          title: FOLLOW_UP_ACTION_LABEL[action],
+          subtitle: FOLLOW_UP_ACTION_SUBTITLE[action],
+          state: action === presentation.action ? ("on" as const) : ("off" as const),
+        })),
+        ...(props.offersCompactAndSend
+          ? [
+              {
+                id: "compact",
+                title: "Compact and send",
+                subtitle: "Summarize the history first, then send this",
+              },
+            ]
+          : []),
+      ]}
+      onPressAction={({ nativeEvent }) => props.onSend(nativeEvent.event as ComposerSendChoice)}
     >
       {button}
     </Menu>
@@ -505,6 +521,9 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
       ) ?? null
     );
   })();
+  const offersCompactAndSend =
+    props.offersCompactAndSend === true &&
+    (selectedProviderStatus?.slashCommands.some((command) => command.name === "compact") ?? false);
   const openDraftDocument = (attachment: ComposerDocumentAttachment) => {
     Keyboard.dismiss();
     navigation.navigate("ThreadAttachment", {
@@ -668,7 +687,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     settingsSheetPresentation.onEditorFocusChange(false);
     onEditorFocusChange?.(false);
   };
-  const handleSend = async (followUp?: ActiveTurnComposerAction) => {
+  const handleSend = async (followUp?: ComposerSendChoice) => {
     if (
       isSubmissionLocked ||
       sendBlockedReason !== null ||
@@ -1125,6 +1144,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                     accessibilityLabel={sendBlockedReason ?? sendLabel}
                     presentation={sendPresentation}
                     disabled={!canSend}
+                    offersCompactAndSend={offersCompactAndSend}
                     onSend={handleSend}
                   />
                 )}
@@ -1193,6 +1213,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                       accessibilityLabel={sendBlockedReason ?? sendLabel}
                       presentation={sendPresentation}
                       disabled={!canSend}
+                      offersCompactAndSend={offersCompactAndSend}
                       onSend={handleSend}
                     />
                   ) : null}

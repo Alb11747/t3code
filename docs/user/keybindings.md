@@ -19,9 +19,10 @@ while a turn is still starting joins that turn once it begins. Use
 `mod+Enter` to do the opposite for one message, even when the send shortcut
 requires a modifier. `mod+Alt+Enter` sends, keeps that thread running in the
 background, and opens a fresh new-thread composer. In a new thread, `mod+Enter`
-does the same. Change these shortcuts in **Settings → Keybindings** under
+does the same. `mod+Alt+Shift+Enter` compacts the thread, then sends. Change
+these shortcuts in **Settings → Keybindings** under
 **Composer: Opposite Queue or Steer Action**, **Composer: Start in Background**,
-or **Composer: Send and Start New Thread**. These bindings take priority over the
+**Composer: Send and Start New Thread**, or **Composer: Compact and Send**. These bindings take priority over the
 send shortcut. Click the send button to use the configured follow-up behavior.
 
 When a thread has queued messages, `mod+Shift+Enter` sends the first one as a steer

@@ -215,6 +215,8 @@ interface ComposerSendInput {
   readonly panelAnimationsActive: boolean;
   readonly panelAnimationDurationMs: number;
   readonly keepFullHistory: boolean;
+  /** Compact and send can run here; see ChatView for what rules it out. */
+  readonly compactAndSendAvailable: boolean;
   readonly freshSessionAvailable: boolean;
   readonly resumeCompaction: ResumeCompaction | null;
   readonly usageLimitsKey: string | null;
@@ -311,6 +313,7 @@ export function useComposerSend(input: ComposerSendInput) {
     panelAnimationsActive,
     panelAnimationDurationMs,
     keepFullHistory,
+    compactAndSendAvailable,
     freshSessionAvailable,
     resumeCompaction,
     usageLimitsKey,
@@ -392,6 +395,7 @@ export function useComposerSend(input: ComposerSendInput) {
     },
   ) => {
     e?.preventDefault();
+    if (submissionIntent === "compact" && !compactAndSendAvailable) return;
     // What the user pressed send on; uploads below can take a while, and a redirect must not
     // decline approvals for a draft that changed meanwhile.
     const promptAtSend = promptRef.current;
@@ -826,6 +830,7 @@ export function useComposerSend(input: ComposerSendInput) {
         selectedProvider: ctxSelectedProvider,
         selectedModelSelection: ctxSelectedModelSelection,
         keepFullHistory,
+        compactRequested: submissionIntent === "compact",
         phase,
         dispatchMode,
         freshContext: freshArm !== undefined,
@@ -1275,13 +1280,15 @@ export function useComposerSend(input: ComposerSendInput) {
 
     // Uploads and settings persistence can outlive the source conversation.
     const { compactBeforeSend, turnDispatchMode } = readTurnPlan();
-    if (failure === null && compactBeforeSend) {
+    // The message runs as the first turn after this compaction, and only once it succeeds.
+    const compactionMessageId = compactBeforeSend ? newMessageId() : undefined;
+    if (failure === null && compactionMessageId !== undefined) {
       const compactResult = await startThreadTurn({
         environmentId,
         input: {
           threadId: threadIdForSend,
           message: {
-            messageId: newMessageId(),
+            messageId: compactionMessageId,
             role: "user",
             text: "/compact",
             attachments: [],
@@ -1290,6 +1297,8 @@ export function useComposerSend(input: ComposerSendInput) {
           modelSelection: ctxSelectedModelSelection,
           runtimeMode,
           interactionMode: DEFAULT_INTERACTION_MODE,
+          // Steering a running turn with a compaction is rejected.
+          dispatchMode: "queue",
         },
       });
       if (compactResult._tag === "Failure") {
@@ -1365,6 +1374,9 @@ export function useComposerSend(input: ComposerSendInput) {
           runtimeMode,
           interactionMode: DEFAULT_INTERACTION_MODE,
           dispatchMode: turnDispatchMode,
+          ...(compactionMessageId === undefined
+            ? {}
+            : { afterCompactionMessageId: compactionMessageId }),
           ...(freshArm === undefined ? {} : { freshContext: true }),
           ...(bootstrap ? { bootstrap } : {}),
           createdAt: messageCreatedAt,

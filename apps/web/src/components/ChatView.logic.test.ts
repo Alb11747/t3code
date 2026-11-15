@@ -1146,6 +1146,7 @@ describe("planComposerTurn", () => {
       model: "claude-opus-4-6",
     },
     keepFullHistory: false,
+    compactRequested: false,
     phase: "ready" as const,
     dispatchMode: "auto" as const,
     freshContext: false,
@@ -1188,6 +1189,28 @@ describe("planComposerTurn", () => {
         compactBeforeSend: false,
         turnDispatchMode: "auto",
         shouldQueueBehindActiveRun: false,
+      });
+    }
+  });
+
+  it("compacts first on Compact and send, even with a warm cache or while running", () => {
+    const requested = {
+      ...base,
+      isServerThread: true,
+      activeMessageCount: 3,
+      keepFullHistory: true,
+      compactRequested: true,
+    };
+    for (const phase of ["ready", "running"] as const) {
+      expect(planComposerTurn({ ...requested, phase, dispatchMode: "steer" })).toMatchObject({
+        compactBeforeSend: true,
+        turnDispatchMode: "queue",
+        shouldQueueBehindActiveRun: true,
+      });
+    }
+    for (const override of [{ freshContext: true }, { messageText: "/compact" }]) {
+      expect(planComposerTurn({ ...requested, ...override })).toMatchObject({
+        compactBeforeSend: false,
       });
     }
   });

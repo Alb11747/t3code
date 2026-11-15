@@ -899,7 +899,12 @@ export function createThreadOutboxDelivery(): {
       settings,
       currentConfig.providers,
     );
-    if (queuedMessage.compactBeforeSend === true) {
+    // The message runs as the first turn after this compaction, and only once it succeeds.
+    const compactionMessageId =
+      queuedMessage.compactBeforeSend === true
+        ? MessageId.make(`${queuedMessage.messageId}:compact`)
+        : undefined;
+    if (compactionMessageId !== undefined) {
       if (!hasAccess()) return true;
       // Queued, since steering a running turn with a compaction is rejected.
       const compactionResult = await runDeliveryCommand(threadEnvironment.startTurn, {
@@ -909,7 +914,7 @@ export function createThreadOutboxDelivery(): {
           creationSource: "mobile",
           threadId: queuedMessage.threadId,
           message: {
-            messageId: MessageId.make(`${queuedMessage.messageId}:compact`),
+            messageId: compactionMessageId,
             role: "user",
             text: "/compact",
             attachments: [],
@@ -960,6 +965,9 @@ export function createThreadOutboxDelivery(): {
         interactionMode: sendSettings.interactionMode,
         createdAt: queuedMessage.createdAt,
         dispatchMode: queuedMessage.dispatchMode ?? "start",
+        ...(compactionMessageId === undefined
+          ? {}
+          : { afterCompactionMessageId: compactionMessageId }),
         ...(queuedMessage.freshContext ? { freshContext: true } : {}),
         resendAfterSocketLoss: false,
       },

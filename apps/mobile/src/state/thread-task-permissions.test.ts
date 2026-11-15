@@ -347,6 +347,11 @@ describe("mobile task permissions", () => {
     expect(state.enqueue).toHaveBeenLastCalledWith(
       expect.not.objectContaining({ compactBeforeSend: true }),
     );
+    // Compact and send compacts without the notice.
+    await unannounced.onSendMessage("compact");
+    expect(state.enqueue).toHaveBeenLastCalledWith(
+      expect.objectContaining({ compactBeforeSend: true, dispatchMode: "queue" }),
+    );
     state.compactDueAt = "";
     const composer = useThreadComposerState(NO_SIDE_CHATS);
     expect(composer.compactBeforeSend?.tokens).toBe(248_000);

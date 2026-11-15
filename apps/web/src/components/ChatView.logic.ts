@@ -1312,6 +1312,8 @@ export function planComposerTurn(input: {
   readonly selectedProvider: ProviderDriverKind;
   readonly selectedModelSelection: ModelSelection;
   readonly keepFullHistory: boolean;
+  /** The user picked Compact and send, which compacts whatever the cache state. */
+  readonly compactRequested: boolean;
   readonly phase: SessionPhase;
   readonly dispatchMode: ComposerDispatchMode;
   /** The turn starts a new provider session, so it neither compacts first nor steers. */
@@ -1326,13 +1328,14 @@ export function planComposerTurn(input: {
   // rejected.
   const compactBeforeSend =
     !input.freshContext &&
-    resumeCompactionTokensForSelection({
-      ...input,
-      selectedInstanceId: input.selectedModelSelection.instanceId,
-    }) !== null &&
-    input.resumeCompaction?.providerThreadId === input.destinationProviderThreadId &&
-    !input.keepFullHistory &&
-    !COMPACT_COMMAND_PATTERN.test(input.messageText);
+    !COMPACT_COMMAND_PATTERN.test(input.messageText) &&
+    (input.compactRequested ||
+      (resumeCompactionTokensForSelection({
+        ...input,
+        selectedInstanceId: input.selectedModelSelection.instanceId,
+      }) !== null &&
+        input.resumeCompaction?.providerThreadId === input.destinationProviderThreadId &&
+        !input.keepFullHistory));
   const dispatchMode =
     input.freshContext && (input.dispatchMode === "steer" || input.dispatchMode === "restart")
       ? "queue"

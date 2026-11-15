@@ -76,7 +76,7 @@ import { formatModelSlugName, resolveSelectableModel } from "@t3tools/shared/mod
 import { isProviderNativeSubagentThread } from "@t3tools/contracts";
 import type { QueuedRunEdit } from "../../state/queued-run-edit";
 import type { FollowUpBehavior } from "../../lib/followUpBehavior";
-import type { ActiveTurnComposerAction } from "@t3tools/client-runtime/state/composer-dispatch";
+import type { ComposerSendChoice } from "../../state/use-thread-composer-state";
 import * as Haptics from "expo-haptics";
 import {
   useCallback,
@@ -303,7 +303,7 @@ export interface ThreadDetailScreenProps {
   readonly onResumeQueue: (() => Promise<void>) | null;
   readonly offersSideChat: boolean;
   readonly onSendMessage: (
-    followUp?: ActiveTurnComposerAction,
+    followUp?: ComposerSendChoice,
     beforeDispatch?: (
       text: string,
       hasAttachmentsOrContext: boolean,
@@ -1276,7 +1276,7 @@ function ThreadDetailBody(
           environmentThreadDetails.pendingRequestsAtom(props.selectedThreadDetailRef),
         )?.approvals ?? []);
   const handleSendMessage = async (
-    followUp?: ActiveTurnComposerAction,
+    followUp?: ComposerSendChoice,
     stillSendable?: () => boolean,
   ) => {
     const scope = threadScope.current.signal;
@@ -1903,6 +1903,15 @@ function ThreadDetailBody(
                               onFreshSession: () => setFreshSessionPending(selectedThreadKey, true),
                             }
                           : {})}
+                        offersCompactAndSend={
+                          hasCompactableConversation &&
+                          !props.isCompacting &&
+                          !props.draftMode &&
+                          props.canOperateThread &&
+                          props.queuedRunEdit === null &&
+                          props.activePendingApprovals.length === 0 &&
+                          props.activePendingUserInput === null
+                        }
                         offersSideChat={
                           props.offersSideChat &&
                           !props.draftMode &&

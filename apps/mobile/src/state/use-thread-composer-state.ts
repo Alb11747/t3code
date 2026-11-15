@@ -3,7 +3,10 @@ import * as Dialog from "../components/ui/Dialog";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { readEnvironmentScope } from "./session";
 import { useAtomValue } from "@effect/atom-react";
-import { compactBeforeSendTokens } from "@t3tools/client-runtime/state/context-window";
+import {
+  COMPACT_COMMAND_PATTERN,
+  compactBeforeSendTokens,
+} from "@t3tools/client-runtime/state/context-window";
 import { threadRuntimeIsActive } from "@t3tools/client-runtime/state/shell";
 import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thread-checkpoints";
 import { threadSteersDuringCompaction } from "@t3tools/client-runtime/state/thread-workflows";
@@ -98,6 +101,9 @@ import {
   resolveComposerDispatchMode,
   type ActiveTurnComposerAction,
 } from "@t3tools/client-runtime/state/composer-dispatch";
+
+/** How the composer sends: a follow-up action for a running turn, or `compact` to compact first. */
+export type ComposerSendChoice = ActiveTurnComposerAction | "compact";
 import { Atom } from "effect/reactivity";
 import { AsyncResult } from "effect/reactivity";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -573,7 +579,7 @@ export function useThreadComposerState(input: {
   };
 
   const onSendMessage = async (
-    followUpOverride?: ActiveTurnComposerAction,
+    sendChoice?: ComposerSendChoice,
     beforeDispatch?: (
       text: string,
       hasAttachmentsOrContext: boolean,
@@ -589,6 +595,8 @@ export function useThreadComposerState(input: {
     if (!selectedThreadShell) {
       return null;
     }
+    const compactRequested = sendChoice === "compact";
+    const followUpOverride = compactRequested ? undefined : sendChoice;
     // Before thread creation succeeds, follow-ups could become orphaned and be dropped by the drain.
     if (selectedThreadCreation !== null) {
       return null;
@@ -793,12 +801,17 @@ export function useThreadComposerState(input: {
     const metadata = makeQueuedMessageMetadata();
     // A fresh session drops the context a compaction would summarize. Only a send the notice
     // announced compacts, since the notice's minute clock can trail the exact deadline.
+    // Compact and send compacts whatever the cache state; it never answers an approval.
     const compactBeforeSend =
-      compactTokens !== null &&
       !freshContext &&
-      followUpDispatchMode === null &&
-      appAtomRegistry.get(fullHistoryThreadKeysAtom)[threadKey] !== true &&
-      resumeCompactionTokens(modelSelection, text, metadata.createdAt) !== null;
+      ((compactRequested &&
+        beforeDispatch === undefined &&
+        pendingHandoff === null &&
+        !COMPACT_COMMAND_PATTERN.test(text)) ||
+        (compactTokens !== null &&
+          followUpDispatchMode === null &&
+          appAtomRegistry.get(fullHistoryThreadKeysAtom)[threadKey] !== true &&
+          resumeCompactionTokens(modelSelection, text, metadata.createdAt) !== null));
     // Fork: a send that steers the running turn joins requests the turn makes anyway.
     if (
       beforeDispatch === undefined &&

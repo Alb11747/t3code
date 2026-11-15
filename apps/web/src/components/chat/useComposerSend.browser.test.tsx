@@ -246,6 +246,7 @@ function setup(
     panelAnimationsActive: false,
     panelAnimationDurationMs: 0,
     keepFullHistory: false,
+    compactAndSendAvailable: false,
     freshSessionAvailable: false,
     resumeCompaction: {
       usedTokens: 250_000,
@@ -367,14 +368,16 @@ describe("resume compaction dispatch", () => {
       await act(() => sender.current!.onSend());
       expect(mocks.startTurn).toHaveBeenCalledTimes(2);
       expect(mocks.startTurn.mock.calls[0]![0].input.modelSelection.instanceId).toBe("claudeAgent");
+      const compactionMessageId = mocks.startTurn.mock.calls[0]![0].input.message.messageId;
       expect(
         mocks.startTurn.mock.calls.map(([call]) => [
           call.input.message.text,
           call.input.dispatchMode,
+          call.input.afterCompactionMessageId,
         ]),
       ).toEqual([
-        ["/compact", undefined],
-        ["Keep the attachment", "queue"],
+        ["/compact", "queue", undefined],
+        ["Keep the attachment", "queue", compactionMessageId],
       ]);
     },
   );
