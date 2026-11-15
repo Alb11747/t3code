@@ -227,6 +227,7 @@ import {
   type SnoozePreset,
 } from "./Sidebar.snooze";
 import { loadUsageResetSnoozeOptions, usageResetSnoozeChoice } from "./usageResetSnooze";
+import { startMenuOpen } from "../menuOpenGuard";
 import { mergeUsageResetSnoozeOptions } from "@t3tools/client-runtime/usage-reset-snooze";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { deriveProviderEntriesByEnvironment } from "../providerInstances";
@@ -2353,11 +2354,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         timestampFormat,
         selectedThreads[0]!.environmentId,
       );
+      const pending = startMenuOpen();
       const usageResetOptionsByThread = canSnoozeSelection
         ? await loadUsageResetSnoozeOptions(
             selectedThreads.map((thread) => scopeThreadRef(thread.environmentId, thread.id)),
           )
         : [];
+      if (!pending.isCurrent()) return;
       const clicked = await settlePromise(() =>
         api.contextMenu.show(
           [
@@ -2671,10 +2674,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             ),
           ) ?? null;
         const canSnoozeNow = canSnooze(thread, { now: new Date().toISOString() });
+        const pending = startMenuOpen();
         const [usageResetOptions = []] =
           configLoaded && !isSnoozed && canSnoozeNow
             ? await loadUsageResetSnoozeOptions([threadRef])
             : [];
+        if (!pending.isCurrent()) return;
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             buildThreadActionMenuItems({

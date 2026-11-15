@@ -42,7 +42,12 @@ export async function chooseUsageResetSnooze(
     return undefined;
   }
   const options = usageResetSnoozeOptions(result.value);
-  if (options.length === 1) return options[0]!.snoozedUntil;
+  if (options.length === 1) {
+    if (!options[0]!.snoozedUntil) {
+      Dialog.alert("Could not snooze until usage resets", "The reset time is unknown.");
+    }
+    return options[0]!.snoozedUntil;
+  }
   return new Promise((resolve) =>
     Dialog.alert(
       "Snooze until usage resets",

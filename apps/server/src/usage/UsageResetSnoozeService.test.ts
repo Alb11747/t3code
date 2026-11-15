@@ -166,6 +166,22 @@ describe("UsageResetSnoozeService", () => {
     }),
   );
 
+  it.effect("still offers known windows when the router's overall reset is unknown", () =>
+    Effect.gen(function* () {
+      const { result } = yield* resolve({
+        provider: claude({ type: "customEndpoint" }, []),
+        pick: { resetsAt: null, lastAccount: "last" },
+      });
+      expect(result._tag).toBe("Success");
+      if (result._tag !== "Success") return;
+      expect(result.success.resetsAt).toBeUndefined();
+      expect(result.success.windows).toEqual([
+        { window: "session", resetsAt: at(2) },
+        { window: "weekly", resetsAt: at(50) },
+      ]);
+    }),
+  );
+
   it.effect("fails instead of substituting another account when the picked reset is unknown", () =>
     Effect.gen(function* () {
       const { result } = yield* resolve({

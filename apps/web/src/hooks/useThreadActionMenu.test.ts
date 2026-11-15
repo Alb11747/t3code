@@ -21,6 +21,7 @@ const state = vi.hoisted(() => ({
   granted: new Set<string>(),
   effects: [] as string[],
   completed: deferred<void>(),
+  usageResetOptions: vi.fn<() => Promise<ReadonlyArray<ReadonlyArray<unknown>>>>(),
   show: vi.fn<
     (
       items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>,
@@ -36,6 +37,7 @@ function recordEffect(action: string) {
 
 vi.mock("../components/CustomSnoozeDialog", () => ({ requestCustomSnooze: vi.fn() }));
 vi.mock("react", () => ({
+  useEffect: () => {},
   useCallback: (callback: unknown) => callback,
   useMemo: (factory: () => unknown) => factory(),
 }));
@@ -105,7 +107,7 @@ vi.mock("../components/Sidebar.snooze", () => ({
   snoozeWakeDescription: () => "later",
 }));
 vi.mock("../components/usageResetSnooze", () => ({
-  loadUsageResetSnoozeOptions: async () => [],
+  loadUsageResetSnoozeOptions: () => state.usageResetOptions(),
   usageResetSnoozeChoice: vi.fn(),
 }));
 vi.mock("./useCopyToClipboard", () => ({
@@ -167,6 +169,7 @@ beforeEach(() => {
   state.effects = [];
   state.completed = deferred<void>();
   state.show.mockReset().mockResolvedValue(null);
+  state.usageResetOptions.mockReset().mockResolvedValue([]);
 });
 
 describe("thread menu permissions", () => {
@@ -198,5 +201,31 @@ describe("thread menu permissions", () => {
     expect(items[0]?.disabled).not.toBe(true);
     expect(state.effects).toEqual(["find"]);
     expect(onFind).toHaveBeenCalledExactlyOnceWith(target);
+  });
+
+  it("drops a menu whose options arrive after it was closed", async () => {
+    const answer = deferred<ReadonlyArray<ReadonlyArray<unknown>>>();
+    state.usageResetOptions.mockReturnValue(answer.promise);
+    const menu = createMenu();
+    menu.openMenu(position);
+    menu.closeMenu();
+    answer.resolve([]);
+    await answer.promise;
+    await Promise.resolve();
+    expect(state.show).not.toHaveBeenCalled();
+  });
+
+  it("drops an older open whose options arrive after a newer one", async () => {
+    const older = deferred<ReadonlyArray<ReadonlyArray<unknown>>>();
+    const newer = deferred<ReadonlyArray<ReadonlyArray<unknown>>>();
+    state.usageResetOptions.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+    createMenu().openMenu(position);
+    createMenu().openMenu({ x: 30, y: 40 });
+    newer.resolve([]);
+    await vi.waitFor(() => expect(state.show).toHaveBeenCalledOnce());
+    older.resolve([]);
+    await older.promise;
+    await Promise.resolve();
+    expect(state.show.mock.calls).toEqual([[expect.anything(), { x: 30, y: 40 }]]);
   });
 });

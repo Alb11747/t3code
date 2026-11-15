@@ -31,11 +31,12 @@ export const UsageResetSnoozeWindow = Schema.Struct({
 export type UsageResetSnoozeWindow = typeof UsageResetSnoozeWindow.Type;
 
 /**
- * `resetsAt`: when the thread's account has quota again. `windows`: each window's reset on the
- * account the thread last used, when the server knows that account; older servers omit it.
+ * `resetsAt`: when the thread's account has quota again, absent when only `windows` are known.
+ * `windows`: each window's reset on the account the thread last used, when the server knows that
+ * account; older servers omit it.
  */
 export const UsageResetSnooze = Schema.Struct({
-  resetsAt: IsoDateTime,
+  resetsAt: Schema.optional(IsoDateTime),
   basis: UsageResetSnoozeBasis,
   accountLabel: Schema.optional(TrimmedNonEmptyString),
   windows: Schema.optional(Schema.Array(UsageResetSnoozeWindow)),

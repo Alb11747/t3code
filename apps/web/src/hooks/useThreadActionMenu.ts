@@ -15,6 +15,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { useRouter } from "@tanstack/react-router";
+import { useEffect } from "react";
 
 import { pickSnoozePreset, resolveSnoozePresets } from "../components/Sidebar.snooze";
 import {
@@ -42,6 +43,7 @@ import {
 } from "../state/entities";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { readLocalApi } from "../localApi";
+import { cancelPendingMenuOpen, startMenuOpen } from "../menuOpenGuard";
 import { configuredHostedAppUrl } from "../hostedPairing";
 import {
   deriveLogicalProjectKeyFromSettings,
@@ -125,8 +127,13 @@ export function useThreadActionMenu(input: {
     onError: (error) => failureToast("Failed to copy thread ID", error),
   });
 
+  const threadKey = threadRef ? `${threadRef.environmentId}:${threadRef.threadId}` : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- leaving a thread drops its menu still waiting for options
+  useEffect(() => (threadKey === null ? undefined : cancelPendingMenuOpen), [threadKey]);
+
   const openMenu = (position: { x: number; y: number }) => {
     if (threadRef === null) return;
+    const pending = startMenuOpen();
     void (async () => {
       const api = readLocalApi();
       if (!api) return;
@@ -152,6 +159,7 @@ export function useThreadActionMenu(input: {
         supports.snooze && !isSnoozed && canSnoozeNow
           ? await loadUsageResetSnoozeOptions([threadRef])
           : [];
+      if (!pending.isCurrent()) return;
       const items = buildThreadActionMenuItems({
         canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
         canFind: onFind !== undefined,
@@ -406,6 +414,7 @@ export function useThreadActionMenu(input: {
   };
 
   const closeMenu = () => {
+    cancelPendingMenuOpen();
     void readLocalApi()?.contextMenu.close();
   };
 

@@ -57,9 +57,11 @@ export async function usageResetSnoozeChoice(
   if (option.snoozedUntil) return { snoozedUntil: option.snoozedUntil };
   const result = await askServer(threadRef);
   if (!result) return undefined;
-  if (result._tag === "Success") return { snoozedUntil: result.value.resetsAt };
-  if (!isAtomCommandInterrupted(result)) {
-    const error = squashAtomCommandFailure(result);
+  if (result._tag === "Success" && result.value.resetsAt) {
+    return { snoozedUntil: result.value.resetsAt };
+  }
+  if (result._tag === "Success" || !isAtomCommandInterrupted(result)) {
+    const error = result._tag === "Failure" ? squashAtomCommandFailure(result) : undefined;
     toastManager.add({
       type: "warning",
       title: "Could not snooze until usage resets",

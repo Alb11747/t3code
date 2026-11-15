@@ -28,10 +28,22 @@ export const make = Effect.gen(function* () {
     if (!provider) {
       return yield* new UsageResetSnoozeError({ detail: "That provider is not available." });
     }
-    const done = (resetsAtMs: number, rest: Omit<UsageResetSnooze, "resetsAt">) => ({
-      resetsAt: DateTime.formatIso(DateTime.makeUnsafe(resetsAtMs)),
-      ...rest,
-    });
+    // The overall reset and each window's are separate answers: a window's reset still serves
+    // when the overall one is unknown, but never stands in for it.
+    const answer = (
+      resetsAtMs: number | null,
+      rest: Omit<UsageResetSnooze, "resetsAt">,
+      unknown: string,
+    ) => {
+      const known = resetsAtMs !== null && resetsAtMs > now;
+      if (!known && (rest.windows ?? []).length === 0) {
+        return Effect.fail(new UsageResetSnoozeError({ detail: unknown }));
+      }
+      return Effect.succeed<UsageResetSnooze>({
+        ...(known ? { resetsAt: DateTime.formatIso(DateTime.makeUnsafe(resetsAtMs)) } : {}),
+        ...rest,
+      });
+    };
 
     // Behind a hub, streamed windows describe whichever account served the last turn, so only
     // the hub can say which account comes next. Claude marks a gateway as a custom endpoint;
@@ -41,17 +53,11 @@ export const make = Effect.gen(function* () {
       provider.auth.type === "customEndpoint" ||
       (own?.unavailable?.reason === "unsupported" && provider.auth.type !== "apiKey");
     if (!behindHub) {
-      const resetsAtMs =
-        own && own.windows.length > 0 ? accountResetAtMs(provider.driver, own, model, now) : null;
-      if (resetsAtMs === null) {
-        return yield* new UsageResetSnoozeError({
-          detail: "This account has not reported when its usage resets.",
-        });
-      }
-      return done(resetsAtMs, {
-        basis: "account",
-        windows: windowResets(provider.driver, own, model, now),
-      });
+      return yield* answer(
+        own && own.windows.length > 0 ? accountResetAtMs(provider.driver, own, model, now) : null,
+        { basis: "account", windows: windowResets(provider.driver, own, model, now) },
+        "This account has not reported when its usage resets.",
+      );
     }
 
     // Hub settings do not name the provider endpoint they serve, so only a single hub holding
@@ -75,13 +81,6 @@ export const make = Effect.gen(function* () {
         ...(session ? { session } : {}),
       });
       if (pick !== null) {
-        const resetsAtMs = pick.resetsAt === null ? Number.NaN : Date.parse(pick.resetsAt);
-        // Never another account's reset: the router named the account it will use.
-        if (!(resetsAtMs > now)) {
-          return yield* new UsageResetSnoozeError({
-            detail: "The CLI Proxy account this thread will use has not reported its reset.",
-          });
-        }
         // Windows are those of the account the conversation is on, whose readings the hub has.
         // The router names accounts as it does now; the snapshot's aliases can trail it.
         const rename = yield* sources.routerAlias(hubs[0]!.id);
@@ -91,10 +90,15 @@ export const make = Effect.gen(function* () {
             account.routerAlias !== undefined &&
             rename(account.routerAlias) === pick.lastAccount,
         );
-        return done(resetsAtMs, {
-          basis: "router",
-          windows: last ? windowResets(provider.driver, last.usageLimits, model, now) : [],
-        });
+        // Never another account's overall reset: the router named the account it will use.
+        return yield* answer(
+          pick.resetsAt === null ? null : Date.parse(pick.resetsAt),
+          {
+            basis: "router",
+            windows: last ? windowResets(provider.driver, last.usageLimits, model, now) : [],
+          },
+          "The CLI Proxy account this thread will use has not reported its reset.",
+        );
       }
     }
 
@@ -102,20 +106,19 @@ export const make = Effect.gen(function* () {
       source.accounts.filter((account) => account.driver === provider.driver),
     );
     const soonest = soonestHubReset(candidates, model, now);
-    if (soonest === null) {
-      return yield* new UsageResetSnoozeError({
-        detail: "No usage reset time is known for this provider.",
-      });
-    }
     // Only a lone account is surely the thread's, so only its windows can be offered.
-    return done(soonest.resetsAtMs, {
-      basis: "soonest",
-      accountLabel: soonest.accountLabel,
-      windows:
-        candidates.length === 1
-          ? windowResets(provider.driver, candidates[0]!.usageLimits, model, now)
-          : [],
-    });
+    return yield* answer(
+      soonest?.resetsAtMs ?? null,
+      {
+        basis: "soonest",
+        ...(soonest ? { accountLabel: soonest.accountLabel } : {}),
+        windows:
+          candidates.length === 1
+            ? windowResets(provider.driver, candidates[0]!.usageLimits, model, now)
+            : [],
+      },
+      "No usage reset time is known for this provider.",
+    );
   });
 
   return { resolve };

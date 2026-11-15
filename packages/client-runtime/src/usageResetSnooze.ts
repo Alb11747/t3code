@@ -40,7 +40,7 @@ export function usageResetSnoozeOptions(
     {
       id: USAGE_RESET_SNOOZE_ACTION,
       label: "Until usage resets",
-      ...(answer ? { snoozedUntil: answer.resetsAt } : {}),
+      ...(answer?.resetsAt ? { snoozedUntil: answer.resetsAt } : {}),
     },
   ];
 }

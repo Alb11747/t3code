@@ -33,7 +33,6 @@ import {
   UsageLimitSourceError,
   type UsageLimitSourceId,
   type UsageLimitSourceSnapshot,
-  type UsageResetSnooze,
   threadAccountChoiceFor,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -203,7 +202,7 @@ export class ThreadAccounts extends Context.Reference<{
   /** When the account the thread's next message would use gets quota back. */
   readonly usageResetAt: (
     threadId: ThreadId,
-  ) => Effect.Effect<UsageResetSnooze, ThreadAccountError>;
+  ) => Effect.Effect<{ readonly resetsAt: string }, ThreadAccountError>;
   /** A stored choice's account as its hub's router names it now, with its email, for agents. */
   readonly describeChoice: (
     choice: ThreadAccountChoice,
@@ -1011,7 +1010,16 @@ export const make = Effect.gen(function* () {
 
   const usageResetAt = Effect.fn("ThreadAccounts.usageResetAt")(function* (threadId: ThreadId) {
     const thread = yield* threadOf(threadId);
-    return yield* usageResetSnooze.resolve({ threadId, modelSelection: thread.modelSelection });
+    const { resetsAt } = yield* usageResetSnooze.resolve({
+      threadId,
+      modelSelection: thread.modelSelection,
+    });
+    if (resetsAt === undefined) {
+      return yield* fail(
+        "The account this thread will use has not reported when its usage resets.",
+      );
+    }
+    return { resetsAt };
   });
 
   // Clients find a thread's choice among the hub's accounts by alias, so once a router renames
