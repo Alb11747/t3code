@@ -113,7 +113,8 @@ jobs:
           T3CODE_ANDROID_KEY_ALIAS: ${{ secrets.FORK_ANDROID_KEY_ALIAS }}
           T3CODE_ANDROID_KEY_PASSWORD: ${{ secrets.FORK_ANDROID_KEY_PASSWORD }}
         working-directory: apps/mobile/android
-        run: ./gradlew app:assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon --max-workers=2
+        # Include the emulator ABI so the published APK can be verified without ARM translation.
+        run: ./gradlew app:assembleRelease -PreactNativeArchitectures=arm64-v8a,x86_64 --no-daemon --max-workers=2
 
       - name: Verify and describe APK
         run: |
@@ -144,7 +145,7 @@ jobs:
             tag: process.env.ANDROID_RELEASE_TAG,
             file,
             sha256,
-            architecture: 'arm64-v8a',
+            architectures: ['arm64-v8a', 'x86_64'],
           }, null, 2) + '\n');
           writeFileSync(join(dir, 'update.json'), JSON.stringify({
             schema: 1,
