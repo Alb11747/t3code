@@ -506,7 +506,7 @@ export const make = Effect.gen(function* () {
 
   // An approved move compacts once on the new account: that one request drops the old account's
   // thinking, and the compacted history no longer carries it. The orchestrator puts it first and
-  // stops a live turn, which continues afterwards; a compaction already on its way does the job.
+  // stops a live turn, which continues afterwards.
   const compactAfterMove = Effect.fn("ThreadAccounts.compactAfterMove")(function* (
     threadId: ThreadId,
     commandId: string,
@@ -520,7 +520,10 @@ export const make = Effect.gen(function* () {
     });
     const compacts = (run: (typeof runs)[number]) =>
       messages.some((message) => message.id === run.userMessageId && isCompactionPrompt(message));
-    if (runs.some(compacts)) return undefined;
+    // Only a compaction that runs next does the job; a held or later one would wait behind turns that fail.
+    const runsNext = (run: (typeof runs)[number]) =>
+      run.status !== "queued" || (run.queuePosition === 1 && run.queueHeld !== true);
+    if (runs.some((run) => compacts(run) && runsNext(run))) return undefined;
     const continues = alwaysContinue || runs.some((run) => run.status !== "queued");
     const compactId = MessageId.make(`${commandId}:compact`);
     const continueId = `${commandId}:continue`;

@@ -83,7 +83,13 @@ function testLayer(input: {
   // The thread's live run, held or not.
   readonly liveRunId?: string;
   // Queued or live runs with their prompts, beside the completed `run-1`.
-  readonly runs?: ReadonlyArray<{ id: string; status: string; text: string }>;
+  readonly runs?: ReadonlyArray<{
+    id: string;
+    status: string;
+    text: string;
+    queuePosition?: number;
+    queueHeld?: boolean;
+  }>;
   readonly accountMovedAt?: string;
   readonly compactedAt?: string;
   // Router pins and orchestrator commands in the order the service made them.
@@ -271,7 +277,13 @@ function setAccount(input: {
   readonly dropThinking?: boolean;
   readonly heldRunId?: string;
   readonly liveRunId?: string;
-  readonly runs?: ReadonlyArray<{ id: string; status: string; text: string }>;
+  readonly runs?: ReadonlyArray<{
+    id: string;
+    status: string;
+    text: string;
+    queuePosition?: number;
+    queueHeld?: boolean;
+  }>;
   readonly heldByPin?: "moves" | "stays";
   readonly accountChoice?: unknown;
   readonly renamed?: Record<string, string>;
@@ -352,16 +364,29 @@ describe("ThreadAccountService.set", () => {
   );
 
   it.effect.each([
-    { name: "queued", status: "queued", text: "/compact" },
-    { name: "running with instructions", status: "running", text: "/compact keep the API notes" },
-  ])("queues nothing more while a compaction is $name", ({ status, text }) =>
+    { name: "queued next", run: { status: "queued", queuePosition: 1 }, queues: false },
+    {
+      name: "running with instructions",
+      run: { status: "running" },
+      text: "/compact keep it",
+      queues: false,
+    },
+    { name: "queued behind others", run: { status: "queued", queuePosition: 2 }, queues: true },
+    {
+      name: "held",
+      run: { status: "queued", queuePosition: 1, queueHeld: true },
+      queues: true,
+    },
+  ])("queues its own compaction only if none runs next: $name", ({ run, text, queues }) =>
     Effect.gen(function* () {
       const { commands, pins } = yield* setAccount({
         owner: OWNER,
         dropThinking: true,
-        runs: [{ id: "run-c", status, text }],
+        runs: [{ id: "run-c", text: text ?? "/compact", ...run }],
       });
-      expect(commands.map((command) => command.type)).toEqual(["thread.account-choice.set"]);
+      expect(commands.map((command) => command.type)).toEqual(
+        queues ? ["thread.account-choice.set", "message.dispatch"] : ["thread.account-choice.set"],
+      );
       expect(pins).toMatchObject([{ move: true }]);
     }),
   );
