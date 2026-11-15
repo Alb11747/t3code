@@ -604,46 +604,7 @@ describe("queued task whose launch reply is lost", () => {
 });
 
 describe("compaction before a queued send", () => {
-  const compactTurn = {
-    commandId: "command:compact",
-    message: {
-      messageId: "message:compact",
-      role: "user",
-      text: "/compact",
-      attachments: [],
-      idleCompaction: "onReturn",
-    },
-    dispatchMode: "queue",
-  };
-
-  it("queues /compact ahead of the message and resends the same /compact on a retry", async () => {
-    setOperateGrant("secondary", true);
-    const queued = message({ compactBeforeSend: true, dispatchMode: "queue" });
-    await state.manager.enqueue(queued);
-    state.start
-      .mockResolvedValueOnce(AsyncResult.success({}))
-      .mockResolvedValueOnce(AsyncResult.failure(Cause.fail(new Error("Socket is not connected"))));
-    await runDrain();
-    expect(remaining()).toEqual([queued]);
-
-    // A restarted app delivers the persisted message again.
-    state.cleanups.splice(0).forEach((cleanup) => cleanup());
-    await runDrain();
-    const afterCompaction = {
-      commandId: "command",
-      dispatchMode: "queue",
-      afterCompactionMessageId: "message:compact",
-    };
-    expect(state.start.mock.calls.map(([call]) => call.input)).toEqual([
-      expect.objectContaining(compactTurn),
-      expect.objectContaining(afterCompaction),
-      expect.objectContaining(compactTurn),
-      expect.objectContaining(afterCompaction),
-    ]);
-    expect(remaining()).toEqual([]);
-  });
-
-  it("holds the message when its /compact cannot be sent", async () => {
+  it("sends the message with its compaction in one command and resends it on a retry", async () => {
     setOperateGrant("secondary", true);
     const queued = message({ compactBeforeSend: true, dispatchMode: "queue" });
     await state.manager.enqueue(queued);
@@ -651,8 +612,20 @@ describe("compaction before a queued send", () => {
       AsyncResult.failure(Cause.fail(new Error("Socket is not connected"))),
     );
     await runDrain();
-    expect(state.start).toHaveBeenCalledOnce();
-    expect(state.start.mock.calls[0]?.[0].input).toMatchObject(compactTurn);
     expect(remaining()).toEqual([queued]);
+
+    // A restarted app delivers the persisted message again.
+    state.cleanups.splice(0).forEach((cleanup) => cleanup());
+    await runDrain();
+    const compactAndSend = expect.objectContaining({
+      commandId: "command",
+      dispatchMode: "queue",
+      compactFirst: true,
+    });
+    expect(state.start.mock.calls.map(([call]) => call.input)).toEqual([
+      compactAndSend,
+      compactAndSend,
+    ]);
+    expect(remaining()).toEqual([]);
   });
 });

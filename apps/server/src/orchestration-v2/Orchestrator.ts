@@ -2396,25 +2396,75 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     return turnItems.some((item) => item.type === "compaction" && item.status === "completed");
   });
 
-  // The first queued message waiting on a compaction; `pending` while that compaction can still
-  // let it run, false once the compaction ended without compacting.
-  const pendingCompactionFollowUp = Effect.fn("Orchestrator.pendingCompactionFollowUp")(function* (
+  // Queued messages waiting on a compaction: the compaction that can still let them run, and the
+  // messages whose compaction ended without compacting.
+  const compactionDependents = Effect.fn("Orchestrator.compactionDependents")(function* (
     threadId: ThreadId,
     runs: ReadonlyArray<OrchestrationV2Run>,
   ) {
-    const followUp = runs.find(
-      (run) => run.status === "queued" && run.afterCompactionMessageId !== undefined,
+    let pendingCompactionMessageId: MessageId | undefined;
+    const stranded: Array<OrchestrationV2Run> = [];
+    for (const run of runs) {
+      const compactionMessageId = run.afterCompactionMessageId;
+      if (run.status !== "queued" || compactionMessageId === undefined) continue;
+      const compaction = runs.find((candidate) => candidate.userMessageId === compactionMessageId);
+      const pending =
+        compaction !== undefined &&
+        (compaction.status === "queued" ||
+          isActiveRun(compaction) ||
+          (compaction.status === "completed" &&
+            (yield* compactionSucceeded(threadId, compactionMessageId, runs))));
+      if (!pending) stranded.push(run);
+      else pendingCompactionMessageId ??= compactionMessageId;
+    }
+    return { pendingCompactionMessageId, stranded };
+  });
+
+  // `/compact` and a message that runs right after it, committed together. While another
+  // compaction with a message is pending, the message follows that one instead.
+  const dispatchCompactFirst = Effect.fn("Orchestrator.dispatchCompactFirst")(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const { compactFirst: _compactFirst, deliveryIntent: _deliveryIntent, ...message } = command;
+    const projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    const { pendingCompactionMessageId } = yield* compactionDependents(
+      command.threadId,
+      projection.runs,
     );
-    if (followUp?.afterCompactionMessageId === undefined) return undefined;
-    const compactionMessageId = followUp.afterCompactionMessageId;
-    const compaction = runs.find((run) => run.userMessageId === compactionMessageId);
-    const pending =
-      compaction !== undefined &&
-      (compaction.status === "queued" ||
-        isActiveRun(compaction) ||
-        (compaction.status === "completed" &&
-          (yield* compactionSucceeded(threadId, compactionMessageId, runs))));
-    return { followUp, compactionMessageId, pending };
+    const compactionMessageId =
+      pendingCompactionMessageId ?? MessageId.make(`${command.messageId}:compact`);
+    if (pendingCompactionMessageId === undefined) {
+      yield* dispatchMessage(
+        {
+          type: "message.dispatch",
+          commandId: command.commandId,
+          threadId: command.threadId,
+          messageId: compactionMessageId,
+          text: "/compact",
+          attachments: [],
+          idleCompaction: "onReturn",
+          ...(command.modelSelection === undefined
+            ? {}
+            : { modelSelection: command.modelSelection }),
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: command.createdBy,
+          creationSource: command.creationSource,
+        },
+        events,
+        effects,
+      );
+    }
+    return yield* dispatchMessage(
+      {
+        ...message,
+        afterCompactionMessageId: compactionMessageId,
+        dispatchMode: { type: "queue_after_active" },
+      },
+      events,
+      effects,
+    );
   });
 
   const isStaleQuestionWake = Effect.fn("Orchestrator.isStaleQuestionWake")(function* (
@@ -2528,13 +2578,34 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 run.status === "queued" &&
                 run.boundaryOffer === undefined,
             );
-      while (
-        storedQueuedRun !== undefined &&
-        isStalePullRequestWatchWake(projection, storedQueuedRun)
-      ) {
-        yield* writeSystemEvents(
-          queuedRunCancellationEvents(projection, storedQueuedRun, yield* DateTime.now),
-        );
+      while (storedQueuedRun !== undefined) {
+        if (isStalePullRequestWatchWake(projection, storedQueuedRun)) {
+          yield* writeSystemEvents(
+            queuedRunCancellationEvents(projection, storedQueuedRun, yield* DateTime.now),
+          );
+        } else if (
+          // A message whose compaction failed is held, and the rest of the queue goes on.
+          options?.queuedRunId === undefined &&
+          storedQueuedRun.afterCompactionMessageId !== undefined &&
+          !(yield* compactionSucceeded(
+            threadId,
+            storedQueuedRun.afterCompactionMessageId,
+            projection.runs,
+          ))
+        ) {
+          yield* writeSystemEvents([
+            {
+              type: "run.updated",
+              threadId,
+              runId: storedQueuedRun.id,
+              providerInstanceId: storedQueuedRun.providerInstanceId,
+              occurredAt: yield* DateTime.now,
+              payload: { ...storedQueuedRun, queueHeld: true },
+            },
+          ]);
+        } else {
+          break;
+        }
         projection = yield* readCommandProjection(threadId);
         storedQueuedRun = nextQueuedRun(projection);
       }
@@ -6999,50 +7070,68 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
       return;
     }
-    const pendingCompaction = yield* pendingCompactionFollowUp(command.threadId, projection.runs);
-    // A user's `/compact` while a compaction with a message is pending joins that compaction.
-    const joinsPendingCompaction =
+    // A user's `/compact` joins a compaction already pending with a message, and takes over the
+    // messages of one that ended without compacting.
+    if (
       command.createdBy === "user" &&
       command.afterCompactionMessageId === undefined &&
-      isCompactionCommandMessage({ ...command, role: "user" });
-    if (joinsPendingCompaction && pendingCompaction?.pending === true) {
-      yield* emit(
-        events,
-        command,
-      )({
-        type: "thread.metadata-updated",
-        threadId: command.threadId,
-        occurredAt: yield* DateTime.now,
-        payload: projection.thread,
-      });
-      return;
-    }
-    if (joinsPendingCompaction && pendingCompaction !== undefined) {
-      // The message whose compaction failed follows this one instead.
-      const event = yield* emit(
-        events,
-        command,
-      )({
-        type: "run.updated",
-        threadId: command.threadId,
-        runId: pendingCompaction.followUp.id,
-        providerInstanceId: pendingCompaction.followUp.providerInstanceId,
-        occurredAt: yield* DateTime.now,
-        payload: {
-          ...pendingCompaction.followUp,
-          afterCompactionMessageId: command.messageId,
-          queueHeld: false,
-        },
-      });
-      projection = applyToProjection(projection, event);
-    }
-    // A message sent after a `/compact` that joined a pending compaction follows that one.
-    if (
-      pendingCompaction?.pending === true &&
-      command.afterCompactionMessageId !== undefined &&
-      !projection.runs.some((run) => run.userMessageId === command.afterCompactionMessageId)
+      isCompactionCommandMessage({ ...command, role: "user" })
     ) {
-      command = { ...command, afterCompactionMessageId: pendingCompaction.compactionMessageId };
+      const { pendingCompactionMessageId, stranded } = yield* compactionDependents(
+        command.threadId,
+        projection.runs,
+      );
+      const now = yield* DateTime.now;
+      for (const run of stranded) {
+        const event = yield* emit(
+          events,
+          command,
+        )({
+          type: "run.updated",
+          threadId: command.threadId,
+          runId: run.id,
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: now,
+          payload: {
+            ...run,
+            afterCompactionMessageId: pendingCompactionMessageId ?? command.messageId,
+            queueHeld: false,
+          },
+        });
+        projection = applyToProjection(projection, event);
+      }
+      if (pendingCompactionMessageId !== undefined) {
+        // Like any message sent from a client, it resumes a held queue.
+        for (const run of projection.runs) {
+          if (
+            run.status !== "queued" ||
+            run.queueHeld !== true ||
+            (command.creationSource !== "web" && command.creationSource !== "mobile")
+          )
+            continue;
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "run.updated",
+            threadId: command.threadId,
+            runId: run.id,
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+            payload: { ...run, queueHeld: false },
+          });
+        }
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: command.threadId,
+          occurredAt: now,
+          payload: projection.thread,
+        });
+        return;
+      }
     }
     const activeProviderInstanceId = projection.providerThreads.find(
       (candidate) => candidate.id === projection.thread.activeProviderThreadId,
@@ -7719,10 +7808,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.afterCompactionMessageId,
         projection.runs,
       ));
+    const startsOrQueuesRun =
+      dispatchMode.type === "defer_start" ||
+      dispatchMode.type === "start_immediately" ||
+      dispatchMode.type === "queue_after_active";
+    // Client messages resume held queues; server continuations and scheduled tasks do not.
+    // Provider failure or usage limits re-hold the queue.
+    const worktreeSetupUnresolved = worktreeSetupPending(projection);
+    const sentByUserFromClient =
+      command.steerFollowUpOfRunId === undefined &&
+      command.createdBy === "user" &&
+      (command.creationSource === "web" || command.creationSource === "mobile") &&
+      command.scheduledTaskId === undefined;
+    const heldRunsToRelease =
+      sentByUserFromClient && startsOrQueuesRun && !worktreeSetupUnresolved
+        ? projection.runs.filter((run) => run.status === "queued" && run.queueHeld === true)
+        : [];
     // Between a compaction's end and its message's start, a send queues behind that message.
     const compactionFollowUp =
       activeRun === undefined && worktreeMissingRun === undefined && !waitsForCompaction
-        ? nextQueuedRun(projection)
+        ? nextQueuedRun({
+            ...projection,
+            runs: projection.runs.map((run) =>
+              heldRunsToRelease.includes(run) ? { ...run, queueHeld: false } : run,
+            ),
+          })
         : undefined;
     const startsAfterCompaction =
       compactionFollowUp?.afterCompactionMessageId !== undefined &&
@@ -7738,10 +7848,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (waitsForCompaction ? requiredCompactionRun : undefined) ??
       (startsAfterCompaction ? compactionFollowUp : undefined);
     const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(projection);
-    const startsOrQueuesRun =
-      dispatchMode.type === "defer_start" ||
-      dispatchMode.type === "start_immediately" ||
-      dispatchMode.type === "queue_after_active";
     const shouldQueue = queueBehindRun !== undefined && startsOrQueuesRun;
     // An explicit pick queued ahead reaches the thread only when its run starts. A goal or
     // restart command that stops the active run goes first, so nothing queued applies before it.
@@ -7758,18 +7864,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       modelSelection = queueTailModelSelection(projection);
     }
     yield* ensureGoalCommandSupported(command, command, modelSelection.instanceId);
-    // Client messages resume held queues; server continuations and scheduled tasks do not.
-    // Provider failure or usage limits re-hold the queue.
-    const worktreeSetupUnresolved = worktreeSetupPending(projection);
-    const sentByUserFromClient =
-      command.steerFollowUpOfRunId === undefined &&
-      command.createdBy === "user" &&
-      (command.creationSource === "web" || command.creationSource === "mobile") &&
-      command.scheduledTaskId === undefined;
-    const heldRunsToRelease =
-      sentByUserFromClient && startsOrQueuesRun && !worktreeSetupUnresolved
-        ? projection.runs.filter((run) => run.status === "queued" && run.queueHeld === true)
-        : [];
     const releasedAt = yield* DateTime.now;
     for (const held of heldRunsToRelease) {
       yield* emit(
@@ -16032,7 +16126,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 text: guestSend.text,
                 context: { version: 1 as const, records: [], guest: guestSend.guest },
               };
-        cancelUnsettledEffects = yield* dispatchMessage(dispatched, events, effects);
+        cancelUnsettledEffects =
+          dispatched.compactFirst === true
+            ? yield* dispatchCompactFirst(dispatched, events, effects)
+            : yield* dispatchMessage(dispatched, events, effects);
         yield* recordSubagentFollowup(dispatched, events).pipe(mapDispatchError(command));
         break;
       }
@@ -16652,6 +16749,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       command.type === "queue.resume" ||
       command.type === "queued-run.start" ||
+      // A `/compact` that joined a held compaction released the queue without adding a run.
+      (command.type === "message.dispatch" &&
+        committed.storedEvents.some(
+          ({ event }) => event.type === "run.updated" && event.payload.queueHeld === false,
+        ) &&
+        !committed.storedEvents.some(({ event }) => event.type === "run.created")) ||
       // An offer Claude drops after its turn ended rejoins an idle queue.
       (command.type === "queued-message.promote-to-steer" &&
         command.boundaryOffer?.step === "withdraw") ||

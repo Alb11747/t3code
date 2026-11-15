@@ -899,43 +899,6 @@ export function createThreadOutboxDelivery(): {
       settings,
       currentConfig.providers,
     );
-    // The message runs as the first turn after this compaction, and only once it succeeds.
-    const compactionMessageId =
-      queuedMessage.compactBeforeSend === true
-        ? MessageId.make(`${queuedMessage.messageId}:compact`)
-        : undefined;
-    if (compactionMessageId !== undefined) {
-      if (!hasAccess()) return true;
-      // Queued, since steering a running turn with a compaction is rejected.
-      const compactionResult = await runDeliveryCommand(threadEnvironment.startTurn, {
-        environmentId: queuedMessage.environmentId,
-        input: {
-          commandId: settingsCommandId(queuedMessage, "compact"),
-          creationSource: "mobile",
-          threadId: queuedMessage.threadId,
-          message: {
-            messageId: compactionMessageId,
-            role: "user",
-            text: "/compact",
-            attachments: [],
-            idleCompaction: "onReturn",
-          },
-          modelSelection: sendSettings.modelSelection,
-          runtimeMode: sendSettings.runtimeMode,
-          interactionMode: sendSettings.interactionMode,
-          createdAt: queuedMessage.createdAt,
-          dispatchMode: "queue",
-          resendAfterSocketLoss: false,
-        },
-      });
-      if (AsyncResult.isFailure(compactionResult) && !hasAccess()) return true;
-      const compactionFailure = reportCommandFailure(queuedMessage, compactionResult, "start-turn");
-      if (compactionFailure?.action === "retry") return false;
-      if (compactionFailure?.action === "restore") {
-        return restoreQueuedMessage(persistedMessage, compactionFailure.message);
-      }
-      if (!isQueuedMessagePayloadCurrent(persistedMessage, deliveryRevision)) return true;
-    }
     if (!hasAccess()) return true;
     const deliveryResult = await runDeliveryCommand(threadEnvironment.startTurn, {
       environmentId: queuedMessage.environmentId,
@@ -965,9 +928,8 @@ export function createThreadOutboxDelivery(): {
         interactionMode: sendSettings.interactionMode,
         createdAt: queuedMessage.createdAt,
         dispatchMode: queuedMessage.dispatchMode ?? "start",
-        ...(compactionMessageId === undefined
-          ? {}
-          : { afterCompactionMessageId: compactionMessageId }),
+        // The server queues `/compact` with this message, which runs right after it succeeds.
+        ...(queuedMessage.compactBeforeSend === true ? { compactFirst: true } : {}),
         ...(queuedMessage.freshContext ? { freshContext: true } : {}),
         resendAfterSocketLoss: false,
       },

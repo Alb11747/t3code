@@ -3402,6 +3402,8 @@ export const OrchestrationV2Command = Schema.Union([
     /** Sends this pending guest message; the server uses the guest's text, not `text`. */
     guestMessageId: Schema.optional(GuestMessageId),
     afterCompactionMessageId: Schema.optional(MessageId),
+    /** Queues `/compact` and this message after it in one step; the message runs once it succeeds. */
+    compactFirst: Schema.optional(Schema.Literal(true)),
     keepFullHistory: Schema.optional(Schema.Literal(true)),
     ...OrchestrationV2CreationFields,
     scheduledTaskId: Schema.optional(ScheduledTaskId),

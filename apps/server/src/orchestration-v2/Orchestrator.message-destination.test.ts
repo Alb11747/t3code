@@ -135,11 +135,10 @@ const scenarios = [
   "compact-attachment",
   "scheduled",
   "compact",
-  "compact-partial",
 ]
   .map((scenario) => ({ scenario, providerDriver: driver }))
   .concat(
-    ["compact", "compact-partial", "busy-self-compact"].map((scenario) => ({
+    ["compact", "busy-self-compact"].map((scenario) => ({
       scenario,
       providerDriver: ProviderDriverKind.make("codex"),
     })),
@@ -303,26 +302,10 @@ it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, prov
         ? { scheduledTaskId: ScheduledTaskId.make("scheduled:control") }
         : {}),
     };
-    if (scenario === "compact" || scenario === "compact-partial") {
-      if (scenario === "compact-partial") {
-        yield* orchestrator.dispatch({
-          type: "message.dispatch",
-          threadId,
-          commandId: CommandId.make(`agent-compact:${input.commandId}`),
-          messageId: MessageId.make(`agent-compact:${input.messageId}`),
-          text: "/compact",
-          attachments: [],
-          modelSelection,
-          dispatchMode: { type: "defer_start" },
-          createdBy: "agent",
-          creationSource: "mcp",
-        });
-      }
+    if (scenario === "compact") {
       const sent = yield* messages.sendToThread({ ...input, contextPolicy: "compact" });
       expect(sent.delivery).toBe("queued");
-      expect(sent.run.afterCompactionMessageId).toBe(
-        MessageId.make(`agent-compact:${input.messageId}`),
-      );
+      expect(sent.run.afterCompactionMessageId).toBe(MessageId.make(`${input.messageId}:compact`));
       const replay = yield* messages.sendToThread({ ...input, contextPolicy: "compact" });
       expect(replay.run.id).toBe(sent.run.id);
       const stored = yield* orchestrator.getThreadRecords(threadId, ["messages"]);
@@ -340,7 +323,7 @@ it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, prov
       });
       expect(sent.delivery).toBe("queued");
       expect(sent.run.deliveryIntent).toBeUndefined();
-      const compactId = MessageId.make(`agent-compact:${input.messageId}`);
+      const compactId = MessageId.make(`${input.messageId}:compact`);
       expect(sent.run.afterCompactionMessageId).toBe(compactId);
       const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
       expect(runs.find((run) => run.userMessageId === compactId)?.status).toBe("queued");

@@ -887,15 +887,13 @@ const make = Effect.gen(function* () {
     const steerableRun = latestSteerableRun(target);
     const selection = input.modelSelection ?? target.thread.modelSelection;
     const isCompactCommand = isCompactionCommandMessage({ ...input, role: "user" });
-    let afterCompactionMessageId: MessageId | undefined;
-    if (
+    const compactBeforeSend =
       input.createdBy === "agent" &&
       input.creationSource === "mcp" &&
       input.contextPolicy === "compact" &&
       !input.freshContext &&
-      !isCompactCommand &&
-      !(yield* hasReceipt(input.commandId))
-    ) {
+      !isCompactCommand;
+    if (compactBeforeSend && !(yield* hasReceipt(input.commandId))) {
       const providerThread = yield* orchestrator.resolveMessageProviderThread(
         input.threadId,
         selection,
@@ -907,33 +905,16 @@ const make = Effect.gen(function* () {
             'contextPolicy:"compact" requires an existing Claude or Codex conversation. Use contextPolicy:"keep" to send normally.',
         });
       }
-      const compactCommandId = CommandId.make(`agent-compact:${input.commandId}`);
       const busy = target.runs.some((run) => !isTerminalRunStatus(run.status));
       // An agent compacting its own thread is busy with the calling turn; compact after it.
-      const afterOwnTurn = busy && input.senderThreadId === input.threadId;
-      if (!(yield* hasReceipt(compactCommandId)) && busy && !afterOwnTurn) {
+      if (busy && input.senderThreadId !== input.threadId) {
         return yield* new ThreadManagementContextPolicyError({
           threadId: input.threadId,
           message:
             'The target is busy. Wait for it to become idle before using contextPolicy:"compact", or use contextPolicy:"keep" to send without compaction.',
         });
       }
-      afterCompactionMessageId = MessageId.make(`agent-compact:${input.messageId}`);
-      yield* dispatch({
-        type: "message.dispatch",
-        commandId: compactCommandId,
-        threadId: input.threadId,
-        messageId: afterCompactionMessageId,
-        text: "/compact",
-        attachments: [],
-        modelSelection: selection,
-        idleCompaction: "onReturn",
-        dispatchMode: { type: afterOwnTurn ? "queue_after_active" : "start_immediately" },
-        createdBy: input.createdBy,
-        creationSource: input.creationSource,
-      });
     }
-    const compactBeforeSend = afterCompactionMessageId !== undefined;
     // A fresh send never joins a running turn, so it needs none to steer or restart.
     const mode =
       input.freshContext && (input.mode === "steer" || input.mode === "restart")
@@ -990,7 +971,7 @@ const make = Effect.gen(function* () {
       commandId: input.commandId,
       threadId: input.threadId,
       messageId: input.messageId,
-      ...(afterCompactionMessageId === undefined ? {} : { afterCompactionMessageId }),
+      ...(compactBeforeSend ? { compactFirst: true } : {}),
       ...(input.contextPolicy === "keep" ? { keepFullHistory: true } : {}),
       ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
       ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),

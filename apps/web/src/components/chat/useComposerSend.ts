@@ -1280,31 +1280,6 @@ export function useComposerSend(input: ComposerSendInput) {
 
     // Uploads and settings persistence can outlive the source conversation.
     const { compactBeforeSend, turnDispatchMode } = readTurnPlan();
-    // The message runs as the first turn after this compaction, and only once it succeeds.
-    const compactionMessageId = compactBeforeSend ? newMessageId() : undefined;
-    if (failure === null && compactionMessageId !== undefined) {
-      const compactResult = await startThreadTurn({
-        environmentId,
-        input: {
-          threadId: threadIdForSend,
-          message: {
-            messageId: compactionMessageId,
-            role: "user",
-            text: "/compact",
-            attachments: [],
-            idleCompaction: "onReturn",
-          },
-          modelSelection: ctxSelectedModelSelection,
-          runtimeMode,
-          interactionMode: DEFAULT_INTERACTION_MODE,
-          // Steering a running turn with a compaction is rejected.
-          dispatchMode: "queue",
-        },
-      });
-      if (compactResult._tag === "Failure") {
-        failure = compactResult;
-      }
-    }
 
     let backgroundDraftOpened = false;
     let turnStartSucceeded = false;
@@ -1374,9 +1349,8 @@ export function useComposerSend(input: ComposerSendInput) {
           runtimeMode,
           interactionMode: DEFAULT_INTERACTION_MODE,
           dispatchMode: turnDispatchMode,
-          ...(compactionMessageId === undefined
-            ? {}
-            : { afterCompactionMessageId: compactionMessageId }),
+          // The server queues `/compact` with this message, which runs right after it succeeds.
+          ...(compactBeforeSend ? { compactFirst: true } : {}),
           ...(freshArm === undefined ? {} : { freshContext: true }),
           ...(bootstrap ? { bootstrap } : {}),
           createdAt: messageCreatedAt,

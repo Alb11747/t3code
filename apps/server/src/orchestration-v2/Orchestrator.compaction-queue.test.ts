@@ -369,46 +369,218 @@ it.effect.each(["child report during compaction", "scheduled prompt as it ends"]
     }).pipe(Effect.provide(layerTest)),
 );
 
+const sendFromWeb = (
+  threadId: ThreadId,
+  messageId: MessageId,
+  text: string,
+  options: { readonly compactFirst?: true; readonly afterCompactionMessageId?: MessageId } = {},
+) =>
+  Effect.flatMap(Orchestrator.OrchestratorV2, (orchestrator) =>
+    orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make(`send:${messageId}`),
+      threadId,
+      messageId,
+      text,
+      attachments: [],
+      ...options,
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "user",
+      creationSource: "web",
+    }),
+  );
+
+const holdRuns = Effect.fn("holdRuns")(function* (
+  threadId: ThreadId,
+  runs: ReadonlyArray<OrchestrationV2Run>,
+) {
+  const sink = yield* EventSink.EventSinkV2;
+  yield* sink.write({
+    commandId: CommandId.make("command:runtime-reconcile:hold"),
+    events: runs.map((run) => ({
+      id: EventId.make(`event:hold:${run.id}`),
+      type: "run.updated" as const,
+      threadId,
+      runId: run.id,
+      occurredAt: run.requestedAt,
+      payload: { ...run, status: "queued" as const, queueHeld: true },
+    })),
+  });
+});
+
 it.effect.each([true, false])(
-  "a user's /compact joins a pending compaction and its message (compaction succeeds: %s)",
+  "a user's /compact joins a pending compaction and takes over a failed one's messages (succeeds: %s)",
   (compacted) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const threadId = ThreadId.make("thread:compaction-join");
       const { compactMessageId, messageId, compactRun } = yield* compactionPair(threadId);
+      const secondMessageId = MessageId.make("message:second-after-compact");
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("send:second-after-compact"),
+        threadId,
+        messageId: secondMessageId,
+        text: "And then",
+        attachments: [],
+        afterCompactionMessageId: compactMessageId,
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "agent",
+        creationSource: "mcp",
+      });
       if (!compacted) {
         yield* endCompaction(threadId, compactRun, false);
         yield* orchestrator.resumeQueuedRuns;
       }
       const userCompactId = MessageId.make("message:user-compact");
       const laterMessageId = MessageId.make("message:user-after-compact");
-      for (const [id, text, afterCompactionMessageId] of [
-        [userCompactId, "/compact", undefined],
-        [laterMessageId, "And this", userCompactId],
-      ] as const) {
-        yield* orchestrator.dispatch({
-          type: "message.dispatch",
-          commandId: CommandId.make(`send:${id}`),
-          threadId,
-          messageId: id,
-          text,
-          attachments: [],
-          ...(afterCompactionMessageId === undefined ? {} : { afterCompactionMessageId }),
-          dispatchMode: { type: "queue_after_active" },
-          createdBy: "user",
-          creationSource: "web",
-        });
-      }
+      yield* sendFromWeb(threadId, userCompactId, "/compact");
+      yield* sendFromWeb(threadId, laterMessageId, "And this", { compactFirst: true });
       const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
       const runOf = (id: MessageId) => runs.find((run) => run.userMessageId === id);
-      // One compaction stays ahead of both messages: the pending one, or the user's retry.
+      // One compaction stays ahead of every message: the pending one, or the user's retry.
       const compaction = compacted ? compactMessageId : userCompactId;
       expect(runOf(userCompactId) !== undefined).toBe(!compacted);
-      expect(runOf(messageId)).toMatchObject({
-        status: "queued",
-        afterCompactionMessageId: compaction,
-      });
-      expect(runOf(messageId)?.queueHeld).not.toBe(true);
-      expect(runOf(laterMessageId)?.afterCompactionMessageId).toBe(compaction);
+      expect(runOf(MessageId.make(`${laterMessageId}:compact`))).toBeUndefined();
+      for (const id of [messageId, secondMessageId, laterMessageId]) {
+        expect(runOf(id)).toMatchObject({ status: "queued", afterCompactionMessageId: compaction });
+        expect(runOf(id)?.queueHeld).not.toBe(true);
+      }
     }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("compact and send commits its compaction and message in one command", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const threadId = ThreadId.make("thread:compact-first");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create:compact-first"),
+      threadId,
+      projectId: ProjectId.make("project:compact-first"),
+      title: "Compact first",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const messageId = MessageId.make("message:compact-first");
+    const sent = yield* sendFromWeb(threadId, messageId, "Continue", { compactFirst: true });
+    const compactionMessageId = MessageId.make(`${messageId}:compact`);
+    const { runs, messages } = yield* orchestrator.getThreadRecords(threadId, ["runs", "messages"]);
+    expect(messages.find((message) => message.id === compactionMessageId)?.text).toBe("/compact");
+    expect(runs.find((run) => run.userMessageId === compactionMessageId)?.status).toBe("starting");
+    expect(runs.find((run) => run.userMessageId === messageId)).toMatchObject({
+      status: "queued",
+      afterCompactionMessageId: compactionMessageId,
+    });
+    expect(sent.storedEvents.filter(({ event }) => event.type === "run.created")).toHaveLength(2);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("a compaction that finished without compacting does not stall the queue", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const threadId = ThreadId.make("thread:compaction-item-failed");
+    const { compactRun, messageId } = yield* compactionPair(threadId);
+    const reportId = MessageId.make("message:report");
+    const taskIds = [NodeId.make("task:child")];
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("event:delivery"),
+          type: "run.updated",
+          threadId,
+          runId: compactRun.id,
+          occurredAt: yield* DateTime.now,
+          payload: {
+            ...compactRun,
+            delegatedCompletion: {
+              disposition: "open",
+              nextGeneration: 2,
+              delivery: { generation: 1, messageId: reportId, taskIds },
+            },
+          },
+        },
+      ],
+    });
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("send:report"),
+      threadId,
+      messageId: reportId,
+      text: "Delegated task completed",
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      delegatedCompletion: { parentRunId: compactRun.id, generation: 1, taskIds },
+      createdBy: "agent",
+      creationSource: "server",
+    });
+    const current = (yield* orchestrator.getThreadRecords(threadId, ["runs"])).runs.find(
+      (run) => run.id === compactRun.id,
+    )!;
+    // Claude can finish a /compact run successfully while its compaction item failed.
+    // Reconcile writes skip the run-end reactor, so the queue starts only once both have landed.
+    yield* endCompaction(threadId, current, false, CommandId.make("command:runtime-reconcile:a"));
+    const now = yield* DateTime.now;
+    yield* sink.write({
+      commandId: CommandId.make("command:runtime-reconcile:b"),
+      events: [
+        {
+          id: EventId.make("event:compact-run-completed"),
+          type: "run.updated",
+          threadId,
+          runId: compactRun.id,
+          occurredAt: now,
+          payload: { ...current, status: "completed", completedAt: now },
+        },
+      ],
+    });
+    yield* orchestrator.resumeQueuedRuns;
+    const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+    expect(runs.find((run) => run.userMessageId === messageId)?.queueHeld).toBe(true);
+    expect(runs.find((run) => run.userMessageId === reportId)?.status).toBe("starting");
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("a client send that resumes a held queue stays behind a compaction's message", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const threadId = ThreadId.make("thread:held-follow-up");
+    const { compactRun, messageId } = yield* compactionPair(threadId);
+    const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+    yield* holdRuns(
+      threadId,
+      runs.filter((run) => run.userMessageId === messageId),
+    );
+    yield* endCompaction(
+      threadId,
+      compactRun,
+      true,
+      CommandId.make("command:runtime-reconcile:compaction-ended"),
+    );
+    const laterId = MessageId.make("message:later");
+    yield* sendFromWeb(threadId, laterId, "New user message");
+    yield* orchestrator.resumeQueuedRuns;
+    const current = (yield* orchestrator.getThreadRecords(threadId, ["runs"])).runs;
+    expect(current.find((run) => run.userMessageId === messageId)?.status).toBe("starting");
+    expect(current.find((run) => run.userMessageId === laterId)?.status).toBe("queued");
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("a user's /compact that joins a held compaction resumes the queue", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const threadId = ThreadId.make("thread:join-held");
+    const { compactMessageId } = yield* compactionPair(threadId);
+    yield* holdRuns(threadId, (yield* orchestrator.getThreadRecords(threadId, ["runs"])).runs);
+    yield* sendFromWeb(threadId, MessageId.make("message:user-compact"), "/compact");
+    const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+    expect(runs).toHaveLength(2);
+    expect(runs.find((run) => run.userMessageId === compactMessageId)?.status).not.toBe("queued");
+  }).pipe(Effect.provide(layerTest)),
 );

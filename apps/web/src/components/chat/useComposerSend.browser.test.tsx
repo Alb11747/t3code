@@ -366,19 +366,13 @@ describe("resume compaction dispatch", () => {
       );
       await using _screen = await render(<Harness input={input} sender={sender} />);
       await act(() => sender.current!.onSend());
-      expect(mocks.startTurn).toHaveBeenCalledTimes(2);
-      expect(mocks.startTurn.mock.calls[0]![0].input.modelSelection.instanceId).toBe("claudeAgent");
-      const compactionMessageId = mocks.startTurn.mock.calls[0]![0].input.message.messageId;
-      expect(
-        mocks.startTurn.mock.calls.map(([call]) => [
-          call.input.message.text,
-          call.input.dispatchMode,
-          call.input.afterCompactionMessageId,
-        ]),
-      ).toEqual([
-        ["/compact", "queue", undefined],
-        ["Keep the attachment", "queue", compactionMessageId],
-      ]);
+      expect(mocks.startTurn).toHaveBeenCalledTimes(1);
+      expect(mocks.startTurn.mock.calls[0]![0].input).toMatchObject({
+        message: { text: "Keep the attachment" },
+        modelSelection: { instanceId: "claudeAgent" },
+        dispatchMode: "queue",
+        compactFirst: true,
+      });
     },
   );
 });
