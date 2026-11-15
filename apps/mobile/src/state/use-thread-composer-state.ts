@@ -442,10 +442,13 @@ export function useThreadComposerState(input: {
     : null;
 
   const activeThreadBusy = threadRuntimeIsActive(selectedThreadRuntime);
+  // Older servers drop `compactFirst` and would send without compacting.
+  const compactFirstSupported = serverConfig?.environment.capabilities.compactFirst === true;
   const resumeCompactionTokens = (selection: ModelSelection | null, text: string, now: string) =>
     selectedEnvironmentRuntime?.connectionState === "connected" &&
     selectedThreadProjection !== null &&
     serverConfig != null &&
+    compactFirstSupported &&
     selection !== null
       ? compactBeforeSendTokens({
           projection: selectedThreadProjection.projection,
@@ -805,6 +808,7 @@ export function useThreadComposerState(input: {
     const compactBeforeSend =
       !freshContext &&
       ((compactRequested &&
+        compactFirstSupported &&
         beforeDispatch === undefined &&
         pendingHandoff === null &&
         !COMPACT_COMMAND_PATTERN.test(text)) ||

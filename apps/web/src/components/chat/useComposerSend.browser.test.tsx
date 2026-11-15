@@ -154,7 +154,7 @@ function setup(
     file: new File(["test"], "image.png", { type: "image/png" }),
     previewUrl: "data:image/png;base64,dGVzdA==",
   };
-  const config = { environment: { capabilities: { attachmentUploads: true } } };
+  const config = { environment: { capabilities: { attachmentUploads: true, compactFirst: true } } };
   appAtomRegistry.set(mocks.config, new Map([[environmentId, config]]));
   appAtomRegistry.set(mocks.presentations, new Map([[environmentId, { serverConfig: config }]]));
   const handle: Partial<ChatComposerHandle> = {

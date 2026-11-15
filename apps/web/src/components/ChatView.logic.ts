@@ -1314,6 +1314,8 @@ export function planComposerTurn(input: {
   readonly keepFullHistory: boolean;
   /** The user picked Compact and send, which compacts whatever the cache state. */
   readonly compactRequested: boolean;
+  /** The destination server honors `compactFirst`; older ones would send without compacting. */
+  readonly compactFirstSupported: boolean;
   readonly phase: SessionPhase;
   readonly dispatchMode: ComposerDispatchMode;
   /** The turn starts a new provider session, so it neither compacts first nor steers. */
@@ -1327,6 +1329,7 @@ export function planComposerTurn(input: {
   // old history. The message queues behind the /compact run, since steering into it is
   // rejected.
   const compactBeforeSend =
+    input.compactFirstSupported &&
     !input.freshContext &&
     !COMPACT_COMMAND_PATTERN.test(input.messageText) &&
     (input.compactRequested ||

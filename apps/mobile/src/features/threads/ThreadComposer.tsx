@@ -523,6 +523,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   })();
   const offersCompactAndSend =
     props.offersCompactAndSend === true &&
+    props.serverConfig?.environment.capabilities.compactFirst === true &&
     (selectedProviderStatus?.slashCommands.some((command) => command.name === "compact") ?? false);
   const openDraftDocument = (attachment: ComposerDocumentAttachment) => {
     Keyboard.dismiss();

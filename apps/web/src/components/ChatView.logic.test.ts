@@ -1147,6 +1147,7 @@ describe("planComposerTurn", () => {
     },
     keepFullHistory: false,
     compactRequested: false,
+    compactFirstSupported: true,
     phase: "ready" as const,
     dispatchMode: "auto" as const,
     freshContext: false,
@@ -1184,6 +1185,10 @@ describe("planComposerTurn", () => {
         shouldQueueBehindActiveRun: true,
       });
     }
+    expect(planComposerTurn({ ...stale, compactFirstSupported: false })).toMatchObject({
+      compactBeforeSend: false,
+      turnDispatchMode: "auto",
+    });
     for (const messageText of ["/COMPACT", "/compact keep the API notes", "/compact\n  tests"]) {
       expect(planComposerTurn({ ...stale, messageText })).toMatchObject({
         compactBeforeSend: false,
@@ -1208,7 +1213,12 @@ describe("planComposerTurn", () => {
         shouldQueueBehindActiveRun: true,
       });
     }
-    for (const override of [{ freshContext: true }, { messageText: "/compact" }]) {
+    for (const override of [
+      { freshContext: true },
+      { messageText: "/compact" },
+      // An older server drops `compactFirst`, so the message would start uncompacted.
+      { compactFirstSupported: false },
+    ]) {
       expect(planComposerTurn({ ...requested, ...override })).toMatchObject({
         compactBeforeSend: false,
       });

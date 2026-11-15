@@ -2513,6 +2513,8 @@ export default function ChatView(props: ChatViewProps) {
     pendingApprovals.length > 0 ||
     pendingUserInputs.length > 0;
   const compactThreadUnavailable = compactThreadBlocked || isWorking;
+  // Older servers drop `compactFirst` and would send without compacting.
+  const compactFirstSupported = serverConfig?.environment.capabilities.compactFirst === true;
   const compactDisabled = compactThreadUnavailable;
   const resumeCompactionProviderThread = resolveResumeCompactionProviderThread({
     providerThreads: serverProjection?.providerThreads ?? [],
@@ -2526,6 +2528,7 @@ export default function ChatView(props: ChatViewProps) {
     entries: serverVisibleTurnItems,
   });
   const resumeCompaction =
+    compactFirstSupported &&
     resumeCompactionProviderThread?.driver === "claudeAgent" &&
     resumeCompactionContext &&
     resolveIdleCompaction(settings, resumeCompactionProviderThread.providerInstanceId) !== "off" &&
@@ -2569,6 +2572,7 @@ export default function ChatView(props: ChatViewProps) {
   const freshSessionArmed = useFreshSessionArmed(routeThreadKey);
   // Compact and send queues behind a running turn, so a run in progress does not rule it out.
   const compactAndSendAvailable =
+    compactFirstSupported &&
     !compactThreadBlocked &&
     pendingHandoff === null &&
     multipleModelSelections === null &&

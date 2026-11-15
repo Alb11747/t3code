@@ -831,6 +831,9 @@ export function useComposerSend(input: ComposerSendInput) {
         selectedModelSelection: ctxSelectedModelSelection,
         keepFullHistory,
         compactRequested: submissionIntent === "compact",
+        compactFirstSupported:
+          readEnvironmentPresentation(environmentId)?.serverConfig?.environment.capabilities
+            .compactFirst === true,
         phase,
         dispatchMode,
         freshContext: freshArm !== undefined,

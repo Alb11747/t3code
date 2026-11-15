@@ -314,6 +314,14 @@ describe("mobile task permissions", () => {
 
   it("compacts a stale thread before sending unless kept or a fresh session is armed", async () => {
     state.grantedEnvironments.add("secondary");
+    const supported = state.serverConfig!;
+    state.serverConfig = {
+      ...supported,
+      environment: {
+        ...supported.environment,
+        capabilities: { ...supported.environment.capabilities, compactFirst: true },
+      },
+    };
     state.projection = {
       thread: {
         ...state.thread,
@@ -392,6 +400,17 @@ describe("mobile task permissions", () => {
       expect.not.objectContaining({ compactBeforeSend: true }),
     );
     expect(state.enqueue).toHaveBeenLastCalledWith(expect.objectContaining({ freshContext: true }));
+    // An older server drops `compactFirst`, so neither path compacts against it.
+    state.freshPending = false;
+    state.serverConfig = supported;
+    const older = useThreadComposerState(NO_SIDE_CHATS);
+    expect(older.compactBeforeSend).toBeNull();
+    for (const choice of [undefined, "compact"] as const) {
+      await older.onSendMessage(choice);
+      expect(state.enqueue).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ compactBeforeSend: true }),
+      );
+    }
   });
 
   it("sends a typed /clear with an approval redirect as that reply's text", async () => {
