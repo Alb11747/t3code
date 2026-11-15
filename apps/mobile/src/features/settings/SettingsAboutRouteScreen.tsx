@@ -1,3 +1,5 @@
+import { ForkUpdateSettings } from "../updates/ForkUpdateSettings";
+import { isAndroidFork } from "../updates/fork-updates";
 import * as Dialog from "../../components/ui/Dialog";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import Constants from "expo-constants";
@@ -120,6 +122,7 @@ function AppSettingsSection() {
 
   return (
     <SettingsSection title="App">
+      {isAndroidFork ? <ForkUpdateSettings /> : null}
       <SettingsRow icon="internaldrive" label="Client Storage" target="SettingsClientStorage" />
       <SettingsRow icon="stethoscope" label="Diagnostics" target="SettingsDiagnostics" />
       <SettingsRow

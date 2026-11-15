@@ -10,6 +10,8 @@ than the fork's fix. Keep each entry on a single line; the sync script deletes
 the line of a change whose upstream PR merged. Closing an issue alone does not
 revert a patch. See `fork/README.md` for how to add or drop an entry.
 
+- `feat(mobile): publish standalone fork Android APKs`: a separately installed **T3 Code Fork** ARM64 APK embeds the fork client, disables upstream Expo OTA, and uses persistent private signing so later APKs keep saved data; Vokoma-style updates automatically download signed, verified APKs and offer Android installation at next launch or through Settings → About; mobile-related pushes publish an Android prerelease with source SHA, checksum and signed update manifest. Fork-only. Issue: none linked. PR: none yet
+
 - `fix(dev): dev runner refuses the live ~/.t3 home`: `vp run dev`, `dev:server` and `dev:desktop` exit with an error naming the path when the chosen home is the live `~/.t3` (symlinks resolved), whether from an inherited `T3CODE_HOME` (as in a T3 agent shell in the main checkout) or `--home-dir`, since a dev server there opens the real `~/.t3/userdata`. Worktrees, other homes and the no-home default (`~/.t3/dev`) are unaffected; `--allow-live-home` overrides. Dev tooling only. Issue: none. PR: none yet (fork-only safety check)
 
 - `fix(server): a slow remote fetch no longer fails worktree creation at 30s`: the remote fetch before a start-from-origin worktree gets a five-minute bound instead of the 30-second Git default, so a slow but healthy fetch finishes and a hung one still fails clearly. Carries juliusmarminge's maintainer takeover of watson's fix. Issue: https://github.com/pingdotgg/t3code/issues/10916. PR: https://github.com/pingdotgg/t3code/pull/24604

@@ -461,6 +461,7 @@ const config: ExpoConfig = {
     "./plugins/withAndroidWindowDisplayMetrics.cjs",
     "./plugins/withAndroidTabletOrientation.cjs",
     ...(isIosPersonalTeamBuild ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"] : []),
+    ...(repoEnv.T3CODE_ANDROID_FORK === "1" ? ["../../fork/mobile/withForkAndroid.cjs"] : []),
   ],
   extra: {
     appVariant: APP_VARIANT,

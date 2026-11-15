@@ -1,0 +1,199 @@
+name: Fork Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "apps/mobile/**"
+      - "packages/client-runtime/**"
+      - "packages/contracts/**"
+      - "packages/shared/**"
+      - "scripts/lib/**"
+      - "scripts/mobile-*.ts"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "patches/**"
+      - "fork/mobile/**"
+      - ".github/workflows/fork-android.yml"
+
+concurrency:
+  group: fork-android
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    if: github.repository == 'Alb11747/t3code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      actions: read
+    env:
+      APP_VARIANT: production
+      T3CODE_ANDROID_FORK: "1"
+      T3CODE_MOBILE_UPDATES_ENABLED: "0"
+      CI: "1"
+      EXPO_NO_GIT_STATUS: "1"
+      NODE_OPTIONS: --max-old-space-size=4096
+      T3CODE_CLERK_PUBLISHABLE_KEY: ${{ vars.CLERK_PUBLISHABLE_KEY }}
+      T3CODE_CLERK_JWT_TEMPLATE: ${{ vars.CLERK_JWT_TEMPLATE }}
+      T3CODE_RELAY_URL: ${{ vars.RELAY_URL }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Check job budget
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LIMIT: ${{ vars.FORK_JOB_BUDGET || 150 }}
+        run: bash fork/scripts/job-budget.sh
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android toolchain
+        run: |
+          set -euo pipefail
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-37" "build-tools;37.0.0" "ndk;27.1.12297006"
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: fork-android-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'apps/mobile/app.config.ts', 'fork/mobile/**') }}
+          restore-keys: fork-android-${{ runner.os }}-
+
+      - name: Prepare signing and version
+        env:
+          T3CODE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.FORK_ANDROID_KEYSTORE_PASSWORD }}
+          T3CODE_ANDROID_KEY_ALIAS: ${{ secrets.FORK_ANDROID_KEY_ALIAS }}
+          T3CODE_ANDROID_KEY_PASSWORD: ${{ secrets.FORK_ANDROID_KEY_PASSWORD }}
+          KEYSTORE_BASE64: ${{ secrets.FORK_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          for key in KEYSTORE_BASE64 T3CODE_ANDROID_KEYSTORE_PASSWORD T3CODE_ANDROID_KEY_ALIAS T3CODE_ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!key}" ]]; then
+              echo "::error::Missing Android signing secret: $key"
+              exit 1
+            fi
+          done
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/fork-android.keystore"
+          echo "T3CODE_ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/fork-android.keystore" >> "$GITHUB_ENV"
+          echo "T3CODE_ANDROID_VERSION_CODE=$(( ($(date -u +%s) - 1577836800) / 60 ))" >> "$GITHUB_ENV"
+          echo "ANDROID_RELEASE_TAG=android-fork-$(date -u +%Y%m%d%H%M)-${GITHUB_SHA:0:12}" >> "$GITHUB_ENV"
+
+      - name: Generate native project
+        working-directory: apps/mobile
+        run: vp exec expo prebuild --clean --platform android --no-install
+
+      - name: Build standalone ARM64 APK
+        env:
+          T3CODE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.FORK_ANDROID_KEYSTORE_PASSWORD }}
+          T3CODE_ANDROID_KEY_ALIAS: ${{ secrets.FORK_ANDROID_KEY_ALIAS }}
+          T3CODE_ANDROID_KEY_PASSWORD: ${{ secrets.FORK_ANDROID_KEY_PASSWORD }}
+        working-directory: apps/mobile/android
+        run: ./gradlew app:assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon --max-workers=2
+
+      - name: Verify and describe APK
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/android-release"
+          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/android-release/T3-Code-Fork-Android-arm64.apk"
+          apk="$RUNNER_TEMP/android-release/T3-Code-Fork-Android-arm64.apk"
+          "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/android-release/signing.txt"
+          "$ANDROID_HOME/build-tools/37.0.0/aapt" dump badging "$apk" > "$RUNNER_TEMP/android-release/package.txt"
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          import { join } from 'node:path';
+          const dir = join(process.env.RUNNER_TEMP, 'android-release');
+          const file = 'T3-Code-Fork-Android-arm64.apk';
+          const pkg = readFileSync(join(dir, 'package.txt'), 'utf8');
+          if (!pkg.includes("package: name='com.alb11747.t3code'") || !pkg.includes(`versionCode='${process.env.T3CODE_ANDROID_VERSION_CODE}'`)) {
+            throw new Error('APK package or versionCode differs from the fork build');
+          }
+          const version = pkg.match(/\bversionName='([^']+)'/)?.[1];
+          if (!version) throw new Error('APK versionName is missing');
+          const sha256 = createHash('sha256').update(readFileSync(join(dir, file))).digest('hex');
+          writeFileSync(join(dir, `${file}.sha256`), `${sha256}  ${file}\n`);
+          writeFileSync(join(dir, 'android-release.json'), JSON.stringify({
+            packageName: 'com.alb11747.t3code',
+            versionCode: Number(process.env.T3CODE_ANDROID_VERSION_CODE),
+            sourceSha: process.env.GITHUB_SHA,
+            tag: process.env.ANDROID_RELEASE_TAG,
+            file,
+            sha256,
+            architecture: 'arm64-v8a',
+          }, null, 2) + '\n');
+          writeFileSync(join(dir, 'update.json'), JSON.stringify({
+            schema: 1,
+            versionCode: Number(process.env.T3CODE_ANDROID_VERSION_CODE),
+            version,
+            sourceSha: process.env.GITHUB_SHA,
+            apk: { name: file, sha256, size: readFileSync(join(dir, file)).length },
+          }, null, 2) + '\n');
+          NODE
+
+      - name: Sign update manifest
+        env:
+          UPDATE_PRIVATE_KEY: ${{ secrets.FORK_ANDROID_UPDATE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$UPDATE_PRIVATE_KEY" ]]; then
+            echo "::error::Missing FORK_ANDROID_UPDATE_PRIVATE_KEY"
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$UPDATE_PRIVATE_KEY" > "$RUNNER_TEMP/update-private.pem"
+          openssl dgst -sha256 -sign "$RUNNER_TEMP/update-private.pem" \
+            -out "$RUNNER_TEMP/android-release/update.json.sig" "$RUNNER_TEMP/android-release/update.json"
+          openssl dgst -sha256 -verify fork/mobile/update-public.pem \
+            -signature "$RUNNER_TEMP/android-release/update.json.sig" "$RUNNER_TEMP/android-release/update.json"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: fork-android-arm64
+          path: ${{ runner.temp }}/android-release/*
+          if-no-files-found: error
+
+      - name: Publish Android prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/android-notes.md" <<EOF
+          Standalone **T3 Code Fork** for Android ARM64 phones (Android 7 or newer).
+
+          Download **T3-Code-Fork-Android-arm64.apk** and open it on the phone. Allow installation from that browser or file manager when Android asks. Future updates download automatically and install on the next launch with Android confirmation. Use **Settings → About → Install now** to install sooner; **Check now** checks manually. You can also install a newer fork APK over this app to keep saved connections and settings.
+
+          This is a separate app from upstream T3 Code. Upstream Expo updates are disabled so they cannot replace fork changes. The phone connects to an existing T3 server; it does not run providers itself. Native Google sign-in and push notifications are not verified for the fork signing identity.
+
+          Source: $GITHUB_SHA
+          Android version code: $T3CODE_ANDROID_VERSION_CODE
+          Build: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          EOF
+          gh release create "$ANDROID_RELEASE_TAG" "$RUNNER_TEMP/android-release/"* \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --prerelease --latest=false \
+            --title "T3 Code Fork Android $T3CODE_ANDROID_VERSION_CODE" --notes-file "$RUNNER_TEMP/android-notes.md"
+          gh release edit "$ANDROID_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false

@@ -4,7 +4,9 @@ This repository is a personal fork of [pingdotgg/t3code](https://github.com/ping
 upstream `main` plus a short series of patches. GitHub Actions merges upstream
 into the fork, checks the result, and publishes Windows x64 and Linux x64
 desktop builds plus CLI archives for those two platforms only; ARM64 and macOS
-are not built, since nobody here uses them. Installed desktop copies update through the in-app **Install update** button.
+desktop builds are omitted. The separate
+**Fork Android APK** workflow publishes standalone ARM64 Android builds.
+Installed desktop copies update through the in-app **Install update** button.
 
 To set up another computer, follow [Install the fork](INSTALL.md) for downloads,
 installation, remote connections and updates.
@@ -30,6 +32,7 @@ If a fetch fails, it's best to stop and report it rather than work from stale re
 | `.github/workflows/fork-sync.yml`      | When dispatched: sync, check, promote or review PR.           |
 | `.github/workflows/fork-checks.yml`    | Upstream's release checks on GitHub-hosted runners.           |
 | `.github/workflows/fork-release.yml`   | On push to `main`: check, build, publish a GitHub prerelease. |
+| `.github/workflows/fork-android.yml`   | Build and sign a standalone fork Android APK.                 |
 | `.github/workflows/fork-pr-checks.yml` | Optional hosted checks, dispatched on demand.                 |
 | `fork/scripts/local-validation.cjs`    | Records local validation on the exact commit for release.     |
 
@@ -838,6 +841,23 @@ fallback (resolver claims and `check-sync-request.sh` rely on the open issue) un
   from the latest official build; without them builds simply lack T3 Connect.
 
 ## Repository settings
+
+Android releases use the separate `android-fork-…` tag namespace and package
+`com.alb11747.t3code`. **Fork Android APK** builds on mobile-related `main`
+changes or manual dispatch, using native Gradle without Expo credentials. It
+embeds the app bundle and disables upstream OTA. Android version codes count
+minutes since 2020-01-01 UTC; keep the same signing key for every release so
+users can update without losing their saved data. Build ARM64 only; desktop's
+platform restrictions do not apply to this APK.
+
+Before running it, provision repository secrets `FORK_ANDROID_KEYSTORE_BASE64`
+(base64-encoded private signing keystore), `FORK_ANDROID_KEYSTORE_PASSWORD`,
+`FORK_ANDROID_KEY_ALIAS`, `FORK_ANDROID_KEY_PASSWORD`, and
+`FORK_ANDROID_UPDATE_PRIVATE_KEY` (RSA PEM). Preserve these private keys outside
+the repository. The matching public update key is
+[`mobile/update-public.pem`](mobile/update-public.pem); it is compiled into the
+app, and the workflow verifies signed manifests against it before publishing.
+The existing public Clerk and relay variables also configure Android.
 
 | Setting                    | Kind     | Purpose                                                                |
 | -------------------------- | -------- | ---------------------------------------------------------------------- |

@@ -89,7 +89,7 @@ jobs:
         run: |
           set -euo pipefail
           last=$(gh release list --exclude-drafts --limit 100 --json tagName,publishedAt \
-            --jq 'sort_by(.publishedAt) | last | .tagName // ""')
+            --jq 'map(select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-nightly\\.[0-9]+\\.[0-9]+\\.fork(\\.[0-9]+)?$"))) | sort_by(.publishedAt) | last | .tagName // ""')
           release=true
           if [[ -n $last ]]; then
             git init --quiet

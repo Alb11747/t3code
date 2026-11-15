@@ -1,7 +1,7 @@
-# Install the fork on another computer
+# Install the fork
 
 Install a build from [Alb11747/t3code releases](https://github.com/Alb11747/t3code/releases)
-once, then use the app's **Install update** button for future fork releases.
+once, then use the desktop app's **Install update** button for future fork releases.
 You do not need to clone the repository, build anything, or set up the sync
 workflow on each computer.
 
@@ -15,6 +15,7 @@ GitHub's `/releases/latest` link, which looks for a stable release.
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
 | Windows, Intel or AMD 64-bit | `T3-Code-<version>-x64.exe`                                                                           |
 | Linux, Intel or AMD 64-bit   | `T3-Code-<version>-x86_64.AppImage`                                                                   |
+| Android, ARM64 phone         | `T3-Code-Fork-Android-arm64.apk` from an **Android** release.                                         |
 | macOS or an ARM computer     | No native fork build is published; use [browser access](#browser-access-on-macos-or-other-computers). |
 
 The `.blockmap` and `.yml` files support automatic updates; you do not need to
@@ -23,6 +24,29 @@ download them. The `t3-...` archives are command-line servers, not desktop apps.
 Official downloads, `winget`, Homebrew, `npx t3`, and the installer at `t3.codes`
 install upstream T3 Code. Switching an official app to Nightly also keeps its
 upstream update feed. To receive this fork's updates, install its download first.
+
+## Android
+
+1. Open [fork releases](https://github.com/Alb11747/t3code/releases) on the phone
+   and choose the newest **T3 Code Fork Android** release (`android-fork-…`).
+2. Download **T3-Code-Fork-Android-arm64.apk**, open it and allow installation
+   from your browser or file manager when Android asks.
+3. Open **T3 Code Fork** and connect to the T3 server that runs your agents.
+   The phone controls that server; it does not run providers itself.
+
+This standalone APK supports ARM64 phones on Android 7 or newer and does not
+need Expo Go or a development server. It installs beside upstream T3 Code with
+separate saved connections and settings. Native Google sign-in and push
+notifications are not verified for this fork's signing identity; direct server
+pairing is available.
+
+Fork updates download automatically at launch and after four hours when returning to the app. A downloaded update opens Android’s installer on the next launch; Android may first ask you to allow updates from T3 Code Fork. **Settings → About** shows update status, **Check now**, and **Install now**. Installation requires Android confirmation.
+
+To update manually, download a newer fork APK and install it over **T3 Code
+Fork** without uninstalling; its saved data remains. Android asks you to confirm
+the installation. Upstream Expo updates are disabled for fork builds, so they
+cannot replace fork changes. The release includes a SHA-256 checksum, source
+commit, and signing certificate information for verification.
 
 ## Windows
 
