@@ -163,6 +163,9 @@ You can also request compaction for an existing Codex conversation with the same
 option. An agent sending to its own busy thread can compact after its current
 turn and deliver its message after successful compaction in one call. Other
 threads must be idle to request compaction.
+The message is the first turn after its compaction: subagent reports, scheduled
+prompts and other sends that arrive meanwhile wait behind it. A `/compact` you
+send while that compaction is pending joins it instead of compacting twice.
 If compaction fails or is stopped, the message stays queued. Cancel that queued
 message before resending with `keep` if you want to continue with the full history.
 

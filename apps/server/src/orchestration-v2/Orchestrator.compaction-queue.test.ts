@@ -3,13 +3,16 @@ import {
   CommandId,
   EventId,
   MessageId,
+  NodeId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
+  ScheduledTaskId,
   ThreadId,
   TurnItemId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2Run,
 } from "@t3tools/contracts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as DateTime from "effect/DateTime";
@@ -195,5 +198,217 @@ it.effect.each([
           .pipe(Effect.result);
         expect(promotion._tag).toBe("Failure");
       }
+    }).pipe(Effect.provide(layerTest)),
+);
+
+const compactionPair = Effect.fn("compactionPair")(function* (threadId: ThreadId) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const compactMessageId = MessageId.make("message:compact");
+  const messageId = MessageId.make("message:after-compact");
+  yield* orchestrator.dispatch({
+    type: "thread.create",
+    commandId: CommandId.make("create:compaction-pair"),
+    threadId,
+    projectId: ProjectId.make("project:compaction-pair"),
+    title: "Compaction pair",
+    modelSelection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    createdBy: "user",
+    creationSource: "web",
+  });
+  for (const [id, text, afterCompactionMessageId] of [
+    [compactMessageId, "/compact", undefined],
+    [messageId, "Continue", compactMessageId],
+  ] as const) {
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make(`send:${id}`),
+      threadId,
+      messageId: id,
+      text,
+      attachments: [],
+      ...(afterCompactionMessageId === undefined ? {} : { afterCompactionMessageId }),
+      dispatchMode: { type: afterCompactionMessageId ? "queue_after_active" : "defer_start" },
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+  }
+  const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+  return { compactMessageId, messageId, compactRun: runs[0]! };
+});
+
+const endCompaction = Effect.fn("endCompaction")(function* (
+  threadId: ThreadId,
+  compactRun: OrchestrationV2Run,
+  compacted: boolean,
+  commandId?: CommandId,
+) {
+  const sink = yield* EventSink.EventSinkV2;
+  const now = yield* DateTime.now;
+  yield* sink.write({
+    ...(commandId === undefined ? {} : { commandId }),
+    events: [
+      {
+        id: EventId.make(`event:compact-ended:${compactRun.id}`),
+        type: "run.updated",
+        threadId,
+        runId: compactRun.id,
+        occurredAt: now,
+        payload: {
+          ...compactRun,
+          status: compacted ? "completed" : "failed",
+          completedAt: now,
+        },
+      },
+      {
+        id: EventId.make(`event:compaction-result:${compactRun.id}`),
+        type: "turn-item.updated",
+        threadId,
+        runId: compactRun.id,
+        occurredAt: now,
+        payload: {
+          id: TurnItemId.make(`item:compaction:${compactRun.id}`),
+          type: "compaction",
+          threadId,
+          runId: compactRun.id,
+          nodeId: compactRun.rootNodeId,
+          providerThreadId: compactRun.providerThreadId,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          driver: adapter.driver,
+          status: compacted ? "completed" : "failed",
+          title: "Compaction result",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+        },
+      },
+    ],
+  });
+});
+
+it.effect.each(["child report during compaction", "scheduled prompt as it ends"] as const)(
+  "runs a compaction's message before a %s",
+  (arrival) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("thread:compaction-order");
+      const { messageId, compactRun } = yield* compactionPair(threadId);
+      const otherMessageId = MessageId.make("message:other");
+      if (arrival === "child report during compaction") {
+        const now = yield* DateTime.now;
+        const taskIds = [NodeId.make("task:child")];
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("event:child-delivery"),
+              type: "run.updated",
+              threadId,
+              runId: compactRun.id,
+              occurredAt: now,
+              payload: {
+                ...compactRun,
+                delegatedCompletion: {
+                  disposition: "open",
+                  nextGeneration: 2,
+                  delivery: { generation: 1, messageId: otherMessageId, taskIds },
+                },
+              },
+            },
+          ],
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("send:child-report"),
+          threadId,
+          messageId: otherMessageId,
+          text: "Delegated task completed",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          delegatedCompletion: { parentRunId: compactRun.id, generation: 1, taskIds },
+          createdBy: "agent",
+          creationSource: "server",
+        });
+      }
+      const ended = (yield* orchestrator.getThreadRecords(threadId, ["runs"])).runs[0]!;
+      // The run-end reactor skips reconcile writes, so the prompt below lands before it starts
+      // the next run, as a send racing that reactor can.
+      yield* endCompaction(
+        threadId,
+        ended,
+        true,
+        arrival === "scheduled prompt as it ends"
+          ? CommandId.make("command:runtime-reconcile:compaction-ended")
+          : undefined,
+      );
+      if (arrival === "scheduled prompt as it ends") {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("send:scheduled"),
+          threadId,
+          messageId: otherMessageId,
+          text: "Scheduled check",
+          attachments: [],
+          scheduledTaskId: ScheduledTaskId.make("task:scheduled"),
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+      }
+      yield* orchestrator.resumeQueuedRuns;
+      const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+      const statusOf = (id: MessageId) => runs.find((run) => run.userMessageId === id)?.status;
+      expect(statusOf(messageId)).toBe("starting");
+      expect(statusOf(otherMessageId)).toBe("queued");
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.each([true, false])(
+  "a user's /compact joins a pending compaction and its message (compaction succeeds: %s)",
+  (compacted) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("thread:compaction-join");
+      const { compactMessageId, messageId, compactRun } = yield* compactionPair(threadId);
+      if (!compacted) {
+        yield* endCompaction(threadId, compactRun, false);
+        yield* orchestrator.resumeQueuedRuns;
+      }
+      const userCompactId = MessageId.make("message:user-compact");
+      const laterMessageId = MessageId.make("message:user-after-compact");
+      for (const [id, text, afterCompactionMessageId] of [
+        [userCompactId, "/compact", undefined],
+        [laterMessageId, "And this", userCompactId],
+      ] as const) {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`send:${id}`),
+          threadId,
+          messageId: id,
+          text,
+          attachments: [],
+          ...(afterCompactionMessageId === undefined ? {} : { afterCompactionMessageId }),
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+      }
+      const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+      const runOf = (id: MessageId) => runs.find((run) => run.userMessageId === id);
+      // One compaction stays ahead of both messages: the pending one, or the user's retry.
+      const compaction = compacted ? compactMessageId : userCompactId;
+      expect(runOf(userCompactId) !== undefined).toBe(!compacted);
+      expect(runOf(messageId)).toMatchObject({
+        status: "queued",
+        afterCompactionMessageId: compaction,
+      });
+      expect(runOf(messageId)?.queueHeld).not.toBe(true);
+      expect(runOf(laterMessageId)?.afterCompactionMessageId).toBe(compaction);
     }).pipe(Effect.provide(layerTest)),
 );
