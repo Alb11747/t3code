@@ -1,7 +1,6 @@
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
-
-import { USAGE_RESET_SNOOZE_ACTION, USAGE_RESET_SNOOZE_LABEL } from "./usageResetSnooze.logic";
+import type { UsageResetSnoozeOption } from "@t3tools/client-runtime/usage-reset-snooze";
 
 export type ThreadActionMenuId =
   | "find"
@@ -106,6 +105,7 @@ export interface ThreadActionMenuState {
     readonly titleRegeneration: boolean;
   };
   readonly snoozePresets: ReadonlyArray<SnoozePreset>;
+  readonly usageResetSnoozeOptions: ReadonlyArray<UsageResetSnoozeOption>;
   /** Guest links need their own grant, so the caller checks it instead of `canOperate`. */
   readonly canShareWithGuest?: boolean;
   /** A No project thread with its own folder, on a server that can promote it. */
@@ -173,11 +173,11 @@ export function buildThreadActionMenuItems(
                     label: preset.label,
                     detail: preset.whenLabel,
                   })),
-                  {
-                    id: USAGE_RESET_SNOOZE_ACTION,
-                    label: USAGE_RESET_SNOOZE_LABEL,
-                    separatorBefore: state.snoozePresets.length > 0,
-                  },
+                  ...state.usageResetSnoozeOptions.map((option, index) => ({
+                    id: option.id,
+                    label: option.label,
+                    separatorBefore: index === 0 && state.snoozePresets.length > 0,
+                  })),
                   { id: "snooze:custom" as const, label: "Custom…" },
                 ],
               },

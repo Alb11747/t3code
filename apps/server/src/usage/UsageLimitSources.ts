@@ -58,7 +58,7 @@ export class UsageLimitSources extends Context.Service<
       readonly provider: "claude" | "codex";
       readonly session?: string;
       readonly model?: string;
-    }) => Effect.Effect<{ readonly resetsAt: string | null } | null>;
+    }) => Effect.Effect<{ readonly resetsAt: string | null; readonly lastAccount: string } | null>;
     /** Fork: the enabled source's hub with its management key, or null. */
     readonly hub: (sourceId: UsageLimitSourceId) => Effect.Effect<CliproxyHub | null>;
     /** Fork: the router's controls; a changed account listing re-reads the source's accounts. */

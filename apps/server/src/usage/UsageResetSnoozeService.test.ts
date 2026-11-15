@@ -1,6 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
-import type { ServerProvider, UsageLimitSourceSnapshot } from "@t3tools/contracts";
+import type {
+  ServerProvider,
+  UsageLimitSourceSnapshot,
+  UsageResetWindowKind,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
@@ -15,7 +19,7 @@ const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const at = (hours: number) => iso(NOW + hours * 3_600_000);
 const window = (id: string, usedPercent: number, resetsAt: string) => ({
   id,
-  kind: "session" as const,
+  kind: id === "five_hour" ? ("session" as const) : ("weekly" as const),
   label: id,
   usedPercent,
   resetsAt,
@@ -42,15 +46,24 @@ const hub = [
         driver: "claudeAgent",
         usageLimits: { checkedAt: at(0), windows: [window("five_hour", 100, at(1))] },
       },
+      {
+        id: "claude-last.json",
+        routerAlias: "last",
+        driver: "claudeAgent",
+        usageLimits: {
+          checkedAt: at(0),
+          windows: [window("five_hour", 20, at(2)), window("seven_day", 30, at(50))],
+        },
+      },
     ],
   },
 ] as unknown as ReadonlyArray<UsageLimitSourceSnapshot>;
 
 function resolve(input: {
   readonly provider: ServerProvider;
-  readonly pick: { readonly resetsAt: string | null } | null;
+  readonly pick: { readonly resetsAt: string | null; readonly lastAccount?: string } | null;
   readonly hubs?: ReadonlyArray<UsageLimitSourceSnapshot>;
-  readonly freshContext?: boolean;
+  readonly window?: UsageResetWindowKind;
 }) {
   const asked: Array<
     Parameters<UsageLimitSources.UsageLimitSources["Service"]["nextPickReset"]>[0]
@@ -62,7 +75,7 @@ function resolve(input: {
       .resolve({
         threadId: "thread-1" as never,
         modelSelection: { instanceId: "claude" as never, model: "claude-opus-5-5" },
-        ...(input.freshContext ? { freshContext: true } : {}),
+        ...(input.window ? { window: input.window } : {}),
       })
       .pipe(Effect.result);
     return { result, asked };
@@ -76,8 +89,9 @@ function resolve(input: {
           current: Effect.succeed(input.hubs ?? hub),
           nextPickReset: (request) => {
             asked.push(request);
-            return Effect.succeed(input.pick);
+            return Effect.succeed(input.pick && { lastAccount: "next", ...input.pick });
           },
+          routerAlias: () => Effect.succeed((alias: string) => alias),
         }),
         Layer.mock(Orchestrator.OrchestratorV2)({
           resolveMessageProviderThread: () =>
@@ -147,14 +161,32 @@ describe("UsageResetSnoozeService", () => {
       expect(result._tag).toBe("Failure");
     }),
   );
-  it.effect("previews a new session when the composer armed a fresh one", () =>
+  it.effect.each([
+    [undefined, at(30)],
+    ["session", at(2)],
+    ["weekly", at(30)],
+  ] as const)("snoozes a native account until its %s window resets", ([kind, expected]) =>
     Effect.gen(function* () {
-      const { asked } = yield* resolve({
-        provider: claude({ type: "customEndpoint" }, []),
-        pick: { resetsAt: at(4) },
-        freshContext: true,
+      const { result } = yield* resolve({
+        provider: claude({}, [window("five_hour", 10, at(2)), window("seven_day", 100, at(30))]),
+        pick: null,
+        ...(kind ? { window: kind } : {}),
       });
-      expect(asked).toEqual([{ sourceId: "hub", provider: "claude", model: "claude-opus-5-5" }]);
+      expect(result).toMatchObject({ _tag: "Success", success: { resetsAt: expected } });
+    }),
+  );
+
+  it.effect("uses the window of the hub account the thread last used", () =>
+    Effect.gen(function* () {
+      const { result } = yield* resolve({
+        provider: claude({ type: "customEndpoint" }, [window("seven_day", 10, at(9))]),
+        pick: { resetsAt: at(4), lastAccount: "last" },
+        window: "weekly",
+      });
+      expect(result).toMatchObject({
+        _tag: "Success",
+        success: { resetsAt: at(50), basis: "router" },
+      });
     }),
   );
 

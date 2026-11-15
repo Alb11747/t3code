@@ -18,9 +18,10 @@ import { useRouter } from "@tanstack/react-router";
 
 import { pickSnoozePreset, resolveSnoozePresets } from "../components/Sidebar.snooze";
 import {
-  resolveUsageResetSnoozeLazily,
-  USAGE_RESET_SNOOZE_ACTION,
-} from "../components/usageResetSnooze.logic";
+  readUsageResetSnoozeOptions,
+  resolveUsageResetSnooze,
+} from "../components/usageResetSnooze";
+import { usageResetSnoozeOptionOf } from "@t3tools/client-runtime/usage-reset-snooze";
 import {
   buildThreadActionMenuItems,
   compactBeforeCacheExpiresChoice,
@@ -164,6 +165,7 @@ export function useThreadActionMenu(input: {
         isRunning: !threadRuntimeCanArchive(thread.runtime),
         supports,
         snoozePresets,
+        usageResetSnoozeOptions: readUsageResetSnoozeOptions([threadRef]),
         canShareWithGuest,
         canTurnIntoProject: canTurnThreadIntoProject(threadRef),
       });
@@ -181,11 +183,12 @@ export function useThreadActionMenu(input: {
         return;
       }
       if (action.startsWith("snooze:")) {
+        const usageReset = usageResetSnoozeOptionOf(action);
         const preset =
           action === "snooze:custom"
             ? await requestCustomSnooze()
-            : action === USAGE_RESET_SNOOZE_ACTION
-              ? await resolveUsageResetSnoozeLazily(threadRef)
+            : usageReset
+              ? await resolveUsageResetSnooze(threadRef, usageReset.window)
               : pickSnoozePreset(
                   snoozePresets,
                   action.slice("snooze:".length),

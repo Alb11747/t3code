@@ -3,12 +3,18 @@ import * as Schema from "effect/Schema";
 import { IsoDateTime, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
 
-/** `modelSelection` is what the thread's next message would use: the composer's unsent choice, else the thread's. */
+/** The usage windows "Snooze until usage resets" offers one option each for. */
+export const UsageResetWindowKind = Schema.Literals(["session", "weekly"]);
+export type UsageResetWindowKind = typeof UsageResetWindowKind.Type;
+
+/**
+ * `modelSelection` is the thread's. Without `window`, the reset after which the thread's account
+ * has quota again; with it, that window's reset on the account the thread last used.
+ */
 export const UsageResetSnoozeInput = Schema.Struct({
   threadId: ThreadId,
   modelSelection: ModelSelection,
-  /** The composer has a fresh session armed, so the next message starts a new native session. */
-  freshContext: Schema.optional(Schema.Boolean),
+  window: Schema.optional(UsageResetWindowKind),
 });
 export type UsageResetSnoozeInput = typeof UsageResetSnoozeInput.Type;
 

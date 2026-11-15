@@ -1,38 +1,61 @@
-import type { ModelSelection, ScopedThreadRef } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
+import type {
+  EnvironmentId,
+  ModelSelection,
+  ScopedThreadRef,
+  UsageResetWindowKind,
+} from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   runAtomCommand,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import {
+  lastUsedAccountWindows,
+  type UsageResetSnoozeOption,
+  usageResetSnoozeOptions,
+} from "@t3tools/client-runtime/usage-reset-snooze";
+import { Atom } from "effect/reactivity";
 
 import * as Dialog from "../../components/ui/Dialog";
-import { scopedThreadKey } from "../../lib/scopedEntities";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { environmentPresentations } from "../../state/presentation";
 import { serverEnvironment } from "../../state/server";
-import { getComposerDraftSnapshot } from "../../state/use-composer-drafts";
 
-/** Fork: the snooze menu entry that wakes a thread when its provider's usage resets. */
-export const USAGE_RESET_SNOOZE_ACTION = "snooze:usage-reset";
-export const USAGE_RESET_SNOOZE_LABEL = "Until usage resets";
+const sameOptions = (
+  a: ReadonlyArray<UsageResetSnoozeOption>,
+  b: ReadonlyArray<UsageResetSnoozeOption>,
+) => a.length === b.length && a.every((option, index) => option.label === b[index]?.label);
 
-/** When the account the thread's next message would use gets quota back, counting an unsent provider switch or fresh session. */
+// Keyed by environment and provider instance; rows re-render only when the options change.
+const optionsAtom = Atom.family((key: string) => {
+  const [environmentId, instanceId] = key.split("\u0000") as [EnvironmentId, string];
+  return Atom.make((get) => {
+    const provider = get(environmentPresentations.providersByEnvironmentAtom)
+      .get(environmentId)
+      ?.find((candidate) => candidate.instanceId === instanceId);
+    const sources = get(serverEnvironment.configValueAtom(environmentId))?.usageLimitSources ?? [];
+    return usageResetSnoozeOptions(lastUsedAccountWindows(provider, sources));
+  }).pipe(Atom.withEquality(sameOptions));
+});
+
+/** The snooze menu's usage-reset options for a thread, from its last-used account. */
+export function useUsageResetSnoozeOptions(environmentId: EnvironmentId, instanceId: string) {
+  return useAtomValue(optionsAtom(`${environmentId}\u0000${instanceId}`));
+}
+
+/** When `window` (else any limit) resets on the account the thread last used. */
 export async function resolveUsageResetSnooze(
   threadRef: ScopedThreadRef,
-  threadModelSelection: ModelSelection,
+  modelSelection: ModelSelection,
+  window?: UsageResetWindowKind,
 ): Promise<string | undefined> {
-  const draft = getComposerDraftSnapshot(
-    scopedThreadKey(threadRef.environmentId, threadRef.threadId),
-  );
   const result = await runAtomCommand(
     appAtomRegistry,
     serverEnvironment.resolveUsageResetSnooze,
     {
       environmentId: threadRef.environmentId,
-      input: {
-        threadId: threadRef.threadId,
-        modelSelection: draft.modelSelection ?? threadModelSelection,
-        ...(draft.freshContext === true ? { freshContext: true } : {}),
-      },
+      input: { threadId: threadRef.threadId, modelSelection, ...(window ? { window } : {}) },
     },
     { reportFailure: false },
   );

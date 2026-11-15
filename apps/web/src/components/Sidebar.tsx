@@ -226,8 +226,8 @@ import {
   snoozeWakeLabel,
   type SnoozePreset,
 } from "./Sidebar.snooze";
-import { resolveUsageResetSnooze } from "./usageResetSnooze";
-import { USAGE_RESET_SNOOZE_ACTION, USAGE_RESET_SNOOZE_LABEL } from "./usageResetSnooze.logic";
+import { readUsageResetSnoozeOptions, resolveUsageResetSnooze } from "./usageResetSnooze";
+import { usageResetSnoozeOptionOf } from "@t3tools/client-runtime/usage-reset-snooze";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { deriveProviderEntriesByEnvironment } from "../providerInstances";
 import { useStableCallback } from "../hooks/useStableCallback";
@@ -2377,12 +2377,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         detail: preset.whenLabel,
                         disabled: !canOperateThreads(selectedThreads),
                       })),
-                      {
-                        id: USAGE_RESET_SNOOZE_ACTION,
-                        label: USAGE_RESET_SNOOZE_LABEL,
-                        separatorBefore: snoozePresets.length > 0,
+                      ...readUsageResetSnoozeOptions(
+                        selectedThreads.map((thread) =>
+                          scopeThreadRef(thread.environmentId, thread.id),
+                        ),
+                      ).map((option, index) => ({
+                        id: option.id,
+                        label: option.label,
+                        separatorBefore: index === 0 && snoozePresets.length > 0,
                         disabled: !canOperateThreads(selectedThreads),
-                      },
+                      })),
                       {
                         id: "snooze:custom",
                         label: "Custom…",
@@ -2430,8 +2434,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       if (clicked.value === "settle" && actionTargets.length === 0) return;
       if (clicked.value !== "mark-unread" && !checkThreadOperations(actionTargets)) return;
       if (clicked.value?.startsWith("snooze:")) {
-        // Each thread's usage resets with the account its own next message would use.
-        const usageReset = clicked.value === USAGE_RESET_SNOOZE_ACTION;
+        // Each thread's usage resets with the account it last used.
+        const usageReset = usageResetSnoozeOptionOf(clicked.value);
         const sharedPreset = usageReset
           ? undefined
           : clicked.value === "snooze:custom"
@@ -2448,7 +2452,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           const outcomes = await Promise.all(
             selectedThreads.map(async (thread) => {
               const threadRef = scopeThreadRef(thread.environmentId, thread.id);
-              const preset = sharedPreset ?? (await resolveUsageResetSnooze(threadRef));
+              const preset =
+                sharedPreset ??
+                (usageReset
+                  ? await resolveUsageResetSnooze(threadRef, usageReset.window)
+                  : undefined);
               const outcome = preset
                 ? await performSnooze(threadRef, preset, { coSnoozingKeys })
                 : ({ status: "skipped" } as const);
@@ -2699,6 +2707,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 titleRegeneration: configLoaded,
               },
               snoozePresets,
+              usageResetSnoozeOptions: readUsageResetSnoozeOptions([threadRef]),
             }),
             position,
           ),
@@ -2706,11 +2715,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         if (clicked._tag === "Failure" || clicked.value === null) return;
         if (threadActionRequiresOperate(clicked.value) && !checkThreadOperations([thread])) return;
         if (clicked.value?.startsWith("snooze:")) {
+          const usageReset = usageResetSnoozeOptionOf(clicked.value);
           const preset =
             clicked.value === "snooze:custom"
               ? await requestCustomSnooze()
-              : clicked.value === USAGE_RESET_SNOOZE_ACTION
-                ? await resolveUsageResetSnooze(threadRef)
+              : usageReset
+                ? await resolveUsageResetSnooze(threadRef, usageReset.window)
                 : pickSnoozePreset(
                     snoozePresets,
                     clicked.value.slice("snooze:".length),

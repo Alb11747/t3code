@@ -757,7 +757,10 @@ describe("quota-router next-pick preview", () => {
         session: "abc def",
         model: "claude-opus-5-5",
       });
-      expect(pick).toEqual({ resetsAt: "2026-11-12T16:30:00.123Z" });
+      expect(pick).toEqual({
+        resetsAt: "2026-11-12T16:30:00.123Z",
+        lastAccount: "account-0123456789abcdef",
+      });
       expect(seen[0]?.pathname).toMatch(/\/v0\/management\/control\/next$/);
       expect(Object.fromEntries(seen[0]!.searchParams)).toEqual({
         provider: "claude",

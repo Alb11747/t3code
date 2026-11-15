@@ -889,7 +889,8 @@ export const makeCliproxyApi = Effect.gen(function* () {
     const pick = yield* nextPick(config, input);
     // No account means the router could not tell (no pool for the provider), unlike an unknown reset.
     if (pick === null || pick.account === null) return null;
-    return { resetsAt: pick.resetsAt };
+    // `resetsAt` is the next pick's; `lastAccount` is the conversation's account, else that pick.
+    return { resetsAt: pick.resetsAt, lastAccount: pick.current ?? pick.owner ?? pick.account };
   });
 
   /**

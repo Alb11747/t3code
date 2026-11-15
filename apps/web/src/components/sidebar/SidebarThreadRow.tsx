@@ -111,8 +111,7 @@ import {
   ThreadSearchPullRequestNumber,
 } from "../ThreadStatusIndicators";
 import { pickSnoozePreset, resolveSnoozePresets, type SnoozePreset } from "../Sidebar.snooze";
-import { resolveUsageResetSnooze } from "../usageResetSnooze";
-import { USAGE_RESET_SNOOZE_LABEL } from "../usageResetSnooze.logic";
+import { readUsageResetSnoozeOptions, resolveUsageResetSnooze } from "../usageResetSnooze";
 import { useThreadShell } from "../../state/entities";
 import { ProjectFavicon, type ProjectFaviconProject } from "../ProjectFavicon";
 import { ThreadSearchMatchExcerpt } from "../ThreadSearchMatch";
@@ -405,6 +404,7 @@ function SnoozeMenuButton(props: {
     ? // oxlint-disable-next-line react/purity -- Presets are resolved only while the menu is open, so each opening reads a fresh time.
       resolveSnoozePresets(new Date(), timestampFormat, environmentId)
     : [];
+  const usageResetOptions = open ? readUsageResetSnoozeOptions([{ environmentId, threadId }]) : [];
   return (
     <Menu open={open} onOpenChange={onOpenChange}>
       <Tooltip>
@@ -442,15 +442,21 @@ function SnoozeMenuButton(props: {
           </MenuItem>
         ))}
         {presets.length > 0 ? <MenuSeparator /> : null}
-        <MenuItem
-          onClick={async (event) => {
-            event.stopPropagation();
-            const choice = await resolveUsageResetSnooze({ environmentId, threadId });
-            if (choice) onSnooze(choice);
-          }}
-        >
-          {USAGE_RESET_SNOOZE_LABEL}
-        </MenuItem>
+        {usageResetOptions.map((option) => (
+          <MenuItem
+            key={option.id}
+            onClick={async (event) => {
+              event.stopPropagation();
+              const choice = await resolveUsageResetSnooze(
+                { environmentId, threadId },
+                option.window,
+              );
+              if (choice) onSnooze(choice);
+            }}
+          >
+            {option.label}
+          </MenuItem>
+        ))}
         <MenuItem
           onClick={async (event) => {
             event.stopPropagation();

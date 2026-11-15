@@ -1,32 +1,46 @@
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { ScopedThreadRef, UsageResetWindowKind } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   runAtomCommand,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import {
+  lastUsedAccountWindows,
+  usageResetSnoozeOptions,
+} from "@t3tools/client-runtime/usage-reset-snooze";
 
-import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-
-import { useComposerDraftStore } from "../composerDraftStore";
-import { readFreshSessionArm } from "./chat/freshSessionArms";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { readThreadShell } from "../state/entities";
+import { environmentPresentations } from "../state/presentation";
 import { serverEnvironment } from "../state/server";
 import { toastManager } from "./ui/toast";
 
-/**
- * Asks the thread's environment when the account its next message would use gets quota back.
- * An unsent provider switch in the composer counts as the provider that message would use.
- */
+/** The snooze menu's usage-reset options for these threads, from their last-used accounts. */
+export function readUsageResetSnoozeOptions(threadRefs: ReadonlyArray<ScopedThreadRef>) {
+  const providersByEnvironment = appAtomRegistry.get(
+    environmentPresentations.providersByEnvironmentAtom,
+  );
+  return usageResetSnoozeOptions(
+    threadRefs.flatMap((threadRef) => {
+      const instanceId = readThreadShell(threadRef)?.modelSelection.instanceId;
+      const provider = providersByEnvironment
+        .get(threadRef.environmentId)
+        ?.find((candidate) => candidate.instanceId === instanceId);
+      const sources =
+        appAtomRegistry.get(serverEnvironment.configValueAtom(threadRef.environmentId))
+          ?.usageLimitSources ?? [];
+      return lastUsedAccountWindows(provider, sources);
+    }),
+  );
+}
+
+/** Asks the thread's environment when `window` (else any limit) resets on its account. */
 export async function resolveUsageResetSnooze(
   threadRef: ScopedThreadRef,
+  window?: UsageResetWindowKind,
 ): Promise<{ readonly snoozedUntil: string } | undefined> {
   const thread = readThreadShell(threadRef);
   if (!thread) return undefined;
-  const draft = useComposerDraftStore.getState().getComposerDraft(threadRef);
-  const modelSelection =
-    (draft?.activeProvider ? draft.modelSelectionByProvider[draft.activeProvider] : undefined) ??
-    thread.modelSelection;
   const result = await runAtomCommand(
     appAtomRegistry,
     serverEnvironment.resolveUsageResetSnooze,
@@ -34,10 +48,8 @@ export async function resolveUsageResetSnooze(
       environmentId: threadRef.environmentId,
       input: {
         threadId: threadRef.threadId,
-        modelSelection,
-        ...(readFreshSessionArm(scopedThreadKey(threadRef)) === undefined
-          ? {}
-          : { freshContext: true }),
+        modelSelection: thread.modelSelection,
+        ...(window ? { window } : {}),
       },
     },
     { reportFailure: false },
