@@ -200,6 +200,8 @@ const McpToolUseExpect = Schema.Struct({
   calls: Schema.optional(Schema.Array(McpToolUseCall)),
   /** Each entry matches a different call, and no call matches two entries; tool names are exact. */
   distinctCalls: Schema.optional(Schema.Array(McpToolUseCall)),
+  /** Each group needs one call matching any of its entries, for routes that differ in args. */
+  callsAny: Schema.optional(Schema.Array(Schema.Array(McpToolUseCall))),
   /** No call may match any entry. */
   callsMustNot: Schema.optional(Schema.Array(McpToolUseCall)),
   notCalls: Schema.optional(Schema.Array(Schema.String)),
@@ -1876,6 +1878,11 @@ export const gradeSample = (
     among.some((call) => tool.split("|").includes(call.tool) && matches(args, call.input));
   const label = ({ tool, args }: McpToolUseCall) => (args ? `${tool} ${valueText(args)}` : tool);
   for (const call of expect.calls ?? []) add(`calls ${label(call)}`, found(call));
+  for (const group of expect.callsAny ?? [])
+    add(
+      `callsAny ${group.map(label).join(" | ")}`,
+      group.some((call) => found(call)),
+    );
   if (expect.distinctCalls !== undefined) {
     const expected = expect.distinctCalls.map(({ tool, args }) => ({ tool, input: args ?? {} }));
     add(

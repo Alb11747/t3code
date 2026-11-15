@@ -107,7 +107,7 @@ export const OrchestratorMcpLaunchAccountFields = {
   account: Schema.optional(
     Schema.NullOr(TrimmedNonEmptyString).annotate({
       description:
-        "CLI Proxy hub account (email or alias; `t3_usage` lists them). Omit: automatic.",
+        "CLI Proxy hub account (email or alias; `t3_usage` lists them), only when the user names one; the router balances quota itself. Omit: automatic.",
     }),
   ),
   waitWhenOut: Schema.optional(
@@ -151,7 +151,7 @@ export const OrchestratorMcpTarget = Schema.Struct({
   account: Schema.optional(
     Schema.NullOr(TrimmedNonEmptyString).annotate({
       description:
-        "CLI Proxy hub account (email or alias; `t3_usage` lists them). Omit: automatic; a child gets the parent's account, without waiting. null: automatic.",
+        "CLI Proxy hub account (email or alias; `t3_usage` lists them), only when the user names one; the router balances quota itself. Omit: automatic; a child gets the parent's account, without waiting. null: automatic.",
     }),
   ),
 });

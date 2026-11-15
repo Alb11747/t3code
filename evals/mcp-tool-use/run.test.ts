@@ -77,6 +77,17 @@ it("grades Codex shell and subagent calls with the shared rules", () => {
     ),
     ["notCalls Agent", "shellMustNot /sleep/"],
   );
+  const either = [
+    [
+      { tool: "Bash", args: { command: "~sleep" } },
+      { tool: "Agent", args: { prompt: "~absent" } },
+    ],
+  ];
+  assert.deepEqual(failed({ callsAny: either }, { calls, text: "", stopReason: "end_turn" }), []);
+  assert.deepEqual(
+    failed({ callsAny: [either[0]!.slice(1)] }, { calls, text: "", stopReason: "end_turn" }),
+    ['callsAny Agent {"prompt":"~absent"}'],
+  );
   const distinctCalls = ["application key", "application secret", "consumer key"].map((label) => ({
     tool: "request_secret",
     args: { label: "~" + label, delivery: "file", value: null },
