@@ -539,7 +539,7 @@ export const make = Effect.gen(function* () {
       moved = !!pick?.owner && rename(pick.owner) !== account;
       if (moved && input.dropThinking !== true) {
         return yield* new ThreadAccountError({
-          detail: `${THREAD_ACCOUNT_MOVE_WARNING} Confirm with dropThinking: true to switch.`,
+          detail: `${THREAD_ACCOUNT_MOVE_WARNING} Tell the user their earlier thinking will be dropped, then confirm with dropThinking: true to switch.`,
           requiresDropThinking: true,
         });
       }
