@@ -219,7 +219,8 @@ Switching an existing thread re-sends its context to the new account as a cold c
 Some conversations stay bound to the account they started on; moving one asks first, because its
 earlier thinking is dropped. T3 Code then compacts the conversation once on the new account,
 which removes that thinking; a running turn stops and continues after the compaction. Messages
-and files stay in the thread. Asking first needs quota router 0.24.0 or
+and files stay in the thread. If that compaction fails or is stopped, the next turn fails with
+**Retry with dropped thinking**, which compacts and continues. Asking first needs quota router 0.24.0 or
 later: older routers do not report which account a conversation is bound to, so T3 Code switches
 without asking, and a bound conversation's requests then fail until you set it back.
 

@@ -45,6 +45,12 @@ export function accountMoveDropsThinking(
   );
 }
 
+/** A prompt that runs Claude's `/compact`, with or without summary instructions. */
+export const isCompactionPrompt = (message: {
+  readonly text: string;
+  readonly attachments: ReadonlyArray<unknown>;
+}) => message.attachments.length === 0 && /^\/compact(?:\s|$)/i.test(message.text.trim());
+
 interface PrepareTurnInput<E> {
   readonly appThread: OrchestrationV2AppThread;
   readonly providerThread: OrchestrationV2ProviderThread;

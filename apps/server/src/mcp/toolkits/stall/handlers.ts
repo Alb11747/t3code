@@ -18,6 +18,7 @@ const make = Effect.gen(function* () {
           yield* readCaller();
           if (input.action === "switch" && input.account !== undefined) {
             // A keep-warm hold's turn stops and continues there; a pin hold's request just moves.
+            // Moving an owned conversation instead stops its turn and compacts once first.
             yield* threadAccounts.set({
               threadId: input.threadId,
               account: input.account,

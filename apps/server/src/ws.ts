@@ -1980,12 +1980,22 @@ export const layerWsRpc = (
                 .enqueueCommand(
                   (command.type === "prepared-run.retry"
                     ? threadLaunch.retryPreparation(command)
-                    : ThreadMessageIntake.dispatchCommand(
-                        ThreadManagementService.withCreationProvenance(command, {
-                          createdBy: "user",
-                          creationSource:
-                            "creationSource" in command ? command.creationSource : "web",
-                        }),
+                    : (command.type === "run.retry"
+                        ? threadAccounts.compactForRetry(command)
+                        : Effect.undefined
+                      ).pipe(
+                        // Fork: a moved thread's retry compacts once instead.
+                        Effect.filterOrElse(
+                          (compacted) => compacted !== undefined,
+                          () =>
+                            ThreadMessageIntake.dispatchCommand(
+                              ThreadManagementService.withCreationProvenance(command, {
+                                createdBy: "user",
+                                creationSource:
+                                  "creationSource" in command ? command.creationSource : "web",
+                              }),
+                            ),
+                        ),
                       )
                   ).pipe(Effect.provide(intakeContext)),
                 )

@@ -3402,6 +3402,11 @@ export const OrchestrationV2Command = Schema.Union([
     /** Sends this pending guest message; the server uses the guest's text, not `text`. */
     guestMessageId: Schema.optional(GuestMessageId),
     afterCompactionMessageId: Schema.optional(MessageId),
+    /**
+     * Fork, server only: the compaction an approved account move queues, or its continuation. It
+     * goes first in the queue, past a held one; the compaction stops the live turn.
+     */
+    accountMoveCompaction: Schema.optional(Schema.Literal(true)),
     keepFullHistory: Schema.optional(Schema.Literal(true)),
     ...OrchestrationV2CreationFields,
     scheduledTaskId: Schema.optional(ScheduledTaskId),

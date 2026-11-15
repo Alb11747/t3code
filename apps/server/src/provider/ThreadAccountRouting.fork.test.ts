@@ -52,6 +52,20 @@ describe("accountMoveDropsThinking", () => {
   });
 });
 
+describe("isCompactionPrompt", () => {
+  it.each([
+    { text: "/compact", attachments: [], compacts: true },
+    { text: " /compact keep the API notes", attachments: [], compacts: true },
+    { text: "/compactor", attachments: [], compacts: false },
+    { text: "/compact", attachments: [{}], compacts: false },
+  ])(
+    "$text with $attachments.length attachments compacts: $compacts",
+    ({ compacts, ...message }) => {
+      expect(ThreadAccountRouting.isCompactionPrompt(message)).toBe(compacts);
+    },
+  );
+});
+
 type Pin = Parameters<UsageLimitSources.UsageLimitSources["Service"]["pin"]>[1];
 const CHOICE = { sourceId: "hub", account: "account-0123456789abcdef", stall: true };
 
