@@ -1122,7 +1122,6 @@ export const layer: Layer.Layer<
                 ...(sourceProviderTurn === undefined
                   ? {}
                   : { providerTurnId: sourceProviderTurn.id }),
-                ...(sourceBusy ? { sourceBusy } : {}),
               }),
             );
             if (forked._tag === "Success") return forked.success;
