@@ -15514,7 +15514,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const awaitsMarkedWork =
         options.task.cancelledRunId === undefined &&
         childControls.providerThreads.some((thread) =>
-          awaitedBackgroundWorkHolds(thread.pendingBackgroundTasks ?? []),
+          awaitedBackgroundWorkHolds(
+            (thread.pendingBackgroundTasks ?? []).filter((work) =>
+              taskRuns.some((run) => run.id === work.runId),
+            ),
+          ),
         );
       if (
         outcome === "completed" &&
@@ -15793,7 +15797,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         task.origin !== "app_owned" ||
         task.childThreadId !== childThreadId ||
-        heldUntilSettled(task) ||
+        (!cancelled && heldUntilSettled(task)) ||
         (task.id === childControls.thread.forkedFrom.nodeId &&
           (cancelled ? progress.state === "working" : progress.state !== "result_available")) ||
         (task.result !== null &&

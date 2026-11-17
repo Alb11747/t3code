@@ -133,6 +133,8 @@ it.each([false, true])(
         : [
             {
               run: { id: "run:queued", userMessageId: "message:queued" },
+              delivery: "queued",
+              deliveryLabel: "Queued",
               text: "Later",
               attachments,
             },
@@ -374,6 +376,8 @@ it("does not re-render while assistant text streams into the thread", async () =
     queuedRuns: [
       {
         run: { id: "run:queued", userMessageId: "message:queued" },
+        delivery: "queued",
+        deliveryLabel: "Queued",
         text: "Run the tests next",
         attachments: [],
       },
@@ -434,6 +438,8 @@ it("tells the user why Send now was rejected", async () => {
     queuedRuns: [
       {
         run: { id: "run:queued", userMessageId: "message:queued" },
+        delivery: "queued",
+        deliveryLabel: "Queued",
         text: "Follow up",
         attachments: [],
       },

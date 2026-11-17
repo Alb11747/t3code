@@ -1,3 +1,4 @@
+import * as DateTime from "effect/DateTime";
 import { expect, it } from "vite-plus/test";
 
 import { queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
@@ -25,7 +26,7 @@ it("delivers pending steering before completion notices while explicit Queue kee
       },
       { id: "queue-last", userMessageId: "queue-last", ordinal: 5, status: "queued" },
       { id: "goal", userMessageId: "goal", ordinal: 6, status: "queued", queuePosition: 1 },
-    ],
+    ].map((run) => ({ ...run, requestedAt: DateTime.makeUnsafe("2026-01-01T00:00:00Z") })),
   } as never;
 
   expect(queuedRunsInDeliveryOrder(projection).map((run) => run.id)).toEqual([

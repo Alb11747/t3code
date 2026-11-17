@@ -21,7 +21,7 @@ const mocks = await vi.hoisted(async () => {
     contextTokens: 250_000,
     usageUpdatedAt: null as string | null,
     startTurn: vi.fn(),
-    awaitUploads: vi.fn(),
+    refreshUploads: vi.fn(),
     config: Atom.make(new Map()).pipe(Atom.keepAlive),
     presentations: Atom.make(new Map()).pipe(Atom.keepAlive),
   };
@@ -90,7 +90,7 @@ vi.mock("../../state/threads", async (original) => {
   };
 });
 vi.mock("../../lib/attachmentUploadQueue", () => ({
-  awaitAttachmentUploads: () => mocks.awaitUploads(),
+  refreshExpiredAttachmentUploads: () => mocks.refreshUploads(),
   readAttachmentUpload: () => undefined,
   startAttachmentUpload: () => {},
   retryAttachmentUpload: () => {},
@@ -129,7 +129,7 @@ function setup(
   mocks.contextTokens = 250_000;
   mocks.usageUpdatedAt = null;
   mocks.startTurn.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
-  mocks.awaitUploads.mockReset().mockResolvedValue(undefined);
+  mocks.refreshUploads.mockReset().mockResolvedValue(undefined);
   const environmentId = EnvironmentId.make("compaction-send-test");
   const instanceId = ProviderInstanceId.make(provider);
   const sourceInstanceId = ProviderInstanceId.make("claudeAgent");
@@ -183,6 +183,7 @@ function setup(
       interactionModeEnabled: true,
       shownPendingApprovalIds: [],
     }),
+    hasPendingAttachments: () => false,
     validateProviderInput: () => true,
     resetCursorState: () => {},
   };
@@ -327,7 +328,7 @@ describe("resume compaction dispatch", () => {
       const started = new Promise<void>((resolve) => {
         markStarted = resolve;
       });
-      mocks.awaitUploads.mockImplementation(() => {
+      mocks.refreshUploads.mockImplementation(() => {
         markStarted();
         return upload;
       });

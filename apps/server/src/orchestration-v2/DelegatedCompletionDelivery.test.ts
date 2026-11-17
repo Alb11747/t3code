@@ -4111,6 +4111,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
                 id: EventId.make(`event:awaited-wake-roster-${run.id}`),
                 type: "provider-thread.updated",
                 threadId: child.childThreadId,
+                runId: run.id,
                 driver,
                 providerInstanceId: modelSelection.instanceId,
                 occurredAt: now,

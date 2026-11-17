@@ -709,7 +709,11 @@ it.effect.each([
                     new Map([
                       [
                         unacceptedFollowUp.userMessageId,
-                        { id: unacceptedFollowUp.userMessageId, createdBy: "user" } as never,
+                        {
+                          id: unacceptedFollowUp.userMessageId,
+                          text: "Follow up",
+                          createdBy: "user",
+                        } as never,
                       ],
                     ]),
                   ),

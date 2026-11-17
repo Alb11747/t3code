@@ -88,10 +88,12 @@ vi.mock("../../components/ui/ThemedSwitch", () => ({
   ThemedSwitch: ({
     value,
     onValueChange,
+    accessibilityLabel,
   }: {
     value: boolean;
     onValueChange: (value: boolean) => void;
-  }) => <button onClick={() => onValueChange(!value)}>Toggle enabled</button>,
+    accessibilityLabel: string;
+  }) => <button onClick={() => onValueChange(!value)}>{accessibilityLabel}</button>,
 }));
 vi.mock("../../state/entities", () => ({
   useProjects: () => [
@@ -220,7 +222,7 @@ describe("scheduled task batched edits", () => {
   it("retains the interval when enabled changes before React commits", async () => {
     act(() => {
       button("Interval").click();
-      button("Toggle enabled").click();
+      button("Task enabled").click();
     });
     expect(appAtomRegistry.get(scheduledTaskEditorSessionAtom)?.current?.draft.schedule.mode).toBe(
       "interval",
