@@ -13,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
+import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { CursorProviderCapabilitiesV2 } from "@t3tools/provider-cursor/testing";
 import { makeGrokAcpAdapterFlavor } from "@t3tools/provider-grok/testing";
@@ -232,6 +233,23 @@ it("does not steer a Grok follow-up by interrupting its running turn", () => {
   }
 });
 
+// regression: #37326 a steered Grok follow-up waits for the turn to end instead of interjecting
+it("steers a Grok follow-up into its running turn without restarting it", () => {
+  const grok = makeGrokAcpAdapterFlavor(
+    { makeRuntime: () => Effect.never } as unknown as Parameters<
+      typeof makeGrokAcpAdapterFlavor
+    >[0],
+    "/home/ada",
+  ).capabilities;
+  const mode = CommandPolicy.resolveMessageDispatchIntent(
+    dispatchProjection(grok),
+    { type: "start_immediately" },
+    "steer",
+  );
+  assert.strictEqual(mode.type, "steer_active");
+  assert.isTrue(grok.turns.supportsActiveSteering);
+});
+
 it.each(["/compact", " /LOGOUT "])("queues a steer sent while %s runs", (text) => {
   const projection = dispatchProjection(baseCapabilities);
   const maintenance = {
@@ -303,16 +321,20 @@ layer("CommandPolicyV2", (it) => {
   );
 
   it.effect.each([
-    { canForkWhileRunning: true, hasNativeTurnBoundary: true, busyStrategy: "native_fork" },
+    { canForkWhileSourceRunning: true, hasNativeTurnBoundary: true, busyStrategy: "native_fork" },
     {
-      canForkWhileRunning: undefined,
+      canForkWhileSourceRunning: undefined,
       hasNativeTurnBoundary: true,
       busyStrategy: "portable_context",
     },
-    { canForkWhileRunning: true, hasNativeTurnBoundary: false, busyStrategy: "portable_context" },
+    {
+      canForkWhileSourceRunning: true,
+      hasNativeTurnBoundary: false,
+      busyStrategy: "portable_context",
+    },
   ] as const)(
-    "forks a busy source with canForkWhileRunning=$canForkWhileRunning and hasNativeTurnBoundary=$hasNativeTurnBoundary",
-    ({ canForkWhileRunning, hasNativeTurnBoundary, busyStrategy }) =>
+    "forks a busy source with canForkWhileSourceRunning=$canForkWhileSourceRunning and hasNativeTurnBoundary=$hasNativeTurnBoundary",
+    ({ canForkWhileSourceRunning, hasNativeTurnBoundary, busyStrategy }) =>
       Effect.gen(function* () {
         const policy = yield* CommandPolicy.CommandPolicyV2;
         const decide = (sourceBusy: boolean) =>
@@ -322,7 +344,7 @@ layer("CommandPolicyV2", (it) => {
             providerInstanceId: ProviderInstanceId.make("codex"),
             capabilities: {
               ...CodexProviderCapabilitiesV2,
-              threads: { ...CodexProviderCapabilitiesV2.threads, canForkWhileRunning },
+              threads: { ...CodexProviderCapabilitiesV2.threads, canForkWhileSourceRunning },
             },
             sameProvider: true,
             hasStrongNativeSource: true,

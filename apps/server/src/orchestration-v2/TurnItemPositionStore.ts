@@ -30,6 +30,8 @@ export interface TurnItemPositionStoreV2Shape {
     readonly runOrdinal?: number;
     // `run_start` takes the run's unused first slot, ahead of its items, and appends once it is taken.
     readonly placement?: "append" | "run_start";
+    // Keep an existing position even when it lies outside the run's range.
+    readonly keepExisting?: boolean;
   }) => Effect.Effect<number, TurnItemPositionStoreError>;
   readonly reserveBoundary: (input: {
     readonly threadId: ThreadId;
@@ -65,6 +67,7 @@ export const layer: Layer.Layer<TurnItemPositionStoreV2, never, SqlClient.SqlCli
           runId,
           runOrdinal: suppliedRunOrdinal,
           placement = "append",
+          keepExisting = false,
           moveToRun = false,
         }: Parameters<TurnItemPositionStoreV2Shape["allocate"]>[0] & {
           readonly moveToRun?: boolean | "always";
@@ -75,8 +78,6 @@ export const layer: Layer.Layer<TurnItemPositionStoreV2, never, SqlClient.SqlCli
           WHERE thread_id = ${threadId} AND turn_item_id = ${turnItemId}
           LIMIT 1
         `;
-          if (existing[0] !== undefined && moveToRun === false) return existing[0].ordinal;
-
           const runRows =
             runId === null || suppliedRunOrdinal !== undefined
               ? []
@@ -91,9 +92,11 @@ export const layer: Layer.Layer<TurnItemPositionStoreV2, never, SqlClient.SqlCli
           const upperBound = runOrdinal === null ? 999_999 : lowerBound + 999_999;
           if (existing[0] !== undefined) {
             if (
-              moveToRun !== "always" &&
-              existing[0].ordinal >= lowerBound &&
-              existing[0].ordinal <= upperBound
+              keepExisting ||
+              runOrdinal === null ||
+              (moveToRun !== "always" &&
+                existing[0].ordinal >= lowerBound &&
+                existing[0].ordinal <= upperBound)
             ) {
               return existing[0].ordinal;
             }
@@ -192,6 +195,8 @@ export const layer: Layer.Layer<TurnItemPositionStoreV2, never, SqlClient.SqlCli
           threadId: item.threadId,
           turnItemId: item.id,
           runId: item.runId,
+          // Queued steers keep their submission order until their run starts (see Orchestrator).
+          keepExisting: item.status === "pending",
           ...(runOrdinal === undefined ? {} : { runOrdinal }),
           // Explicit retry replaces the old boundary reservation with the committed run's position.
           moveToRun: item.type === "user_message" && item.status !== "pending",

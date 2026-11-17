@@ -3,6 +3,7 @@ import {
   parseGoalCommand,
   type MessageId,
   type OrchestrationV2ThreadProjection,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -14,6 +15,7 @@ import * as Stream from "effect/Stream";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import type * as Orchestrator from "./Orchestrator.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import { isUndeliveredMailboxSteer } from "./NotificationMailbox.ts";
@@ -68,6 +70,7 @@ export const layer = Layer.effectDiscard(
     const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const retryAttempts = yield* Ref.make(new Map<string, number>());
+    const continuations = yield* KeyedLock.makeRunner<ThreadId>();
 
     const clearRetryAttempt = (key: string) =>
       Ref.update(retryAttempts, (current) => {
@@ -494,6 +497,8 @@ export const layer = Layer.effectDiscard(
               }
             }),
           ),
+          // A dispatch can wait on its parent's lock, so only its own thread's later requests queue behind it.
+          (handled) => continuations.run(request.threadId, handled),
         ),
       ),
       Effect.forever,

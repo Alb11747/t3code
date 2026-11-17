@@ -107,7 +107,7 @@ function baseThread(input: {
 function makeRun(input: {
   readonly id: RunId;
   readonly ordinal: number;
-  readonly status: "running" | "waiting" | "cancelled" | "queued" | "completed";
+  readonly status: "running" | "waiting" | "cancelled" | "queued" | "completed" | "failed";
   readonly instanceId?: ProviderInstanceId;
 }) {
   return {
@@ -154,6 +154,15 @@ it("readThread preserves caller access errors and prefers activity-run status ov
       streaming: false,
     },
   }));
+  let pendingBackgroundTasks: OrchestrationV2ThreadShell["pendingBackgroundTasks"] = [
+    {
+      taskId: "task-subagent",
+      kind: "subagent",
+      parentTaskId: "task-parent",
+      providerInstanceId: parentInstanceId,
+      childThreadId,
+    },
+  ];
   const pullRequestLink = (number: number, state: "open" | "merged", watched: boolean) => ({
     host: "github.com",
     repository: "acme/web",
@@ -243,16 +252,9 @@ it("readThread preserves caller access errors and prefers activity-run status ov
                         ...projection.thread,
                         contextNote,
                         visibleItemCount: rows.length,
+                        pinnedAt: now,
                         blockedOnThreadWait: true,
-                        pendingBackgroundTasks: [
-                          {
-                            taskId: "task-subagent",
-                            kind: "subagent",
-                            parentTaskId: "task-parent",
-                            providerInstanceId: parentInstanceId,
-                            childThreadId,
-                          },
-                        ],
+                        pendingBackgroundTasks,
                       } as unknown as OrchestrationV2ThreadShell)
                     : null,
                 ),
@@ -260,6 +262,7 @@ it("readThread preserves caller access errors and prefers activity-run status ov
             input.threadId === parentThreadId
               ? Effect.succeed({ ...projection, thread: { ...projection.thread, contextNote } })
               : Effect.die(`unexpected thread ${input.threadId}`),
+          getRunCount: () => Effect.succeed(projection.runs.length),
         } satisfies Partial<ThreadManagementService.ThreadManagementService["Service"]>),
         ServerSettings.layerTest(),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
@@ -285,6 +288,7 @@ it("readThread preserves caller access errors and prefers activity-run status ov
     expect(result.thread.status).toBe("running");
     expect(result.thread.latestRunId).toBe(cancelledRunId);
     expect(result.thread.activeRunId).toBe(activeRunId);
+    expect(result.thread.pinned).toBe(true);
     expect(result.thread.blockedOnThreadWait).toBe(true);
     expect(result.thread.pendingBackgroundTasks).toEqual([
       { taskId: "task-subagent", kind: "subagent", childThreadId },
@@ -361,6 +365,25 @@ it("readThread preserves caller access errors and prefers activity-run status ov
     expect(next.items.map((item) => [item.position, item.text])).toEqual([[1, "Original plan 1"]]);
     expect(next.nextPosition).toBe(1);
     expect(next.hasMore).toBe(false);
+    Object.assign(projection, {
+      runs: [makeRun({ id: activeRunId, ordinal: 1, status: "completed" })],
+    });
+    const awaiting = yield* service.readThread(makeScope(), { threadId: parentThreadId });
+    expect(awaiting.thread.status).toBe("waiting");
+
+    Object.assign(projection, {
+      runs: [makeRun({ id: activeRunId, ordinal: 1, status: "failed" })],
+    });
+    const failed = yield* service.readThread(makeScope(), { threadId: parentThreadId });
+    expect(failed.thread.status).toBe("failed");
+
+    Object.assign(projection, {
+      runs: [makeRun({ id: activeRunId, ordinal: 1, status: "completed" })],
+    });
+    // An unawaited command (a dev server) does not hold the thread once its turn ends.
+    pendingBackgroundTasks = [{ taskId: "dev-server", kind: "command" }];
+    const released = yield* service.readThread(makeScope(), { threadId: parentThreadId });
+    expect(released.thread.status).toBe("completed");
 
     callerUnavailable = true;
     const denied = yield* service
@@ -440,6 +463,7 @@ it("readThread pages cut-off text without splitting an emoji across pages", asyn
           },
           getThreadRecords: () => Effect.succeed(projection),
           getProjectThreadRecords: () => Effect.succeed(projection),
+          getRunCount: () => Effect.succeed(projection.runs.length),
           getThreadShell: () =>
             Effect.succeed(projection.thread as unknown as OrchestrationV2ThreadShell),
         } satisfies Partial<ThreadManagementService.ThreadManagementService["Service"]>),
@@ -547,6 +571,7 @@ it("readThread returns the newest items that fit the response budget", async () 
           },
           getThreadRecords: () => Effect.succeed(projection),
           getProjectThreadRecords: () => Effect.succeed(projection),
+          getRunCount: () => Effect.succeed(projection.runs.length),
           getThreadShell: () =>
             Effect.succeed(projection.thread as unknown as OrchestrationV2ThreadShell),
         } satisfies Partial<ThreadManagementService.ThreadManagementService["Service"]>),
@@ -653,6 +678,7 @@ it("readThread keeps an activity page within an MCP client's output limit and pa
           },
           getThreadRecords: () => Effect.succeed(projection),
           getProjectThreadRecords: () => Effect.succeed(projection),
+          getRunCount: () => Effect.succeed(projection.runs.length),
           getThreadShell: () =>
             Effect.succeed(projection.thread as unknown as OrchestrationV2ThreadShell),
         } satisfies Partial<ThreadManagementService.ThreadManagementService["Service"]>),
@@ -934,6 +960,7 @@ it("readThread and sendToThread reach threads in other projects", async () => {
               hasMore: false,
               hasEarlier: false,
             }),
+          getRunCount: (threadId) => Effect.succeed(foreignProjection(threadId).runs.length),
           getProjectThreadRecords: (input) =>
             input.threadId === foreignThreadId && input.projectId === foreignProjectId
               ? Effect.succeed(foreignProjection(input.threadId))

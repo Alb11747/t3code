@@ -204,6 +204,8 @@ export interface EnvironmentThreadShell {
   /** Fork: the CLI Proxy account the thread's requests go to; absent or null is automatic. */
   readonly accountChoice?: import("@t3tools/contracts").ThreadAccountChoice | null;
   readonly branchPullRequest?: ThreadLinkedPullRequest | null;
+  /** Absent from rows built before issue linking; the server sends an empty list. */
+  readonly issues?: ReadonlyArray<import("@t3tools/contracts").ThreadIssueLink>;
   /**
    * Server-tracked visited watermark. `undefined` means the environment's
    * server predates visited tracking and clients should fall back to any
@@ -323,6 +325,7 @@ export function presentThreadShell(
     ...(thread.compactOnce === undefined ? {} : { compactOnce: thread.compactOnce }),
     ...(thread.accountChoice ? { accountChoice: thread.accountChoice } : {}),
     branchPullRequest: thread.branchPullRequest ?? null,
+    issues: thread.issues ?? [],
     lineage: thread.lineage,
     forkedFrom: thread.forkedFrom,
     linkOrigin: thread.linkOrigin ?? null,

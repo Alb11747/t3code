@@ -168,6 +168,10 @@ prompts and other sends that arrive meanwhile wait behind it. A `/compact` you
 send while that compaction is pending joins it instead of compacting twice.
 If compaction fails or is stopped, the message stays queued. Cancel that queued
 message before resending with `keep` if you want to continue with the full history.
+To choose the model, pass `--provider <instance-id> --model <slug>`. Add
+`--option id=value` for each model option, such as `--option effort=high`.
+Option ids and values depend on the model; `true` and `false` set on/off
+options.
 
 `--wait` prints the agent's reply. It exits 1 when the run fails or stops, and
 2 when the agent waits for an answer you give in the app. Add `--json` for a
