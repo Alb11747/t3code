@@ -1499,7 +1499,7 @@ export const layerQueryRunner: Layer.Layer<
       return { refresh: refresh(true).pipe(Effect.asVoid), stop };
     };
 
-    // The open span below covers both attempts.
+    // The open span below is the tracing boundary for both attempts.
     const openQuery = Effect.fnUntraced(function* (input: ClaudeAgentSdkQueryOpenInput) {
       const protocolLogger = makeClaudeAgentSdkProtocolLogger({
         nativeEventLogger,
@@ -1623,6 +1623,7 @@ export const layerQueryRunner: Layer.Layer<
       let stderrTail = "";
       let stderrClosed: Promise<void> = Promise.resolve();
       let answered = false;
+      let conversationMissing = false;
       let cancelsQueuedOnInterrupt = false;
       const appendStderr = (text: string) => {
         if (answered) return;
@@ -1655,12 +1656,11 @@ export const layerQueryRunner: Layer.Layer<
             }
             return child;
           }
-          const child = NodeChildProcess.spawn(spawnOptions.command, spawnOptions.args, {
+          const child = SpawnWorker.spawnPiped(spawnOptions.command, spawnOptions.args, {
             cwd: spawnOptions.cwd,
             env: spawnOptions.env,
             signal: spawnOptions.signal,
             windowsHide: true,
-            stdio: ["pipe", "pipe", "pipe"],
           });
           child.stderr.setEncoding("utf8").on("data", (chunk: string) => options.stderr?.(chunk));
           return child;
@@ -1689,10 +1689,9 @@ export const layerQueryRunner: Layer.Layer<
       const queryRuntime = yield* Effect.uninterruptibleMask((restore) =>
         Effect.try({
           try: () =>
-            query({
-              prompt,
-              options: { ...options, spawnClaudeCodeProcess },
-            }),
+            withoutClaudeCanUseToolShadowedWarning(() =>
+              query({ prompt, options: { ...options, spawnClaudeCodeProcess } }),
+            ),
           catch: (cause) => queryRunnerError(cause, "query"),
         }).pipe(
           Effect.tap((queryRuntime) =>
@@ -1793,7 +1792,12 @@ export const layerQueryRunner: Layer.Layer<
                 }
                 const refusedRoot = !answered && stderrTail.includes(CLAUDE_ROOT_REFUSAL);
                 return yield* queryRunnerError(
-                  refusedRoot ? new ClaudeCodeRootRefusalError({ cause }) : cause,
+                  refusedRoot
+                    ? new ClaudeCodeRootRefusalError({ cause })
+                    : conversationMissing ||
+                        (!answered && stderrTail.includes(CLAUDE_CONVERSATION_NOT_FOUND))
+                      ? new ClaudeConversationNotFoundError({ cause })
+                      : cause,
                   "fromAsyncIterable",
                 );
               }),
@@ -1802,6 +1806,12 @@ export const layerQueryRunner: Layer.Layer<
           Stream.tap((message) =>
             Effect.sync(() => {
               answered = true;
+              if (
+                message.type === "result" &&
+                message.subtype !== "success" &&
+                message.errors.some((error) => error.startsWith(CLAUDE_CONVERSATION_NOT_FOUND))
+              )
+                conversationMissing = true;
               if (message.type === "system" && message.subtype === "init") {
                 cancelsQueuedOnInterrupt =
                   message.capabilities?.includes("interrupt_cancel_queued_v1") === true;
@@ -12417,10 +12427,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const resetTimes = Array.from(context.rateLimitResetTimes.values(), (time) =>
               time !== null && Date.parse(time) > DateTime.toEpochMillis(completedAt) ? time : null,
             );
-            const resetAt =
-              resetTimes.length > 0 && resetTimes.every((time) => time !== null)
-                ? resetTimes.reduce((latest, time) => (time! > latest ? time! : latest), "")
-                : null;
             const resultFailure = interrupted
               ? null
               : limitedCompaction !== null
@@ -12436,6 +12442,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     usageLimited,
                     context.latestAssistantError,
                   );
+            if (resultFailure?.class === "usage_limit" && resultFailure.resetAt != null) {
+              resetTimes.push(resultFailure.resetAt);
+            }
+            const resetAt =
+              resetTimes.length > 0 && resetTimes.every((time) => time !== null)
+                ? resetTimes.reduce((latest, time) => (time! > latest ? time! : latest), "")
+                : null;
             if (resultFailure?.code === "quota_admission_limited") {
               // Earlier account observations must not outlive the router's assigned-account evidence.
               context.rateLimitResetTimes.clear();
@@ -12447,7 +12460,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     resetAt:
                       resultFailure.code === "quota_admission_limited"
                         ? (resultFailure.resetAt ?? null)
-                        : (resetAt ?? resultFailure.resetAt ?? null),
+                        : resetAt,
                   }
                 : resultFailure;
             if (

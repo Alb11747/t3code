@@ -328,7 +328,11 @@ describe("fixed-time scheduled tasks", () => {
       ...legacyTask,
       schedule: { type: "fixed_time", timeOfDay: "14:30" },
     });
-    expect(scheduleFromDraft(draft)).toEqual({ type: "fixed_time", timeOfDay: "14:30", timeZone: null });
+    expect(scheduleFromDraft(draft)).toEqual({
+      type: "fixed_time",
+      timeOfDay: "14:30",
+      timeZone: null,
+    });
     // A native time input reports "" when it is cleared or only partly filled.
     expect(scheduleFromDraft({ ...draft, timeOfDay: "" })).toBeNull();
   });

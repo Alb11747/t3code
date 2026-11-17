@@ -1226,7 +1226,7 @@ export const layer: Layer.Layer<
       let recoveryTurnItem: OrchestrationV2TurnItem | undefined;
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (attempt.recovery === "drop_thinking") {
-          resumedRetryHandoff = [];
+          resumedRetryHandoff = { handoffs: [], attachments: [] };
           return yield* loadFromProvider(
             session.resumeThread({
               providerThread,

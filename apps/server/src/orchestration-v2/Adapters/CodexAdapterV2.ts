@@ -6650,12 +6650,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           const completionHasClass =
             failureCode != null &&
             !codexTerminalErrorNeedsEvidence(input.failureErrorInfo, failureCode);
+          // Native evidence can carry richer quota or sharing details than the completion repeats.
           let failure =
             previousFailure !== undefined &&
             (input.failureMessage === undefined ||
               input.failureMessage === previousFailure.nativeMessage) &&
             (failureCode === undefined || failureCode === previousFailure.nativeCode) &&
-            (!completionHasClass || previousFailure.failure.class === failureClass)
+            (!completionHasClass ||
+              codexTerminalFailureClass(previousFailure.errorInfo, previousFailure.nativeCode) ===
+                failureClass)
               ? previousFailure.failure
               : withCodexManagedFailure(
                   makeProviderFailure({
@@ -7677,7 +7680,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 failure: {
                   nativeMessage: state.nativeMessage,
                   nativeCode: state.nativeCode,
-                  errorInfo: errorInfo,
+                  ...(errorInfo === undefined ? {} : { errorInfo }),
                   failure: {
                     ...state.failure,
                     retryable: false,

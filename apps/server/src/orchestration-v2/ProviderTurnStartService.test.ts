@@ -1138,7 +1138,11 @@ function makeLocalCommandHarness(input: {
                   } as never)
                 : Effect.die("A local command must not open a native session."),
   );
-  const startRootRun = vi.fn((turn: RunExecutionService.RunExecutionServiceV2StartRootRunInput) =>
+  const startRootRun = vi.fn<
+    (
+      turn: RunExecutionService.RunExecutionServiceV2StartRootRunInput,
+    ) => Effect.Effect<void, RunExecutionService.RunExecutionServiceV2Error>
+  >((turn) =>
     input.sideChat !== undefined
       ? (turn.resume
           ? turn.session.resumeTurn!({ ...turn, messageId: turn.message.messageId } as never)
@@ -2379,7 +2383,7 @@ effectIt.effect.each([
           contextRun: "current",
           nativeForkFrom,
           canForkWhileSourceRunning,
-          sourceBoundary,
+          ...(sourceBoundary === undefined ? {} : { sourceBoundary }),
         },
       });
 

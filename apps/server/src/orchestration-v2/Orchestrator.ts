@@ -17391,7 +17391,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           stored.event.type === "provider-turn.updated" &&
           stored.event.payload.status === "running",
       ),
-      Stream.runForEach(deliverStartupQueuedMessages),
+      Stream.runForEach((stored) =>
+        threadReactions.run(stored.event.threadId, deliverStartupQueuedMessages(stored)),
+      ),
       Effect.forkScoped,
     );
 

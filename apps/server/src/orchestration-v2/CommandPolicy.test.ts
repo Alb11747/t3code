@@ -356,6 +356,21 @@ layer("CommandPolicyV2", (it) => {
 
         assert.equal(yield* decide(false), "native_fork");
         assert.equal(yield* decide(true), busyStrategy);
+        assert.equal(
+          yield* policy.decideForkExecution({
+            commandId,
+            threadId,
+            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+            capabilities: ClaudeProviderCapabilitiesV2,
+            sameProvider: true,
+            hasStrongNativeSource: true,
+            hasNativeTurnBoundary: true,
+            sourceRunStatus: "completed",
+            fromSpecificTurn: true,
+            sourceBusy: true,
+          }),
+          "native_fork",
+        );
       }),
   );
 });
