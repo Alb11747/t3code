@@ -398,6 +398,28 @@ export const runScript = Effect.fn("ScheduledTaskScript.run")(function* (input: 
   };
 });
 
+/**
+ * A check runs in its thread's worktree, else its project root (the same repository), and in
+ * the home folder only when the task has neither. It never runs in an unrelated folder.
+ */
+export const resolveScriptCwd = Effect.fn("ScheduledTaskScripts.resolveCwd")(function* (input: {
+  readonly bound: boolean;
+  readonly folders: ReadonlyArray<string | null>;
+}) {
+  if (!input.bound) return { cwd: NodeOS.homedir() };
+  const fs = yield* FileSystem.FileSystem;
+  const folders = input.folders.flatMap((folder) => (folder ? [folder] : []));
+  for (const folder of folders) {
+    if (yield* fs.exists(folder).pipe(Effect.orElseSucceed(() => false))) return { cwd: folder };
+  }
+  return {
+    error:
+      folders.length === 0
+        ? "The task's project no longer exists, so the check did not run."
+        : `The task's folder no longer exists (${folders.join(", ")}), so the check did not run.`,
+  };
+});
+
 const iso = (value: DateTime.DateTime | null | undefined) =>
   value == null ? null : DateTime.formatIso(value);
 
@@ -574,23 +596,14 @@ export const layer = Layer.effect(
       };
     });
 
-    const resolveCwd = Effect.fn("ScheduledTaskScripts.resolveCwd")(function* (
+    const workspaceRoot = Effect.fn("ScheduledTaskScripts.workspaceRoot")(function* (
       projectId: ProjectId | null,
-      worktreePath: string | null,
     ) {
       const project =
         projectId === null ? Option.none() : yield* projects.get(projectId).pipe(Effect.option);
-      const candidates = [
-        worktreePath,
-        Option.isSome(project) && Option.isSome(project.value)
-          ? project.value.value.workspaceRoot
-          : null,
-      ];
-      for (const candidate of candidates) {
-        if (candidate && (yield* fs.exists(candidate).pipe(Effect.orElseSucceed(() => false))))
-          return candidate;
-      }
-      return NodeOS.homedir();
+      return Option.isSome(project) && Option.isSome(project.value)
+        ? project.value.value.workspaceRoot
+        : null;
     });
 
     const evaluate = Effect.fn("ScheduledTaskScripts.evaluate")(function* (
@@ -656,17 +669,24 @@ export const layer = Layer.effect(
         thread: thread === null ? null : threadFields,
         webhook: input.webhook,
       };
-      const cwd = yield* resolveCwd(input.projectId, thread?.worktreePath ?? null);
-      const result = yield* runScript({
-        source: input.source,
-        context,
-        cwd,
-        taskId: input.task?.id ?? null,
-        models,
-      }).pipe(
-        Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
-        Effect.provideService(SecureRandom.SecureRandom, random),
-      );
+      const worktreePath = thread?.worktreePath ?? null;
+      const cwd = yield* resolveScriptCwd({
+        bound: input.projectId !== null || worktreePath !== null,
+        folders: [worktreePath, yield* workspaceRoot(input.projectId)],
+      }).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+      const result =
+        "error" in cwd
+          ? { ...failed(cwd.error), logs: "", durationMs: 0 }
+          : yield* runScript({
+              source: input.source,
+              context,
+              cwd: cwd.cwd,
+              taskId: input.task?.id ?? null,
+              models,
+            }).pipe(
+              Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
+              Effect.provideService(SecureRandom.SecureRandom, random),
+            );
       return {
         ...result,
         contextJson:

@@ -9,7 +9,12 @@ import * as Layer from "effect/Layer";
 import type { ServerProvider } from "@t3tools/contracts";
 
 import * as ProcessRunner from "../processRunner.ts";
-import { decideScriptResult, runScript, type ScriptModels } from "./ScheduledTaskScript.ts";
+import {
+  decideScriptResult,
+  resolveScriptCwd,
+  runScript,
+  type ScriptModels,
+} from "./ScheduledTaskScript.ts";
 
 const NOW = Date.parse("2026-11-13T12:00:00.000Z");
 const ok = (result: unknown, state = "{}") => ({
@@ -222,6 +227,25 @@ describe("runScript", () => {
       expect(hung).toMatchObject({
         outcome: "error",
         error: "The script did not finish within 1 second.",
+      });
+    }),
+  );
+});
+
+describe("resolveScriptCwd", () => {
+  it.effect("falls back to home only when the task has no folder of its own", () =>
+    Effect.gen(function* () {
+      const tmp = NodeOS.tmpdir();
+      const gone = `${tmp}/t3-missing-task-folder`;
+      const cwd = (bound: boolean, ...folders: Array<string | null>) =>
+        resolveScriptCwd({ bound, folders }).pipe(Effect.provide(NodeServices.layer));
+      expect(yield* cwd(false, null, null)).toEqual({ cwd: NodeOS.homedir() });
+      expect(yield* cwd(true, gone, tmp)).toEqual({ cwd: tmp });
+      expect(yield* cwd(true, null, gone)).toEqual({
+        error: `The task's folder no longer exists (${gone}), so the check did not run.`,
+      });
+      expect(yield* cwd(true, null, null)).toEqual({
+        error: "The task's project no longer exists, so the check did not run.",
       });
     }),
   );
