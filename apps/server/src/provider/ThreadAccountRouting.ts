@@ -3,6 +3,7 @@ import {
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2TurnItem,
+  type ProviderThreadId,
   type ThreadId,
   type UsageLimitSourceId,
 } from "@t3tools/contracts";
@@ -29,16 +30,19 @@ export const controlExpiry = (now: DateTime.Utc) =>
 /**
  * Whether a turn must drop thinking that an account move left in the conversation: Claude resends
  * the old account's thinking blocks with every request until a compaction replaces the history.
+ * Only a compaction of this provider thread counts; another provider's compaction leaves it intact.
  */
 export function accountMoveDropsThinking(
   accountMovedAt: string | null | undefined,
   compactions: ReadonlyArray<OrchestrationV2TurnItem>,
+  providerThreadId: ProviderThreadId,
 ): boolean {
   if (!accountMovedAt) return false;
   const movedAt = Date.parse(accountMovedAt);
   return !compactions.some(
     (item) =>
       item.type === "compaction" &&
+      item.providerThreadId === providerThreadId &&
       item.status === "completed" &&
       item.completedAt !== null &&
       DateTime.toEpochMillis(item.completedAt) > movedAt,
@@ -80,6 +84,7 @@ export const make = Effect.gen(function* () {
         input.appThread.accountMovedAt,
         // An unreadable history keeps dropping: it only removes thinking the new account cannot use.
         yield* input.loadCompactions.pipe(Effect.orElseSucceed(() => [])),
+        input.providerThread.id,
       );
     const choice = threadAccountChoiceFor(
       input.appThread.accountChoice,

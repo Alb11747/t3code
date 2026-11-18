@@ -2,6 +2,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import {
   type OrchestrationV2TurnItem,
+  ProviderThreadId,
   UsageLimitSourceError,
   UsageLimitSourceId,
 } from "@t3tools/contracts";
@@ -21,10 +22,16 @@ import type { RouterListing } from "../usage/cliproxyApi.ts";
 import * as UsageLimitSources from "../usage/UsageLimitSources.ts";
 import * as ThreadAccountRouting from "./ThreadAccountRouting.ts";
 
-const compaction = (completedAt: string, status = "completed") =>
+const PROVIDER_THREAD = ProviderThreadId.make("provider-thread-claude");
+const compaction = (
+  completedAt: string,
+  status = "completed",
+  providerThreadId = PROVIDER_THREAD,
+) =>
   ({
     type: "compaction",
     status,
+    providerThreadId,
     completedAt: DateTime.makeUnsafe(completedAt),
   }) as unknown as OrchestrationV2TurnItem;
 
@@ -47,8 +54,15 @@ describe("accountMoveDropsThinking", () => {
       items: [compaction("2026-11-14T13:00:00.000Z")],
       drops: false,
     },
+    {
+      movedAt: "2026-11-14T12:00:00.000Z",
+      items: [compaction("2026-11-14T13:00:00.000Z", "completed", ProviderThreadId.make("codex"))],
+      drops: true,
+    },
   ])("moved $movedAt with $items.length compactions drops: $drops", ({ movedAt, items, drops }) => {
-    expect(ThreadAccountRouting.accountMoveDropsThinking(movedAt, items)).toBe(drops);
+    expect(ThreadAccountRouting.accountMoveDropsThinking(movedAt, items, PROVIDER_THREAD)).toBe(
+      drops,
+    );
   });
 });
 
