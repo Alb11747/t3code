@@ -38,10 +38,13 @@ export const SCHEDULED_TASK_SCRIPT_EXAMPLES: ReadonlyArray<ScheduledTaskScriptEx
   {
     id: "usage-gate",
     label: "Skip when usage is high",
-    description: "Runs only while every Codex account has weekly usage left.",
+    description:
+      "Runs only while every Codex account has weekly usage left, and skips without a reading.",
     source: `// ctx.usage.accounts lists native and CLI Proxy accounts with their usage windows.
 const codex = ctx.usage.accounts.filter((account) => account.driver === "codex");
 const weekly = codex.flatMap((account) => account.windows.filter((w) => w.kind === "weekly"));
+// A failed usage read arrives as no readings, so skip rather than run unchecked.
+if (weekly.length === 0) return { run: false, reason: "No Codex weekly usage reading" };
 if (weekly.some((window) => window.usedPercent >= 80)) {
   return { run: false, reason: "Codex weekly usage is above 80%" };
 }
@@ -56,10 +59,11 @@ return true;
 const weekly = ctx.usage.accounts
   .filter((account) => account.driver === "claudeAgent")
   .flatMap((account) => account.windows.filter((w) => w.kind === "weekly"));
-const low = weekly.some((window) => window.usedPercent >= 70);
+// Usage that could not be read arrives as no readings; treat that as low.
+const low = weekly.length === 0 || weekly.some((window) => window.usedPercent >= 70);
 const lastRun = ctx.state.lastRun ? Date.parse(ctx.state.lastRun) : 0;
 if (low && Date.now() - lastRun < 3 * 24 * 60 * 60 * 1000) {
-  return { run: false, reason: "Weekly usage is low; waiting three days" };
+  return { run: false, reason: "Weekly usage is low or unknown; waiting three days" };
 }
 ctx.state.lastRun = ctx.now;
 return true;
