@@ -58,6 +58,25 @@ jobs:
           LIMIT: ${{ vars.FORK_JOB_BUDGET || 150 }}
         run: bash fork/scripts/job-budget.sh
 
+      # Phones install the newest tag by name and tags carry the build time, so a rerun of an
+      # older commit would publish old code as the newest update. The workflow-level concurrency
+      # group keeps another run from publishing between this check and this run's publication.
+      - name: Refuse to publish over a newer Android release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          newest=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.draft == false) | .tag_name' |
+            { grep -E '^android-fork-[0-9]{12}-[a-f0-9]+$' || true; } | LC_ALL=C sort | tail -n 1)
+          [[ -n "$newest" ]] || exit 0
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$newest...$GITHUB_SHA" --jq .status)
+          if [[ "$status" != ahead && "$status" != identical ]]; then
+            echo "::error::$GITHUB_SHA does not contain $newest, the newest Android release ($status), so publishing it would replace newer code on phones. Dispatch Fork Android APK on current main instead of rerunning an older run: gh workflow run fork-android.yml -R $GITHUB_REPOSITORY --ref main"
+            exit 1
+          fi
+          echo "$GITHUB_SHA contains $newest ($status)."
+
       - uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json

@@ -863,8 +863,10 @@ Android releases use the separate `android-fork-…` tag namespace and package
 `com.alb11747.t3code`. **Fork Android APK** builds on mobile-related `main`
 changes or manual dispatch, using native Gradle without Expo credentials. It
 embeds the app bundle and disables upstream OTA. Android version codes count
-minutes since 2020-01-01 UTC; keep the same signing key for every release so
-users can update without losing their saved data. Build ARM64 only; desktop's
+minutes since 2020-01-01 UTC, so a run refuses to publish a commit that does not
+contain the newest Android release's commit; to republish, dispatch it on
+current `main` rather than rerunning an older run. Keep the same signing key
+for every release so users can update without losing their saved data. Build ARM64 only; desktop's
 platform restrictions do not apply to this APK.
 
 Before running it, provision repository secrets `FORK_ANDROID_KEYSTORE_BASE64`
