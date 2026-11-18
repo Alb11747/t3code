@@ -50,7 +50,7 @@ function fixture(t) {
   const directory = mkdtempSync(path.join(tmpdir(), "t3-release-fallback-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const names = [
-    `T3-Code-${version}-x86_64.AppImage`,
+    "T3-Code-Nightly-x86_64.AppImage",
     `T3-Code-${version}-amd64.deb`,
     `T3-Code-${version}-x64.exe`,
     `T3-Code-${version}-x64.exe.blockmap`,

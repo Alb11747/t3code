@@ -268,7 +268,10 @@ attempt at the previous one.
    If you added an upstream workflow, run
    `bash fork/scripts/disable-upstream-workflows.sh` after pushing; CI-only
    pushes deliberately have no release job to disable it. Sync promotions
-   handle this automatically.
+   handle this automatically. When a tooling fix unblocks an unpublished app
+   release, dispatch **Fork release** again on the updated fork `main`:
+   `gh workflow run fork-release.yml -R Alb11747/t3code --ref main`.
+   Rerunning the failed run still uses its original commit and publisher.
 
    Fork release and Fork PR checks first check a job budget
    (`fork/scripts/job-budget.sh`): once the fork's workflows have run 150 jobs

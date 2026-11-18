@@ -10,7 +10,8 @@ function releaseAssets(directory, version) {
     (name) => /\.(AppImage|deb|exe|blockmap|yml|tar\.gz|zip)$/.test(name) || name === "SHA256SUMS",
   );
   const required = [
-    `T3-Code-${version}-x86_64.AppImage`,
+    // The updater replaces the AppImage in place when the filename has no version.
+    "T3-Code-Nightly-x86_64.AppImage",
     `T3-Code-${version}-amd64.deb`,
     `T3-Code-${version}-x64.exe`,
     `T3-Code-${version}-x64.exe.blockmap`,
@@ -127,8 +128,8 @@ function publish({
     `target_commitish=${sha}`,
     "-f",
     `name=${name}`,
-    "-f",
-    `body=${readFileSync(notes, "utf8")}`,
+    "-F",
+    `body=@${notes}`,
     "-F",
     "draft=true",
     "-F",

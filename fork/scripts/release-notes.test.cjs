@@ -172,6 +172,23 @@ test("includes new upstream and fork changes without repeating rebased carried p
   assert.match(normalized.releaseNotes[0].items[0], /^Fork: feat: new fork patch/);
 });
 
+test("keeps recent entries and links the full comparison when release notes are too large", (t) => {
+  const { git, commit, notes } = fixture(t);
+  git("switch", "upstream");
+  commit("upstream.txt", "older\n", "older upstream entry " + "界".repeat(18_000));
+  commit("upstream.txt", "newer\n", "newer upstream entry " + "界".repeat(18_000));
+  git("switch", "fork");
+  git("merge", "-q", "--no-ff", "-m", "Merge upstream", "upstream");
+  const head = commit("patch.txt", "fork patch\n", "recent fork entry");
+
+  const body = notes();
+  assert.ok(Buffer.byteLength(body) <= 100_000);
+  assert.ok(!body.includes("older upstream entry"));
+  assert.match(body, /Upstream: newer upstream entry/);
+  assert.match(body, /Fork: recent fork entry/);
+  assert.ok(body.includes(`https://github.com/example/fork/compare/${previousTag}...${head}`));
+});
+
 test("lists only new fork commits after upstream is merged in", (t) => {
   const { git, commit, notes } = fixture(t);
   git("switch", "upstream");

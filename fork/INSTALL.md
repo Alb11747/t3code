@@ -14,7 +14,7 @@ GitHub's `/releases/latest` link, which looks for a stable release.
 | Computer                     | Download                                                                                              |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
 | Windows, Intel or AMD 64-bit | `T3-Code-<version>-x64.exe`                                                                           |
-| Linux, Intel or AMD 64-bit   | `T3-Code-<version>-x86_64.AppImage`                                                                   |
+| Linux, Intel or AMD 64-bit   | `T3-Code-Nightly-x86_64.AppImage`                                                                     |
 | Android, ARM64 phone         | `T3-Code-Fork-Android-arm64.apk` from an **Android** release.                                         |
 | macOS or an ARM computer     | No native fork build is published; use [browser access](#browser-access-on-macos-or-other-computers). |
 
@@ -66,15 +66,15 @@ This does not create an independent profile alongside the official app.
 1. Finish active agent work and quit any running T3 Code app.
 2. Download the fork's AppImage and keep it in a writable folder such as
    `~/Applications`, so the updater can replace it.
-3. Make it executable and launch it. Replace `VERSION` with the downloaded
-   filename's version; these commands assume it is initially in `~/Downloads`:
+3. Make it executable and launch it. These commands assume it is initially in
+   `~/Downloads`:
 
    ```sh
    mkdir -p "$HOME/Applications"
-   mv "$HOME/Downloads/T3-Code-VERSION-x86_64.AppImage" "$HOME/Applications/"
+   mv "$HOME/Downloads/T3-Code-Nightly-x86_64.AppImage" "$HOME/Applications/"
    cd "$HOME/Applications"
-   chmod +x T3-Code-VERSION-x86_64.AppImage
-   ./T3-Code-VERSION-x86_64.AppImage
+   chmod +x T3-Code-Nightly-x86_64.AppImage
+   ./T3-Code-Nightly-x86_64.AppImage
    ```
 
 4. [Check the update track](#keep-receiving-fork-updates). Update any launcher you

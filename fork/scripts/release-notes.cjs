@@ -2,6 +2,9 @@ const { execFileSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
 const { readFileSync } = require("node:fs");
 
+// GitHub rejects release bodies over 125,000 characters. Leave room for multibyte text.
+const NOTES_BYTE_LIMIT = 100_000;
+
 // Fork releases are `<upstream nightly>.fork` (upstream synced, nothing new) or
 // `.fork.<n>` (the nth fork change on that nightly). As in semver, `.fork`
 // sorts below `.fork.1` on the same nightly. Other tags are not fork releases.
@@ -186,18 +189,44 @@ function buildReleaseNotes({ cwd, releases, currentTag, repository, upstreamRef 
     `### Built from upstream [${base.slice(0, 12)}](https://github.com/pingdotgg/t3code/commit/${base})`,
     "",
   ];
-  if (upstreamChanges.length) lines.push("### Upstream changes", ...upstreamChanges, "");
-  // The desktop popover keeps the last eight items and shows them newest first.
-  // Put fork changes last so they remain visible when upstream has a busy cut.
-  if (forkChanges.length) lines.push("### New or updated fork patches", ...forkChanges, "");
-  if (!upstreamChanges.length && !forkChanges.length) {
-    lines.push("No new upstream changes or fork patches since the previous release.", "");
+  const upstreamHeading = "### Upstream changes";
+  const forkHeading = "### New or updated fork patches";
+  const comparison = `### [Full comparison](https://github.com/${repository}/compare/${previousTag ?? base}...${head})`;
+  const inventory = `### [All carried fork patches](https://github.com/${repository}/blob/${head}/fork/CHANGES.md)`;
+  const render = (upstream, fork, truncated = false) =>
+    [
+      ...lines,
+      ...(upstream.length ? [upstreamHeading, ...upstream, ""] : []),
+      ...(fork.length ? [forkHeading, ...fork, ""] : []),
+      ...(!upstreamChanges.length && !forkChanges.length
+        ? ["No new upstream changes or fork patches since the previous release.", ""]
+        : []),
+      ...(truncated ? [comparison, ""] : []),
+      inventory,
+      "",
+    ].join("\n");
+
+  const full = render(upstreamChanges, forkChanges);
+  if (Buffer.byteLength(full) <= NOTES_BYTE_LIMIT) return full;
+
+  let remaining =
+    NOTES_BYTE_LIMIT -
+    Buffer.byteLength(render([], [], true)) -
+    Buffer.byteLength(`${upstreamHeading}\n\n${forkHeading}\n\n`);
+  function newest(entries) {
+    let start = entries.length;
+    while (start > 0) {
+      const size = Buffer.byteLength(entries[start - 1]) + 1;
+      if (size > remaining) break;
+      remaining -= size;
+      start--;
+    }
+    return entries.slice(start);
   }
-  // A heading keeps this inventory link out of the popover's change count.
-  lines.push(
-    `### [All carried fork patches](https://github.com/${repository}/blob/${head}/fork/CHANGES.md)`,
-  );
-  return `${lines.join("\n")}\n`;
+
+  // Keep fork entries first in the budget and last in the body, where the desktop popover reads them.
+  const fork = newest(forkChanges);
+  return render(newest(upstreamChanges), fork, true);
 }
 
 module.exports = {
