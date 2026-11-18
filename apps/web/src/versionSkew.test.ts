@@ -41,6 +41,17 @@ describe("versionSkew", () => {
     const olderFork = `0.0.46-nightly.20261014.3132${suffix}`;
     expect(serverUpdateTargetVersion(fork, "boot-service", olderFork)).toBe(fork);
     expect(serverUpdateTargetVersion(fork, null, olderFork)).toBe(fork);
+    const launcher = { kind: "t3-launcher", launcher: "t3", baseDir: "/home/u/.t3" } as const;
+    expect(manualServerUpdateCommand(fork, launcher, olderFork)).toBe(
+      `'t3' update --base-dir '/home/u/.t3' ${fork}`,
+    );
+    expect(manualServerUpdateCommand(fork, launcher, "0.0.46-nightly.20261014.3132")).toBe(
+      "'t3' update --base-dir '/home/u/.t3' 0.0.46-nightly.20261015.3176",
+    );
+    expect(
+      manualServerUpdateCommand(fork, { kind: "npm-global", prefix: "/opt/node" }, olderFork),
+    ).toBeNull();
+    expect(manualServerUpdateCommand(fork, undefined, olderFork)).toBeNull();
     branding.APP_VERSION = fork;
     const environment = {
       environmentId: EnvironmentId.make("server"),

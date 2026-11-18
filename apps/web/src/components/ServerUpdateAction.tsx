@@ -32,7 +32,7 @@ import { useServerConfigs } from "~/state/entities";
 import { useManagedPolicy } from "~/state/managedPolicy";
 import { environmentPresentations } from "~/state/presentation";
 import { ManagedControl } from "./ManagedPolicy";
-import { crossesReleaseTrack } from "@t3tools/shared/cliRelease";
+import { cliReleasesPageUrl, crossesReleaseTrack } from "@t3tools/shared/cliRelease";
 import { Button } from "./ui/button";
 import { toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
@@ -355,7 +355,25 @@ export function ServerUpdateAction({
   }
 
   const manualCommand =
-    selfUpdate === null ? manualServerUpdateCommand(targetVersion, installation) : null;
+    selfUpdate === null
+      ? manualServerUpdateCommand(targetVersion, installation, serverVersion)
+      : null;
+  if (selfUpdate === null && manualCommand === null) {
+    return (
+      <span className="text-muted-foreground text-xs">
+        Install t3 {targetVersion} on that machine from{" "}
+        <a
+          className="underline"
+          href={cliReleasesPageUrl(targetVersion)}
+          target="_blank"
+          rel="noreferrer noopener"
+        >
+          the fork's releases
+        </a>
+        .
+      </span>
+    );
+  }
   const actionLabel =
     manualCommand !== null
       ? updatesInstall

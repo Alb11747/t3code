@@ -115,11 +115,18 @@ export function supportsDesktopAppUpdate(
   return serverConfig?.environment.capabilities.desktopAppUpdate === true;
 }
 
+/** Null for a fork server installed through npm or a runner: npm only has upstream builds. */
 export function manualServerUpdateCommand(
   targetVersion: string,
   installation?: ServerInstallation,
-): string {
-  targetVersion = serverUpdateTargetVersion(targetVersion);
+  serverVersion?: string,
+): string | null {
+  targetVersion = serverUpdateTargetVersion(targetVersion, null, serverVersion);
+  if (
+    installation?.kind !== "t3-launcher" &&
+    targetVersion !== upstreamCliReleaseVersion(targetVersion)
+  )
+    return null;
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
   if (installation?.kind === "npm-global") {
     return `npm install --global --prefix ${quote(installation.prefix)} t3@${targetVersion}`;
