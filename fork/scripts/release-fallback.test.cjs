@@ -41,6 +41,13 @@ test("fallback requires actual budget exhaustion, not an arbitrary failed gate",
       ]),
     /newer budget-blocked/,
   );
+  verifyBudgetFailure(run, jobs, receipt, [
+    {
+      tag_name: "android-fork-202610200700-0123456789ab",
+      draft: false,
+      published_at: "2026-10-20T07:00:00Z",
+    },
+  ]);
 });
 
 const version = "0.1.1-nightly.20261020.3386.fork.1";

@@ -24,7 +24,11 @@ function verifyBudgetFailure(run, jobs, logs, releases) {
   if (!match || Number(match[1]) < Number(match[2])) {
     throw new Error("No job-budget exhaustion receipt; API or runner failures do not qualify.");
   }
-  if (releases.flat().some((release) => !release.draft && release.published_at > run.updated_at)) {
+  // Android releases have their own update feed, so they do not supersede a desktop release.
+  const desktop = releases
+    .flat()
+    .filter((release) => !release.tag_name?.startsWith("android-fork-"));
+  if (desktop.some((release) => !release.draft && release.published_at > run.updated_at)) {
     throw new Error(
       "A release was published after this failure; supply a newer budget-blocked run.",
     );

@@ -428,7 +428,8 @@ example `-b lazarus-linux` while GitHub-hosted runners are limited.
 **Fork release** can also run manually in `Alb11747-Labs/t3code`. Pushes there
 skip every release job. Supply a failed `Alb11747/t3code` Fork release run ID.
 Its budget job must have logged actual budget exhaustion; an API error, runner
-outage, or a failure followed by a newer published release does not qualify.
+outage, or a failure followed by a newer published desktop release (Android
+releases do not count) does not qualify.
 The fallback pins current fork `main` (which must contain the blocked commit),
 checks that exact SHA with Labs' existing checks workflow, and builds the same
 installers, updater feeds, WSL runtime and both native CLI archives. The version
