@@ -78,7 +78,6 @@ import {
   resolveClaudeUpdateRequiredModels,
   withUltracodeToggle,
 } from "./ClaudeModelCatalog.ts";
-import { CLAUDE_AUTO_COMPACT_RANGE, withAutoCompactLimitOption } from "./autoCompactLimit.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -86,18 +85,14 @@ const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabili
 
 function claudeProviderModels(
   builtInModels: ReadonlyArray<ServerProviderModel>,
-  settings: Pick<ClaudeSettings, "customModels" | "autoCompactLimits">,
+  customModels: ClaudeSettings["customModels"],
 ): ReadonlyArray<ServerProviderModel> {
-  return withAutoCompactLimitOption(
-    providerModelsFromSettings(
-      builtInModels,
-      settings.customModels,
-      DEFAULT_CLAUDE_MODEL_CAPABILITIES,
-    ).map((model) =>
-      model.isCustom ? { ...model, capabilities: withUltracodeToggle(model.capabilities) } : model,
-    ),
-    settings.autoCompactLimits,
-    CLAUDE_AUTO_COMPACT_RANGE,
+  return providerModelsFromSettings(
+    builtInModels,
+    customModels,
+    DEFAULT_CLAUDE_MODEL_CAPABILITIES,
+  ).map((model) =>
+    model.isCustom ? { ...model, capabilities: withUltracodeToggle(model.capabilities) } : model,
   );
 }
 
@@ -689,7 +684,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const allModels = claudeProviderModels(
     modelCatalog.models.map((entry) => entry.model),
-    claudeSettings,
+    claudeSettings.customModels,
   );
 
   if (!claudeSettings.enabled) {
@@ -799,7 +794,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         ...resolveClaudeModelsForVersion(modelCatalog, parsedVersion),
         ...claudeReportedModels(modelCatalog, claudeSettings.customModels, capabilities?.models),
       ],
-      claudeSettings,
+      claudeSettings.customModels,
     ),
     capabilities?.effortCapSources ?? [],
   );
@@ -925,7 +920,7 @@ export const makePendingClaudeProvider = Effect.fn("ClaudeProvider.makePendingCl
     const checkedAt = yield* nowIso;
     const models = claudeProviderModels(
       modelCatalog.models.map((entry) => entry.model),
-      claudeSettings,
+      claudeSettings.customModels,
     );
 
     if (!claudeSettings.enabled) {

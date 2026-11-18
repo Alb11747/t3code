@@ -1836,7 +1836,7 @@ describe("composerDraftStore modelSelection", () => {
     store.setProviderModelOptions(
       threadRef,
       CLAUDE_AGENT_DRIVER,
-      toSelections({ thinking: false, autoCompactLimit: "250000" }),
+      toSelections({ thinking: false }),
       {
         persistSticky: true,
       },
@@ -1847,19 +1847,15 @@ describe("composerDraftStore modelSelection", () => {
     ).toEqual(
       modelSelection(CLAUDE_AGENT_DRIVER, "claude-opus-4-6", {
         thinking: false,
-        autoCompactLimit: "250000",
       }),
     );
-    // The auto-compact limit stays with its thread instead of seeding new ones.
-    const state = useComposerDraftStore.getState();
-    expect(state.stickyModelSelectionByProvider[CLAUDE_AGENT_INSTANCE]).toEqual(
+    expect(
+      useComposerDraftStore.getState().stickyModelSelectionByProvider[CLAUDE_AGENT_INSTANCE],
+    ).toEqual(
       modelSelection(CLAUDE_AGENT_DRIVER, "claude-opus-4-6", {
         thinking: false,
       }),
     );
-    expect(
-      state.stickyOptionsByModelByProvider[CLAUDE_AGENT_INSTANCE]?.["claude-opus-4-6"],
-    ).toEqual(toSelections({ thinking: false }));
   });
 
   // regression: #6011 new threads ignored project default models unless edits are marked explicit

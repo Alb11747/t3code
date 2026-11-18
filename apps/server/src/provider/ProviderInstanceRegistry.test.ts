@@ -103,7 +103,6 @@ const makeCodexConfig = (overrides: Partial<CodexSettings>): CodexSettings => ({
   shadowHomePath: "",
   launchArgs: "",
   customModels: [],
-  autoCompactLimits: {},
   ...overrides,
 });
 
@@ -114,7 +113,6 @@ const makeClaudeConfig = (overrides: Partial<ClaudeSettings>): ClaudeSettings =>
   customModels: [],
   launchArgs: "",
   autoCompactWindow: "",
-  autoCompactLimits: {},
   uncachedColdCompaction: false,
   idleCompaction: "default",
   ...overrides,

@@ -123,8 +123,6 @@ export function buildTraitsTriggerDisplay(input: {
   let ultracodeLabelIndex = -1;
   const labels: Array<string> = [];
   for (const descriptor of input.descriptors) {
-    // Fork: the auto-compact limit stays in the picker; the trigger is for effort and speed.
-    if (descriptor.id === "autoCompactLimit") continue;
     if (descriptor.id === "fastMode" && descriptor.type === "boolean") {
       speedLabel = descriptor.currentValue === true ? "Fast" : null;
       fastModeFallbackLabel = speedLabel ?? "Normal";

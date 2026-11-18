@@ -708,15 +708,6 @@ export function makeProviderSettingsSchema<const Fields extends Schema.Struct.Fi
   );
 }
 
-/**
- * Fork: per-model auto-compaction limits in tokens, edited in settings.json; a thread's pick wins.
- * The server checks each entry where it applies, so one bad value cannot disable the instance.
- */
-const AutoCompactLimits = Schema.Record(Schema.String, Schema.Unknown).pipe(
-  Schema.withDecodingDefault(Effect.succeed({})),
-  Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
-);
-
 export const CodexSettings = makeProviderSettingsSchema(
   {
     setupMode: Schema.optionalKey(Schema.Literals(["managed", "existing"])).pipe(
@@ -767,7 +758,6 @@ export const CodexSettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
-    autoCompactLimits: AutoCompactLimits,
   },
   {
     order: ["binaryPath", "homePath", "shadowHomePath", "launchArgs"],
@@ -848,7 +838,6 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
-    autoCompactLimits: AutoCompactLimits,
     uncachedColdCompaction: Schema.Boolean.pipe(
       Schema.withDecodingDefault(Effect.succeed(false)),
       Schema.annotateKey({

@@ -18,34 +18,6 @@ const selection = (
 });
 
 describe("compileClaudeModelSelection", () => {
-  it("resolves the auto-compact limit from the thread, then the model's default", () => {
-    const pick = (value: string) =>
-      selection("claude-opus-5-5", [{ id: "autoCompactLimit", value }]);
-    const defaults = { "claude-opus-5-5": 300_000 };
-    const compile = (input: ModelSelection, limits?: Record<string, unknown>) =>
-      compileClaudeModelSelection(input, BUNDLED_CLAUDE_MODEL_CATALOG, limits).autoCompactLimit;
-    expect(compile(pick("250000"))).toBe(250_000);
-    expect(compile(pick("250000"), defaults)).toBe(250_000);
-    expect(compile(pick("default"), defaults)).toBe(300_000);
-    expect(compile(selection("claude-opus-5-5", []), defaults)).toBe(300_000);
-    expect(compile(pick("default"))).toBeUndefined();
-    // Only offered presets count; anything else falls back.
-    expect(compile(pick("12345"), defaults)).toBe(300_000);
-    expect(compile(pick("2.5e5"), defaults)).toBe(300_000);
-    // An alias finds the default kept under its catalog slug.
-    expect(compile(selection("opus", []), defaults)).toBe(300_000);
-    // Entries outside Claude's window range, or not integers, are ignored one by one.
-    expect(
-      compile(selection("claude-opus-5-5", []), { "claude-opus-5-5": 75_000 }),
-    ).toBeUndefined();
-    expect(
-      compile(selection("claude-opus-5-5", []), { "claude-opus-5-5": "250k" }),
-    ).toBeUndefined();
-    expect(compileClaudeModelSelection(pick("250000")).queryIdentity).not.toBe(
-      compileClaudeModelSelection(pick("default")).queryIdentity,
-    );
-  });
-
   it("compiles context, effort, and settings together", () => {
     expect(
       compileClaudeModelSelection(

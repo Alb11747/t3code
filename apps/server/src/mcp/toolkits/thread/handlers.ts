@@ -26,7 +26,6 @@ import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
 import { queuedRunsInDeliveryOrder } from "../../../orchestration-v2/QueuedRunOrder.ts";
 import * as ThreadAccountService from "../../../usage/ThreadAccountService.ts";
-import { invalidAutoCompactLimit } from "../../../provider/autoCompactLimit.ts";
 import { ThreadToolkit } from "./tools.ts";
 
 function queueEntry(
@@ -273,15 +272,6 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     ),
     writesThread((input) =>
       Effect.gen(function* () {
-        // Fork: launch and delegation check options; configure stores them as given. Checked
-        // before any write so a rejected request changes nothing.
-        const invalidLimit = input.modelSelection && invalidAutoCompactLimit(input.modelSelection);
-        if (invalidLimit !== undefined) {
-          return yield* new OrchestratorMcpFailure({
-            code: "invalid_request",
-            message: invalidLimit,
-          });
-        }
         const {
           threads,
           projection: { thread },

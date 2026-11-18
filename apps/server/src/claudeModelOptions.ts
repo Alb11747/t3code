@@ -16,7 +16,6 @@ import {
   resolveClaudeModelSlug,
   type ClaudeModelCatalog,
 } from "./provider/ClaudeModelCatalog.ts";
-import { CLAUDE_AUTO_COMPACT_RANGE, resolveAutoCompactLimit } from "./provider/autoCompactLimit.ts";
 
 const CLAUDE_CODE_MODEL_ALIASES = new Set(["opus", "sonnet", "haiku", "fable"]);
 
@@ -27,15 +26,12 @@ export interface CompiledClaudeModelSelection {
   readonly settings: Readonly<Record<string, boolean>>;
   /** The alias of a custom model named like one, which Claude Code would otherwise expand. */
   readonly pinnedAlias: string | undefined;
-  /** The auto-compact window from the thread or its model's default; undefined leaves Claude's. */
-  readonly autoCompactLimit: number | undefined;
   readonly queryIdentity: string;
 }
 
 export function compileClaudeModelSelection(
   selection: ModelSelection,
   catalog: ClaudeModelCatalog = BUNDLED_CLAUDE_MODEL_CATALOG,
-  autoCompactLimits: Readonly<Record<string, unknown>> = {},
 ): CompiledClaudeModelSelection {
   const capabilities = getClaudeCatalogModelCapabilities(catalog, selection.model);
   const descriptors = getProviderOptionDescriptors({
@@ -69,25 +65,17 @@ export function compileClaudeModelSelection(
     resolveClaudeModelSlug(catalog, selection.model) === apiModelId
       ? apiModelId
       : undefined;
-  const autoCompactLimit = resolveAutoCompactLimit(
-    selection,
-    autoCompactLimits,
-    CLAUDE_AUTO_COMPACT_RANGE,
-    resolveClaudeModelSlug(catalog, selection.model),
-  );
   return {
     apiModelId,
     effort,
     promptEffort,
     settings,
     pinnedAlias,
-    autoCompactLimit,
     queryIdentity: JSON.stringify({
       apiModelId,
       effort: effort ?? null,
       settings,
       pinnedAlias: pinnedAlias ?? null,
-      autoCompactLimit: autoCompactLimit ?? null,
     }),
   };
 }

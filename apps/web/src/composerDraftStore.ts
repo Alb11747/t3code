@@ -49,7 +49,6 @@ import {
   draftModelPickMatchesThread,
   normalizeCustomModelSlug,
   normalizeModelSlug,
-  withoutThreadOnlyOptions,
 } from "@t3tools/shared/model";
 import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 import * as Option from "effect/Option";
@@ -3218,11 +3217,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           });
         },
         setStickyModelSelection: (modelSelection) => {
-          const normalized = normalizeModelSelection(
-            modelSelection?.options === undefined
-              ? modelSelection
-              : { ...modelSelection, options: withoutThreadOnlyOptions(modelSelection.options) },
-          );
+          const normalized = normalizeModelSelection(modelSelection);
           set((state) => {
             if (!normalized) {
               return state;
@@ -3450,20 +3445,19 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               // Traits for another shown model belong in per-model memory only;
               // the sticky selection keeps its own model's traits.
               const appliesToSticky = rememberedModel === stickyBase.model;
-              const stickyOpts = providerOpts && withoutThreadOnlyOptions(providerOpts);
-              if (stickyOpts && stickyOpts.length > 0) {
+              if (providerOpts) {
                 if (appliesToSticky) {
                   nextStickyMap[instanceKey] = createModelSelection(
                     instanceKey,
                     stickyBase.model,
-                    stickyOpts,
+                    providerOpts,
                   );
                 }
                 nextOptionsByModel = {
                   ...state.stickyOptionsByModelByProvider,
                   [instanceKey]: {
                     ...state.stickyOptionsByModelByProvider[instanceKey],
-                    [rememberedModel]: stickyOpts,
+                    [rememberedModel]: providerOpts,
                   },
                 };
               } else {
