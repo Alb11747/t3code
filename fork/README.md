@@ -20,6 +20,18 @@ _Adding a change_, step 1. Upstream often fixes a bug within days of the
 fork's base, so it pays to check fetched `upstream/main` before writing code.
 If a fetch fails, it's best to stop and report it rather than work from stale refs.
 
+## User-requested issues and pull requests
+
+File requested bug reports and open requested PRs in
+[`pingdotgg/t3code`](https://github.com/pingdotgg/t3code). Set the destination
+explicitly with `-R pingdotgg/t3code` when using `gh`. Never create a fork issue
+or fork PR in response to a user request, even when the report comes from a
+fork build or the source branch for an upstream PR lives on the fork.
+
+Check for an existing upstream report or fix before filing. If upstream
+already covers it, link the existing report or fix in your reply. If the
+problem only affects the fork, report the findings to the user in the thread.
+
 ## Layout
 
 | Path                                   | Purpose                                                       |
@@ -561,8 +573,9 @@ label, or request review for an upstream PR.
    for that revision. Prepare the PR body and triage the branch and drafted body;
    resolve any gaps before creating an issue or opening the PR.
 
-   If a substantial fix has no existing issue, create the bug issue now, once
-   the fix is implemented, reviewed, validated and ready for PR publication.
+   If a substantial fix has no existing issue, create the bug issue on
+   `pingdotgg/t3code` once the fix is implemented, reviewed, validated and
+   ready for PR publication.
    Follow the sections of the `via-triage` template
    (`.github/ISSUE_TEMPLATE/via-triage.yml`) and redact secrets and home directory
    paths from quoted evidence. Include the proposed fix, links to the published
