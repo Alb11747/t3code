@@ -489,17 +489,36 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
   });
 
   it("sends the auto-compact window as the env var Claude Code prefers", () => {
-    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
-      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-      nativeThreadId: "native-auto-compact",
-      resume: false,
-      cwd: "/workspace",
-      settings: { ...DEFAULT_CLAUDE_SETTINGS, autoCompactWindow: "400000" },
-    });
-    assert.equal(
-      (options.settings as { env?: Record<string, string> }).env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW,
-      "400000",
-    );
+    // A thread's window comes ahead of the instance's Auto-compact after.
+    for (const [autoCompactLimit, expected] of [
+      [undefined, "400000"],
+      [250_000, "250000"],
+    ] as const) {
+      const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        ...(autoCompactLimit === undefined ? {} : { autoCompactLimit }),
+        nativeThreadId: "native-auto-compact",
+        resume: false,
+        cwd: "/workspace",
+        settings: { ...DEFAULT_CLAUDE_SETTINGS, autoCompactWindow: "400000" },
+      });
+      const settings = options.settings as {
+        env?: Record<string, string>;
+        autoCompactWindow?: number;
+      };
+      assert.equal(settings.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW, expected);
+      assert.equal(settings.autoCompactWindow, Number(expected));
+    }
+  });
+
+  it("turns a thread's auto-compact limit into a window capped at the model's", () => {
+    // Claude compacts 33,000 tokens short of its window.
+    assert.equal(ClaudeAdapterV2.claudeAutoCompactWindow(250_000, 1_000_000), 283_000);
+    assert.equal(ClaudeAdapterV2.claudeAutoCompactWindow(900_000, 200_000), 200_000);
+    // Claude Code's own floor, and its ceiling when the model's window is unknown.
+    assert.equal(ClaudeAdapterV2.claudeAutoCompactWindow(50_000, 200_000), 100_000);
+    assert.equal(ClaudeAdapterV2.claudeAutoCompactWindow(2_000_000, null), 1_000_000);
+    assert.isUndefined(ClaudeAdapterV2.claudeAutoCompactWindow(undefined, 200_000));
   });
 
   it("sends a custom model named like a Claude Code alias to the API unchanged", () => {
@@ -7741,7 +7760,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
           model: "claude-opus-5-5",
         } satisfies ModelSelection;
-        const turn = (ordinal: number, modelSelection: ModelSelection) =>
+        const turn = (
+          ordinal: number,
+          modelSelection: ModelSelection,
+          runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+        ) =>
           makeClaudeTestTurnInput({
             threadId: harness.threadId,
             providerThread: harness.providerThread,
@@ -7751,6 +7774,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             attachments: [],
             providerTurnOrdinal: ordinal,
             modelSelection,
+            ...(runtimePolicy === undefined ? {} : { runtimePolicy }),
           });
         const settle = Effect.gen(function* () {
           yield* harness.offerAndWait(turnOneResult);
@@ -7762,11 +7786,17 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* settle;
         assert.isTrue(yield* harness.hasPendingBackgroundWork);
 
+        // A new auto-compact limit waits for a safe reopen instead of refusing the message.
         yield* harness.runtime.startTurn(
-          turn(2, { ...normal, options: [{ id: "fastMode", value: false }] }),
+          turn(
+            2,
+            { ...normal, options: [{ id: "fastMode", value: false }] },
+            { ...CLAUDE_TEST_RUNTIME_POLICY, autoCompactLimit: 250_000 },
+          ),
         );
         yield* settle;
         assert.deepEqual(harness.liveSelectionChanges, []);
+        assert.strictEqual(harness.getOpenedOptions(), originalOptions);
 
         yield* harness.runtime.startTurn(
           turn(3, {

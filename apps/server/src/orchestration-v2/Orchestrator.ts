@@ -4088,6 +4088,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       runtimeMode: command.runtimeMode,
       interactionMode: command.interactionMode,
       ...(command.accountChoice === undefined ? {} : { accountChoice: command.accountChoice }),
+      ...(command.autoCompactLimit === undefined
+        ? {}
+        : { autoCompactLimit: command.autoCompactLimit }),
       branch: command.branch,
       worktreePath: command.worktreePath,
       activeProviderThreadId: null,
@@ -5188,6 +5191,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     compactBeforeCacheExpires: command.compactBeforeCacheExpires,
                     compactOnceRequestedAt: null,
                   }),
+            ...(command.autoCompactLimit === undefined
+              ? {}
+              : { autoCompactLimit: command.autoCompactLimit }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
             ...(command.limitRecovery !== undefined &&
             limitRecovery?.snooze === true &&
@@ -10094,6 +10100,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         interactionMode: command.interactionMode,
         ...(command.workspaceStrategy === undefined ? {} : { branch: null, worktreePath: null }),
         ...(command.accountChoice === undefined ? {} : { accountChoice: command.accountChoice }),
+        ...(command.autoCompactLimit === undefined
+          ? {}
+          : { autoCompactLimit: command.autoCompactLimit }),
       };
       const task: OrchestrationV2Subagent = {
         id: taskNodeId,

@@ -311,6 +311,9 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           interactionMode,
           workspaceStrategy: strategy ?? { type: "root" },
           ...(accountChoice === undefined ? {} : { accountChoice }),
+          ...(input.autoCompactLimit === undefined
+            ? {}
+            : { autoCompactLimit: input.autoCompactLimit }),
           ...(input.message === undefined && attachments.length === 0
             ? {}
             : {

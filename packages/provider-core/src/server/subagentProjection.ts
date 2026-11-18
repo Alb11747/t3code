@@ -94,6 +94,8 @@ export function makeSubagentChildThread(input: {
     // that asked, and a new conversation has no moved thinking to drop.
     accountChoice: suggestedAccountChoice(input.parentThread, input.providerInstanceId),
     accountMovedAt: null,
+    // Fork: a coordinator's auto-compact limit is its own; a child gets one only when asked.
+    autoCompactLimit: null,
     lineage: {
       parentThreadId: input.parentThread.id,
       relationshipToParent: "subagent",

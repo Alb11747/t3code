@@ -84,9 +84,14 @@ export const layer: Layer.Layer<RuntimePolicyV2> = Layer.succeed(RuntimePolicyV2
       runtimeMode: input.thread.runtimeMode,
       interactionMode: input.thread.interactionMode,
       cwd: input.thread.worktreePath,
+      ...threadAutoCompactLimit(input.thread),
     });
   }),
 });
+
+// Fork: every provider start, resume and fork resolves this policy, so the limit reaches them all.
+const threadAutoCompactLimit = (thread: OrchestrationV2AppThread) =>
+  thread.autoCompactLimit == null ? {} : { autoCompactLimit: thread.autoCompactLimit };
 
 function providerRuntimeMode(
   runtimeMode: RuntimeMode,
@@ -189,6 +194,7 @@ export const layerFromProjectStore: Layer.Layer<
           interactionMode: input.thread.interactionMode,
           cwd,
           ...(maxRuntimeMode === undefined ? {} : { maxRuntimeMode }),
+          ...threadAutoCompactLimit(input.thread),
         });
       }),
     });

@@ -339,6 +339,8 @@ export const layer: Layer.Layer<
               providerThread,
               target: rollbackTarget,
               providerThreadTurns,
+              modelSelection,
+              runtimePolicy: resolvedRuntimePolicy,
             });
       if (input.restoreFiles !== false) yield* checkpoints.restore({ scope, checkpoint });
       if (staleCheckpoints.length > 0) {

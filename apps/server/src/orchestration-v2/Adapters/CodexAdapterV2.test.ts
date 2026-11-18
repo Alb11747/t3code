@@ -126,6 +126,30 @@ describe("CodexAdapterV2 context usage", () => {
   });
 });
 
+describe("CodexAdapterV2 thread config", () => {
+  it("sets the auto-compact limit from the thread, then the model's default", () => {
+    const limit = (threadLimit: number | undefined, defaults: Record<string, unknown>) =>
+      CodexAdapterV2.codexThreadRuntimeParams({
+        threadId: null,
+        mcpSession: undefined,
+        modelSelection: { model: "gpt-6-astra" },
+        runtimePolicy: {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: null,
+          ...(threadLimit === undefined ? {} : { autoCompactLimit: threadLimit }),
+        },
+        autoCompactLimits: defaults,
+      }).config.model_auto_compact_token_limit;
+    assert.equal(limit(250_000, {}), 250_000);
+    assert.equal(limit(250_000, { "gpt-6-astra": 300_000 }), 250_000);
+    assert.equal(limit(undefined, { "gpt-6-astra": 300_000 }), 300_000);
+    // Without a usable entry, Codex's own config stays in charge.
+    assert.isUndefined(limit(undefined, { "gpt-6-sol": 300_000 }));
+    assert.isUndefined(limit(undefined, { "gpt-6-astra": "250k" }));
+  });
+});
+
 describe("CodexAdapterV2 assistant message streaming", () => {
   it.effect("flushes buffered text synchronously before item and turn completion", () =>
     Effect.gen(function* () {

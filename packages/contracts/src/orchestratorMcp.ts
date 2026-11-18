@@ -118,6 +118,14 @@ export const OrchestratorMcpLaunchAccountFields = {
   ),
 };
 
+/** Fork: older environments ignore it. */
+export const OrchestratorMcpAutoCompactLimit = Schema.optional(
+  PositiveInt.annotate({
+    description:
+      "Tokens at which the new thread auto-compacts, capped at its model's window. Omit: the model's default.",
+  }),
+);
+
 export const OrchestratorMcpTarget = Schema.Struct({
   providerInstanceId: Schema.optional(
     ProviderInstanceId.annotate({
@@ -149,6 +157,7 @@ export const OrchestratorMcpTarget = Schema.Struct({
     }),
   ),
   ...OrchestratorMcpLaunchAccountFields,
+  autoCompactLimit: OrchestratorMcpAutoCompactLimit,
   account: Schema.optional(
     Schema.NullOr(TrimmedNonEmptyString).annotate({
       description:

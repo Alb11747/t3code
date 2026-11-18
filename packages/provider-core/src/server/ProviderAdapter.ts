@@ -57,6 +57,8 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    * it; adapters use it to refuse native mode choices a user makes beside T3 Code's own.
    */
   maxRuntimeMode: Schema.optional(RuntimeMode),
+  /** Fork: the thread's auto-compaction limit in tokens; adapters cap it at the model's window. */
+  autoCompactLimit: Schema.optional(PositiveInt),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 
@@ -654,6 +656,9 @@ export interface ProviderAdapterV2RollbackThreadInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly target: ProviderAdapterV2RollbackTarget;
   readonly providerThreadTurns: ReadonlyArray<OrchestrationV2ProviderTurn>;
+  /** Fork: the thread's own selection and policy, for a provider that reloads it to roll back. */
+  readonly modelSelection?: ModelSelection;
+  readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;
 }
 
 export interface ProviderAdapterV2ForkThreadInput {

@@ -380,6 +380,9 @@ const make = Effect.gen(function* () {
           projectId,
           title,
           modelSelection: { instanceId, model, ...(options === undefined ? {} : { options }) },
+          ...(target.autoCompactLimit === undefined
+            ? {}
+            : { autoCompactLimit: target.autoCompactLimit }),
           ...(runtimeMode === undefined ? {} : { runtimeMode }),
           ...(interactionMode === undefined ? {} : { interactionMode }),
           // Fork: the environment it runs in resolves the account on its own hub.

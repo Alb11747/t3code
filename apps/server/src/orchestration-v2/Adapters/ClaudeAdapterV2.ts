@@ -199,6 +199,7 @@ import * as ServerConfig from "../../config.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import { resolveAutoCompactLimit } from "../../provider/autoCompactLimit.ts";
 import * as ClaudeKeepWarm from "../../provider/ClaudeKeepWarm.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
@@ -288,6 +289,27 @@ function claudePromptCacheTtlMs(
 // Below that, Claude compacts 33,000 tokens short of the window: Claude Code 2.1.305's
 // getContextUsage reports a 150,000 window as a 117,000 threshold, for every catalog model.
 const CLAUDE_AUTO_COMPACT_RESERVE_TOKENS = 33_000;
+
+// Claude Code accepts auto-compact windows from 100,000 tokens and caps one at the model's context.
+const CLAUDE_MIN_AUTO_COMPACT_WINDOW = 100_000;
+// Claude Code's upper bound for the window, used only when the model's own window is unknown.
+const CLAUDE_MAX_AUTO_COMPACT_WINDOW = 1_000_000;
+
+/**
+ * Fork: the window that makes Claude compact at `limit` tokens, as Codex does. A limit past the
+ * model's window means the model's own maximum.
+ */
+export function claudeAutoCompactWindow(
+  limit: number | undefined,
+  contextWindow: number | null,
+): number | undefined {
+  if (limit === undefined) return undefined;
+  const max = contextWindow ?? CLAUDE_MAX_AUTO_COMPACT_WINDOW;
+  return Math.max(
+    CLAUDE_MIN_AUTO_COMPACT_WINDOW,
+    Math.min(limit + CLAUDE_AUTO_COMPACT_RESERVE_TOKENS, max),
+  );
+}
 
 // Claude Code's isEnvTruthy.
 function isClaudeEnvTruthy(value: string | undefined): boolean {
@@ -2188,7 +2210,8 @@ function canApplyClaudeSelectionLive(
   return (
     live.settings.alwaysThinkingEnabled === next.settings.alwaysThinkingEnabled &&
     (next.effort !== undefined || live.effort === undefined) &&
-    live.pinnedAlias === next.pinnedAlias
+    live.pinnedAlias === next.pinnedAlias &&
+    live.autoCompactLimit === next.autoCompactLimit
   );
 }
 
@@ -2287,6 +2310,8 @@ const subagentDeviceInstructions: HookCallback = () =>
 export function makeClaudeQueryOptions(input: {
   readonly modelSelection: ModelSelection;
   readonly modelCatalog?: ClaudeModelCatalog;
+  /** Fork: the thread's window from claudeAutoCompactWindow, ahead of the instance setting. */
+  readonly autoCompactLimit?: number;
   readonly nativeThreadId: string;
   readonly title?: string;
   readonly resume: boolean;
@@ -2314,7 +2339,11 @@ export function makeClaudeQueryOptions(input: {
   // Flag settings, because a user's settings.json env beats the process env in Claude Code.
   readonly toolSearchOverride?: "true";
 }): ClaudeAgentSdkQueryOptions {
-  const compiledSelection = compileClaudeModelSelection(input.modelSelection, input.modelCatalog);
+  const compiledSelection = compileClaudeModelSelection(
+    input.modelSelection,
+    input.modelCatalog,
+    input.autoCompactLimit,
+  );
   const {
     // claudeLaunchArgDirectories reads every --add-dir into additionalDirectories.
     "add-dir": _launchArgAddDir,
@@ -2356,9 +2385,12 @@ export function makeClaudeQueryOptions(input: {
         ? ({ ...input.sdkSettings, ...selectionSettings } as ClaudeSdkSettings)
         : selectionSettings;
   const autoCompactWindow =
-    input.settings?.autoCompactWindow === undefined || input.settings.autoCompactWindow.length === 0
-      ? undefined
-      : input.settings.autoCompactWindow;
+    compiledSelection.autoCompactLimit !== undefined
+      ? String(compiledSelection.autoCompactLimit)
+      : input.settings?.autoCompactWindow === undefined ||
+          input.settings.autoCompactWindow.length === 0
+        ? undefined
+        : input.settings.autoCompactWindow;
   const compactQuerySettings =
     autoCompactWindow === undefined
       ? querySettings
@@ -5776,6 +5808,22 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
       compileClaudeModelSelection(modelSelection, modelCatalog).apiModelId,
     ) ??
     null;
+  // Fork: the thread's own limit, else this instance's default for the model, as a window.
+  const threadAutoCompactWindow = (turnInput: {
+    readonly modelSelection: ModelSelection;
+    readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+  }) =>
+    claudeAutoCompactWindow(
+      resolveAutoCompactLimit(
+        turnInput.runtimePolicy.autoCompactLimit,
+        adapterOptions.settings.autoCompactLimits,
+        [
+          resolveClaudeModelSlug(modelCatalog, turnInput.modelSelection.model),
+          turnInput.modelSelection.model,
+        ],
+      ),
+      claudeContextWindow(turnInput.modelSelection),
+    );
   const continuationRequests = adapterOptions.continuationRequests ?? {
     offer: () => Effect.void,
   };
@@ -5913,6 +5961,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
     cwd: string | null,
     modelSelection: ModelSelection,
     launchArgSettings: ClaudeSdkSettings | undefined,
+    threadWindow: number | undefined,
   ) {
     // With auto-compaction off Claude never compacts, so there is no threshold to report.
     for (const name of ["DISABLE_COMPACT", "DISABLE_AUTO_COMPACT"]) {
@@ -5932,6 +5981,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
       }
     }
     if (autoCompactEnabled === false) return "";
+    if (threadWindow !== undefined) return String(threadWindow);
     if (adapterOptions.settings.autoCompactWindow !== "")
       return adapterOptions.settings.autoCompactWindow;
     const validWindow = (value: unknown) => {
@@ -13475,7 +13525,28 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.runtimePolicy.cwd,
             launchArgSettings,
           );
-          let compiledSelection = compileClaudeModelSelection(turnInput.modelSelection, catalog);
+          let compiledSelection = compileClaudeModelSelection(
+            turnInput.modelSelection,
+            catalog,
+            threadAutoCompactWindow(turnInput),
+          );
+          // Fork: a new auto-compact window alone never replaces a process running background
+          // work; it keeps the live window until a later turn can reopen the query.
+          if (
+            !turnInput.resume &&
+            existing !== null &&
+            existing.nativeThreadId === nativeThreadId &&
+            existing.queryPolicyKey === queryPolicyKey &&
+            !existing.stopping &&
+            existing.selection.autoCompactLimit !== compiledSelection.autoCompactLimit &&
+            (yield* liveProcessRunsBackgroundWork(existing))
+          ) {
+            compiledSelection = compileClaudeModelSelection(
+              turnInput.modelSelection,
+              catalog,
+              existing.selection.autoCompactLimit,
+            );
+          }
           if (
             !turnInput.resume &&
             existing !== null &&
@@ -13535,7 +13606,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               turnInput.runtimePolicy.cwd,
               launchArgSettings,
             );
-            compiledSelection = compileClaudeModelSelection(turnInput.modelSelection, catalog);
+            compiledSelection = compileClaudeModelSelection(
+              turnInput.modelSelection,
+              catalog,
+              threadAutoCompactWindow(turnInput),
+            );
           }
 
           // Read before closing the live process so a bad path leaves it running.
@@ -13752,6 +13827,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           let queryOptions = makeClaudeQueryOptions({
             modelSelection: turnInput.modelSelection,
             modelCatalog: catalog,
+            ...(compiledSelection.autoCompactLimit === undefined
+              ? {}
+              : { autoCompactLimit: compiledSelection.autoCompactLimit }),
             nativeThreadId,
             title: turnInput.appThread.title,
             resume: shouldResume,
@@ -14377,6 +14455,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               querySession.settingsCwd,
               turnInput.modelSelection,
               querySession.launchArgSettings,
+              querySession.selection.autoCompactLimit,
             );
             const context: ActiveClaudeTurnContext = {
               input: turnInput,
@@ -14966,6 +15045,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 : compileClaudeModelSelection(
                     turnInput.modelSelection,
                     yield* routedCatalogFor(existing),
+                    // A steer carries no runtime policy; the window waits for the next turn.
+                    existing.selection.autoCompactLimit,
                   );
             const liveSteerSelection =
               steerSelection !== undefined &&
@@ -15415,6 +15496,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const selection = compileClaudeModelSelection(
               modelSelection,
               yield* routedCatalogFor(live),
+              live.selection.autoCompactLimit,
             );
             // A model change still waits for the next turn, which checks it against the turn's permission mode.
             if (

@@ -220,6 +220,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     (input) =>
       input.modelSelection === undefined &&
       input.compactBeforeCacheExpires === undefined &&
+      input.autoCompactLimit === undefined &&
       input.account === undefined,
     McpToolAccess.reads((input) =>
       Effect.gen(function* () {
@@ -246,6 +247,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           compactBeforeCacheExpires: shell.compactOnce
             ? ("once" as const)
             : (thread.compactBeforeCacheExpires ?? null),
+          autoCompactLimit: thread.autoCompactLimit ?? null,
           ...(accounts === null
             ? {}
             : {
@@ -277,13 +279,18 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           projection: { thread },
         } = yield* readThread(input.threadId);
         let sequence: number | undefined;
-        if (input.compactBeforeCacheExpires !== undefined) {
+        if (input.compactBeforeCacheExpires !== undefined || input.autoCompactLimit !== undefined) {
           const result = yield* threads
             .dispatch({
               type: "thread.metadata.update",
               threadId: thread.id,
               commandId: yield* newCommandId(),
-              compactBeforeCacheExpires: input.compactBeforeCacheExpires,
+              ...(input.compactBeforeCacheExpires === undefined
+                ? {}
+                : { compactBeforeCacheExpires: input.compactBeforeCacheExpires }),
+              ...(input.autoCompactLimit === undefined
+                ? {}
+                : { autoCompactLimit: input.autoCompactLimit }),
             })
             .pipe(Effect.mapError(dispatchFailure));
           sequence = result.sequence;
@@ -313,7 +320,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         return {
           sequence: yield* required(
             sequence,
-            "modelSelection`, `compactBeforeCacheExpires` or `account",
+            "modelSelection`, `compactBeforeCacheExpires`, `autoCompactLimit` or `account",
           ),
         };
       }),

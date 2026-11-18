@@ -2,6 +2,7 @@ import { pipe } from "effect/Function";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import * as HubModelAliases from "../../provider/HubModelAliases.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
+import { resolveAutoCompactLimit } from "../../provider/autoCompactLimit.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import { codexFailureRetryable, codexOverloadRetryDelayMs } from "./CodexRetryPolicy.ts";
@@ -1511,17 +1512,24 @@ const CODEX_T3_MCP_TOOL_TIMEOUT_SEC = 65 * 60;
 const CODEX_T3_DIRECT_MCP_SERVER = "t3-code-direct";
 const CODEX_DIRECT_ONLY_T3_TOOLS = ["t3_thread_wait", "delegate_task"];
 
-function codexThreadRuntimeParams(input: {
+export function codexThreadRuntimeParams(input: {
   readonly threadId: ThreadId | null;
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
   readonly modelSelection?: { readonly model: string };
   readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+  readonly autoCompactLimits: CodexSettings["autoCompactLimits"];
 }): {
   readonly cwd?: string;
   readonly model?: string;
   readonly config: Readonly<Record<string, Schema.Json>>;
 } {
   const { mcpSession } = input;
+  // Codex caps the limit at 90% of the model's window itself.
+  const autoCompactLimit = resolveAutoCompactLimit(
+    input.runtimePolicy?.autoCompactLimit,
+    input.autoCompactLimits,
+    input.modelSelection === undefined ? [] : [input.modelSelection.model],
+  );
   const t3Server =
     mcpSession === undefined
       ? undefined
@@ -1535,6 +1543,11 @@ function codexThreadRuntimeParams(input: {
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
     config: {
       ...CODEX_THREAD_CONFIG,
+      // Codex reads config only when it loads a thread, so a change applies on its next load:
+      // a new thread at once, a loaded one after Codex unloads it (idle or restart).
+      ...(autoCompactLimit === undefined
+        ? {}
+        : { model_auto_compact_token_limit: autoCompactLimit }),
       // One app-server serves many threads, so the id goes in per-thread shell config, not its env.
       ...(input.threadId === null
         ? {}
@@ -1962,6 +1975,34 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           new Map<string, NonNullable<CodexTurnStartParams["additionalContext"]>>(),
         );
         const threadsAwaitingContextRestore = yield* Ref.make(new Set<string>());
+        // Fork: reloads outside a turn (MCP apps, rollback) use the thread's latest turn inputs,
+        // not this shared session's, so they keep its current auto-compact limit.
+        const latestThreadInputs = new Map<
+          string,
+          {
+            readonly modelSelection: ModelSelection;
+            readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+          }
+        >();
+        const recordThreadInputs = (
+          threadId: string | null,
+          modelSelection: ModelSelection | undefined,
+          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | undefined,
+        ) => {
+          if (threadId !== null && modelSelection !== undefined && runtimePolicy !== undefined) {
+            latestThreadInputs.set(threadId, { modelSelection, runtimePolicy });
+          }
+        };
+        const threadInputsFor = (threadId: string | null) => {
+          const latest = threadId === null ? undefined : latestThreadInputs.get(threadId);
+          if (latest !== undefined) return latest;
+          // The session's own policy carries its opening thread's limit, not this one's.
+          const { autoCompactLimit: _openingThreadLimit, ...runtimePolicy } = input.runtimePolicy;
+          return {
+            modelSelection: input.modelSelection,
+            runtimePolicy: threadId === input.threadId ? input.runtimePolicy : runtimePolicy,
+          };
+        };
         // Codex drops client developer messages during compaction but only resends additionalContext
         // when it changes. Restore after turn/completed: items injected mid-turn make the turn sample again.
         const restoreAdditionalContext = Effect.fn("CodexAdapterV2.restoreAdditionalContext")(
@@ -8195,10 +8236,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   resumeNativeThread(threadId, {
                     excludeTurns: true,
                     ...codexThreadRuntimeParams({
+                      autoCompactLimits: adapterOptions.settings.autoCompactLimits,
                       threadId: providerThread.appThreadId,
                       mcpSession,
-                      modelSelection: input.modelSelection,
-                      runtimePolicy: input.runtimePolicy,
+                      ...threadInputsFor(providerThread.appThreadId),
                     }),
                   }),
                 ),
@@ -8336,11 +8377,19 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             return false;
           }),
           ensureThread: (threadInput) =>
-            ensureInitialized.pipe(
+            Effect.sync(() =>
+              recordThreadInputs(
+                threadInput.threadId,
+                threadInput.modelSelection,
+                threadInput.runtimePolicy,
+              ),
+            ).pipe(
+              Effect.andThen(ensureInitialized),
               Effect.andThen(mcpSessions.read(threadInput.threadId, adapterOptions.instanceId)),
               Effect.flatMap((mcpSession) =>
                 client.request("thread/start", {
                   ...codexThreadRuntimeParams({
+                    autoCompactLimits: adapterOptions.settings.autoCompactLimits,
                     threadId: threadInput.threadId,
                     mcpSession,
                     modelSelection: threadInput.modelSelection,
@@ -8375,9 +8424,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             function* (threadInput) {
               const nativeThreadId = yield* getNativeThreadId(threadInput.providerThread);
               const appThreadId = threadInput.threadId ?? threadInput.providerThread.appThreadId;
+              recordThreadInputs(
+                appThreadId,
+                threadInput.modelSelection,
+                threadInput.runtimePolicy,
+              );
               const resume = resumeNativeThread(nativeThreadId, {
                 excludeTurns: true,
                 ...codexThreadRuntimeParams({
+                  autoCompactLimits: adapterOptions.settings.autoCompactLimits,
                   threadId: appThreadId,
                   mcpSession: yield* readMcpSession(appThreadId),
                   ...(threadInput.modelSelection === undefined
@@ -8481,6 +8536,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (goalCommand !== null) return runGoalCommand(turnInput, goalCommand);
             const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId;
             return Effect.gen(function* () {
+              recordThreadInputs(
+                turnInput.threadId,
+                turnInput.modelSelection,
+                turnInput.runtimePolicy,
+              );
               if (
                 !continuation &&
                 nativeThreadId != null &&
@@ -9185,10 +9245,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* resumeNativeThread(threadId, {
                   excludeTurns: true,
                   ...codexThreadRuntimeParams({
+                    autoCompactLimits: adapterOptions.settings.autoCompactLimits,
                     threadId: threadInput.providerThread.appThreadId,
                     mcpSession: yield* readMcpSession(threadInput.providerThread.appThreadId),
-                    modelSelection: input.modelSelection,
-                    runtimePolicy: input.runtimePolicy,
+                    ...(threadInput.modelSelection !== undefined &&
+                    threadInput.runtimePolicy !== undefined
+                      ? {
+                          modelSelection: threadInput.modelSelection,
+                          runtimePolicy: threadInput.runtimePolicy,
+                        }
+                      : threadInputsFor(threadInput.providerThread.appThreadId)),
                   }),
                 });
               }
@@ -9230,11 +9296,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             function* (threadInput) {
               const threadId = yield* getNativeThreadId(threadInput.sourceProviderThread);
               const boundary = yield* resolveCodexForkBoundary(threadInput);
+              recordThreadInputs(
+                threadInput.targetThreadId,
+                threadInput.modelSelection,
+                threadInput.runtimePolicy,
+              );
               const fork = client.request("thread/fork", {
                 threadId,
                 excludeTurns: true,
                 ...(boundary.lastTurnId === undefined ? {} : { lastTurnId: boundary.lastTurnId }),
                 ...codexThreadRuntimeParams({
+                  autoCompactLimits: adapterOptions.settings.autoCompactLimits,
                   threadId: threadInput.targetThreadId,
                   mcpSession: yield* mcpSessions.read(
                     threadInput.targetThreadId,

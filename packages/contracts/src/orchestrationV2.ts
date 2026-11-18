@@ -495,6 +495,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   accountChoice: Schema.optional(Schema.NullOr(ThreadAccountChoice)),
   /** Fork: an owned conversation moved accounts; turns drop its old thinking until it compacts. */
   accountMovedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** Fork: tokens to auto-compact at, set by agents; null follows the model's default. */
+  autoCompactLimit: Schema.optional(Schema.NullOr(PositiveInt)),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
@@ -3191,6 +3193,7 @@ export const OrchestrationV2Command = Schema.Union([
     runtimeMode: RuntimeMode,
     interactionMode: ProviderInteractionMode,
     accountChoice: Schema.optional(Schema.NullOr(ThreadAccountChoice)),
+    autoCompactLimit: Schema.optional(PositiveInt),
     branch: Schema.NullOr(TrimmedNonEmptyString),
     worktreePath: Schema.NullOr(TrimmedNonEmptyString),
     /** Only the server sets this; a client's thread.create never carries one. */
@@ -3349,6 +3352,8 @@ export const OrchestrationV2Command = Schema.Union([
     compactBeforeCacheExpires: Schema.optional(
       Schema.NullOr(Schema.Union([Schema.Boolean, Schema.Literal("once")])),
     ),
+    /** Fork: null returns the thread to its model's default. */
+    autoCompactLimit: Schema.optional(Schema.NullOr(PositiveInt)),
     regenerateTitle: Schema.optional(Schema.Boolean),
     branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
     worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -3687,6 +3692,7 @@ export const OrchestrationV2Command = Schema.Union([
     workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
     /** Fork: the child's own account choice, which its first turn pins; null routes automatically. */
     accountChoice: Schema.optional(Schema.NullOr(ThreadAccountChoice)),
+    autoCompactLimit: Schema.optional(PositiveInt),
     // Defaults to settled_only; fire-and-forget wakes require always.
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
     // Absent inherits the parent thread's own delegation policy.

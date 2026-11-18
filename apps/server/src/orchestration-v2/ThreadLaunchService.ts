@@ -103,6 +103,8 @@ export interface ThreadLaunchInput {
   readonly interactionMode: ProviderInteractionMode;
   readonly workspaceStrategy: ThreadLaunchWorkspaceStrategy;
   readonly accountChoice?: ThreadAccountChoice;
+  /** Fork: tokens at which the new thread auto-compacts. */
+  readonly autoCompactLimit?: number;
   readonly initialMessage?: ThreadLaunchInitialMessage;
   readonly importedNativeThread?: {
     readonly ref: {
@@ -1384,6 +1386,9 @@ const make = Effect.gen(function* () {
                 commandId: input.commandId,
                 threadId: candidateThreadId,
                 expectedEmpty: true,
+                ...(input.autoCompactLimit === undefined
+                  ? {}
+                  : { autoCompactLimit: input.autoCompactLimit }),
               })
             : threads.dispatch({
                 type: "thread.create",
@@ -1395,6 +1400,9 @@ const make = Effect.gen(function* () {
                 runtimeMode: input.runtimeMode,
                 interactionMode: input.interactionMode,
                 ...(launchAccountChoice === null ? {} : { accountChoice: launchAccountChoice }),
+                ...(input.autoCompactLimit === undefined
+                  ? {}
+                  : { autoCompactLimit: input.autoCompactLimit }),
                 branch: initialBranch,
                 worktreePath: initialWorktreePath,
                 ...(input.importedNativeThread === undefined

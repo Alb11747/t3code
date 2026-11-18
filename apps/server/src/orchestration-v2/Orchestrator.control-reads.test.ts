@@ -815,6 +815,50 @@ it.effect("idle compaction keeps a snooze that a sent message ends", () =>
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("stores an agent's auto-compact limit on the thread", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:auto-compact-limit");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-auto-compact-limit"),
+      threadId,
+      projectId: ProjectId.make("project:auto-compact-limit"),
+      title: "Coordinator",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      autoCompactLimit: 250_000,
+      branch: null,
+      worktreePath: null,
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    const limit = Effect.map(projections.getThread(threadId), (thread) => thread.autoCompactLimit);
+    assert.equal(yield* limit, 250_000);
+    const setLimit = (step: string, autoCompactLimit: number | null) =>
+      orchestrator.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make(`auto-compact-limit-${step}`),
+        threadId,
+        autoCompactLimit,
+      });
+    yield* setLimit("raise", 400_000);
+    assert.equal(yield* limit, 400_000);
+    // An unrelated metadata change keeps it.
+    yield* orchestrator.dispatch({
+      type: "thread.metadata.update",
+      commandId: CommandId.make("auto-compact-limit-title"),
+      threadId,
+      title: "Renamed",
+    });
+    assert.equal(yield* limit, 400_000);
+    yield* setLimit("clear", null);
+    assert.isNull(yield* limit);
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("a one-shot compaction mark lasts until a run starts after it", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;

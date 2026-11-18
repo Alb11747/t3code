@@ -32,6 +32,7 @@ function makeThread(input: {
   readonly now: DateTime.Utc;
   readonly worktreePath: string | null;
   readonly runtimeMode?: RuntimeMode;
+  readonly autoCompactLimit?: number | null;
 }): OrchestrationV2AppThread {
   const threadId = ThreadId.make("thread:runtime-policy");
   return {
@@ -43,6 +44,7 @@ function makeThread(input: {
     providerInstanceId,
     modelSelection,
     runtimeMode: input.runtimeMode ?? "full-access",
+    ...(input.autoCompactLimit === undefined ? {} : { autoCompactLimit: input.autoCompactLimit }),
     interactionMode: "default",
     branch: null,
     worktreePath: input.worktreePath,
@@ -155,6 +157,22 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
       assert.equal(yield* modeFor(grokInstanceId, "auto"), "auto");
       assert.equal(yield* modeFor(grokInstanceId, "full-access"), "full-access");
       assert.equal(yield* modeFor(providerInstanceId, "auto-accept-edits"), "auto-accept-edits");
+    }),
+  );
+
+  it.effect("carries the thread's auto-compact limit to the provider", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const limitFor = (autoCompactLimit: number | null) =>
+        policy
+          .resolve({
+            thread: makeThread({ now, worktreePath: null, autoCompactLimit }),
+            modelSelection,
+          })
+          .pipe(Effect.map((resolved) => resolved.autoCompactLimit));
+      assert.equal(yield* limitFor(250_000), 250_000);
+      assert.isUndefined(yield* limitFor(null));
     }),
   );
 });

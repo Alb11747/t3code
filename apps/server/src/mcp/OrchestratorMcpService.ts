@@ -2945,6 +2945,9 @@ const make = Effect.gen(function* () {
           interactionMode,
           ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
           ...(accountChoice === undefined ? {} : { accountChoice }),
+          ...(input.target?.autoCompactLimit === undefined
+            ? {}
+            : { autoCompactLimit: input.target.autoCompactLimit }),
           ...(input.notifyParent === undefined ? {} : { notifyParent: input.notifyParent }),
           // Async delegations wake the parent on every child terminal; wait
           // delegations deliver through the blocking tool call until `awaitTask`
@@ -3323,6 +3326,9 @@ const make = Effect.gen(function* () {
                   modelSelection: target.modelSelection,
                   runtimeMode,
                   interactionMode,
+                  ...(request.target?.autoCompactLimit === undefined
+                    ? {}
+                    : { autoCompactLimit: request.target.autoCompactLimit }),
                   branch: parent.thread.branch,
                   worktreePath: parent.thread.worktreePath,
                   ...(parent.thread.linkOrigin === undefined
