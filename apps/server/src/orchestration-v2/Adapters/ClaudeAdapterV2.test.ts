@@ -489,17 +489,38 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
   });
 
   it("sends the auto-compact window as the env var Claude Code prefers", () => {
-    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
-      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-      nativeThreadId: "native-auto-compact",
-      resume: false,
-      cwd: "/workspace",
-      settings: { ...DEFAULT_CLAUDE_SETTINGS, autoCompactWindow: "400000" },
-    });
-    assert.equal(
-      (options.settings as { env?: Record<string, string> }).env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW,
-      "400000",
-    );
+    const model = CLAUDE_TEST_MODEL_SELECTION.model;
+    // A thread's pick beats the model's default, which beats the instance window.
+    for (const [threadPick, modelDefaults, expected] of [
+      [undefined, {}, "400000"],
+      ["250000", {}, "250000"],
+      ["default", { [model]: 300_000 }, "300000"],
+      ["150000", { [model]: 300_000 }, "150000"],
+      [undefined, { "other-model": 300_000 }, "400000"],
+    ] as const) {
+      const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+        modelSelection: {
+          ...CLAUDE_TEST_MODEL_SELECTION,
+          ...(threadPick === undefined
+            ? {}
+            : { options: [{ id: "autoCompactLimit", value: threadPick }] }),
+        },
+        nativeThreadId: "native-auto-compact",
+        resume: false,
+        cwd: "/workspace",
+        settings: {
+          ...DEFAULT_CLAUDE_SETTINGS,
+          autoCompactWindow: "400000",
+          autoCompactLimits: modelDefaults,
+        },
+      });
+      const settings = options.settings as {
+        env?: Record<string, string>;
+        autoCompactWindow?: number;
+      };
+      assert.equal(settings.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW, expected);
+      assert.equal(settings.autoCompactWindow, Number(expected));
+    }
   });
 
   it("sends a custom model named like a Claude Code alias to the API unchanged", () => {

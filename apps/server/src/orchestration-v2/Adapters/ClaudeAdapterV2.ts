@@ -2188,7 +2188,9 @@ function canApplyClaudeSelectionLive(
   return (
     live.settings.alwaysThinkingEnabled === next.settings.alwaysThinkingEnabled &&
     (next.effort !== undefined || live.effort === undefined) &&
-    live.pinnedAlias === next.pinnedAlias
+    live.pinnedAlias === next.pinnedAlias &&
+    // Claude Code reads the window when its process starts.
+    live.autoCompactLimit === next.autoCompactLimit
   );
 }
 
@@ -2314,7 +2316,11 @@ export function makeClaudeQueryOptions(input: {
   // Flag settings, because a user's settings.json env beats the process env in Claude Code.
   readonly toolSearchOverride?: "true";
 }): ClaudeAgentSdkQueryOptions {
-  const compiledSelection = compileClaudeModelSelection(input.modelSelection, input.modelCatalog);
+  const compiledSelection = compileClaudeModelSelection(
+    input.modelSelection,
+    input.modelCatalog,
+    input.settings?.autoCompactLimits,
+  );
   const {
     // claudeLaunchArgDirectories reads every --add-dir into additionalDirectories.
     "add-dir": _launchArgAddDir,
@@ -2356,9 +2362,12 @@ export function makeClaudeQueryOptions(input: {
         ? ({ ...input.sdkSettings, ...selectionSettings } as ClaudeSdkSettings)
         : selectionSettings;
   const autoCompactWindow =
-    input.settings?.autoCompactWindow === undefined || input.settings.autoCompactWindow.length === 0
-      ? undefined
-      : input.settings.autoCompactWindow;
+    compiledSelection.autoCompactLimit !== undefined
+      ? String(compiledSelection.autoCompactLimit)
+      : input.settings?.autoCompactWindow === undefined ||
+          input.settings.autoCompactWindow.length === 0
+        ? undefined
+        : input.settings.autoCompactWindow;
   const compactQuerySettings =
     autoCompactWindow === undefined
       ? querySettings
@@ -5932,6 +5941,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
       }
     }
     if (autoCompactEnabled === false) return "";
+    const threadWindow = compileClaudeModelSelection(
+      modelSelection,
+      modelCatalog,
+      adapterOptions.settings.autoCompactLimits,
+    ).autoCompactLimit;
+    if (threadWindow !== undefined) return String(threadWindow);
     if (adapterOptions.settings.autoCompactWindow !== "")
       return adapterOptions.settings.autoCompactWindow;
     const validWindow = (value: unknown) => {
@@ -13475,7 +13490,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.runtimePolicy.cwd,
             launchArgSettings,
           );
-          let compiledSelection = compileClaudeModelSelection(turnInput.modelSelection, catalog);
+          let compiledSelection = compileClaudeModelSelection(
+            turnInput.modelSelection,
+            catalog,
+            adapterOptions.settings.autoCompactLimits,
+          );
           if (
             !turnInput.resume &&
             existing !== null &&
@@ -13535,7 +13554,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               turnInput.runtimePolicy.cwd,
               launchArgSettings,
             );
-            compiledSelection = compileClaudeModelSelection(turnInput.modelSelection, catalog);
+            compiledSelection = compileClaudeModelSelection(
+              turnInput.modelSelection,
+              catalog,
+              adapterOptions.settings.autoCompactLimits,
+            );
           }
 
           // Read before closing the live process so a bad path leaves it running.
@@ -14966,6 +14989,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 : compileClaudeModelSelection(
                     turnInput.modelSelection,
                     yield* routedCatalogFor(existing),
+                    adapterOptions.settings.autoCompactLimits,
                   );
             const liveSteerSelection =
               steerSelection !== undefined &&
@@ -15415,6 +15439,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const selection = compileClaudeModelSelection(
               modelSelection,
               yield* routedCatalogFor(live),
+              adapterOptions.settings.autoCompactLimits,
             );
             // A model change still waits for the next turn, which checks it against the turn's permission mode.
             if (

@@ -126,6 +126,32 @@ describe("CodexAdapterV2 context usage", () => {
   });
 });
 
+describe("CodexAdapterV2 thread config", () => {
+  it("sets the auto-compact limit from the thread, then the model's default", () => {
+    const limit = (options: ModelSelection["options"], limits: Record<string, unknown>) =>
+      CodexAdapterV2.codexThreadRuntimeParams({
+        threadId: null,
+        mcpSession: undefined,
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-6-astra",
+          ...(options === undefined ? {} : { options }),
+        },
+        autoCompactLimits: limits,
+      }).config.model_auto_compact_token_limit;
+    const pick = (value: string) => [{ id: "autoCompactLimit", value }];
+    assert.equal(limit(pick("250000"), {}), 250_000);
+    assert.equal(limit(pick("250000"), { "gpt-6-astra": 300_000 }), 250_000);
+    assert.equal(limit(pick("default"), { "gpt-6-astra": 300_000 }), 300_000);
+    assert.equal(limit(undefined, { "gpt-6-astra": 300_000 }), 300_000);
+    // Default with no usable model entry leaves Codex's own config in charge.
+    assert.isUndefined(limit(pick("default"), { "gpt-6-sol": 300_000 }));
+    assert.isUndefined(limit(pick("default"), { "gpt-6-astra": "250k" }));
+    // Only exact preset ids count as a thread's pick.
+    assert.equal(limit(pick("2.5e5"), { "gpt-6-astra": 300_000 }), 300_000);
+  });
+});
+
 describe("CodexAdapterV2 assistant message streaming", () => {
   it.effect("flushes buffered text synchronously before item and turn completion", () =>
     Effect.gen(function* () {

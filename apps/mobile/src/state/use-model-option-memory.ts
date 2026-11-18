@@ -1,4 +1,5 @@
 import type { ProviderOptionSelection } from "@t3tools/contracts";
+import { withoutThreadOnlyOptions } from "@t3tools/shared/model";
 import { appAtomRegistry } from "./atom-registry";
 import {
   modelOptionMemoryAtom,
@@ -35,8 +36,9 @@ function lookupModelOptionsInState(
 export function rememberModelOptions(
   instanceId: string,
   model: string,
-  options: ReadonlyArray<ProviderOptionSelection>,
+  allOptions: ReadonlyArray<ProviderOptionSelection>,
 ): void {
+  const options = withoutThreadOnlyOptions(allOptions);
   if (options.length === 0) {
     return;
   }

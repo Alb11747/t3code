@@ -112,6 +112,16 @@ reported accounts, refresh provider status, and confirm the second instance has
 its own shadow path and login. A shadow-home conflict usually means the directory
 contains a copied Codex setup. Use a fresh shadow directory and sign in again.
 
+## Compact long conversations sooner
+
+Pick **Auto-compact** in the composer's model options to have Codex summarize a thread at about
+that many tokens. Codex reads the value only when it loads the thread, so a change to a thread
+Codex already has open applies once Codex reloads it, for example after the thread sits idle.
+
+**Default** uses the model's entry in the instance's `autoCompactLimits`, if it has one, and
+otherwise Codex's own setting. Set entries in `settings.json` under
+`providerInstances.<instance>.config`, for example `"autoCompactLimits": {"gpt-6-astra": 250000}`.
+
 ## Answer questions while Codex works
 
 Codex can ask a question and keep working. Answer it in the thread's question

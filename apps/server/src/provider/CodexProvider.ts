@@ -32,6 +32,7 @@ import type {
   ServerProviderSkill,
 } from "@t3tools/contracts";
 import { PREFERRED_DEFAULT_CODEX_MODELS, ServerSettingsError } from "@t3tools/contracts";
+import { CODEX_AUTO_COMPACT_RANGE, withAutoCompactLimitOption } from "./autoCompactLimit.ts";
 
 import {
   codexModelFamily,
@@ -1157,6 +1158,12 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       applyPreferredCodexDefaultModel,
       (models) => applyConfiguredCodexServiceTier(models, snapshot.serviceTier),
       (models) => applyConfiguredCodexCyberAccess(models, snapshot),
+      (models) =>
+        withAutoCompactLimitOption(
+          models,
+          codexSettings.autoCompactLimits,
+          CODEX_AUTO_COMPACT_RANGE,
+        ),
     ),
     skills: snapshot.skills,
     slashCommands: [

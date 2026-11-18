@@ -581,7 +581,11 @@ it.layer(
   describe("checkCodexProviderStatus", () => {
     it.effect("uses the app-server account and model list for provider status", () =>
       Effect.gen(function* () {
-        const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+        const settings = {
+          ...defaultCodexSettings,
+          autoCompactLimits: { "gpt-live-codex": 275_000 },
+        };
+        const status = yield* checkCodexProviderStatus(settings, () =>
           Effect.succeed(
             makeCodexProbeSnapshot({
               skills: [
@@ -604,12 +608,25 @@ it.layer(
         assert.strictEqual(status.auth.label, "ChatGPT Pro 200 Subscription");
         assert.strictEqual(status.auth.email, "test@example.com");
         assert.deepStrictEqual(status.setup, { canAuthenticate: false, canInstall: false });
+        // The model's configured default names its limit.
+        const autoCompact = {
+          id: "autoCompactLimit",
+          label: "Auto-compact",
+          description: "Compact this thread at about this many tokens.",
+          type: "select" as const,
+          options: [
+            { id: "default", label: "Default (275k)", isDefault: true },
+            ...[100, 150, 200, 250, 300, 400, 500].map((k) => ({ id: `${k}000`, label: `${k}k` })),
+          ],
+        };
         assert.deepStrictEqual(status.models, [
           {
             slug: "gpt-live-codex",
             name: "GPT Live Codex",
             isCustom: false,
-            capabilities: codexModelCapabilities,
+            capabilities: {
+              optionDescriptors: [...(codexModelCapabilities.optionDescriptors ?? []), autoCompact],
+            },
           },
         ]);
         assert.deepStrictEqual(status.skills, [
@@ -4412,19 +4429,20 @@ it.layer(
             ["gateway/kimi-3[1m]", "Kimi (mine)", true],
           ],
         );
-        assert.deepStrictEqual(added[0]?.capabilities?.optionDescriptors, []);
-        assert.deepStrictEqual(added[1]?.capabilities?.optionDescriptors, [
-          {
-            id: "effort",
-            label: "Reasoning",
-            type: "select",
-            options: [
-              { id: "default", label: "Default", isDefault: true },
-              { id: "low", label: "Low" },
-              { id: "high", label: "High" },
-            ],
-          },
-        ]);
+        const ids = (model: (typeof added)[number] | undefined) =>
+          model?.capabilities?.optionDescriptors?.map((descriptor) => descriptor.id);
+        assert.deepStrictEqual(ids(added[0]), ["autoCompactLimit"]);
+        assert.deepStrictEqual(added[1]?.capabilities?.optionDescriptors?.[0], {
+          id: "effort",
+          label: "Reasoning",
+          type: "select",
+          options: [
+            { id: "default", label: "Default", isDefault: true },
+            { id: "low", label: "Low" },
+            { id: "high", label: "High" },
+          ],
+        });
+        assert.deepStrictEqual(ids(added[1]), ["effort", "autoCompactLimit"]);
       }).pipe(
         Effect.provide(
           layerMockSpawner((args) => {
@@ -4809,7 +4827,11 @@ it.layer(
               ? `${descriptor.id}:${descriptor.options.map((option) => option.id).join("|")}`
               : `${descriptor.id}:${descriptor.type}`,
           ),
-          ["effort:high|xhigh", "ultracode:boolean"],
+          [
+            "effort:high|xhigh",
+            "ultracode:boolean",
+            "autoCompactLimit:default|100000|150000|200000|250000|300000|400000|500000",
+          ],
         );
       }).pipe(
         Effect.provide(

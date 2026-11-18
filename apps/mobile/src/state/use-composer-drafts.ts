@@ -31,7 +31,7 @@ import type {
   EnvironmentShellState,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import { draftModelPickMatchesThread } from "@t3tools/shared/model";
+import { draftModelPickMatchesThread, withoutThreadOnlyOptions } from "@t3tools/shared/model";
 
 import { writeFileAtomically } from "../lib/atomic-file";
 import { createComposerContextHistory, referencedComposerContext } from "../lib/composerContext";
@@ -1376,7 +1376,12 @@ function updateComposerDrafts(
 }
 
 export function setStickyComposerModelSelection(modelSelection: ModelSelection): void {
-  appAtomRegistry.set(stickyComposerModelSelectionAtom, modelSelection);
+  appAtomRegistry.set(
+    stickyComposerModelSelectionAtom,
+    modelSelection.options === undefined
+      ? modelSelection
+      : { ...modelSelection, options: withoutThreadOnlyOptions(modelSelection.options) },
+  );
   schedulePersistComposerState();
 }
 

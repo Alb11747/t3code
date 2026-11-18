@@ -581,3 +581,12 @@ export function applyClaudePromptEffortPrefix(
   }
   return `Ultrathink:\n${trimmed}`;
 }
+
+/** Fork: a thread's auto-compact limit is its own; client model memory never carries it. */
+export function withoutThreadOnlyOptions<Options extends ReadonlyArray<ProviderOptionSelection>>(
+  options: Options,
+): Options | Array<ProviderOptionSelection> {
+  return options.some((option) => option.id === "autoCompactLimit")
+    ? options.filter((option) => option.id !== "autoCompactLimit")
+    : options;
+}

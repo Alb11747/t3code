@@ -13,6 +13,7 @@ import { ChildProcessSpawner } from "effect/process";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { chatGptModels } from "../CodexChatGptModels.ts";
+import { CODEX_AUTO_COMPACT_RANGE, withAutoCompactLimitOption } from "../autoCompactLimit.ts";
 import { makeCodexManagedRuntime } from "../CodexManagedRuntime.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { createCodexAdapterV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -148,7 +149,15 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           const models = yield* chatGptModels(credentials.accessToken, draft.models).pipe(
             Effect.provideService(HttpClient.HttpClient, http),
           );
-          return { ...draft, models };
+          // The probe ran on the managed launch config; the instance's own map labels defaults.
+          return {
+            ...draft,
+            models: withAutoCompactLimitOption(
+              models,
+              config.autoCompactLimits,
+              CODEX_AUTO_COMPACT_RANGE,
+            ),
+          };
         }),
       ),
       Effect.map((draft) =>
