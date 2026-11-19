@@ -12724,6 +12724,33 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           );
         });
 
+        // A new turn means Claude has had its chance to report an earlier turn's input. Input it
+        // took but never reported counts as delivered, as when its process ends.
+        const settleBoundaryOffersOfEarlierTurns = Effect.fnUntraced(function* (
+          live: ClaudeLiveQueryContext,
+          current: ActiveClaudeTurnContext,
+        ) {
+          yield* live.boundaryLock.withPermits(1)(
+            Effect.gen(function* () {
+              for (const batch of live.boundaryBatches) {
+                if (batch.context === current) continue;
+                yield* acceptBoundaryOffers(
+                  batch,
+                  batch.offers
+                    .filter(
+                      (offer) =>
+                        batch.consumed.has(offer.id) &&
+                        !batch.started.has(offer.id) &&
+                        !batch.withdrawn.has(offer.id),
+                    )
+                    .map((offer) => offer.id),
+                );
+              }
+              pruneBoundaryBatches(live.boundaryBatches);
+            }),
+          );
+        });
+
         const handleSdkMessage = Effect.fnUntraced(function* (input: {
           readonly query: ClaudeAgentSdkQuerySession;
           readonly message: SDKMessage;
@@ -14551,6 +14578,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     : { cause: querySession.exitCause }),
                 });
               }
+              yield* settleBoundaryOffersOfEarlierTurns(querySession, context);
               if (
                 !isClaudeProviderContinuationTurn(turnInput) &&
                 permissionModeForClaudeRuntimePolicy(turnInput.runtimePolicy) ===

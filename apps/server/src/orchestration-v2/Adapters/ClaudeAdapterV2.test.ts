@@ -4143,15 +4143,32 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.lengthOf(withdrawals, 1);
         // Later reports settle directly, since the ended turn no longer ingests events.
         yield* lifecycle(offers[2]!.id, "discarded");
-        for (const offer of offers.slice(3)) yield* lifecycle(offer.id, "started");
+        for (const offer of offers.slice(3, -1)) yield* lifecycle(offer.id, "started");
         assert.deepEqual(
           withdrawals.flatMap((withdrawal) => withdrawal.offers.map((offer) => offer.id)),
           [offers[1]!.id, offers[2]!.id],
         );
         assert.deepEqual(
           lateReceipts.flatMap((receipt) => receipt.offers.map((offer) => offer.id)),
+          offers.slice(3, -1).map((offer) => offer.id),
+        );
+        // The next turn settles input Claude took but never reported: delivered, never resent.
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("mixed-boundary-next-attempt"),
+            providerTurnOrdinal: 2,
+            text: "Next turn.",
+            attachments: [],
+          }),
+        );
+        assert.deepEqual(
+          lateReceipts.flatMap((receipt) => receipt.offers.map((offer) => offer.id)),
           offers.slice(3).map((offer) => offer.id),
         );
+        assert.lengthOf(withdrawals, 2);
         assert.lengthOf(deliveryEvents(), 2);
       }).pipe(
         Effect.scoped,
