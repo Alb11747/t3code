@@ -777,8 +777,6 @@ export const OrchestrationV2Run = Schema.Struct({
   /** This message cannot run until the referenced compaction succeeds. */
   afterCompactionMessageId: Schema.optional(MessageId),
   steerWhenReadyRunId: Schema.optional(RunId),
-  /** A person's Send now waiting for the turn to start: it interrupts once the turn runs. */
-  steerNow: Schema.optional(Schema.Literal(true)),
   requestedAt: Schema.DateTimeUtc,
   startedAt: Schema.NullOr(Schema.DateTimeUtc),
   completedAt: Schema.NullOr(Schema.DateTimeUtc),

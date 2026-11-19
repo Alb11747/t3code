@@ -211,7 +211,9 @@ export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQu
           capabilities?.supportsSteeringByInterruptRestart === true)),
     awaitsProviderTurn: activeRun !== null && !activeProviderTurnRunning,
     promoteSkipsCompaction,
-    sendNowInterruptsTools: activeRun !== null && session?.driver === "claudeAgent",
+    // A starting turn takes it at a boundary, and a compaction is skipped instead.
+    sendNowInterruptsTools:
+      hasSteerableProviderTurn && !promoteSkipsCompaction && session?.driver === "claudeAgent",
   };
 }
 

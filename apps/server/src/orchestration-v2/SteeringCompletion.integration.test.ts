@@ -3687,7 +3687,7 @@ it.effect.each([
     ),
 );
 
-it.effect("Send now pressed while Claude's turn starts still interrupts once it runs", () =>
+it.effect("Send now pressed while Claude's turn starts waits for its tool boundary", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const queuedId = MessageId.make("message:queued");
@@ -3740,10 +3740,15 @@ it.effect("Send now pressed while Claude's turn starts still interrupts once it 
           Stream.runDrain,
           Effect.forkScoped,
         );
-        yield* startFirstTurn;
+        const threadId = yield* startFirstTurn;
         yield* Fiber.join(settled);
         yield* worker.drain();
-        assert.deepEqual(steered, ["queued"]);
+        // The interrupt is for a turn that is running; one still starting gets a boundary.
+        assert.deepEqual(steered, []);
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.isTrue(
+          projection.messages.find((message) => message.id === queuedId)?.atToolBoundary,
+        );
       }).pipe(Effect.provide(layer));
     }),
   ),

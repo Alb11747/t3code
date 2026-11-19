@@ -12442,14 +12442,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         nodeId: queuedRootNode.id,
         providerInstanceId: queuedRun.providerInstanceId,
         occurredAt: now,
-        payload: {
-          ...queuedRun,
-          steerWhenReadyRunId: target.id,
-          deliveryIntent: "steer",
-          ...(command.interrupt === true && command.requestedBy !== "agent"
-            ? { steerNow: true as const }
-            : {}),
-        },
+        payload: { ...queuedRun, steerWhenReadyRunId: target.id, deliveryIntent: "steer" },
       });
       return;
     }
@@ -17446,7 +17439,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               threadId,
               queuedRunId: next.queued.id,
               targetRunId: next.mode.targetRunId,
-              ...(next.queued.steerNow === true ? { interrupt: true as const } : {}),
             }).pipe(
               Effect.catch((cause) =>
                 Effect.logWarning("Failed to steer a message queued before the turn started", {
