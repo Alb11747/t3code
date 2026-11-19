@@ -6688,6 +6688,98 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  // Claude still runs a steer it holds after an API error ends its turn, so the turn waits for
+  // Claude to start or drop it; the failure stays the turn's outcome either way.
+  it.effect.each(["started", "cancelled"] as const)(
+    "holds a failed result until Claude reports the unread steer %s",
+    (state) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const attemptId = RunAttemptId.make(`attempt-steer-after-failure-${state}`);
+        const input = makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId,
+          text: "Run the build.",
+          attachments: [],
+        });
+        yield* harness.runtime.startTurn(input);
+        yield* harness.runtime.steerTurn({
+          threadId: harness.threadId,
+          runId: input.runId,
+          providerThread: harness.providerThread,
+          providerTurnId: idAllocator.derive.providerTurn({
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeTurnId: `turn:${attemptId}`,
+          }),
+          message: {
+            createdBy: "user",
+            creationSource: "web",
+            messageId: MessageId.make("message-steer-after-failure"),
+            text: "Steer",
+            attachments: [],
+          },
+        });
+        const apiError = "API Error: 403 Your organization does not have access to this model.";
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            ...makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000002520",
+              result: apiError,
+              isError: true,
+              apiErrorStatus: 403,
+              terminalReason: "api_error",
+            }),
+            user_message_uuid: harness.promptUuid(0),
+          }),
+        );
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "command_lifecycle",
+            command_uuid: harness.promptUuid(1),
+            state,
+            uuid: "00000000-0000-4000-8000-000000002521",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        if (state === "started") {
+          yield* harness.offerAndWait(
+            makeAssistantTextFrame({
+              uuid: "00000000-0000-4000-8000-000000002522",
+              text: "Steer reply.",
+            }),
+          );
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              ...makeResultFrame({ uuid: "00000000-0000-4000-8000-000000002523", result: "Done." }),
+              user_message_uuid: harness.promptUuid(1),
+            }),
+          );
+        }
+        yield* harness.awaitTerminal(1);
+        const terminal = harness.terminalEvents()[0];
+        assert.equal(terminal?.status, "failed");
+        assert.equal(terminal?.status === "failed" ? terminal.failure.code : null, "api_error_403");
+        // A dropped steer stays pending, so the orchestrator sends it as the next turn.
+        assert.deepEqual(
+          harness.events.flatMap((event) => (event.type === "steer.updated" ? [event.status] : [])),
+          state === "started" ? ["pending", "completed"] : ["pending"],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+  );
+
   // Claude can answer a steer while its offer is still being logged.
   it.effect("settles a turn whose result echoes only a steer before the offer returns", () =>
     Effect.gen(function* () {

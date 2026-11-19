@@ -5299,6 +5299,8 @@ interface ActiveClaudeTurnContext {
   // A completed result whose turn stays open while Claude still holds a steer; it settles the
   // turn if Claude drops that steer instead of starting it.
   heldResult: SDKResultMessage | undefined;
+  // An error result is held the same way; its failure stays the turn's outcome.
+  heldFailure: OrchestrationV2ProviderFailure | undefined;
   // Claude can run another model than requested, such as when an organization disallows it.
   executedModel: string | undefined;
 }
@@ -9729,10 +9731,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         }) {
           // A turn stopped by the retry budget settles as failed with the retry's error.
           const retryBudgetFailure = requested.context.retryBudgetFailure;
+          const heldFailure = requested.context.heldFailure;
           const budgeted =
             requested.status === "interrupted" && retryBudgetFailure !== undefined
               ? { ...requested, status: "failed" as const, failure: retryBudgetFailure }
-              : requested;
+              : requested.status === "completed" && heldFailure !== undefined
+                ? { ...requested, status: "failed" as const, failure: heldFailure }
+                : requested;
           const paused = yield* settleKeepWarm(budgeted.context, budgeted.status);
           const input = paused === null ? budgeted : { ...budgeted, ...paused };
           yield* cancelOverloadRetry(input.context);
@@ -12620,12 +12625,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             // Claude answers a steer it has not read yet as the next native turn, which echoes
             // the steer. A result without echoes cannot prove that turn will come.
             if (
-              status === "completed" &&
-              terminalFailure === null &&
+              (status === "completed"
+                ? terminalFailure === null
+                : status === "failed" && terminalFailure !== null) &&
               context.pendingSteers.size > 0 &&
               claudeEchoedPromptUuids(message).length > 0
             ) {
               context.heldResult = message;
+              if (terminalFailure !== null) context.heldFailure = terminalFailure;
               return;
             }
             yield* finalizeActiveTurn({
@@ -14703,6 +14710,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               pendingSteers: new Map(),
               steerUuids: new Set(),
               heldResult: undefined,
+              heldFailure: undefined,
               executedModel: undefined,
             };
             const attachTurn = Effect.gen(function* () {
