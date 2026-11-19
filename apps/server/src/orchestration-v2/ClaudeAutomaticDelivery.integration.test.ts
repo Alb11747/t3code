@@ -1424,7 +1424,31 @@ it.effect.each([
       }
 
       if (outcome === "Claude cancels it and the user stops") {
+        // Frames are handled in order, so the reply after the cancel shows Claude dropped it first.
+        const replied = yield* watch(
+          (event) => event.type === "message.updated" && event.payload.text === "Still working.",
+        );
         yield* cancel(offers[1]!);
+        yield* Queue.offer(
+          sdkMessages,
+          frame({
+            type: "assistant",
+            uuid: "after-cancel",
+            session_id: sessionId,
+            parent_tool_use_id: null,
+            message: {
+              id: "after-cancel",
+              role: "assistant",
+              type: "message",
+              model: modelSelection.model,
+              content: [{ type: "text", text: "Still working." }],
+              stop_reason: null,
+              stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          }),
+        );
+        yield* Fiber.join(replied);
         const dropped = yield* watch(
           (event) =>
             event.type === "turn-item.updated" &&
@@ -1447,10 +1471,14 @@ it.effect.each([
             ?.status,
           "cancelled",
         );
-        assert.isTrue(
-          after.turnItems.some(
-            (item) => item.type === "system_notice" && item.message?.includes("Message steer"),
+        // The adapter no longer held the steer, so the orchestrator posts the notice.
+        assert.deepEqual(
+          after.turnItems.flatMap((item) =>
+            item.type === "system_notice" && item.message.includes("Message steer")
+              ? [item.message.startsWith("The agent did not confirm")]
+              : [],
           ),
+          [true],
         );
         assert.deepEqual(yield* queuedOrder, [
           [MessageId.make("before"), true],
