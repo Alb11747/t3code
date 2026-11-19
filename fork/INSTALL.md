@@ -169,9 +169,9 @@ before it reported it, the message counts as delivered and is never sent twice.
 cancel the tools it is running. Sending from the composer still waits for a
 boundary, and an agent's promotion never interrupts. If the turn ends before
 Claude reads the message, it stays open until Claude reads or drops it. If
-Claude drops the message unread, it runs as the next turn, in its place in the
-queue. If Claude or the server stops first, it waits there, held, until you
-resume the queue, because it may already have reached Claude.
+Claude drops it unread, or Claude or the server stops first, it goes back to
+its place in the queue, held until you resume it, because it may already have
+reached Claude. Messages after it still run.
 
 After a restart or crash, messages that had not reached Claude resume on their
 own, in order. Messages held by Stop stay held: after Stop, an agent's message

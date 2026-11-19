@@ -3616,6 +3616,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const released = held.filter(
       (run) =>
         unattended.has(run.userMessageId) &&
+        run.unconfirmedSteer !== true &&
         !(
           personHeld &&
           messages.find((message) => message.id === run.userMessageId)?.creationSource === "mcp"
@@ -3765,6 +3766,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         messageId: message.id,
         steerFollowUpOfRunId: run.id,
         steerFollowUpAfterRunOrdinal: afterRunOrdinal,
+        // Claude may have read it before its process or the server stopped, so a person decides.
+        unconfirmedSteer: true,
         modelSelection: steer?.modelSelection ?? run.modelSelection,
         text: message.text,
         ...(message.context ? { context: message.context } : {}),
@@ -8561,8 +8564,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? {}
           : { afterCompactionMessageId: command.afterCompactionMessageId }),
         ...(steerWhenReadyRunId === undefined ? {} : { steerWhenReadyRunId }),
+        ...(command.unconfirmedSteer === true ? { unconfirmedSteer: true } : {}),
         // A restart cancels its run; nobody knows whether the provider read the steer, so a person decides.
         ...(worktreeMissingRun !== undefined ||
+        command.unconfirmedSteer === true ||
         steerFollowUpSource?.status === "cancelled" ||
         (heldRunsToRelease.length === 0 &&
           queueIsHeld &&

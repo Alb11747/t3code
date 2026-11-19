@@ -130,10 +130,10 @@ A steer waits in the queue until Claude finishes the tool calls it is running, t
 Claude reads it in the same turn. If the turn ends first, the steer starts the next
 turn, ahead of messages queued before it. **Send now** on a waiting message makes Claude
 read it at once, even if that cancels the tools it is running; it then shows as unread
-until Claude reads it. If Claude drops it before reading it, the message is sent as the
-next turn, in its place in the queue. If Claude exits or the server restarts first, the
-message waits in that place until you resume it. If you press Stop, T3 Code shows a
-notice with the text of any steer Claude had not read.
+until Claude reads it. If Claude drops it before reading it, or exits or the server
+restarts first, the message goes back to its place in the queue and waits there until
+you resume it, since Claude may already have read it. Messages after it still run. If
+you press Stop, T3 Code shows a notice with the text of any steer Claude had not read.
 
 ## Skills
 

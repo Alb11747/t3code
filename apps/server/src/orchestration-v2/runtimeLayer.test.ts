@@ -8721,6 +8721,20 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       yield* end("earlier", "completed");
       yield* send("active", "agent", true);
       yield* send("issue", "agent", false);
+      // A requeued steer the provider may already have read waits for a person, even an agent's.
+      yield* (yield* Orchestrator.OrchestratorV2).dispatch({
+        type: "message.dispatch",
+        createdBy: "agent",
+        creationSource: "server",
+        commandId: CommandId.make(`${threadId}:message:unconfirmed`),
+        threadId,
+        messageId: MessageId.make(`${threadId}:message:unconfirmed`),
+        text: "unconfirmed",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "queue_after_active" },
+        unconfirmedSteer: true,
+      });
       yield* send("user", "user", false);
       yield* end("active", "failed");
       yield* awaitHeld("issue");
@@ -8733,6 +8747,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       yield* end("tick", "completed");
       assert.equal(yield* Queue.take(startedRunIds), (yield* runFor("issue")).id);
       yield* releasedAfter("issue", "tick");
+      assert.isTrue((yield* runFor("unconfirmed")).queueHeld);
       const user = yield* runFor("user");
       assert.equal(user.status, "queued");
       assert.isTrue(user.queueHeld);

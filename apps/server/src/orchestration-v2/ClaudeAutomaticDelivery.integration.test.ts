@@ -1348,18 +1348,25 @@ it.effect.each([
         yield* Fiber.join(ended);
         yield* worker.drain();
         yield* Fiber.join(nextRunning);
-        // The older message runs first; the steer waits right behind it on its own model.
+        // The older message runs first; the steer waits right behind it on its own model, held
+        // for a person, and the message after it is not held back.
         const behind = yield* queued;
-        assert.deepEqual(
-          behind.map((run) => run.userMessageId),
-          [steerId, MessageId.make("after")],
-        );
+        assert.deepEqual(yield* queuedOrder, [
+          [steerId, true],
+          [MessageId.make("after"), false],
+        ]);
+        assert.isTrue(behind[0]?.unconfirmedSteer);
         assert.deepEqual(behind[0]?.modelSelection, modelSelection);
         assert.include(offeredText(offers[2]), "Message before");
-        // Promoted into that run, Claude drops it again; it is queued again, then reaches Claude.
+        // A person resumes it and sends it now into that run; Claude drops it again.
         const before = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
           (run) => run.userMessageId === MessageId.make("before"),
         )!;
+        yield* orchestrator.dispatch({
+          type: "queue.resume",
+          commandId: CommandId.make("resume"),
+          threadId,
+        });
         yield* sendNow(behind[0]!.id, before.id, "promote");
         yield* worker.drain();
         assert.equal(offers[3]?.priority, "now");
@@ -1368,10 +1375,9 @@ it.effect.each([
         yield* cancel(offers[3]!);
         yield* Fiber.join(beforeEnded);
         yield* worker.drain();
-        assert.deepEqual(yield* queuedOrder, [[MessageId.make("after"), false]]);
+        assert.deepEqual(yield* queuedOrder, [[steerId, true]]);
         assert.equal(offers.length, 5);
-        assert.equal(offers[4]?.priority, undefined);
-        assert.include(offeredText(offers[4]), "Message steer");
+        assert.include(offeredText(offers[4]), "Message after");
         return;
       }
 
@@ -1385,6 +1391,9 @@ it.effect.each([
         yield* Queue.end(sdkMessages);
         yield* Fiber.join(requeued);
         yield* worker.drain();
+        assert.isTrue(
+          (yield* queued).find((run) => run.userMessageId === steerId)?.unconfirmedSteer,
+        );
         // The provider failure holds the queue, the follow-up included, until someone resumes it.
         assert.deepEqual(yield* queuedOrder, [
           [MessageId.make("before"), true],
@@ -1408,10 +1417,11 @@ it.effect.each([
         assert.equal(offers.length, 2);
         yield* archive("thread.unarchive");
         yield* TestClock.adjust("1 second");
+        // The later send requeues it held, and as a person's send it also releases the hold.
         yield* send("later", { type: "queue_after_active" });
         yield* worker.drain();
-        assert.equal(offers.length, 3);
-        assert.include(offeredText(offers[2]), "Message steer");
+        assert.deepEqual(yield* queuedOrder, [[steerId, false]]);
+        assert.include(offeredText(offers[2]), "Message later");
         return;
       }
 

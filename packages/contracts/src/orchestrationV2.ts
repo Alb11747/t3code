@@ -766,6 +766,8 @@ export const OrchestrationV2Run = Schema.Struct({
   status: OrchestrationV2RunStatus,
   queuePosition: Schema.optional(Schema.NullOr(PositiveInt)),
   queueHeld: Schema.optional(Schema.Boolean),
+  /** A requeued steer the provider may already have read; only a person releases its hold. */
+  unconfirmedSteer: Schema.optional(Schema.Literal(true)),
   /** Native input may already be saved; an outstanding offer must never automatically execute. */
   boundaryOffer: Schema.optional(
     Schema.Struct({
@@ -3501,6 +3503,7 @@ export const OrchestrationV2Command = Schema.Union([
     manualContinuationOfRunId: Schema.optional(RunId),
     steerFollowUpOfRunId: Schema.optional(RunId),
     steerFollowUpAfterRunOrdinal: Schema.optional(NonNegativeInt),
+    unconfirmedSteer: Schema.optional(Schema.Literal(true)),
     usageLimitRecoveryRequestId: Schema.optional(CommandId),
     deliveryIntent: Schema.optional(Schema.Literals(["auto", "steer", "restart"])),
     delegatedCompletion: Schema.optional(
