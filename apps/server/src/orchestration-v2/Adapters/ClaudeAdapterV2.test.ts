@@ -58,6 +58,8 @@ import { mcpAppFromToolItem } from "@t3tools/shared/toolOutput";
 import { assert, describe, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -3382,6 +3384,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     });
 
   const makeWakeHarnessWithOptions = (options?: {
+    readonly faultFileSystem?: (fs: FileSystem.FileSystem) => FileSystem.FileSystem;
+    readonly faultOffer?: (message: SDKUserMessage) => Effect.Effect<void>;
     readonly close?: (sdkMessages: Queue.Queue<SDKMessage>) => Effect.Effect<void>;
     readonly interrupt?: Effect.Effect<void, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
     readonly setPermissionMode?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["setPermissionMode"];
@@ -3467,7 +3471,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ...(options?.modelCatalog === undefined ? {} : { modelCatalog: options.modelCatalog }),
         environment: options?.environment ?? {},
         attachmentsDir,
-        fileSystem,
+        fileSystem: options?.faultFileSystem?.(fileSystem) ?? fileSystem,
         path: yield* Path.Path,
         random: yield* SecureRandom.SecureRandom,
         idAllocator,
@@ -3542,6 +3546,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   }).pipe(
                     Effect.andThen(changes.notify),
                     Effect.andThen(options?.offer?.(message) ?? Effect.void),
+                    Effect.andThen(() =>
+                      offeredMessages.length > 1
+                        ? (options?.faultOffer?.(message) ?? Effect.void)
+                        : Effect.void,
+                    ),
                   ),
                 setModel: (model) =>
                   Effect.sync(() => {
@@ -3663,6 +3672,353 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       };
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
+
+  const startSteerFaultTurn = Effect.fnUntraced(function* (
+    harness: Effect.Success<ReturnType<typeof makeWakeHarnessWithOptions>>,
+  ) {
+    const attemptId = RunAttemptId.make("steer-fault-injection");
+    const input = makeClaudeTestTurnInput({
+      threadId: harness.threadId,
+      providerThread: harness.providerThread,
+      now: yield* DateTime.now,
+      attemptId,
+      text: "Start the build.",
+      attachments: [],
+    });
+    const allocator = yield* IdAllocator.IdAllocatorV2;
+    const providerTurnId = allocator.derive.providerTurn({
+      driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+      nativeTurnId: `turn:${attemptId}`,
+    });
+    yield* harness.runtime.startTurn(input);
+    const steer = (text: string, attachments: typeof input.message.attachments = []) =>
+      harness.runtime.steerTurn({
+        threadId: harness.threadId,
+        runId: input.runId,
+        providerThread: harness.providerThread,
+        providerTurnId,
+        message: {
+          createdBy: "user",
+          creationSource: "web",
+          messageId: MessageId.make(text),
+          text,
+          attachments,
+        },
+      });
+    const stop = harness.runtime.interruptTurn({
+      providerThread: harness.providerThread,
+      providerTurnId,
+    });
+    return { input, steer, stop };
+  });
+
+  const steerFaultServices = Layer.mergeAll(
+    IdAllocator.layer,
+    McpProviderSessions.layer,
+    NodeServices.layer,
+    NodeCrypto.layer,
+  );
+
+  const echoedSteerFaultResult = (id: string, text: string, promptUuid?: string) =>
+    claudeSdkFrame({
+      ...makeResultFrame({ uuid: id, result: text }),
+      ...(promptUuid === undefined ? {} : { user_message_uuid: promptUuid }),
+    });
+
+  it.effect.each(["first prompt echoed", "no prompt echoed", "steer queued echo"] as const)(
+    "steer fault: does not leave a turn open or mark a dropped steer delivered (%s)",
+    (echo) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const { steer } = yield* startSteerFaultTurn(harness);
+        yield* steer("Dropped steer");
+        if (echo === "steer queued echo") {
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              type: "command_lifecycle",
+              state: "queued",
+              command_uuid: harness.promptUuid(1),
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+        }
+        yield* harness.offerAndWait(
+          echoedSteerFaultResult(
+            "first-result",
+            "Build finished.",
+            echo !== "no prompt echoed" ? harness.promptUuid(0) : undefined,
+          ),
+        );
+        yield* TestClock.adjust("1 hour");
+        assert.deepEqual(
+          {
+            terminal: harness.terminalEvents().map((event) => event.status),
+            steer: harness.events.flatMap((event) =>
+              event.type === "steer.updated" ? [event.status] : [],
+            ),
+          },
+          { terminal: ["completed"], steer: ["pending", "cancelled"] },
+        );
+      }).pipe(Effect.scoped, Effect.provide(steerFaultServices)),
+  );
+
+  it.effect("steer fault: preserves two result-only replies across a steer", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      const { steer } = yield* startSteerFaultTurn(harness);
+      yield* steer("Tell me the test result too.");
+      yield* harness.offerAndWait(
+        echoedSteerFaultResult("build-only", "Build finished.", harness.promptUuid(0)),
+      );
+      assert.lengthOf(harness.offeredMessages, 2);
+      yield* harness.offerAndWait(
+        echoedSteerFaultResult("test-only", "Tests passed.", harness.promptUuid(1)),
+      );
+      yield* Queue.take(harness.terminalReceipts);
+      assert.deepEqual(
+        harness.events
+          .flatMap((event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "assistant_message" &&
+            event.turnItem.status === "completed"
+              ? [event.turnItem.text]
+              : [],
+          )
+          .filter(Boolean),
+        ["Build finished.", "Tests passed."],
+      );
+      assert.deepEqual(
+        harness.terminalEvents().map((event) => event.status),
+        ["completed"],
+      );
+    }).pipe(Effect.scoped, Effect.provide(steerFaultServices)),
+  );
+
+  it.effect("steer fault: one result can arrive before SDK offer returns", () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<SDKUserMessage>();
+      const release = yield* Deferred.make<void>();
+      const harness = yield* makeWakeHarnessWithOptions({
+        faultOffer: (message) =>
+          Deferred.succeed(entered, message).pipe(Effect.andThen(Deferred.await(release))),
+      });
+      const { steer } = yield* startSteerFaultTurn(harness);
+      const delivery = yield* steer("In-flight steer").pipe(Effect.forkScoped);
+
+      const written = yield* Deferred.await(entered);
+      yield* harness.offerAndWait(
+        echoedSteerFaultResult("in-flight-result", "All done.", written.uuid),
+      );
+      yield* Queue.take(harness.terminalReceipts);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(delivery);
+
+      assert.deepEqual(
+        harness.events.flatMap((event) => (event.type === "steer.updated" ? [event.status] : [])),
+        ["pending", "completed"],
+      );
+      assert.lengthOf(harness.offeredMessages, 2);
+      assert.lengthOf(harness.terminalEvents(), 1);
+    }).pipe(Effect.scoped, Effect.provide(steerFaultServices)),
+  );
+
+  it.effect("steer fault: a stopped turn accounts for an unread steer", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarnessWithOptions({ close: Queue.shutdown });
+      const { steer, stop } = yield* startSteerFaultTurn(harness);
+      yield* steer("Unread at Stop");
+      yield* stop;
+      yield* Queue.take(harness.terminalReceipts);
+      assert.deepEqual(
+        harness.terminalEvents().map((event) => event.status),
+        ["interrupted"],
+      );
+      assert.deepEqual(
+        harness.events.flatMap((event) => (event.type === "steer.updated" ? [event.status] : [])),
+        ["pending", "cancelled"],
+      );
+      assert.equal(
+        harness.offeredMessages.slice(1).some((offer) => offer.priority === "now"),
+        false,
+      );
+    }).pipe(Effect.scoped, Effect.provide(steerFaultServices)),
+  );
+
+  it.effect.each(["result", "Stop"] as const)(
+    "steer fault: releases an unsent PDF reservation when %s overtakes a slow PDF read",
+    (finish) =>
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let streams = 0;
+        let documentPath = "";
+        const harness = yield* makeWakeHarnessWithOptions({
+          close: Queue.shutdown,
+          freshQueueOnReopen: true,
+          faultFileSystem: (fs) => ({
+            ...fs,
+            stream: (path, options) =>
+              Stream.suspend(() => {
+                const read = fs.stream(path, options);
+                if (path !== documentPath || ++streams !== 2) return read;
+                return Stream.fromEffect(
+                  Deferred.succeed(entered, undefined).pipe(
+                    Effect.andThen(Deferred.await(release)),
+                  ),
+                ).pipe(Stream.drain, Stream.concat(read));
+              }),
+          }),
+        });
+        const { input, steer, stop } = yield* startSteerFaultTurn(harness);
+        const document = ChatFileAttachment.make({
+          type: "file",
+          id: ChatAttachmentId.make("steer-budget-abcdefab-1234-1234-1234-123456789abc"),
+          name: "requirements.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 4,
+        });
+        documentPath = (yield* Path.Path).join(
+          harness.attachmentsDir,
+          attachmentRelativePath(document)!,
+        );
+        yield* (yield* FileSystem.FileSystem).writeFileString(
+          documentPath,
+          `%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Count 50 >> endobj\n${Array.from(
+            { length: 50 },
+            (_, index) => `${index + 3} 0 obj << /Type /Page /Parent 2 0 R >> endobj`,
+          ).join("\n")}\n%%EOF`,
+        );
+        const submitting = yield* steer("Read these documents.", [document, document]).pipe(
+          Effect.forkScoped,
+        );
+        yield* Deferred.await(entered);
+        if (finish === "Stop") {
+          yield* stop;
+        } else {
+          yield* harness.offerAndWait(
+            echoedSteerFaultResult("pdf-race-result", "Done.", harness.promptUuid(0)),
+          );
+        }
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+        yield* Deferred.succeed(release, undefined);
+        const submitted = yield* Fiber.await(submitting);
+        assert.equal(terminal.status, finish === "Stop" ? "interrupted" : "completed");
+        assert.equal(
+          submitted._tag,
+          "Failure",
+          "the caller needs a rejection to account for an unsent steer",
+        );
+        assert.lengthOf(harness.offeredMessages, 1);
+
+        const next = makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("steer-budget-next"),
+          text: input.message.text,
+          attachments: [document, document],
+          providerTurnOrdinal: 2,
+        });
+        yield* harness.runtime.startTurn(next);
+        const content = harness.offeredMessages.at(-1)?.message.content;
+        assert.isArray(content);
+        assert.lengthOf(
+          Array.isArray(content) ? content.filter((block) => block.type === "document") : [],
+          2,
+        );
+      }).pipe(Effect.scoped, Effect.provide(steerFaultServices)),
+  );
+
+  it.effect.each(["slow reply", "deadline", "turn ended"] as const)(
+    "steer fault: a foreground subagent move has a bounded wait (%s)",
+    (outcome) =>
+      Effect.gen(function* () {
+        const moveRequested = yield* Deferred.make<string>();
+        const moveReply = yield* Deferred.make<boolean>();
+        const timerStarted = yield* Deferred.make<void>();
+        const harness = yield* makeWakeHarnessWithOptions({
+          backgroundTasks: (id) =>
+            Deferred.succeed(moveRequested, id).pipe(Effect.andThen(Deferred.await(moveReply))),
+        });
+        const { steer } = yield* startSteerFaultTurn(harness);
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: "foreground-agent",
+            tool_use_id: "toolu-foreground-agent",
+            description: "Audit",
+            subagent_type: "general-purpose",
+            is_backgrounded: false,
+            task_type: "local_agent",
+            prompt: "Audit the build.",
+            uuid: "00000000-0000-4000-8000-000000000321",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* harness.until(() =>
+          harness.events.some(
+            (event) => event.type === "subagent.updated" && event.subagent.status === "running",
+          ),
+        );
+        const clock = yield* Clock.Clock;
+        const submitting = yield* steer("Read the test log.").pipe(
+          Effect.provideService(Clock.Clock, {
+            ...clock,
+            sleep: (duration) =>
+              Duration.toMillis(duration) !== 5_000
+                ? clock.sleep(duration)
+                : Effect.gen(function* () {
+                    const timer = yield* Effect.forkChild(clock.sleep(duration), {
+                      startImmediately: true,
+                    });
+                    yield* Deferred.succeed(timerStarted, undefined);
+                    yield* Fiber.join(timer);
+                  }),
+          }),
+          Effect.forkScoped,
+        );
+        assert.equal(yield* Deferred.await(moveRequested), "toolu-foreground-agent");
+        assert.lengthOf(harness.offeredMessages, 1);
+        if (outcome === "deadline") {
+          yield* Deferred.await(timerStarted);
+          yield* TestClock.adjust("5 seconds");
+        } else {
+          if (outcome === "turn ended") {
+            yield* harness.offerAndWait(
+              echoedSteerFaultResult("result-during-background", "Done.", harness.promptUuid(0)),
+            );
+            yield* Queue.take(harness.terminalReceipts);
+          }
+          yield* Deferred.succeed(moveReply, true);
+        }
+        const exit = yield* Fiber.await(submitting);
+        assert.equal(exit._tag, outcome === "turn ended" ? "Failure" : "Success");
+
+        assert.lengthOf(harness.offeredMessages, outcome === "turn ended" ? 1 : 2);
+      }).pipe(Effect.scoped, Effect.provide(steerFaultServices)),
+  );
+
+  it.effect("steer fault: two steers retain order and are offered once", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      const { steer } = yield* startSteerFaultTurn(harness);
+      yield* steer("First update");
+      yield* steer("Second update");
+
+      const offered = harness.offeredMessages.slice(1);
+      assert.deepEqual(
+        offered.map((message) => ({
+          priority: message.priority,
+          text: /(?:First|Second) update/u.exec(JSON.stringify(message.message.content))?.[0],
+        })),
+        [
+          { priority: "next", text: "First update" },
+          { priority: "next", text: "Second update" },
+        ],
+      );
+    }).pipe(Effect.scoped, Effect.provide(steerFaultServices)),
+  );
 
   it.effect.each(["release-after", "cancel-after", "release-before", "resume-pending"] as const)(
     "keeps attachment reservations across compaction: %s boundary",

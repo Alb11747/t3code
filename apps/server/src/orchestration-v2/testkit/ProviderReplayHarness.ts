@@ -256,6 +256,7 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
   | Orchestrator.OrchestratorV2
   | EffectWorker.OrchestrationEffectWorkerV2
   | EventSink.EventSinkV2
+  | ProviderEventIngestor.ProviderEventIngestorV2
   | CommandOutputRecorder.CommandOutputRecorder
   | ProviderSessionManager.ProviderSessionManagerV2,
   Error | MigrationError | PlatformError.PlatformError | SqlError
@@ -284,6 +285,10 @@ export function layerWithRegistry<Error>(
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
     /** Lets a test hold a projection read open to order concurrent dispatches. */
+    readonly wrapOutbox?: (
+      outbox: EffectOutbox.EffectOutboxV2Shape,
+    ) => EffectOutbox.EffectOutboxV2Shape;
+    readonly wrapEventSink?: (sink: EventSink.EventSinkV2Shape) => EventSink.EventSinkV2Shape;
     readonly wrapProjectionStore?: (
       store: ProjectionStore.ProjectionStoreV2Shape,
     ) => ProjectionStore.ProjectionStoreV2Shape;
@@ -328,7 +333,15 @@ export function layerWithRegistry<Error>(
       ),
     ),
   ).pipe(Layer.orDie);
-  const layerEffectOutboxProvided = EffectOutbox.layer.pipe(Layer.provide(layerDatabase));
+  const baseOutbox = EffectOutbox.layer.pipe(Layer.provide(layerDatabase));
+  const wrapOutbox = options.wrapOutbox;
+  const layerEffectOutboxProvided =
+    wrapOutbox === undefined
+      ? baseOutbox
+      : Layer.effect(
+          EffectOutbox.EffectOutboxV2,
+          Effect.map(EffectOutbox.EffectOutboxV2, wrapOutbox),
+        ).pipe(Layer.provide(baseOutbox));
   const wrapProjectionStore = options.wrapProjectionStore;
   const layerProjectionStore =
     wrapProjectionStore === undefined
@@ -347,9 +360,16 @@ export function layerWithRegistry<Error>(
     layerEffectOutboxProvided,
     TurnItemPositionStore.layer,
   ).pipe(Layer.provide(layerDatabase));
-  const layerEventSinkProvided = EventSink.layerFromStores.pipe(
+  const baseEventSink = EventSink.layerFromStores.pipe(
     Layer.provide(Layer.mergeAll(layerStores, layerDatabase)),
   );
+  const wrapEventSink = options.wrapEventSink;
+  const layerEventSinkProvided =
+    wrapEventSink === undefined
+      ? baseEventSink
+      : Layer.effect(EventSink.EventSinkV2, Effect.map(EventSink.EventSinkV2, wrapEventSink)).pipe(
+          Layer.provide(baseEventSink),
+        );
   const layerRuntime = RuntimePolicy.layerEnforcingCeiling.pipe(
     Layer.provide(Layer.merge(layerRuntimeBase, layerServerSettings)),
   );
@@ -556,6 +576,7 @@ export function layerWithRegistry<Error>(
     Layer.provide(Layer.merge(layerStores, layerEffectExecutorProvided)),
   );
   const layerReplayRuntime = Layer.mergeAll(
+    layerProviderEventIngestorProvided,
     layerEffectOutboxProvided,
     layerOrchestratorProvided,
     layerProviderSessionManagerProvided,
