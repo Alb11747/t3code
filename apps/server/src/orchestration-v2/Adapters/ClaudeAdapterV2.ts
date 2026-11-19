@@ -9321,14 +9321,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             dropped.pdfReservation.refund();
             yield* persistAttachmentBudget(context.nativeThreadId);
           }
-          if (context.pendingSteers.size === 0 && context.heldResult !== undefined) {
-            yield* finalizeActiveTurn({
-              context,
-              status: "completed",
-              completedAt: yield* DateTime.now,
-              result: context.heldResult,
-            });
-          }
+          yield* settleHeldResult(context);
+        });
+
+        // A result held for steers settles the turn once no steer is left for Claude to read.
+        const settleHeldResult = Effect.fnUntraced(function* (context: ActiveClaudeTurnContext) {
+          if (context.pendingSteers.size > 0 || context.heldResult === undefined) return;
+          yield* finalizeActiveTurn({
+            context,
+            status: "completed",
+            completedAt: yield* DateTime.now,
+            result: context.heldResult,
+          });
         });
 
         const finalizeActiveTurn = Effect.fnUntraced(function* (requested: {
@@ -14001,7 +14005,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ).pipe(
               Effect.onError(() =>
                 currentTurn.pendingSteers.delete(steerUuid)
-                  ? emitSteerStatus(currentTurn, messageId, "completed")
+                  ? emitSteerStatus(currentTurn, messageId, "completed").pipe(
+                      Effect.andThen(settleHeldResult(currentTurn)),
+                    )
                   : Effect.void,
               ),
             );
