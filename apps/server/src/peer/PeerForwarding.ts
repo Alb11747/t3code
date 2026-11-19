@@ -15,6 +15,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
@@ -106,6 +107,7 @@ const make = Effect.gen(function* () {
   const peers = yield* PeerMcpClient.PeerMcpClient;
   const links = yield* PeerLinks.PeerLinks;
   const crypto = yield* Digest.Digest;
+  const random = yield* SecureRandom.SecureRandom;
   const threads = yield* ThreadManagement.ThreadManagementService;
 
   /**
@@ -176,8 +178,17 @@ const make = Effect.gen(function* () {
         message: "A launch in a linked environment cannot carry attachments yet.",
       });
     }
-    if (typeof args.clientRequestId === "string") {
-      args.clientRequestId = yield* scopedRequestId(scope.requestNamespace, args.clientRequestId);
+    // A call whose answer the link lost may have run there. A tool that takes a retry key always
+    // forwards one, so the caller can retry it at most once.
+    const requestId =
+      typeof args.clientRequestId === "string"
+        ? args.clientRequestId
+        : (parameters as { readonly fields?: Record<string, unknown> }).fields?.clientRequestId ===
+            undefined
+          ? undefined
+          : yield* random.uuidV4();
+    if (requestId !== undefined) {
+      args.clientRequestId = yield* scopedRequestId(scope.requestNamespace, requestId);
     }
     // So a message sent there names the thread that sent it, even to a client that cannot reach here.
     const sender =
@@ -188,14 +199,25 @@ const make = Effect.gen(function* () {
             threadId: caller.id,
             title: caller.title,
           };
-    return yield* peers.call({
-      environmentId,
-      tool: toolName,
-      arguments: args,
-      limits,
-      ...(sender === undefined ? {} : { sender }),
-      success: success as Schema.Decoder<A>,
-    });
+    return yield* peers
+      .call({
+        environmentId,
+        tool: toolName,
+        arguments: args,
+        limits,
+        ...(sender === undefined ? {} : { sender }),
+        success: success as Schema.Decoder<A>,
+      })
+      .pipe(
+        Effect.mapError((error) =>
+          error === PeerMcpClient.stoppedAnswering && requestId !== undefined
+            ? new OrchestratorMcpFailure({
+                code: error.code,
+                message: `${error.message} The call may have run there. Retrying with clientRequestId "${requestId}" is safe: it runs at most once.`,
+              })
+            : error,
+        ),
+      );
   });
 
   const readThread: PeerForwarding["Service"]["readThread"] = (scope, environmentId, input) =>

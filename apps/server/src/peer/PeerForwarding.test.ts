@@ -42,6 +42,8 @@ import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
+import * as PeerMcpClient from "./PeerMcpClient.ts";
+import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
 
@@ -754,4 +756,57 @@ it.effect("refuses a launch there above the link's access, naming the link", () 
       expect(failureOf(yield* launchAboveLink).message).toContain("expired");
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("names a retry key when a link loses the answer to a send that may have run", () =>
+  Effect.gen(function* () {
+    const forwardedIds: Array<unknown> = [];
+    const forwarding = yield* PeerForwarding.PeerForwarding.pipe(
+      Effect.provide(
+        PeerForwarding.layer.pipe(
+          Layer.provide(
+            Layer.mock(PeerMcpClient.PeerMcpClient)({
+              call: (input) => {
+                forwardedIds.push(input.arguments.clientRequestId);
+                return Effect.fail(PeerMcpClient.stoppedAnswering);
+              },
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(PeerLinks.PeerLinks)({
+              enabled: Effect.succeed(true),
+              get: () => Effect.succeedNone,
+            }),
+          ),
+          Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
+          Layer.provide(NodeCrypto.layer),
+        ),
+      ),
+    );
+    const scope: McpInvocationContext.McpInvocationScope = {
+      environmentId: laptop.environmentId,
+      capabilities: new Set(["orchestration"]),
+      issuedAt: 0,
+      requestNamespace: "client:laptop",
+      thread: undefined,
+      client: undefined,
+    };
+    const send = (clientRequestId?: string) =>
+      forwarding
+        .call(scope, OrchestratorToolkit.tools.t3_thread_send, box.environmentId, {
+          environmentId: box.environmentId,
+          threadId: boxThread,
+          message: "Once.",
+          ...(clientRequestId === undefined ? {} : { clientRequestId }),
+        })
+        .pipe(Effect.flip);
+    const lost = yield* send();
+    const retryKey = /clientRequestId "([^"]+)"/.exec(lost.message)?.[1];
+    expect(lost.code).toBe("orchestration_error");
+    expect(retryKey).toBeDefined();
+    yield* send(retryKey);
+    // The retry carries the same key there, so the linked environment runs the send once.
+    expect(forwardedIds[1]).toBe(forwardedIds[0]);
+    expect(typeof forwardedIds[0]).toBe("string");
+  }),
 );
