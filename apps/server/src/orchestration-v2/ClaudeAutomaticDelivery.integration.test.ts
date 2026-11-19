@@ -27,6 +27,7 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -1171,6 +1172,7 @@ it.effect.each([
   "the Claude process exits",
   "the server restarts",
   "Claude cancels it and the user stops",
+  "Claude cancels it while the thread is archived",
 ] as const)("handles an unread steer when %s", (outcome) =>
   Effect.gen(function* () {
     const cwd = yield* checkpointWorkspace("claude-unread-steer");
@@ -1398,6 +1400,26 @@ it.effect.each([
           [MessageId.make("after"), true],
         ]);
         assert.equal(offers.length, 2);
+        return;
+      }
+
+      // The archived thread turns the first requeue into a no-op; a later one must still run.
+      if (outcome === "Claude cancels it while the thread is archived") {
+        const archive = (type: "thread.archive" | "thread.unarchive") =>
+          orchestrator.dispatch({ type, commandId: CommandId.make(type), threadId });
+        yield* archive("thread.archive");
+        const ended = yield* settled(parent.id, "waiting");
+        yield* answer(offers[0]!);
+        yield* cancel(offers[1]!);
+        yield* Fiber.join(ended);
+        yield* worker.drain();
+        assert.equal(offers.length, 2);
+        yield* archive("thread.unarchive");
+        yield* TestClock.adjust("1 second");
+        yield* send("later", { type: "queue_after_active" });
+        yield* worker.drain();
+        assert.equal(offers.length, 3);
+        assert.include(offeredText(offers[2]), "Message steer");
         return;
       }
 
