@@ -3594,18 +3594,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .map((message) => message.id),
     );
     const now = yield* DateTime.now;
-    // An agent's MCP message held behind one a person is holding stays behind it, as it
-    // queued after Stop; server and provider messages, which nobody resumes, still go.
-    const ordered = queuedRunsInDeliveryOrder({ runs: held, messages });
-    const firstAttended = ordered.findIndex(
+    // While a person's message is held, an agent's MCP messages wait for them too, wherever they
+    // sort; server and provider messages, which nobody resumes, still go.
+    const personHeld = held.some(
       (run) => !unattended.has(run.userMessageId) && run.afterCompactionMessageId === undefined,
     );
-    const released = ordered.filter(
-      (run, index) =>
+    const released = held.filter(
+      (run) =>
         unattended.has(run.userMessageId) &&
-        (firstAttended === -1 ||
-          index < firstAttended ||
-          messages.find((message) => message.id === run.userMessageId)?.creationSource !== "mcp"),
+        !(
+          personHeld &&
+          messages.find((message) => message.id === run.userMessageId)?.creationSource === "mcp"
+        ),
     );
     if (released.length === 0) return;
     yield* writeSystemEvents(
@@ -8279,8 +8279,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   }),
               ),
             );
+      // A follow-up held for its failed compaction holds only itself.
       const queueIsHeld = projection.runs.some(
-        (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
+        (candidate) =>
+          candidate.status === "queued" &&
+          candidate.queueHeld === true &&
+          candidate.afterCompactionMessageId === undefined,
       );
       // Buffered wakes need a T3 run for output the CLI already started producing.
       // Stop still holds wakes that arrive before the active run settles.

@@ -726,8 +726,22 @@ it.effect("an agent's send is not held behind a follow-up its failed compaction 
       createdBy: "agent",
       creationSource: "mcp",
     });
+    // A send queued behind the agent's run does not inherit that hold either.
+    const laterId = MessageId.make("message:agent-behind-active");
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("send:agent-behind-active"),
+      threadId,
+      messageId: laterId,
+      text: "Later agent update",
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
     const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
     expect(runs.find((run) => run.userMessageId === messageId)?.queueHeld).toBe(true);
     expect(runs.find((run) => run.userMessageId === agentId)?.status).toBe("starting");
+    expect(runs.find((run) => run.userMessageId === laterId)?.queueHeld).not.toBe(true);
   }).pipe(Effect.provide(layerTest)),
 );

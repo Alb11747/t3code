@@ -819,7 +819,7 @@ it.effect("a message the user sends after Stop releases the held queue; an agent
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("a run ending after Stop releases only agent messages ahead of the user's held one", () =>
+it.effect("a run ending after Stop releases no agent message while the user's is held", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const threads = yield* ThreadManagementService.ThreadManagementService;
@@ -839,6 +839,18 @@ it.effect("a run ending after Stop releases only agent messages ahead of the use
       });
     yield* createWatchingThread(threadId, 7);
     yield* send(threadId, "active", "start_immediately");
+    const serverMessageId = MessageId.make(`message:${threadId}:server`);
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("server-send:stop-release-order"),
+      threadId,
+      messageId: serverMessageId,
+      text: "Server notice",
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "agent",
+      creationSource: "server",
+    });
     const ahead = yield* agentSend("agent ahead", "queue");
     yield* send(threadId, "user held", "queue_after_active");
     yield* orchestrator.dispatch({
@@ -849,11 +861,11 @@ it.effect("a run ending after Stop releases only agent messages ahead of the use
     const behind = yield* agentSend("agent behind", "queue");
     yield* agentSend("agent restart", "restart");
     const restart = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
-    const aheadStarted = yield* sink.stream({ threadId, eventType: "run.updated" }).pipe(
+    const serverStarted = yield* sink.stream({ threadId, eventType: "run.updated" }).pipe(
       Stream.filter(
         ({ event }) =>
           event.type === "run.updated" &&
-          event.payload.id === ahead.run.id &&
+          event.payload.userMessageId === serverMessageId &&
           event.payload.status === "starting",
       ),
       Stream.take(1),
@@ -873,16 +885,18 @@ it.effect("a run ending after Stop releases only agent messages ahead of the use
         },
       ],
     });
-    yield* Fiber.join(aheadStarted);
+    // Nobody resumes a server message, so it goes; agents' messages wait for the user.
+    yield* Fiber.join(serverStarted);
     const runs = (yield* orchestrator.getThreadProjection(threadId)).runs;
-    // The agent's later message stays behind the user's until the user resumes.
-    assert.deepInclude(
-      runs.find((run) => run.id === behind.run.id),
-      {
-        status: "queued",
-        queueHeld: true,
-      },
-    );
+    for (const agent of [ahead, behind]) {
+      assert.deepInclude(
+        runs.find((run) => run.id === agent.run.id),
+        {
+          status: "queued",
+          queueHeld: true,
+        },
+      );
+    }
   }).pipe(Effect.scoped, Effect.provide(layerTest)),
 );
 
