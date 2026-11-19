@@ -244,6 +244,23 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+          case "provider-turn.background-subagents": {
+            const { providerSessionId, providerTurnId } = effect.request;
+            // Only a hint: when it cannot run, the input waits for the next boundary as before.
+            return providerSessions.get(providerSessionId).pipe(
+              Effect.flatMap((session) =>
+                Option.isSome(session) && session.value.backgroundSubagents !== undefined
+                  ? session.value.backgroundSubagents({ providerTurnId })
+                  : Effect.void,
+              ),
+              Effect.catch((cause) =>
+                Effect.logWarning("Could not move subagents to the background", {
+                  threadId: effect.threadId,
+                  cause,
+                }),
+              ),
+            );
+          }
           case "provider-session.apply-thread-title":
             return providerTurnControl
               .applyThreadTitle({ threadId: effect.threadId, title: effect.request.title })

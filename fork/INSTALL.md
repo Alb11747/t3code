@@ -145,11 +145,14 @@ change the phone's choice.
 Ordinary human and agent steers, including attachments, wait for Claude's next
 root tool-batch boundary and use its non-interrupting native message queue.
 Parallel tools finish their batch before delivery. Questions and completion
-notices from delegated tasks arrive the same way. Messages arriving during a
-final reply wait for the next turn. Explicit restart still interrupts; Stop
-cancels pending native inputs. Goal and maintenance commands, compaction, and
-turns that own a delegated task keep their separate-turn behavior. A Claude CLI
-without the required cancellation capability also waits for the next turn.
+notices from delegated tasks arrive the same way. If Claude is waiting on its
+own foreground subagents when a message arrives, T3 asks Claude to move them to
+the background so the message is read sooner; their results then arrive as a
+background-task notice. Messages arriving during a final reply wait for the next
+turn. Explicit restart still interrupts; Stop cancels pending native inputs.
+Goal and maintenance commands, compaction, and turns that own a delegated task
+keep their separate-turn behavior. A Claude CLI without the required
+cancellation capability also waits for the next turn.
 
 A successful MCP promotion receipt can mean the message is still waiting.
 **Pending** means it is waiting for a safe boundary; **Delivering** means

@@ -7227,6 +7227,59 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     return thread;
   });
 
+  /**
+   * Fork: input waiting for a tool boundary on a Claude turn whose root is blocked in foreground
+   * subagents asks Claude to background them, once per message. Delivery stays with the claim.
+   */
+  const requestSubagentsBackground = Effect.fn("Orchestrator.requestSubagentsBackground")(
+    function* (
+      command: OrchestrationV2Command,
+      effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+      threadId: ThreadId,
+      run: OrchestrationV2Run,
+      messageId: MessageId,
+    ) {
+      const records = yield* projectionStore
+        .getThreadRecords(threadId, ["subagents", "providerTurns", "providerThreads"], {
+          subagentRunIds: [run.id],
+        })
+        .pipe(mapDispatchError(command));
+      const providerThread = records.providerThreads.find(
+        (candidate) => candidate.id === run.providerThreadId,
+      );
+      const turn = latestProviderTurnForAttempt(
+        records.providerTurns.filter((candidate) => candidate.nodeId === run.rootNodeId),
+        run.activeAttemptId,
+      );
+      const providerSessionId = providerThread?.providerSessionId ?? null;
+      if (
+        providerThread?.driver !== "claudeAgent" ||
+        providerSessionId === null ||
+        turn?.status !== "running" ||
+        !records.subagents.some(
+          (task) =>
+            task.origin === "provider_native" &&
+            task.status === "running" &&
+            task.parentNodeId === run.rootNodeId,
+        )
+      )
+        return;
+      yield* Ref.update(effects, (existing) => [
+        ...existing,
+        {
+          id: `effect:background-subagents:${messageId}`,
+          commandId: command.commandId,
+          threadId,
+          request: {
+            type: "provider-turn.background-subagents",
+            providerSessionId,
+            providerTurnId: turn.id,
+          },
+        } satisfies PendingOrchestrationEffectV2,
+      ]);
+    },
+  );
+
   const dispatchMessage = Effect.fn("Orchestrator.dispatchMessage")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -8552,6 +8605,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             updatedAt: now,
           },
         });
+      }
+      if (deliverAtToolBoundary && activeRun !== undefined && run.queueHeld !== true) {
+        yield* requestSubagentsBackground(
+          command,
+          effects,
+          command.threadId,
+          activeRun,
+          command.messageId,
+        );
       }
       if (queuedRunStop !== undefined) {
         return yield* stopRunForQueuedCommand({
@@ -12528,6 +12590,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           occurredAt: now,
           payload: { ...queuedMessage, atToolBoundary: true, updatedAt: now },
         });
+        yield* requestSubagentsBackground(
+          command,
+          effects,
+          command.threadId,
+          targetRun,
+          queuedMessage.id,
+        );
         return;
       }
     }

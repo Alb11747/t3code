@@ -565,6 +565,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
   const steered: string[] = [];
   const steeredSelections: Array<ModelSelection | undefined> = [];
   const interrupted: ProviderTurnId[] = [];
+  const backgrounded: ProviderTurnId[] = [];
   const capabilities = {
     ...CodexProviderCapabilitiesV2,
     turns: {
@@ -655,6 +656,10 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
               steered.push(turn.message.text);
               steeredSelections.push(turn.modelSelection);
             }).pipe(Effect.andThen(onSteer(turn))),
+          backgroundSubagents: ({ providerTurnId }) =>
+            Effect.sync(() => {
+              backgrounded.push(providerTurnId);
+            }),
           interruptTurn: ({ providerTurnId }) =>
             beforeInterrupt.pipe(
               Effect.andThen(
@@ -751,7 +756,17 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     yield* (yield* ThreadCommandExecutor.ThreadCommandExecutor).withLock(threadId, Effect.void);
     return threadId;
   });
-  return { cwd, events, started, steered, steeredSelections, interrupted, layer, startFirstTurn };
+  return {
+    cwd,
+    events,
+    started,
+    steered,
+    steeredSelections,
+    interrupted,
+    backgrounded,
+    layer,
+    startFirstTurn,
+  };
 });
 
 it.effect.each([
@@ -3682,6 +3697,80 @@ it.effect.each([
           assert.deepEqual(yield* claimAtToolBoundary(threadId, first.runId), []);
           assert.deepEqual(steered, []);
           assert.equal(started.length, 1);
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
+);
+
+it.effect.each([false, true])(
+  "a boundary update asks Claude to background the root's foreground subagents, once (subagent running: %s)",
+  (subagentRunning) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { started, steered, backgrounded, layer, startFirstTurn } =
+          yield* nextTurnSelectionHarness(`background-subagents-${subagentRunning}`, {
+            activeSteeringInterruptsTools: true,
+            providerDriver: ProviderDriverKind.make("claudeAgent"),
+          });
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const sink = yield* EventSink.EventSinkV2;
+          const threadId = yield* startFirstTurn;
+          const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+          if (subagentRunning) {
+            const now = yield* DateTime.now;
+            const taskId = NodeId.make("node:native-subagent");
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make("event:native-subagent"),
+                  type: "subagent.updated",
+                  threadId,
+                  runId: run.id,
+                  nodeId: taskId,
+                  occurredAt: now,
+                  payload: {
+                    id: taskId,
+                    threadId,
+                    runId: run.id,
+                    parentNodeId: run.rootNodeId!,
+                    origin: "provider_native",
+                    createdBy: "agent",
+                    driver: ProviderDriverKind.make("claudeAgent"),
+                    providerInstanceId: run.providerInstanceId,
+                    providerThreadId: run.providerThreadId,
+                    childThreadId: null,
+                    nativeTaskRef: null,
+                    prompt: "Audit.",
+                    title: "Audit",
+                    model: null,
+                    status: "running",
+                    result: null,
+                    startedAt: now,
+                    completedAt: null,
+                    updatedAt: now,
+                  },
+                },
+              ],
+            });
+          }
+          const sent = yield* sendUpdate(threadId, "agent", "auto");
+          assert.equal(sent.delivery, "queued");
+          yield* orchestrator.dispatch({
+            type: "queued-message.promote-to-steer",
+            commandId: CommandId.make("promote-again"),
+            threadId,
+            queuedRunId: sent.run.id,
+            targetRunId: run.id,
+          });
+          yield* worker.drain();
+          // It only asks: the update itself still waits for Claude's next boundary.
+          assert.deepEqual(steered, []);
+          assert.deepEqual(
+            backgrounded,
+            subagentRunning ? [ProviderTurnId.make(`provider-turn:${started[0]!.attemptId}`)] : [],
+          );
         }).pipe(Effect.provide(layer));
       }),
     ),

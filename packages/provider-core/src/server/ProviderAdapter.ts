@@ -776,6 +776,10 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly steerTurn: (
     input: ProviderAdapterV2SteerInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /** Fork: moves the turn's foreground subagents to the background so input waiting for a tool boundary reaches it sooner. */
+  readonly backgroundSubagents?: (input: {
+    readonly providerTurnId: ProviderTurnId;
+  }) => Effect.Effect<void>;
   /** Applies a thread's new selection to its running process where the provider can; otherwise it waits for the next turn. */
   readonly applyModelSelection?: (input: {
     readonly providerThread: OrchestrationV2ProviderThread;

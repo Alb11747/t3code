@@ -55,6 +55,11 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     title: Schema.String,
   }),
   Schema.Struct({
+    type: Schema.Literal("provider-turn.background-subagents"),
+    providerSessionId: ProviderSessionId,
+    providerTurnId: ProviderTurnId,
+  }),
+  Schema.Struct({
     type: Schema.Literal("provider-turn.start"),
     runId: RunId,
     attemptId: Schema.optional(RunAttemptId),
@@ -160,6 +165,7 @@ export const PROCESS_BOUND_EFFECT_TYPES = [
   "provider-turn.interrupt",
   "provider-turn.steer",
   "provider-turn.restart",
+  "provider-turn.background-subagents",
   "runtime-request.respond",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 

@@ -15071,6 +15071,22 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           yield* Fiber.joinAll(moves).pipe(Effect.timeoutOption(Math.max(0, remaining)));
         });
 
+        // Fork: lets input waiting for a tool boundary reach a root blocked in foreground subagents.
+        const backgroundSubagents = Effect.fn("ClaudeAdapterV2.backgroundSubagents")(function* (
+          input: Parameters<
+            NonNullable<ProviderAdapter.ProviderAdapterV2SessionRuntime["backgroundSubagents"]>
+          >[0],
+        ) {
+          const deadline = (yield* Clock.currentTimeMillis) + BACKGROUND_MOVE_TIMEOUT_MS;
+          const live = yield* Ref.get(queryContext);
+          if (
+            (yield* Ref.get(activeTurn))?.providerTurnId !== input.providerTurnId ||
+            live === null
+          )
+            return;
+          yield* backgroundForegroundSubagents(live, deadline);
+        });
+
         const steerTurn = Effect.fn("ClaudeAdapterV2.steerTurn")(
           function* (turnInput: ProviderAdapter.ProviderAdapterV2SteerInput) {
             modelCatalog = yield* loadModelCatalog;
@@ -15482,6 +15498,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             );
           }),
           steerTurn,
+          backgroundSubagents,
           mcpApps: {
             listTools: Effect.fn("ClaudeAdapterV2.listMcpTools")(function* ({
               providerThread,

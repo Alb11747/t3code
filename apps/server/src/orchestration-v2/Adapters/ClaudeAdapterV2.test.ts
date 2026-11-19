@@ -25304,6 +25304,102 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
   );
 
+  it.effect(
+    "backgrounds the root's foreground subagents for waiting input without writing it",
+    () =>
+      Effect.gen(function* () {
+        const TOOL_USE_ID = "toolu-boundary-foreground";
+        const calls: Array<string> = [];
+        const harness = yield* makeWakeHarnessWithOptions({
+          backgroundTasks: (toolUseId) =>
+            Effect.sync(() => calls.push(toolUseId)).pipe(Effect.as(true)),
+        });
+        const attemptId = RunAttemptId.make("attempt-boundary-foreground");
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId,
+            text: "Audit the repo with a subagent.",
+            attachments: [],
+          }),
+        );
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: "task-boundary-foreground",
+            tool_use_id: TOOL_USE_ID,
+            description: "task-boundary-foreground",
+            subagent_type: "general-purpose",
+            is_backgrounded: false,
+            task_type: "local_agent",
+            prompt: "Audit.",
+            uuid: "00000000-0000-4000-8000-000000000b01",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        const offered = harness.offeredMessages.length;
+        const providerTurnId = (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+          driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+          nativeTurnId: `turn:${attemptId}`,
+        });
+        // A stale turn's request moves nothing.
+        yield* harness.runtime.backgroundSubagents!({
+          providerTurnId: ProviderTurnId.make("provider-turn:stale"),
+        });
+        assert.deepEqual(calls, []);
+        yield* harness.runtime.backgroundSubagents!({ providerTurnId });
+        assert.deepEqual(calls, [TOOL_USE_ID]);
+        assert.equal(harness.offeredMessages.length, offered);
+
+        // As after Send now: a moved subagent that finishes after the turn wakes the thread.
+        yield* harness.offerAndWait(
+          makeResultFrame({ uuid: "00000000-0000-4000-8000-000000000b02", result: "Moved on." }),
+        );
+        yield* harness.until(() => harness.terminalEvents().length === 1);
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-boundary-foreground-next"),
+            text: "Anything else?",
+            attachments: [],
+            providerTurnOrdinal: 2,
+          }),
+        );
+        for (const frame of [
+          makeSubagentNotificationFrame({
+            taskId: "task-boundary-foreground",
+            toolUseId: TOOL_USE_ID,
+            summary: "AUDITED",
+            uuid: "00000000-0000-4000-8000-000000000b03",
+          }),
+          makeResultFrame({ uuid: "00000000-0000-4000-8000-000000000b04", result: "No." }),
+        ]) {
+          yield* Queue.offer(harness.sdkMessages, frame);
+        }
+        yield* harness.until(() => harness.terminalEvents().length === 2);
+        yield* Queue.offer(harness.sdkMessages, wakeTurnInit);
+        yield* harness.until(() => harness.continuationRequests.length === 1);
+        assert.equal(
+          harness.continuationRequests[0]?.notification?.summary,
+          'Subagent "task-boundary-foreground" finished',
+        );
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+  );
+
   runClaudeAdapterForkSuite({
     makeWakeHarnessWithOptions,
     makeClaudeTestTurnInput,

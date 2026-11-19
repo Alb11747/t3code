@@ -927,6 +927,7 @@ it.effect(
         "provider-turn.interrupt",
         "provider-turn.steer",
         "provider-turn.restart",
+        "provider-turn.background-subagents",
         "runtime-request.respond",
       ]);
       const events = committedInput?.events ?? [];
