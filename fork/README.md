@@ -29,8 +29,12 @@ or fork PR in response to a user request, even when the report comes from a
 fork build or the source branch for an upstream PR lives on the fork.
 
 Check for an existing upstream report or fix before filing. If upstream
-already covers it, link the existing report or fix in your reply. If the
-problem only affects the fork, report the findings to the user in the thread.
+already covers it, link the existing report or fix in your reply.
+
+If the user asks you to file an issue and you confirm the bug only affects
+the fork, that request also authorizes a fork fix. Fix it yourself, delegate
+the fix to a subagent, or start a new top-level T3 thread to fix it. Give
+the agent or thread the reproduction and the evidence that the bug is fork-only.
 
 ## Layout
 
