@@ -25,6 +25,7 @@ import {
 } from "../sourceControl/threadPullRequests.ts";
 import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+  linkOriginIsFenced,
   type ChatAttachment,
   CommandId,
   type GuestMessageId,
@@ -7284,6 +7285,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    workspaceBasePinned = false,
   ) {
     // A compacted thread reads every run and turn item, but attempts, nodes, messages and provider
     // turns only for its recent runs and the runs this command names. An idle compaction reads
@@ -8849,7 +8851,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? {}
           : { usageLimitContinuationOfRunId: command.usageLimitContinuationOfRunId }),
         ...(dispatchMode.type === "defer_start" && dispatchMode.workspaceStrategy !== undefined
-          ? { workspacePreparation: dispatchMode.workspaceStrategy }
+          ? {
+              workspacePreparation: dispatchMode.workspaceStrategy,
+              ...(workspaceBasePinned ? { workspaceBasePinned: true as const } : {}),
+            }
           : {}),
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         ...wakeWorkStartedAt(projection, command),
@@ -10157,6 +10162,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             (cause) => new OrchestratorProjectionError({ threadId: command.parentThreadId, cause }),
           ),
         );
+      const crossProject =
+        command.projectId !== undefined && command.projectId !== parentProjection.thread.projectId;
+      if (crossProject) {
+        const targetProject = yield* projects
+          .get(command.projectId)
+          .pipe(mapDispatchError(command));
+        if (
+          Option.isNone(targetProject) ||
+          parentProjection.thread.deletedAt !== null ||
+          parentProjection.thread.archivedAt !== null ||
+          (parentProjection.thread.linkOrigin !== undefined &&
+            linkOriginIsFenced(parentProjection.thread.linkOrigin))
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause:
+              "Cross-project delegation requires a live parent, an existing destination and access outside the parent project.",
+          });
+        }
+      }
       const parentRun = parentProjection.runs.find(
         (candidate) => candidate.id === command.parentRunId,
       );
@@ -10234,6 +10260,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           createdBy: command.createdBy,
           creationSource: command.creationSource,
         }),
+        projectId: command.projectId ?? parentProjection.thread.projectId,
+        ...(crossProject ? { branch: null, worktreePath: null, branchPullRequest: null } : {}),
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
         ...(command.workspaceStrategy === undefined ? {} : { branch: null, worktreePath: null }),
@@ -10365,7 +10393,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? { type: "start_immediately" }
             : { type: "defer_start", workspaceStrategy: command.workspaceStrategy },
       } satisfies Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>;
-      yield* dispatchMessage(childMessageCommand, events, effects);
+      yield* dispatchMessage(childMessageCommand, events, effects, crossProject);
 
       const childProjection = yield* getProjectionWithPendingEvents(childThreadId, events);
       const childRun = childProjection.runs[0];

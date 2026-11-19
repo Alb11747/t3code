@@ -8,6 +8,7 @@ import * as TerminalManager from "../terminal/Manager.ts";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as ServerConfig from "../config.ts";
 import { createPendingAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ThreadMessageIntake from "./ThreadMessageIntake.ts";
@@ -19,6 +20,7 @@ import {
   CommandId,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  EventId,
   GitCommandError,
   MessageId,
   ProjectId,
@@ -1562,7 +1564,7 @@ it.effect.each(["stable", "upstream/release"])(
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: "launch-remote-base-" });
       const cwd = `${directory}/repo`;
       const remote = `${directory}/remote.git`;
-      const worktreePath = `${directory}/worktree`;
+      const worktreePath = (yield* Path.Path).join(directory, "worktree");
       yield* fs.makeDirectory(cwd);
       const command = (at: string, args: string[]) =>
         git.execute({ operation: "launch-test", cwd: at, args });
@@ -1716,6 +1718,106 @@ const launchFromBase = (harness: ReturnType<typeof makeHarness>, baseRef: string
     const projection = yield* preparationSettled(launched.threadId);
     assert.equal(projection.runs[0]?.status, "starting");
   }).pipe(Effect.provide(harness.layer));
+
+it.effect("requires the pinned destination commit when preparing a cross-project child", () =>
+  withRealGitRepo(({ directory, cwd, worktreePath, command, harness }) =>
+    Effect.gen(function* () {
+      yield* command(cwd, ["commit", "--allow-empty", "-m", "replacement checkout"]);
+      const source = `${directory}/original`;
+      yield* command(cwd, ["init", source]);
+      yield* command(source, [
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.test",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "pinned work",
+      ]);
+      const sha = (yield* command(source, ["rev-parse", "HEAD"])).stdout.trim();
+      const test = harness();
+      yield* Effect.gen(function* () {
+        const projects = yield* ProjectStore.ProjectStoreV2;
+        const at = otherProject.createdAt;
+        yield* projects.apply({
+          sequence: 1,
+          eventId: EventId.make("event:destination"),
+          aggregateKind: "project",
+          aggregateId: otherProjectId,
+          occurredAt: at,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "project.created",
+          payload: {
+            projectId: otherProjectId,
+            title: "Destination",
+            workspaceRoot: cwd,
+            scripts: [],
+            defaultModelSelection: null,
+            createdAt: at,
+            updatedAt: at,
+          },
+        });
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const parent = yield* launches.launch(
+          launchInput({
+            command: "create-parent",
+            thread: "thread:parent",
+            message: "Delegate work",
+          }),
+        );
+        const run = parent.projection.runs[0]!;
+        const commandId = CommandId.make("delegate-pinned-base");
+        yield* threads.dispatch({
+          type: "delegated_task.request",
+          commandId,
+          parentThreadId: parent.threadId,
+          parentRunId: run.id,
+          parentNodeId: run.rootNodeId!,
+          projectId: otherProjectId,
+          task: "Inspect the destination",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdBy: "agent",
+          creationSource: "mcp",
+          workspaceStrategy: { type: "worktree", baseRef: sha, startFromOrigin: false },
+        });
+        const threadId = IdAllocator.derive.delegatedTaskThread({ commandId });
+        const runId = IdAllocator.derive.run({ threadId, ordinal: 1 });
+        yield* launches.prepareRun({ commandId, threadId, runId });
+        assert.equal((yield* preparationSettled(threadId)).runs[0]?.status, "failed");
+        assert.isFalse(yield* (yield* FileSystem.FileSystem).exists(worktreePath));
+
+        yield* command(cwd, ["fetch", source, sha]);
+        yield* launches.retryPreparation({
+          commandId: CommandId.make("retry-pinned-base"),
+          threadId,
+          runId,
+        });
+        yield* threads.streamStoredEventsFrom({ threadId }).pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" && stored.event.payload.status === "starting",
+          ),
+          Stream.runHead,
+        );
+        assert.equal((yield* command(worktreePath, ["rev-parse", "HEAD"])).stdout.trim(), sha);
+      }).pipe(
+        Effect.provide(
+          Layer.merge(
+            test.layer,
+            ProjectStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+          ),
+        ),
+      );
+    }),
+  ),
+);
 
 it.effect("re-bases a stored base that no longer exists on the remote default branch", () =>
   withRealGitRepo(({ directory, cwd, worktreePath, command, harness }) =>

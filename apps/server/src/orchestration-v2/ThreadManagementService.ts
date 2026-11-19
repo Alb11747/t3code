@@ -485,7 +485,7 @@ export interface ThreadManagementServiceShape {
     readonly instanceId: ProviderInstanceId;
   }) => Effect.Effect<boolean>;
   /** Receipt replays start no work; skip enablement checks with the same command id so settings cannot reject accepted retries. */
-  readonly hasReceipt: (commandId: CommandId) => Effect.Effect<boolean>;
+  readonly hasReceipt: (commandId: CommandId, status?: "accepted") => Effect.Effect<boolean>;
   readonly waitForThread: (
     input: ThreadManagementWaitInput,
   ) => Effect.Effect<ThreadManagementWaitResult, ThreadManagementError>;
@@ -660,10 +660,13 @@ const make = Effect.gen(function* () {
         ),
       );
 
-  const hasReceipt: ThreadManagementServiceShape["hasReceipt"] = (commandId) =>
+  const hasReceipt: ThreadManagementServiceShape["hasReceipt"] = (commandId, status) =>
     receipts.getByCommandId(commandId).pipe(
       Effect.orElseSucceed(() => Option.none()),
-      Effect.map(Option.isSome),
+      Effect.map(
+        (receipt) =>
+          Option.isSome(receipt) && (status === undefined || receipt.value.status === status),
+      ),
     );
 
   const ensureLegacyTranscript = Effect.fn(
@@ -799,7 +802,7 @@ const make = Effect.gen(function* () {
         return orchestrator.getThreadRecords(command.parentThreadId, []).pipe(
           Effect.flatMap((parent) =>
             assertProviderInstanceEnabled({
-              projectId: parent.thread.projectId,
+              projectId: command.projectId ?? parent.thread.projectId,
               commandId: command.commandId,
               instanceId: command.modelSelection.instanceId,
             }),

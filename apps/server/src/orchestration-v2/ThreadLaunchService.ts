@@ -126,6 +126,7 @@ type PreparationInput = Pick<
   ThreadLaunchInput,
   "commandId" | "projectId" | "workspaceStrategy" | "initialMessage"
 > & {
+  readonly workspaceBasePinned?: boolean;
   readonly reusedWorktree?: { readonly baseRef: string };
 };
 
@@ -702,6 +703,13 @@ const make = Effect.gen(function* () {
               refName: startRef === "-" ? "@{-1}" : startRef,
             })
             .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId))));
+        if (!recordedBaseResolves && input.workspaceBasePinned) {
+          return yield* mapError(
+            input,
+            "provision-worktree",
+            threadId,
+          )("The pinned target commit is no longer available.");
+        }
         if (!recordedBaseResolves) {
           const remoteName =
             remote?.remoteName ??
@@ -1639,6 +1647,7 @@ const make = Effect.gen(function* () {
         commandId: input.commandId,
         projectId: thread.projectId,
         workspaceStrategy: reuse?.strategy ?? workspacePreparation,
+        ...(run.workspaceBasePinned ? { workspaceBasePinned: true } : {}),
         ...(reuse === null ? {} : { reusedWorktree: reuse.reusedWorktree }),
         ...(message === undefined
           ? {}

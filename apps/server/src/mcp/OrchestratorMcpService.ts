@@ -95,6 +95,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
   subagentResultForRun,
@@ -120,6 +121,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import { placeholderThreadTitle } from "../orchestration-v2/placeholderThreadTitle.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { assertNotLinked } from "./linkOrigin.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -1630,6 +1632,7 @@ const make = Effect.gen(function* () {
       >;
     };
     readonly target: OrchestratorMcpTarget | undefined;
+    readonly projectId?: ProjectId;
     readonly providers: ReadonlyArray<ServerProvider>;
     /** Receipt replays bypass current settings because they start no work. Dispatch must reuse the checked command ID. */
     readonly skipProjectEnablementFilter?: boolean;
@@ -1667,7 +1670,7 @@ const make = Effect.gen(function* () {
         const enabledForProject =
           input.skipProjectEnablementFilter === true ||
           (yield* threadManagement.isProviderInstanceEnabledForProject({
-            projectId: input.parent.thread.projectId,
+            projectId: input.projectId ?? input.parent.thread.projectId,
             instanceId: candidate.instanceId,
           }));
         if (enabledForProject) {
@@ -2847,42 +2850,55 @@ const make = Effect.gen(function* () {
           : readTask(scope, taskId, false, true);
       }
       const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
-      if (
-        input.target?.projectId !== undefined &&
-        input.target.projectId !== parent.thread.projectId
-      ) {
-        return yield* failure(
-          "invalid_request",
-          "A local task runs in this thread's project. Omit target.projectId, or pass target.environmentId to run it in that environment's project.",
-        );
-      }
-      const parentRun = parent.runs
-        .filter(ThreadManagementService.isActiveRun)
-        .toSorted((left, right) => right.ordinal - left.ordinal)[0];
+      const projectId = input.target?.projectId ?? parent.thread.projectId;
+      const crossProject = projectId !== parent.thread.projectId;
+      if (crossProject)
+        yield* assertNotLinked({ scope, caller: parent.thread }, "delegate to another project");
+      const parentRun = ThreadManagementService.latestActiveRun(parent);
       if (
         parentRun === undefined ||
         parentRun.rootNodeId === null ||
-        parentRun.providerInstanceId !== scope.thread.providerInstanceId
+        parentRun.providerInstanceId !== scope.thread.providerInstanceId ||
+        (crossProject && (parent.thread.archivedAt !== null || parent.thread.deletedAt !== null))
       ) {
         return yield* failure(
           "parent_not_active",
           "Delegated tasks require an active run owned by this MCP provider session.",
         );
       }
-      const providers = yield* loadProviders;
       const key = yield* requestKey(input.clientRequestId);
       const commandId = stableCommandId({
         scope,
         requestKey: key,
         operation: "delegate-task",
       });
-      const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
-      const target = yield* resolveTargetRechecking({
-        parent,
-        target: input.target,
-        providers,
-        skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
-      });
+      const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId, "accepted");
+      const destination =
+        crossProject && !isRetryOfAcceptedDelegation ? yield* requireProject(projectId) : undefined;
+      let target: ResolvedTarget;
+      if (isRetryOfAcceptedDelegation) {
+        const taskId = IdAllocator.derive.delegatedTaskNode({ commandId });
+        const [committed] = yield* loadTasks(parent.thread.id, [taskId]);
+        if (!committed?.childThreadId)
+          return yield* failure(
+            "orchestration_error",
+            "The accepted delegated task was not found.",
+          );
+        // Older task records omit modelSelection. Canonical thread records survive soft deletion.
+        const modelSelection =
+          committed.modelSelection ??
+          (yield* threadManagement
+            .getThreadRecords(committed.childThreadId, [])
+            .pipe(Effect.mapError(threadManagementFailure))).thread.modelSelection;
+        target = { modelSelection, supportedRuntimeModes: undefined };
+      } else {
+        target = yield* resolveTargetRechecking({
+          parent,
+          projectId,
+          target: input.target,
+          providers: yield* loadProviders,
+        });
+      }
       const runtimeMode = yield* resolveRuntimeMode(
         parent.thread.runtimeMode,
         input.runtimeMode,
@@ -2898,21 +2914,51 @@ const make = Effect.gen(function* () {
         : yield* launchAccountChoice(target.modelSelection.instanceId, input.target);
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
       if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
-        const project = yield* requireProject(parent.thread.projectId);
+        const project = destination ?? (yield* requireProject(projectId));
+        let revision = "HEAD";
+        if (crossProject) {
+          const defaultRef = yield* gitDriver.resolvePrimaryRemoteName(project.workspaceRoot).pipe(
+            Effect.flatMap((remote) =>
+              gitDriver
+                .resolveDefaultBranchName(project.workspaceRoot, remote)
+                .pipe(
+                  Effect.map((branch) =>
+                    branch === null ? null : `refs/remotes/${remote}/${branch}`,
+                  ),
+                ),
+            ),
+            Effect.mapError(() =>
+              failure("invalid_request", "Unable to resolve the target project's default branch."),
+            ),
+          );
+          if (defaultRef === null)
+            return yield* failure(
+              "invalid_request",
+              "The target project's default branch was not found.",
+            );
+          revision = defaultRef;
+        }
         const base = yield* gitDriver
           .resolveCommit({
-            cwd: parent.thread.worktreePath ?? project.workspaceRoot,
-            revision: "HEAD",
+            cwd: crossProject
+              ? project.workspaceRoot
+              : (parent.thread.worktreePath ?? project.workspaceRoot),
+            revision,
           })
           .pipe(
             Effect.mapError(() =>
-              failure("invalid_request", "Unable to resolve the parent checkout commit."),
+              failure(
+                "invalid_request",
+                crossProject
+                  ? "Unable to resolve the target default branch commit."
+                  : "Unable to resolve the parent checkout commit.",
+              ),
             ),
           );
         // Launch preparation creates the worktree from the project root, so a
         // parent checkout in another repository (such as a Git folder inside
         // Scratch) would hand it a commit it cannot find.
-        if (parent.thread.worktreePath !== null) {
+        if (!crossProject && parent.thread.worktreePath !== null) {
           yield* gitDriver
             .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
             .pipe(
@@ -2935,6 +2981,7 @@ const make = Effect.gen(function* () {
           createdBy: "agent",
           creationSource: "mcp",
           commandId,
+          ...(crossProject ? { projectId } : {}),
           parentThreadId: scope.thread.threadId,
           parentRunId: parentRun.id,
           parentNodeId: parentRun.rootNodeId,

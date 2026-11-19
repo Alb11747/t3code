@@ -209,13 +209,23 @@ export type OrchestratorMcpTerminalDelegatedTaskStatus =
 
 export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   task: OrchestratorMcpPrompt,
-  target: Schema.optional(OrchestratorMcpTarget),
+  target: Schema.optional(
+    Schema.Struct({
+      ...OrchestratorMcpTarget.fields,
+      projectId: Schema.optional(
+        ProjectId.annotate({
+          description:
+            "Destination project. Defaults to the parent project locally or the matching repository remotely.",
+        }),
+      ),
+    }),
+  ),
   title: Schema.optional(OrchestratorMcpTitle),
   role: Schema.optional(OrchestratorMcpTaskRole),
   isolation: Schema.optional(
     Schema.Literals(["shared", "worktree"]).annotate({
       description:
-        "'shared' (default): parent checkout. 'worktree': new prepared checkout from the parent commit, for a separate checkout or PR per child. Uncommitted edits stay out.",
+        "Shared (default): parent checkout or target root. Worktree: parent commit or other project's cached primary-remote default (no fetch).",
     }),
   ),
   mode: Schema.optional(

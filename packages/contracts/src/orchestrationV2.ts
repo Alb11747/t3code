@@ -798,6 +798,7 @@ export const OrchestrationV2Run = Schema.Struct({
   ),
   delegatedCompletion: Schema.optional(OrchestrationV2DelegatedCompletionCohort),
   workspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+  workspaceBasePinned: Schema.optional(Schema.Literal(true)),
   /** A message queued only because the active turn had not started yet; delivered so once it does. */
   deliveryIntent: Schema.optional(Schema.Literals(["auto", "steer"])),
   /** Starts a new provider conversation; earlier runs stay visible but never reach the provider. */
@@ -3683,6 +3684,7 @@ export const OrchestrationV2Command = Schema.Union([
     type: Schema.Literal("delegated_task.request"),
     ...OrchestrationV2CreationFields,
     commandId: CommandId,
+    projectId: Schema.optional(ProjectId),
     parentThreadId: ThreadId,
     parentRunId: RunId,
     parentNodeId: NodeId,
