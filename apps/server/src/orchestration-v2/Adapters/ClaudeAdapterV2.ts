@@ -12727,8 +12727,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           );
         });
 
-        // A new turn means Claude has had its chance to report an earlier turn's input. Input it
-        // took but never reported counts as delivered, as when its process ends.
+        // Claude takes input in order, so once a later turn's prompt starts it has reported every
+        // earlier input it dropped. One it took but never reported counts as delivered, as when
+        // its process ends.
         const settleBoundaryOffersOfEarlierTurns = Effect.fnUntraced(function* (
           live: ClaudeLiveQueryContext,
           current: ActiveClaudeTurnContext,
@@ -12788,6 +12789,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   pruneBoundaryBatches(liveQuery.boundaryBatches);
                 }),
               );
+              if (
+                lifecycle.state === "started" &&
+                context !== null &&
+                lifecycle.uuid === context.promptUuid
+              ) {
+                yield* settleBoundaryOffersOfEarlierTurns(liveQuery, context);
+              }
             }
             if (message.type === "result") {
               for (const batch of liveQuery.boundaryBatches) batch.accepting = false;
@@ -14203,18 +14211,43 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             pdfReservation.commit();
             context.pendingRetrySteers.splice(0, pendingCount);
           };
-          // Steers held through a backoff ride along; once written they count as delivered.
+          // Steers held through a backoff ride along: delivered once Claude reads the input,
+          // returned to the queue if it is dropped first.
           const heldSteers = steers.slice(0, pendingCount);
+          let heldSettled = false;
+          const settleHeldSteers = (status: "completed" | "cancelled") => {
+            if (heldSettled) return;
+            heldSettled = true;
+            void runPromise(
+              Effect.forEach(
+                heldSteers,
+                (message) => emitSteerStatus(context, message.messageId, status),
+                { discard: true },
+              ),
+            );
+          };
+          let discardedBeforeQueued = false;
+          const handoff =
+            heldSteers.length === 0
+              ? undefined
+              : {
+                  isCurrent: () => true,
+                  onPulled: () => {},
+                  onConsumed: () => settleHeldSteers("completed"),
+                  onDiscarded: () => {
+                    // Refused before it was queued, the steers stay held for the caller.
+                    if (!committed) discardedBeforeQueued = true;
+                    else settleHeldSteers("cancelled");
+                  },
+                };
           return (query: ClaudeAgentSdkQuerySession) =>
             Effect.uninterruptibleMask((restore) =>
-              restore(query.offer(userMessage, commit)).pipe(
-                Effect.tap(() => Effect.sync(commit)),
+              restore(query.offer(userMessage, commit, handoff)).pipe(
+                // A closed input refuses the offer, with or without a handoff.
                 Effect.tap(() =>
-                  Effect.forEach(
-                    heldSteers,
-                    (message) => emitSteerStatus(context, message.messageId, "completed"),
-                    { discard: true },
-                  ),
+                  discardedBeforeQueued
+                    ? Effect.fail(queryRunnerError(new Error("Claude input is closed."), "offer"))
+                    : Effect.sync(commit),
                 ),
               ),
             );
@@ -14592,7 +14625,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     : { cause: querySession.exitCause }),
                 });
               }
-              yield* settleBoundaryOffersOfEarlierTurns(querySession, context);
               if (
                 !isClaudeProviderContinuationTurn(turnInput) &&
                 permissionModeForClaudeRuntimePolicy(turnInput.runtimePolicy) ===

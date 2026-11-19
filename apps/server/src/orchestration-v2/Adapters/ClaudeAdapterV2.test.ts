@@ -3938,13 +3938,17 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
 
-  it.effect.each(["sent with the retry", "stopped before the retry"] as const)(
+  it.effect.each(["read with the retry", "dropped unread", "stopped before the retry"] as const)(
     "reports a direct steer held through an overload backoff (%s)",
     (outcome) =>
       Effect.gen(function* () {
+        const handoffs: Array<
+          NonNullable<Parameters<ClaudeAdapterV2.ClaudeAgentSdkQuerySession["offer"]>[2]>
+        > = [];
         const harness = yield* makeWakeHarnessWithOptions({
           freshQueueOnReopen: true,
           close: Queue.shutdown,
+          onHandoff: (handoff) => handoffs.push(handoff),
         });
         const attemptId = RunAttemptId.make("backoff-steer");
         const input = makeClaudeTestTurnInput({
@@ -4007,7 +4011,18 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           JSON.stringify(harness.offeredMessages[1]?.message.content),
           "Keep the failed build log.",
         );
-        // Written with the resumed prompt: it counts as delivered and is never sent again.
+        // Queued with the resumed prompt is not yet read: Claude may still drop it.
+        assert.deepEqual(steerStatuses(), ["pending"]);
+        assert.lengthOf(handoffs, 1);
+        if (outcome === "dropped unread") {
+          handoffs[0]!.onDiscarded();
+          yield* harness.until(() => steerStatuses().length === 2);
+          assert.deepEqual(steerStatuses(), ["pending", "cancelled"]);
+          return;
+        }
+        // Written to Claude: it counts as delivered and is never sent again.
+        handoffs[0]!.onPulled();
+        handoffs[0]!.onConsumed();
         yield* harness.until(() => steerStatuses().length === 2);
         assert.deepEqual(steerStatuses(), ["pending", "completed"]);
       }).pipe(
@@ -4228,16 +4243,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.lengthOf(withdrawals, 1);
         // Later reports settle directly, since the ended turn no longer ingests events.
         yield* lifecycle(offers[2]!.id, "discarded");
-        for (const offer of offers.slice(3, -1)) yield* lifecycle(offer.id, "started");
+        for (const offer of offers.slice(3, -2)) yield* lifecycle(offer.id, "started");
         assert.deepEqual(
           withdrawals.flatMap((withdrawal) => withdrawal.offers.map((offer) => offer.id)),
           [offers[1]!.id, offers[2]!.id],
         );
         assert.deepEqual(
           lateReceipts.flatMap((receipt) => receipt.offers.map((offer) => offer.id)),
-          offers.slice(3, -1).map((offer) => offer.id),
+          offers.slice(3, -2).map((offer) => offer.id),
         );
-        // The next turn settles input Claude took but never reported: delivered, never resent.
         yield* harness.runtime.startTurn(
           makeClaudeTestTurnInput({
             threadId: harness.threadId,
@@ -4249,11 +4263,18 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             attachments: [],
           }),
         );
+        // Claude can still drop earlier input after the next turn is sent; it returns to the queue.
+        yield* lifecycle(offers[39]!.id, "discarded");
+        assert.deepEqual(
+          withdrawals.flatMap((withdrawal) => withdrawal.offers.map((offer) => offer.id)),
+          [offers[1]!.id, offers[2]!.id, offers[39]!.id],
+        );
+        // Once the next prompt starts, input it never reported counts as delivered, never resent.
+        yield* lifecycle(harness.promptUuid(41), "started");
         assert.deepEqual(
           lateReceipts.flatMap((receipt) => receipt.offers.map((offer) => offer.id)),
-          offers.slice(3).map((offer) => offer.id),
+          offers.slice(3, -1).map((offer) => offer.id),
         );
-        assert.lengthOf(withdrawals, 2);
         assert.lengthOf(deliveryEvents(), 2);
       }).pipe(
         Effect.scoped,
