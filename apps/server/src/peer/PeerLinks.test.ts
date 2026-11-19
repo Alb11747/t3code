@@ -727,6 +727,16 @@ it.effect(
           })
           .pipe(Effect.flip);
         expect(lanAlternate.message).toContain("plain http");
+        // A numeric Tailscale address passes the credential check; only the peer's age refuses.
+        const tailnetIp = yield* a.links
+          .link({
+            url: b.url,
+            alternateUrls: ["http://100.76.165.45:3773"],
+            pairingCode: pairing.credential,
+            access: "auto",
+          })
+          .pipe(Effect.flip);
+        expect(tailnetIp.reason).toBe("incompatible");
 
         yield* Ref.set(b.descriptor, laptop);
         const self = yield* a.links
