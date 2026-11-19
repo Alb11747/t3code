@@ -38,3 +38,44 @@ it("delivers pending steering before completion notices while explicit Queue kee
     "queue-last",
   ]);
 });
+
+it("starts a steer that missed its tool boundary ahead of an older queued message", () => {
+  const projection = {
+    messages: [
+      { id: "queued", text: "Queued earlier" },
+      { id: "steer", text: "Missed the boundary", atToolBoundary: true },
+    ],
+    runs: [
+      { id: "queued", userMessageId: "queued", ordinal: 1, status: "queued" },
+      { id: "steer", userMessageId: "steer", ordinal: 2, status: "queued" },
+    ].map((run, index) => ({
+      ...run,
+      requestedAt: DateTime.makeUnsafe(`2026-01-01T00:00:0${index}Z`),
+    })),
+  } as never;
+
+  expect(queuedRunsInDeliveryOrder(projection).map((run) => run.id)).toEqual(["steer", "queued"]);
+});
+
+it("breaks a same-millisecond tie between a message and a completion by commit order", () => {
+  const projection = {
+    messages: [
+      { id: "steer", text: "Steer", atToolBoundary: true },
+      {
+        id: "completion",
+        text: "Completed",
+        atToolBoundary: true,
+        delegatedCompletion: { taskIds: ["child"] },
+      },
+    ],
+    runs: [
+      { id: "steer", userMessageId: "steer", ordinal: 1, status: "queued" },
+      { id: "completion", userMessageId: "completion", ordinal: 2, status: "queued" },
+    ].map((run) => ({ ...run, requestedAt: DateTime.makeUnsafe("2026-01-01T00:00:00Z") })),
+  } as never;
+
+  expect(queuedRunsInDeliveryOrder(projection).map((run) => run.id)).toEqual([
+    "steer",
+    "completion",
+  ]);
+});

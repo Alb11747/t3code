@@ -14,7 +14,11 @@ export function isAutomaticCompletionRun(
   );
 }
 
-export function queuedSteeringRunIds(runs: ReadonlyArray<OrchestrationV2Run>) {
+/** `boundaryMessageIds` marks steers waiting for a tool boundary; like Auto, they stop at a fresh context. */
+export function queuedSteeringRunIds(
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  boundaryMessageIds: ReadonlySet<string> = new Set(),
+) {
   const firstFreshPosition = Math.min(
     ...runs
       .filter((run) => run.status === "queued" && run.freshContext === true)
@@ -26,7 +30,7 @@ export function queuedSteeringRunIds(runs: ReadonlyArray<OrchestrationV2Run>) {
         (run) =>
           run.status === "queued" &&
           (run.deliveryIntent === "steer" ||
-            (run.deliveryIntent === "auto" &&
+            ((run.deliveryIntent === "auto" || boundaryMessageIds.has(run.userMessageId)) &&
               (run.queuePosition ?? run.ordinal) < firstFreshPosition)),
       )
       .map((run) => run.id),
@@ -55,7 +59,24 @@ export function queuedRunsInDeliveryOrder(
         left.ordinal - right.ordinal,
     );
   const completions = queued.filter((run) => automaticCompletionMessageIds.has(run.userMessageId));
-  const messages = queued.filter((run) => !automaticCompletionMessageIds.has(run.userMessageId));
+  // A steer that missed its tool boundary leads the other messages but keeps request order with
+  // completions, so a notice committed first still reaches the same boundary first.
+  const boundarySteerIds = queuedSteeringRunIds(
+    queued,
+    new Set(
+      projection.messages
+        .filter(
+          (message) => message.atToolBoundary === true && message.delegatedCompletion === undefined,
+        )
+        .map((message) => message.id),
+    ),
+  );
+  const messages = queued
+    .filter((run) => !automaticCompletionMessageIds.has(run.userMessageId))
+    .toSorted(
+      (left, right) =>
+        Number(boundarySteerIds.has(right.id)) - Number(boundarySteerIds.has(left.id)),
+    );
   // Completions and messages each keep their queue order and interleave by request time,
   // so neither kind can hold the other back while more of it keeps arriving.
   const ordered: Array<OrchestrationV2Run> = [];
@@ -82,8 +103,12 @@ export function queuedRunsInDeliveryOrder(
         }),
       );
     }
+    const completionAt = DateTime.toEpochMillis(completion.requestedAt);
+    const messageAt = DateTime.toEpochMillis(message.requestedAt);
+    // Same-millisecond requests follow commit order.
     if (
-      DateTime.toEpochMillis(completion.requestedAt) <= DateTime.toEpochMillis(message.requestedAt)
+      completionAt < messageAt ||
+      (completionAt === messageAt && completion.ordinal < message.ordinal)
     ) {
       ordered.push(completion);
       completionIndex += 1;
