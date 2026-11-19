@@ -178,15 +178,15 @@ const make = Effect.gen(function* () {
         message: "A launch in a linked environment cannot carry attachments yet.",
       });
     }
-    // A call whose answer the link lost may have run there. A tool that takes a retry key always
-    // forwards one, so the caller can retry it at most once.
+    // A call whose answer the link lost may have run there. A send always forwards a retry key,
+    // which the linked environment replays, so the caller can retry it at most once.
+    const replaysByKey = toolName === "t3_thread_send";
     const requestId =
       typeof args.clientRequestId === "string"
         ? args.clientRequestId
-        : (parameters as { readonly fields?: Record<string, unknown> }).fields?.clientRequestId ===
-            undefined
-          ? undefined
-          : yield* random.uuidV4();
+        : replaysByKey
+          ? yield* random.uuidV4()
+          : undefined;
     if (requestId !== undefined) {
       args.clientRequestId = yield* scopedRequestId(scope.requestNamespace, requestId);
     }
@@ -210,12 +210,15 @@ const make = Effect.gen(function* () {
       })
       .pipe(
         Effect.mapError((error) =>
-          error === PeerMcpClient.stoppedAnswering && requestId !== undefined
-            ? new OrchestratorMcpFailure({
+          error !== PeerMcpClient.stoppedAnswering
+            ? error
+            : new OrchestratorMcpFailure({
                 code: error.code,
-                message: `${error.message} The call may have run there. Retrying with clientRequestId "${requestId}" is safe: it runs at most once.`,
-              })
-            : error,
+                message:
+                  replaysByKey && requestId !== undefined
+                    ? `${error.message} The message may have been sent there. Retrying with clientRequestId "${requestId}" is safe: it is sent at most once.`
+                    : `${error.message} The call may have run there; check before repeating it.`,
+              }),
         ),
       );
   });

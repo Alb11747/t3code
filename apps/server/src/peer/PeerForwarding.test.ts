@@ -808,5 +808,14 @@ it.effect("names a retry key when a link loses the answer to a send that may hav
     // The retry carries the same key there, so the linked environment runs the send once.
     expect(forwardedIds[1]).toBe(forwardedIds[0]);
     expect(typeof forwardedIds[0]).toBe("string");
+    // A tool the linked environment does not replay by key promises nothing.
+    const interrupted = yield* forwarding
+      .interruptThread(scope, box.environmentId, {
+        environmentId: box.environmentId,
+        threadId: boxThread,
+      })
+      .pipe(Effect.flip);
+    expect(interrupted.message).toContain("check before repeating it");
+    expect(interrupted.message).not.toContain("clientRequestId");
   }),
 );
