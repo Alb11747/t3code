@@ -590,6 +590,10 @@ export const make = Effect.gen(function* () {
           continue;
         }
         if (run.queueHeld === true && retryableRuns.length === 0) continue;
+        // Nothing queued reached the provider, so it resumes on its own in order. It is held to
+        // stay behind a saved start the provider may have accepted, and a delegated follow-up is
+        // held so its parent's task goes idle.
+        if (retryableRuns.length === 0 && run.delegatedTaskId === undefined) continue;
         events.push({
           id: yield* allocateEventId(),
           type: "run.updated",

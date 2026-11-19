@@ -358,11 +358,14 @@ const layerProviderRuntimeRecoveryProvided = Layer.effect(
   Effect.gen(function* () {
     const recovery = yield* ProviderRuntimeRecoveryService.make;
     const recoverReceipts = yield* makeClaudeBoundaryReceiptRecovery;
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
     return {
       ...recovery,
+      // Settle open boundary offers before queued messages, which recovery leaves unheld, resume.
       recover: recovery.recover.pipe(
         Effect.tap(() =>
           recoverReceipts.pipe(
+            Effect.andThen(orchestrator.resumeQueuedRuns),
             Effect.mapError(
               (cause) =>
                 new ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryError({
@@ -384,6 +387,7 @@ const layerProviderRuntimeRecoveryProvided = Layer.effect(
       IdAllocator.layer,
       ProjectionStore.layer,
       layerThreadManagementProvided,
+      layerOrchestratorProvided,
       TurnItemPositionStore.layer,
     ),
   ),

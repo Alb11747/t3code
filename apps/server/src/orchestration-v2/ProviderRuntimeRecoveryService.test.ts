@@ -734,6 +734,7 @@ it.effect.each([
                 : [],
             ),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+          cancelUnsettled: () => Effect.succeed([]),
         }),
       ),
     ),
@@ -744,6 +745,11 @@ it.effect.each([
       yield* (yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService).reconcile("startup");
     assert.equal(summary.terminalizedRuns, terminalized ? 1 : 0);
     const command = committedInput;
+    // A queued run is not held: it resumes on its own, and startup settles its open offer.
+    if (scenario === "queued") {
+      assert.isUndefined(command?.events.find((event) => event.type === "run.updated"));
+      return;
+    }
     assert.isNotNull(command);
     if (command === null) return;
     const runEvent = command.events.find((event) => event.type === "run.updated");

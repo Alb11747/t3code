@@ -3607,6 +3607,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     for (const threadId of threadIds) {
       const resumedThread = yield* Effect.gen(function* () {
         if (!(yield* projectionStore.canStartQueuedRun(threadId))) return false;
+        // A pending restart continuation resumes the cut turn first; the queue follows it.
+        const latest = latestExecutedRun(
+          (yield* projectionStore.getThreadRecords(threadId, ["runs"])).runs,
+        );
+        const continuation =
+          latest === null
+            ? Option.none()
+            : yield* effectOutbox.get(`effect:restart-continuation:${latest.id}`);
+        if (
+          Option.isSome(continuation) &&
+          (continuation.value.status === "pending" || continuation.value.status === "running")
+        )
+          return false;
         yield* threadDispatch.withLock(threadId, startNextQueuedRun(threadId));
         return true;
       }).pipe(

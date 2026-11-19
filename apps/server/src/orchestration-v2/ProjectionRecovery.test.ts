@@ -140,7 +140,7 @@ const createRun = Effect.fn(function* (
 });
 
 it.effect.each(["startup", "shutdown"] as const)(
-  "%s cancels queued buffered wakes and holds durable messages",
+  "%s cancels queued buffered wakes and leaves durable messages to resume",
   (trigger) =>
     Effect.gen(function* () {
       const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -209,9 +209,13 @@ it.effect.each(["startup", "shutdown"] as const)(
       for (const threadId of durableThreads) {
         const projection = yield* projections.getThreadProjection(threadId);
         assert.equal(projection.runs[0]?.status, "queued");
-        assert.isTrue(projection.runs[0]?.queueHeld);
+        assert.notEqual(projection.runs[0]?.queueHeld, true);
       }
-      assert.deepEqual(yield* projections.getRecoveryThreadIds("runtime"), []);
+      // Unheld, they are still queued work for startup to resume.
+      assert.deepEqual(
+        new Set(yield* projections.getRecoveryThreadIds("runtime")),
+        new Set(durableThreads),
+      );
     }).pipe(Effect.provide(layerRecoveryTest)),
 );
 

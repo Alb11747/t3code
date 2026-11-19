@@ -10371,7 +10371,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     { trigger: "startup", started: false },
     { trigger: "shutdown", started: false },
   ] as const)(
-    "preserves and holds queued messages across $trigger with started=$started until explicitly resumed",
+    "preserves queued messages across $trigger with started=$started, holding them behind an unaccepted start",
     ({ trigger, started }) =>
       Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -10444,7 +10444,21 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         yield* recovery.reconcile("startup");
         const maintenance = yield* ProjectionReplay.ProjectionReplay;
         assert.isTrue((yield* maintenance.rebuild).valid);
-        assert.equal(yield* orchestrator.resumeQueuedRuns, 0);
+        if (started) {
+          // Nothing queued reached the provider, so the queue resumes on its own, in order.
+          yield* orchestrator.resumeQueuedRuns;
+          const resumed = yield* orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(
+            resumed.runs.map((run) => [run.status, run.queueHeld === true]),
+            [
+              ["cancelled", false],
+              ["starting", false],
+              ["queued", false],
+            ],
+          );
+          return;
+        }
+        yield* orchestrator.resumeQueuedRuns;
         const held = yield* orchestrator.getThreadProjection(threadId);
         assert.deepEqual(
           held.runs.map((run) => run.status),
@@ -10504,7 +10518,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
             beforeRunId: first.id,
           });
         }
-        assert.equal(yield* orchestrator.resumeQueuedRuns, 0);
+        yield* orchestrator.resumeQueuedRuns;
         const resume = {
           type: "queue.resume" as const,
           commandId: CommandId.make(`${threadId}:resume`),
@@ -10915,7 +10929,13 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         ),
         "removed queued message must not surface as a transcript row",
       );
-      assert.equal(yield* orchestrator.resumeQueuedRuns, 0);
+      yield* orchestrator.resumeQueuedRuns;
+      assert.equal(
+        (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+          (run) => run.id === queuedRun.id,
+        )?.status,
+        "cancelled",
+      );
 
       const cancelAgainError = yield* orchestrator
         .dispatch({

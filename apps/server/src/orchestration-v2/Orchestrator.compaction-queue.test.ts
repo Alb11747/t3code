@@ -584,3 +584,78 @@ it.effect("a user's /compact that joins a held compaction resumes the queue", ()
     expect(runs.find((run) => run.userMessageId === compactMessageId)?.status).not.toBe("queued");
   }).pipe(Effect.provide(layerTest)),
 );
+
+it.effect.each([false, true])(
+  "startup resumes a queue that recovery left unheld unless a restart continuation is pending (%s)",
+  (continuing) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make(`thread:restart-queue-${continuing}`);
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${threadId}`),
+        threadId,
+        projectId: ProjectId.make("project:restart-queue"),
+        title: "Restart queue",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const cutId = MessageId.make(`${threadId}:cut`);
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`send:${cutId}`),
+        threadId,
+        messageId: cutId,
+        text: "Work the restart cut",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const queuedId = MessageId.make(`${threadId}:queued`);
+      yield* sendFromWeb(threadId, queuedId, "Sent before the restart");
+      const cut = (yield* orchestrator.getThreadRecords(threadId, ["runs"])).runs.find(
+        (run) => run.userMessageId === cutId,
+      )!;
+      const now = yield* DateTime.now;
+      const commandId = CommandId.make(`command:runtime-reconcile:${threadId}`);
+      yield* sink.writeWithEffects({
+        commandId,
+        events: [
+          {
+            id: EventId.make(`${threadId}:cut-interrupted`),
+            type: "run.updated",
+            threadId,
+            runId: cut.id,
+            occurredAt: now,
+            payload: { ...cut, status: "interrupted", startedAt: now, completedAt: now },
+          },
+        ],
+        effects: continuing
+          ? [
+              {
+                id: `effect:restart-continuation:${cut.id}`,
+                commandId,
+                threadId,
+                request: {
+                  type: "provider-runtime.continue",
+                  sourceRunId: cut.id,
+                  processLossCount: 1,
+                },
+              },
+            ]
+          : [],
+      });
+      yield* orchestrator.resumeQueuedRuns;
+      const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+      expect(runs.find((run) => run.userMessageId === queuedId)?.status).toBe(
+        continuing ? "queued" : "starting",
+      );
+    }).pipe(Effect.provide(layerTest)),
+);
