@@ -410,7 +410,10 @@ export interface OrchestratorV2DispatchResult {
 export interface OrchestratorV2Shape {
   readonly resumeQueuedRuns: Effect.Effect<number, OrchestratorV2Error>;
   /** Starts one thread's queue if nothing holds it; for work that ends outside a run. */
-  readonly resumeQueue: (threadId: ThreadId) => Effect.Effect<void, OrchestratorV2Error>;
+  readonly resumeQueue: (
+    threadId: ThreadId,
+    options?: { readonly continuationSettled?: boolean },
+  ) => Effect.Effect<void, OrchestratorV2Error>;
   readonly recoverDelegatedTasks: Effect.Effect<void>;
   readonly recoverDelegatedTask: (
     threadId: ThreadId,
@@ -2605,6 +2608,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         /** Treat the latest executed run as the one that just ended, as its run-end handler would. */
         readonly latestRunEnded?: boolean;
         readonly userStarted?: boolean;
+        /** The restart continuation of the latest run has finished deciding. */
+        readonly continuationSettled?: boolean;
       },
     ) {
       if (!(yield* projectionStore.canStartQueuedRun(threadId))) return;
@@ -2783,10 +2788,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
         return;
       }
-      // A pending restart continuation resumes the cut turn first; its end starts the queue.
-      if (options?.userStarted !== true && failedRun !== null) {
+      // An open restart continuation resumes the cut turn first; it starts the queue when done.
+      if (
+        options?.userStarted !== true &&
+        options?.continuationSettled !== true &&
+        failedRun !== null
+      ) {
         const continuation = yield* effectOutbox.get(`effect:restart-continuation:${failedRun.id}`);
-        if (Option.isSome(continuation) && continuation.value.status === "pending") return;
+        if (
+          Option.isSome(continuation) &&
+          (continuation.value.status === "pending" || continuation.value.status === "running")
+        )
+          return;
       }
       // Move queued ordinals after runs that started while they waited to preserve transcript and checkpoint order.
       // Started runs have prompts; cancelled queued messages do not.
@@ -3621,17 +3634,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   });
 
   /** Starts a thread's queue as the end of its latest run would, honouring the holds it sets. */
-  const resumeQueue = (threadId: ThreadId) =>
-    threadDispatch.withLock(threadId, startNextQueuedRun(threadId, { latestRunEnded: true })).pipe(
-      Effect.mapError(
-        (cause) =>
-          new OrchestratorDispatchError({
-            commandId: CommandId.make(`command:system:resume-queue:${threadId}`),
-            commandType: "message.dispatch",
-            cause,
-          }),
-      ),
-    );
+  const resumeQueue = (threadId: ThreadId, options?: { readonly continuationSettled?: boolean }) =>
+    threadDispatch
+      .withLock(
+        threadId,
+        startNextQueuedRun(threadId, {
+          latestRunEnded: true,
+          ...(options?.continuationSettled === true ? { continuationSettled: true } : {}),
+        }),
+      )
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorDispatchError({
+              commandId: CommandId.make(`command:system:resume-queue:${threadId}`),
+              commandType: "message.dispatch",
+              cause,
+            }),
+        ),
+      );
 
   const resumeQueuedRuns = Effect.gen(function* () {
     const threadIds = yield* projectionStore.getRecoveryThreadIds("queued-runs");

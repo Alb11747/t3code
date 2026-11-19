@@ -182,7 +182,19 @@ export const layerExecutor: Layer.Layer<
               Effect.tapError(() =>
                 willRetry
                   ? Effect.void
-                  : threads.recoverDelegatedTask(effect.threadId, { sourceRunId }),
+                  : threads.recoverDelegatedTask(effect.threadId, { sourceRunId }).pipe(
+                      // No retry is left to admit a run, so the queue behind it goes on.
+                      Effect.andThen(
+                        threads.resumeQueue(effect.threadId, { continuationSettled: true }).pipe(
+                          Effect.catch((cause) =>
+                            Effect.logWarning("Failed to resume the queue after a restart", {
+                              threadId: effect.threadId,
+                              cause,
+                            }),
+                          ),
+                        ),
+                      ),
+                    ),
               ),
               Effect.mapError(
                 (cause) =>

@@ -978,3 +978,64 @@ it.effect.each([3, 4])(
       );
     }),
 );
+
+it.effect("wakes the queue when a restart continuation fails for the last time", () =>
+  Effect.gen(function* () {
+    const processLossCount = 1;
+    const now = yield* DateTime.now;
+    const instanceId = ProviderInstanceId.make("codex");
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const layer = layerExecutorFor({
+      events,
+      continueAfterRestart: true,
+      threads: {
+        getThreadRecords: () =>
+          Effect.succeed({
+            thread: {
+              id: threadId,
+              projectId: ProjectId.make("project:executor-recovery"),
+              providerInstanceId: instanceId,
+              archivedAt: null,
+              deletedAt: null,
+              lineage: { parentThreadId: null, relationshipToParent: null },
+            },
+            runs: [
+              {
+                id: runId,
+                providerInstanceId: instanceId,
+                status: "cancelled",
+                requestedAt: DateTime.subtract(now, { minutes: 22 }),
+                completedAt: now,
+                ordinal: 1,
+              },
+            ],
+            messages: [],
+            providerTurns: [],
+            runtimeRequests: [],
+            turnItems: [],
+            attempts: [],
+          } as unknown as OrchestrationV2ThreadProjection),
+        dispatch: () =>
+          Ref.update(events, (entries) => [...entries, "dispatch"]).pipe(
+            Effect.andThen(Effect.fail(new Error("dispatch failed") as never)),
+          ),
+        recoverDelegatedTask: () => Ref.update(events, (entries) => [...entries, "recover-child"]),
+        resumeQueue: () => Ref.update(events, (entries) => [...entries, "resume-queue"]),
+      },
+    });
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      yield* Effect.flip(
+        executor.execute(
+          {
+            ...restartEffect(now, { type: "detach" }),
+            request: { type: "provider-runtime.continue", sourceRunId: runId, processLossCount },
+          },
+          { willRetry: false },
+        ),
+      );
+    }).pipe(Effect.provide(layer));
+    // No retry is left to admit a run, so the queue behind it starts.
+    assert.deepEqual(yield* Ref.get(events), ["dispatch", "recover-child", "resume-queue"]);
+  }),
+);

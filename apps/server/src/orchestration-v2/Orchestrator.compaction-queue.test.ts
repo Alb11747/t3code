@@ -17,8 +17,10 @@ import {
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -660,18 +662,39 @@ const restartCutQueue = Effect.fn("restartCutQueue")(function* (
   return { queuedRun };
 });
 
-it.effect.each([false, true])(
-  "startup resumes a queue that recovery left unheld unless a restart continuation is pending (%s)",
-  (continuing) =>
+it.effect.each(["none", "pending", "claimed"] as const)(
+  "startup resumes a queue that recovery left unheld unless a restart continuation is open (%s)",
+  (continuation) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const threadId = ThreadId.make(`thread:restart-queue-${continuation}`);
       const { queuedRun } = yield* restartCutQueue(
-        ThreadId.make(`thread:restart-queue-${continuing}`),
+        threadId,
         (run) => ({ ...run, status: "interrupted" }),
-        continuing,
+        continuation !== "none",
+      );
+      // The worker has claimed the continuation but not yet admitted its run.
+      for (let claims = 0; continuation === "claimed" && claims < 10; claims++) {
+        const claimed = yield* outbox.claimNext({ workerId: "test-worker" });
+        if (Option.isNone(claimed) || claimed.value.request.type === "provider-runtime.continue")
+          break;
+        // Earlier effects on the thread run first; settle them so the continuation is next.
+        yield* outbox.succeed({ effectId: claimed.value.id, workerId: "test-worker" });
+      }
+      const cut = (yield* orchestrator.getThreadRecords(threadId, ["runs"])).runs[0]!;
+      expect(
+        Option.map(
+          yield* outbox.get(`effect:restart-continuation:${cut.id}`),
+          (effect) => effect.status,
+        ),
+      ).toEqual(
+        continuation === "none"
+          ? Option.none()
+          : Option.some(continuation === "pending" ? "pending" : "running"),
       );
       yield* orchestrator.resumeQueuedRuns;
-      expect((yield* queuedRun).status).toBe(continuing ? "queued" : "starting");
+      expect((yield* queuedRun).status).toBe(continuation === "none" ? "starting" : "queued");
     }).pipe(Effect.provide(layerTest)),
 );
 
