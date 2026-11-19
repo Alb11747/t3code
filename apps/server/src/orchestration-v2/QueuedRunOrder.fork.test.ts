@@ -33,8 +33,9 @@ it("delivers pending steering before completion notices while explicit Queue kee
     "goal",
     "auto",
     "steer",
-    "completion",
+    // Requested in the same millisecond: commit order.
     "queue-first",
+    "completion",
     "queue-last",
   ]);
 });
@@ -76,6 +77,30 @@ it("breaks a same-millisecond tie between a message and a completion by commit o
 
   expect(queuedRunsInDeliveryOrder(projection).map((run) => run.id)).toEqual([
     "steer",
+    "completion",
+  ]);
+});
+
+it("lifts a missed-boundary steer past older messages without moving a completion past them", () => {
+  const projection = {
+    messages: [
+      { id: "queued", text: "Queued first" },
+      { id: "completion", text: "Completed", delegatedCompletion: { taskIds: ["child"] } },
+      { id: "steer", text: "Missed the boundary", atToolBoundary: true },
+    ],
+    runs: [
+      { id: "queued", userMessageId: "queued", ordinal: 1, status: "queued" },
+      { id: "completion", userMessageId: "completion", ordinal: 2, status: "queued" },
+      { id: "steer", userMessageId: "steer", ordinal: 3, status: "queued" },
+    ].map((run, index) => ({
+      ...run,
+      requestedAt: DateTime.makeUnsafe(`2026-01-01T00:00:0${index}Z`),
+    })),
+  } as never;
+
+  expect(queuedRunsInDeliveryOrder(projection).map((run) => run.id)).toEqual([
+    "steer",
+    "queued",
     "completion",
   ]);
 });

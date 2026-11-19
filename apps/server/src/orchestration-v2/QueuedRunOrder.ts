@@ -59,24 +59,7 @@ export function queuedRunsInDeliveryOrder(
         left.ordinal - right.ordinal,
     );
   const completions = queued.filter((run) => automaticCompletionMessageIds.has(run.userMessageId));
-  // A steer that missed its tool boundary leads the other messages but keeps request order with
-  // completions, so a notice committed first still reaches the same boundary first.
-  const boundarySteerIds = queuedSteeringRunIds(
-    queued,
-    new Set(
-      projection.messages
-        .filter(
-          (message) => message.atToolBoundary === true && message.delegatedCompletion === undefined,
-        )
-        .map((message) => message.id),
-    ),
-  );
-  const messages = queued
-    .filter((run) => !automaticCompletionMessageIds.has(run.userMessageId))
-    .toSorted(
-      (left, right) =>
-        Number(boundarySteerIds.has(right.id)) - Number(boundarySteerIds.has(left.id)),
-    );
+  const messages = queued.filter((run) => !automaticCompletionMessageIds.has(run.userMessageId));
   // Completions and messages each keep their queue order and interleave by request time,
   // so neither kind can hold the other back while more of it keeps arriving.
   const ordered: Array<OrchestrationV2Run> = [];
@@ -88,11 +71,11 @@ export function queuedRunsInDeliveryOrder(
     if (completion === undefined || message === undefined) {
       return withCompactionFollowUpsNext(
         projection.runs,
-        [
+        withBoundarySteersFirst(projection, queued, steeringRunIds, [
           ...ordered,
           ...completions.slice(completionIndex),
           ...messages.slice(messageIndex),
-        ].toSorted((left, right) => {
+        ]).toSorted((left, right) => {
           const commandPriority =
             Number(right.queuePosition === 1 && goalMessageIds.has(right.userMessageId)) -
             Number(left.queuePosition === 1 && goalMessageIds.has(left.userMessageId));
@@ -117,6 +100,49 @@ export function queuedRunsInDeliveryOrder(
       messageIndex += 1;
     }
   }
+}
+
+/**
+ * A steer that missed its tool boundary moves ahead of the plain messages committed before it.
+ * Completions keep their place, so one never passes a message committed before it. Like Auto, a
+ * steer stops at a fresh context.
+ */
+function withBoundarySteersFirst(
+  projection: Pick<OrchestrationV2ThreadProjection, "messages">,
+  queued: ReadonlyArray<OrchestrationV2Run>,
+  steeringRunIds: ReadonlySet<OrchestrationV2Run["id"]>,
+  merged: ReadonlyArray<OrchestrationV2Run>,
+): Array<OrchestrationV2Run> {
+  const boundaryMessageIds = new Set(
+    projection.messages
+      .filter(
+        (message) => message.atToolBoundary === true && message.delegatedCompletion === undefined,
+      )
+      .map((message) => message.id),
+  );
+  const completionMessageIds = new Set(
+    projection.messages
+      .filter((message) => message.delegatedCompletion !== undefined)
+      .map((message) => message.id),
+  );
+  const boundarySteerIds = queuedSteeringRunIds(queued, boundaryMessageIds);
+  const result: Array<OrchestrationV2Run> = [];
+  let firstPlain = -1;
+  for (const run of merged) {
+    if (boundarySteerIds.has(run.id) && !steeringRunIds.has(run.id)) {
+      if (firstPlain === -1) result.push(run);
+      else result.splice(firstPlain++, 0, run);
+      continue;
+    }
+    if (
+      firstPlain === -1 &&
+      !steeringRunIds.has(run.id) &&
+      !completionMessageIds.has(run.userMessageId)
+    )
+      firstPlain = result.length;
+    result.push(run);
+  }
+  return result;
 }
 
 /**
