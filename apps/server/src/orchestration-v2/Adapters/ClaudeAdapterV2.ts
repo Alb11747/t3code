@@ -3137,7 +3137,10 @@ const CLAUDE_ATTACHMENT_MAX_PAGES = 100;
 const makeClaudeAttachmentBudget = (used?: { pagesUsed: number; bytesUsed: number }) => ({
   committed: { pages: used?.pagesUsed ?? 0, bytes: used?.bytesUsed ?? 0 },
   pending: { pages: 0, bytes: 0 },
-  compacting: null as { pages: number; bytes: number } | null,
+  compacting: null as { pages: number; bytes: number; snapshot: number } | null,
+  // Counts compaction snapshots; usage committed before `compactedThrough` left the history.
+  snapshots: 0,
+  compactedThrough: 0,
   get remainingPages() {
     return CLAUDE_ATTACHMENT_MAX_PAGES - this.committed.pages - this.pending.pages;
   },
@@ -3160,20 +3163,28 @@ const reserveClaudePdfBudget = (
       bytes: 0,
       delivered: false,
       refunded: false,
+      committedBefore: 0,
       commit() {
         if (this.delivered) return;
         this.delivered = true;
+        this.committedBefore = budget.snapshots + 1;
         budget.pending.pages -= this.pages;
         budget.pending.bytes -= this.bytes;
         budget.committed.pages += this.pages;
         budget.committed.bytes += this.bytes;
       },
-      // Claude dropped the message unread, so its files never entered the session.
+      // Claude dropped the message unread, so its files never entered the session. A full
+      // compaction already removed usage it snapshotted, so that part is not removed again.
       refund() {
         if (!this.delivered || this.refunded) return;
         this.refunded = true;
+        if (this.committedBefore <= budget.compactedThrough) return;
         budget.committed.pages -= this.pages;
         budget.committed.bytes -= this.bytes;
+        if (budget.compacting !== null && this.committedBefore <= budget.compacting.snapshot) {
+          budget.compacting.pages -= this.pages;
+          budget.compacting.bytes -= this.bytes;
+        }
       },
     })),
     (reservation) =>
@@ -11624,7 +11635,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               const budget = pdfBudgets.get(context.nativeThreadId);
               // Offers made while compaction runs are outside the history it
               // removes. Pending reservations must survive its boundary too.
-              if (budget !== undefined) budget.compacting = { ...budget.committed };
+              if (budget !== undefined) {
+                budget.snapshots += 1;
+                budget.compacting = { ...budget.committed, snapshot: budget.snapshots };
+              }
               context.compaction = compaction;
               yield* emitProviderEvent({
                 type: "turn_item.updated",
@@ -11641,9 +11655,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 message.compact_metadata.preserved_segment === undefined &&
                 message.compact_metadata.preserved_messages === undefined
               ) {
-                const compacted = budget.compacting ?? { ...budget.committed };
+                const compacted = budget.compacting ?? {
+                  ...budget.committed,
+                  snapshot: (budget.snapshots += 1),
+                };
                 budget.committed.pages -= compacted.pages;
                 budget.committed.bytes -= compacted.bytes;
+                budget.compactedThrough = Math.max(budget.compactedThrough, compacted.snapshot);
               }
               budget.compacting = null;
               yield* persistAttachmentBudget(context.nativeThreadId);

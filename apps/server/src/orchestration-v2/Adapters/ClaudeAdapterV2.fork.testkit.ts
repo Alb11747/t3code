@@ -616,6 +616,112 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
     ),
   );
 
+  // A full compaction already removed a delivered message's pages; dropping it later must not
+  // remove them again and lift the cap.
+  it.effect("refunds a steer Claude drops after a compaction only once", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const pages = Array.from(
+        { length: 60 },
+        (_, i) => `${i + 3} 0 obj << /Type /Page /Parent 2 0 R >> endobj`,
+      ).join("\n");
+      const pdf = (name: string) =>
+        Effect.gen(function* () {
+          const document = ChatFileAttachment.make({
+            type: "file",
+            id: ChatAttachmentId.make(`thread-compacted-pdf-${name}-1234-1234-123456789abc`),
+            name: `${name}.pdf`,
+            mimeType: "application/pdf",
+            sizeBytes: 4,
+          });
+          yield* fileSystem.writeFile(
+            path.join(harness.attachmentsDir, attachmentRelativePath(document)!),
+            new TextEncoder().encode(
+              `%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Count 60 >> endobj\n${pages}\n%%EOF`,
+            ),
+          );
+          return document;
+        });
+      const attemptId = RunAttemptId.make("attempt-compacted-steer");
+      const input = makeClaudeTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId,
+        text: "Run the build.",
+        attachments: [],
+      });
+      yield* harness.runtime.startTurn(input);
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const steer = (id: string, attachments: ReadonlyArray<ChatFileAttachment>) =>
+        harness.runtime.steerTurn({
+          threadId: harness.threadId,
+          runId: input.runId,
+          providerThread: harness.providerThread,
+          providerTurnId: idAllocator.derive.providerTurn({
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeTurnId: `turn:${attemptId}`,
+          }),
+          message: {
+            createdBy: "user",
+            creationSource: "web",
+            messageId: MessageId.make(id),
+            text: "Read the spec.",
+            attachments,
+          },
+        });
+      const documents = () => {
+        const content = harness.offeredMessages.at(-1)!.message.content;
+        return typeof content === "string"
+          ? 0
+          : content.filter((block) => block.type === "document").length;
+      };
+      yield* steer("message-compacted-steer", [yield* pdf("aaaaaaaa-1234")]);
+      assert.equal(documents(), 1);
+      yield* harness.offerAndWait(
+        claudeSdkFrame({
+          type: "system",
+          subtype: "status",
+          status: "compacting",
+          uuid: "00000000-0000-4000-8000-000000002530",
+          session_id: WAKE_NATIVE_SESSION,
+        }),
+      );
+      yield* harness.offerAndWait(
+        claudeSdkFrame({
+          type: "system",
+          subtype: "compact_boundary",
+          compact_metadata: { trigger: "auto", pre_tokens: 1500, post_tokens: 400 },
+          uuid: "00000000-0000-4000-8000-000000002531",
+          session_id: WAKE_NATIVE_SESSION,
+        }),
+      );
+      yield* harness.offerAndWait(
+        claudeSdkFrame({
+          type: "command_lifecycle",
+          command_uuid: harness.promptUuid(1),
+          state: "cancelled",
+          uuid: "00000000-0000-4000-8000-000000002532",
+          session_id: WAKE_NATIVE_SESSION,
+        }),
+      );
+      // 120 pages exceed the session's 100, so only the first file goes natively.
+      yield* steer("message-two-pdfs", [yield* pdf("bbbbbbbb-1234"), yield* pdf("cccccccc-1234")]);
+      assert.equal(documents(), 1);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
   it.effect("withdraws a never-pulled input discarded after its hook aborts", () =>
     Effect.gen(function* () {
       const offers: ProviderContinuationRequests.AgentMessageOffer[] = [0, 1].map((index) => ({
