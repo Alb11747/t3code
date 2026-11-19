@@ -499,6 +499,190 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
     );
   });
 
+  const sendNow = (
+    harness: WakeHarness,
+    input: ProviderAdapter.ProviderAdapterV2TurnInput,
+    id: string,
+    attachments: ProviderAdapter.ProviderAdapterV2TurnInput["message"]["attachments"] = [],
+  ) =>
+    IdAllocator.IdAllocatorV2.pipe(
+      Effect.flatMap((idAllocator) =>
+        harness.runtime.steerTurn({
+          threadId: harness.threadId,
+          runId: input.runId,
+          providerThread: harness.providerThread,
+          providerTurnId: idAllocator.derive.providerTurn({
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeTurnId: `turn:${input.attemptId}`,
+          }),
+          message: { ...input.message, messageId: MessageId.make(id), text: "Steer.", attachments },
+        }),
+      ),
+    );
+  const steerStatuses = (harness: WakeHarness) =>
+    harness.events.flatMap((event) => (event.type === "steer.updated" ? [event.status] : []));
+  const apiError = (uuid: string, echo?: string) =>
+    claudeSdkFrame({
+      ...makeResultFrame({
+        uuid,
+        result: "API Error: 403 Your organization does not have access to this model.",
+        isError: true,
+        apiErrorStatus: 403,
+        terminalReason: "api_error",
+      }),
+      ...(echo === undefined ? {} : { user_message_uuid: echo }),
+    });
+  const sixtyPagePdf = (harness: WakeHarness, name: string) =>
+    Effect.gen(function* () {
+      const document = ChatFileAttachment.make({
+        type: "file",
+        id: ChatAttachmentId.make(`thread-steer-pdf-${name}-1234-1234-123456789abc`),
+        name: `${name}.pdf`,
+        mimeType: "application/pdf",
+        sizeBytes: 4,
+      });
+      const pages = Array.from(
+        { length: 60 },
+        (_, i) => `${i + 3} 0 obj << /Type /Page /Parent 2 0 R >> endobj`,
+      ).join("\n");
+      yield* (yield* FileSystem.FileSystem).writeFile(
+        (yield* Path.Path).join(harness.attachmentsDir, attachmentRelativePath(document)!),
+        new TextEncoder().encode(
+          `%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Count 60 >> endobj\n${pages}\n%%EOF`,
+        ),
+      );
+      return document;
+    });
+  const startTurn = (harness: WakeHarness, attempt: string) =>
+    Effect.gen(function* () {
+      const input = makeClaudeTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make(attempt),
+        text: "Run the build.",
+        attachments: [],
+      });
+      yield* harness.runtime.startTurn(input);
+      return input;
+    });
+  const layers = Layer.mergeAll(
+    IdAllocator.layer,
+    McpProviderSessions.layer,
+    NodeServices.layer,
+    NodeCrypto.layer,
+  );
+
+  // Claude never read the steer, and only the requeue may send it again.
+  it.effect.each(["without an echo", "while its offer fails"] as const)(
+    "keeps a steer pending when an API error ends its turn %s",
+    (when) =>
+      Effect.gen(function* () {
+        let failOffer: Effect.Effect<void, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError> =
+          Effect.void;
+        const harness = yield* makeWakeHarnessWithOptions({
+          offerFailure: Effect.suspend(() => failOffer),
+        });
+        const input = yield* startTurn(harness, `attempt-unread-error-${when}`);
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "status",
+            status: null,
+            user_message_uuid: harness.promptUuid(0),
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        if (when === "while its offer fails") {
+          failOffer = harness
+            .offerAndWait(apiError("00000000-0000-4000-8000-000000002540", harness.promptUuid(0)))
+            .pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                    method: "offer",
+                    cause: new Error("Claude input is closed."),
+                  }),
+                ),
+              ),
+            );
+          assert.isTrue(
+            Exit.isFailure(yield* Effect.exit(sendNow(harness, input, "unread-error"))),
+          );
+        } else {
+          yield* sendNow(harness, input, "unread-error");
+          yield* harness.offerAndWait(apiError("00000000-0000-4000-8000-000000002541"));
+        }
+        yield* harness.awaitTerminal(1);
+        const terminal = harness.terminalEvents()[0];
+        assert.equal(terminal?.status === "failed" ? terminal.failure.code : null, "api_error_403");
+        assert.deepEqual(steerStatuses(harness), ["pending"]);
+      }).pipe(Effect.scoped, Effect.provide(layers)),
+  );
+
+  // Send now cut the tools off; once Claude also discards the steer, nothing else ends the turn.
+  it.effect("settles a turn whose aborting steer Claude discards", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      const input = yield* startTurn(harness, "attempt-aborted-then-discarded");
+      yield* sendNow(harness, input, "aborting-steer");
+      yield* harness.offerAndWait(
+        claudeSdkFrame({
+          ...makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000002550",
+            result: "",
+            subtype: "error_during_execution",
+            isError: true,
+            terminalReason: "aborted_tools",
+          }),
+          user_message_uuid: harness.promptUuid(0),
+        }),
+      );
+      yield* harness.offerAndWait(
+        claudeSdkFrame({
+          type: "command_lifecycle",
+          command_uuid: harness.promptUuid(1),
+          state: "discarded",
+          uuid: "00000000-0000-4000-8000-000000002551",
+          session_id: WAKE_NATIVE_SESSION,
+        }),
+      );
+      yield* harness.awaitTerminal(1);
+      assert.deepEqual(steerStatuses(harness), ["pending"]);
+    }).pipe(Effect.scoped, Effect.provide(layers)),
+  );
+
+  // Stop's interrupt receipt is the only report when the process closes before the lifecycle frame.
+  it.effect("returns the PDF pages of a Send now input Stop removed unread", () =>
+    Effect.gen(function* () {
+      const handoffs: Array<
+        NonNullable<Parameters<ClaudeAdapterV2.ClaudeAgentSdkQuerySession["offer"]>[2]>
+      > = [];
+      const harness = yield* makeWakeHarnessWithOptions({
+        onHandoff: (handoff) => {
+          handoffs.push(handoff);
+        },
+      });
+      const input = yield* startTurn(harness, "attempt-stopped-pdf-steer");
+      const documents = () => {
+        const content = harness.offeredMessages.at(-1)!.message.content;
+        return typeof content === "string"
+          ? 0
+          : content.filter((block) => block.type === "document").length;
+      };
+      yield* sendNow(harness, input, "stopped-pdf", [
+        yield* sixtyPagePdf(harness, "aaaaaaaa-1234"),
+      ]);
+      assert.equal(documents(), 1);
+      const handoff = handoffs.at(-1);
+      handoff?.onPulled();
+      handoff?.onConsumed();
+      handoff?.onDiscarded();
+      yield* sendNow(harness, input, "next-pdf", [yield* sixtyPagePdf(harness, "bbbbbbbb-1234")]);
+      assert.equal(documents(), 1);
+    }).pipe(Effect.scoped, Effect.provide(layers)),
+  );
+
   it.effect("returns a dropped boundary input's PDF pages to the session budget", () =>
     Effect.gen(function* () {
       const document = ChatFileAttachment.make({
@@ -1420,6 +1604,68 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
           terminalReason: "api_error",
         }),
       );
+
+    // Claude reported the turn's outcome before its process went away; the steer it held went
+    // with that process, so the turn settles with that outcome instead of continuing.
+    it.effect.each(["closes", "fails"] as const)(
+      "settles a held API error when Claude's process %s before reading the steer",
+      (exit) =>
+        Effect.gen(function* () {
+          const errors = yield* Queue.unbounded<ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>();
+          const harness = yield* makeWakeHarnessWithOptions({
+            freshQueueOnReopen: true,
+            queryFailure: Queue.take(errors).pipe(Effect.flatMap(Effect.fail)),
+          });
+          const input = yield* start(harness);
+          yield* harness.runtime.steerTurn({
+            threadId: harness.threadId,
+            runId: input.runId,
+            providerThread: harness.providerThread,
+            providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+              nativeTurnId: `turn:${input.attemptId}`,
+            }),
+            message: { ...input.message, messageId: MessageId.make("held-error-steer") },
+          });
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              ...makeResultFrame({
+                uuid: "00000000-0000-4000-8000-000000000940",
+                result: "API Error: 403 Your organization does not have access to this model.",
+                isError: true,
+                apiErrorStatus: 403,
+                terminalReason: "api_error",
+              }),
+              user_message_uuid: harness.promptUuid(0),
+            }),
+          );
+          if (exit === "closes") yield* Queue.shutdown(harness.sdkMessages);
+          else
+            yield* Queue.offer(
+              errors,
+              new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                method: "fromAsyncIterable",
+                cause: { code: "ECONNRESET" },
+              }),
+            );
+          yield* TestClock.adjust("1 minute");
+          yield* harness.until(
+            () => harness.terminalEvents().length > 0 || harness.offeredMessages.length > 2,
+          );
+          const terminal = harness.terminalEvents()[0];
+          assert.equal(
+            terminal?.status === "failed" ? terminal.failure.code : null,
+            "api_error_403",
+          );
+          assert.lengthOf(harness.offeredMessages, 2);
+          assert.deepEqual(
+            harness.events.flatMap((event) =>
+              event.type === "steer.updated" ? [event.status] : [],
+            ),
+            ["pending"],
+          );
+        }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
 
     it.effect("a second steer preserves an earlier steer after its SDK offer fails", () =>
       Effect.gen(function* () {

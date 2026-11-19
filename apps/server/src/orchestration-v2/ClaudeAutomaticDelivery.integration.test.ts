@@ -1382,17 +1382,9 @@ it.effect.each([
             event.payload.userMessageId === steerId &&
             event.payload.status === "queued",
         );
-        // The first prompt's reply completes; its result waits for the steer, then Claude exits.
-        yield* answer(offers[0]!);
         yield* Queue.end(sdkMessages);
         yield* Fiber.join(requeued);
         yield* worker.drain();
-        assert.equal(
-          (yield* orchestrator.getThreadProjection(threadId)).providerTurns.find(
-            (turn) => turn.runAttemptId === parent.activeAttemptId,
-          )?.turnTokenUsage?.usageStatus,
-          "partial",
-        );
         // The provider failure holds the queue, the follow-up included, until someone resumes it.
         assert.deepEqual(yield* queuedOrder, [
           [MessageId.make("before"), true],

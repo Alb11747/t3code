@@ -9783,13 +9783,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             yield* cutOffStreamedText(input.context);
           }
           // A live Claude still runs a steer queued at a completed result, and Stop drops them unread
-          // with a notice below. A steer whose process exited stays pending: nothing can read it now,
-          // so the orchestrator sends it as the next turn.
+          // with a notice below. A steer whose process exited, or whose turn failed, stays pending:
+          // the orchestrator queues it held, since Claude may still have read it.
           const droppedSteers = [...input.context.pendingSteers];
           input.context.pendingSteers.clear();
           const currentQuery = yield* Ref.get(queryContext);
           for (const [, { messageId, liveQuery }] of droppedSteers) {
-            if (input.status !== "interrupted" && liveQuery !== currentQuery) continue;
+            if (
+              input.status === "failed" ||
+              (input.status !== "interrupted" && liveQuery !== currentQuery)
+            )
+              continue;
             yield* emitSteerStatus(
               input.context,
               messageId,
@@ -10286,6 +10290,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const subagents = yield* Ref.get(sessionSubagentsByTaskId);
           const buffered = (yield* Ref.get(wakeBuffers)).get(closedQuery.nativeThreadId)?.messages;
           if (current === context) {
+            // Steers written to this process went with it; they stay pending for the requeue.
+            // Stop's finalization still reports the ones it dropped.
+            if (!interrupted) {
+              for (const [uuid, steer] of context.pendingSteers) {
+                if (steer.liveQuery === closedQuery) context.pendingSteers.delete(uuid);
+              }
+            }
+            // Claude already reported the turn's outcome; a steer's abort result is not one.
+            const settlesHeld =
+              !interrupted &&
+              context.heldResult !== undefined &&
+              !isClaudeActiveSteeringAbortResult(context.heldResult) &&
+              context.pendingSteers.size === 0;
             const retry = (yield* Ref.get(providerRetries)).get(context.providerTurnId);
             const queryError = cause === undefined ? undefined : Cause.squash(cause);
             const queryFailure = providerFailureFromQueryError(
@@ -10317,7 +10334,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 (cause === undefined && retry?.retry.maxAttempts === null)) &&
               retryFailure !== undefined &&
               claudeFailureRecoverable(retryFailure);
-            if (recoverable && (yield* overloadRetryWindowOpen(context))) {
+            if (settlesHeld) {
+              yield* settleHeldResult(context);
+            } else if (recoverable && (yield* overloadRetryWindowOpen(context))) {
               if (context.overloadRetry === null)
                 yield* holdForOverloadRetry(context, retryFailure);
             } else {
@@ -12490,11 +12509,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   completedAt,
                 });
               }
-              context.steeredSegmentUsage.push(message.usage);
-              context.steeredLedgerUsage = addClaudeLedgerUsage(
-                context.steeredLedgerUsage,
-                resultLedgerUsage.get(message),
-              );
+              // Held like a completed result: it settles the turn if Claude drops the steer.
+              if (context.pendingSteers.size > 0) context.heldResult = message;
+              else {
+                context.steeredSegmentUsage.push(message.usage);
+                context.steeredLedgerUsage = addClaudeLedgerUsage(
+                  context.steeredLedgerUsage,
+                  resultLedgerUsage.get(message),
+                );
+              }
               return;
             }
             yield* Ref.update(steeredTurns, (current) => {
@@ -14377,19 +14400,24 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             );
           };
           let discardedBeforeQueued = false;
-          const handoff =
-            heldSteers.length === 0
-              ? undefined
-              : {
-                  isCurrent: () => true,
-                  onPulled: () => {},
-                  onConsumed: () => settleHeldSteers("completed"),
-                  onDiscarded: () => {
-                    // Refused before it was queued, the steers stay held for the caller.
-                    if (!committed) discardedBeforeQueued = true;
-                    else settleHeldSteers("cancelled");
-                  },
-                };
+          const handoff = {
+            isCurrent: () => true,
+            onPulled: () => {},
+            onConsumed: () => settleHeldSteers("completed"),
+            onDiscarded: () => {
+              // Refused before it was queued, the steers stay held for the caller.
+              if (!committed) {
+                discardedBeforeQueued = true;
+                return;
+              }
+              settleHeldSteers("cancelled");
+              // Stop removed it unread, so its files never entered the session.
+              if (pdfReservation.delivered && !pdfReservation.refunded) {
+                pdfReservation.refund();
+                void runPromise(persistAttachmentBudget(context.nativeThreadId));
+              }
+            },
+          };
           const offer = (query: ClaudeAgentSdkQuerySession) =>
             Effect.uninterruptibleMask((restore) =>
               restore(query.offer(userMessage, commit, handoff)).pipe(
@@ -15344,9 +15372,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             yield* Effect.uninterruptibleMask((restore) => restore(offer(existing.query))).pipe(
               Effect.onError(() =>
                 currentTurn.pendingSteers.delete(steerUuid)
-                  ? emitSteerStatus(currentTurn, messageId, "completed").pipe(
-                      Effect.andThen(settleHeldResult(currentTurn)),
-                    )
+                  ? // A held API error fails the turn, so only the requeue sends the steer again.
+                    (currentTurn.heldFailure === undefined
+                      ? emitSteerStatus(currentTurn, messageId, "completed")
+                      : Effect.void
+                    ).pipe(Effect.andThen(settleHeldResult(currentTurn)))
                   : Effect.void,
               ),
             );
