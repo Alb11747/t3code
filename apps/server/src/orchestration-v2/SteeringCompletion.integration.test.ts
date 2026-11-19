@@ -3587,13 +3587,19 @@ it.effect.each([
   { requester: "user", attachments: [], providerDriver: "cursor", author: "user" },
   { requester: "agent", attachments: [], providerDriver: "cursor", author: "user" },
   { requester: "user", attachments: [], providerDriver: "cursor", author: "agent" },
+  // Send now: a person's press interrupts Claude; an agent's request and other providers wait.
+  { requester: "user", attachments: [], providerDriver: "claudeAgent", author: "agent", now: true },
+  { requester: "agent", attachments: [], providerDriver: "claudeAgent", author: "user", now: true },
+  { requester: "user", attachments: [], providerDriver: "cursor", author: "agent", now: true },
 ] as const)(
   "a queue promotion requested by the $requester for $author input on $providerDriver (attachments=$attachments.length)",
-  ({ requester, attachments, providerDriver, author }) =>
+  (row) =>
     Effect.scoped(
       Effect.gen(function* () {
+        const { requester, attachments, providerDriver, author } = row;
+        const interrupt = "now" in row;
         const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
-          `queue-promote-${providerDriver}-${requester}-${author}-${attachments.length}`,
+          `queue-promote-${providerDriver}-${requester}-${author}-${attachments.length}-${interrupt}`,
           {
             activeSteeringInterruptsTools: true,
             providerDriver: ProviderDriverKind.make(providerDriver),
@@ -3626,12 +3632,16 @@ it.effect.each([
               queuedRunId: queuedRun.id,
               targetRunId: first.runId,
               ...(requester === "agent" ? { requestedBy: "agent" as const } : {}),
+              ...(interrupt ? { interrupt: true as const } : {}),
             })
             .pipe(Effect.result);
           yield* worker.drain();
 
           assert.equal(promoted._tag, "Success");
-          if (providerDriver === "cursor" && requester === "user" && author === "user") {
+          if (
+            (providerDriver === "cursor" && requester === "user" && author === "user") ||
+            (providerDriver === "claudeAgent" && requester === "user" && interrupt)
+          ) {
             const projection = yield* orchestrator.getThreadProjection(threadId);
             assert.deepEqual(steered, ["queued"]);
             assert.equal(started.length, 1);

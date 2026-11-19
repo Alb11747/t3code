@@ -3597,6 +3597,8 @@ export const OrchestrationV2Command = Schema.Union([
       ]),
     ),
     requestedBy: Schema.optional(Schema.Literal("agent")),
+    /** A person's explicit Send now: Claude reads it at once, even if that cancels running tools. */
+    interrupt: Schema.optional(Schema.Literal(true)),
   }),
   Schema.Struct({
     type: Schema.Literal("queue.resume"),

@@ -12434,6 +12434,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         Option.isSome(session) &&
         session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools === true &&
+        // A person's Send now interrupts Claude; an agent's promotion still waits for a boundary.
+        !(
+          command.interrupt === true &&
+          command.requestedBy !== "agent" &&
+          targetProviderThread?.driver === "claudeAgent"
+        ) &&
         !(
           targetProviderThread?.driver === "cursor" &&
           queuedMessage.createdBy === "user" &&

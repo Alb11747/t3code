@@ -156,9 +156,20 @@ A successful MCP promotion receipt can mean the message is still waiting.
 Claude is taking it. Once Claude reports the message started, it leaves the
 queue and appears at the tool boundary where it was inserted. If Claude drops
 it unread, for example because you pressed Stop first, it returns to the queue
-and waits for the next safe boundary or turn. If Claude or the server stops
-after taking a message but before Claude reports it, the message counts as
-delivered and is never sent twice.
+and waits for the next safe boundary or turn. A message that missed the last
+boundary starts the next turn, ahead of messages you queued earlier. If Claude
+or the server stops, or the next turn starts, after Claude took a message but
+before it reported it, the message counts as delivered and is never sent twice.
+
+**Send now** on a Pending or Queued message during a running Claude turn
+(or its keyboard shortcut) does not wait: Claude reads it at once, which can
+cancel the tools it is running. Sending from the composer still waits for a
+boundary, and an agent's promotion never interrupts.
+
+After a restart or crash, messages that had not reached Claude resume on their
+own, in order. Messages held by Stop stay held: after Stop, an agent's message
+also waits behind them until you resume the queue, and its receipt says so. An
+agent can still start work at once with `mode: "restart"`.
 
 ## Browser access on macOS or other computers
 

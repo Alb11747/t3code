@@ -254,11 +254,12 @@ shortcut described above.
 
 On web and desktop, queued messages appear at the end of the thread as dashed messages that have
 not been sent yet. On mobile they appear above the composer. Each shows its text and any attached
-images. **Send now** sends a message right away, into the running turn if there is one. You can
-also edit or remove it.
+images. **Send now** sends a message right away, into the running turn if there is one. Claude
+reads it at once, even if that cancels the tools it is running. You can also edit or remove it.
 
-If you stop the agent or the server restarts, queued messages keep their order and are held.
-Press **Resume** in an empty composer to continue. For stopped runs and usage limits,
+If you stop the agent, queued messages keep their order and are held. After a server restart they
+continue on their own, in order, unless a request the restart cut may already have reached the
+provider; then they are held too. Press **Resume** in an empty composer to continue. For stopped runs and usage limits,
 this uses the provider's native continuation without sending a new prompt. If the provider
 does not support it, send a message to continue instead. If the original request never reached
 the provider, Resume sends that request again.

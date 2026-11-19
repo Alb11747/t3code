@@ -283,6 +283,8 @@ export interface ResumeThreadQueueInput extends ThreadCommandInput {
 export interface PromoteQueuedRunInput extends ThreadCommandInput {
   readonly queuedRunId: RunId;
   readonly targetRunId: RunId;
+  /** Send now: Claude reads it at once instead of at its next tool boundary. */
+  readonly interrupt?: true;
 }
 
 export interface CancelQueuedRunInput extends ThreadCommandInput {
@@ -1169,6 +1171,7 @@ export const promoteQueuedRun = Effect.fn("EnvironmentCommands.promoteQueuedRun"
     threadId: input.threadId,
     queuedRunId: input.queuedRunId,
     targetRunId: input.targetRunId,
+    ...(input.interrupt === undefined ? {} : { interrupt: input.interrupt }),
   });
 });
 

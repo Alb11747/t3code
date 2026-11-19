@@ -211,6 +211,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                   threadId: target.threadId,
                   queuedRunId: runId,
                   targetRunId: workflow.activeRun.id,
+                  interrupt: true,
                 },
               })
             : null;
@@ -390,6 +391,11 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel={`Send now, ${deliveryLabel.toLowerCase()} message ${index + 1}`}
+                    accessibilityHint={
+                      workflow?.canSendNow
+                        ? undefined
+                        : "Sends into the current turn now. Claude may cancel running tools to read it."
+                    }
                     disabled={!controls.canSend}
                     onPress={() => void act(run.id, "steer")}
                     className="shrink-0 justify-center self-stretch pl-4 active:opacity-70 disabled:opacity-40"
