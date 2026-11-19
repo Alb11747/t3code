@@ -22,6 +22,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Semaphore from "effect/Semaphore";
+import type * as Scope from "effect/Scope";
+import * as DelegatedProjectDeletion from "./DelegatedProjectDeletion.ts";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -80,6 +82,13 @@ const CurrentProviderBatch = Context.Reference<ProviderBatchPublication | undefi
 );
 
 export interface EventSinkV2Shape {
+  readonly claimProjectDeletion: (
+    id: ProjectId,
+  ) => Effect.Effect<
+    { thread_id: ThreadId; title: string } | null,
+    EventSinkWriteError,
+    Scope.Scope
+  >;
   /** Items that are not provider snapshots, such as a consumer's own control items, never batch. */
   readonly consumeProviderEvents: <A extends { readonly type: string }, E, R, E2, R2>(
     source: Stream.Stream<A, E, R>,
@@ -271,6 +280,7 @@ const layerBase: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const projectDeletion = DelegatedProjectDeletion.make(sql);
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
     const eventStore = yield* EventStore.EventStoreV2;
@@ -412,9 +422,18 @@ const layerBase: Layer.Layer<
     const applyStoredEvents =
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
       Effect.fnUntraced(function* (storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>) {
-        yield* Effect.forEach(storedEvents, (stored) => projectionStore.apply(stored.event), {
-          concurrency: 1,
-        });
+        const startingThreads = new Set<ThreadId>();
+        for (const { event } of storedEvents) {
+          if (
+            (event.type === "run.created" || event.type === "run.updated") &&
+            (yield* projectDeletion.startsWork(event))
+          ) {
+            startingThreads.add(event.threadId);
+          }
+          yield* projectionStore.apply(event);
+        }
+        // A new delegated run and its ownership edge can arrive in the same transaction.
+        yield* projectDeletion.checkAdmission(startingThreads);
         const sequence = storedEvents.at(-1)?.sequence;
         if (sequence !== undefined) {
           const now = DateTime.formatIso(yield* DateTime.now);
@@ -1124,6 +1143,10 @@ const layerBase: Layer.Layer<
     );
 
     return EventSinkV2.of({
+      claimProjectDeletion: (id) =>
+        projectDeletion
+          .claim(id)
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       consumeProviderEvents: coordinator.consume,
       withProviderBatch,
       write: (input) =>

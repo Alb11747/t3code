@@ -579,6 +579,18 @@ export const make = Effect.gen(function* () {
 
       const isFirstDelete = existing.value.deletedAt === null;
       if (isFirstDelete) {
+        const child = yield* eventSink
+          .claimProjectDeletion(projectId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new ProjectOperationError({ operation: "list-threads", projectId, cause }),
+            ),
+          );
+        if (child !== null)
+          return yield* new ProjectInvalidError({
+            projectId,
+            detail: `Stop delegated child "${child.title}" (${child.thread_id}) before removing this project.`,
+          });
         yield* deleteChildThreads(input);
       }
       yield* commit({ type: "project.delete", commandId: input.commandId, projectId });
@@ -588,6 +600,7 @@ export const make = Effect.gen(function* () {
       yield* projectEnrichment.invalidate([existing.value.workspaceRoot]);
       return yield* readCommitted(projectId);
     },
+    Effect.scoped,
   );
 
   const enrichShell = (shell: OrchestrationProjectShell) =>

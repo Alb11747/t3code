@@ -3,6 +3,10 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   EventId,
+  MessageId,
+  NodeId,
+  RunId,
+  ProviderDriverKind,
   type OrchestrationV2AppThread,
   ProjectId,
   ProviderInstanceId,
@@ -22,6 +26,11 @@ import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as LegacyV1ThreadImporter from "../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProjectionReplay from "../orchestration-v2/testkit/ProjectionReplay.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
@@ -30,6 +39,7 @@ import { planThreadDeletion } from "../orchestration-v2/ThreadDeletion.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectSettingsOverrideSweep from "../provider/ProjectSettingsOverrideSweep.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
@@ -124,6 +134,188 @@ function nativeThreadCreated(projectId: ProjectId, threadId: ThreadId) {
     payload,
   };
 }
+
+it.effect(
+  "blocks removal until a delegated descendant stops and rejects its late self-continuation",
+  () =>
+    Effect.gen(function* () {
+      const a = ProjectId.make("project:owner");
+      const b = ProjectId.make("project:destination");
+      yield* seedProject(a);
+      yield* seedProject(b);
+      const parent = nativeThreadCreated(a, ThreadId.make("owner"));
+      const child = nativeThreadCreated(b, ThreadId.make("child"));
+      const nested = nativeThreadCreated(b, ThreadId.make("nested"));
+      const { occurredAt, providerInstanceId } = parent;
+      const completedTask = (threadId: ThreadId, childThreadId: ThreadId) => ({
+        id: EventId.make(`delegated:${childThreadId}`),
+        type: "subagent.updated" as const,
+        threadId,
+        occurredAt,
+        payload: {
+          id: NodeId.make(`task:${childThreadId}`),
+          threadId,
+          runId: null,
+          parentNodeId: NodeId.make("root"),
+          origin: "app_owned" as const,
+          createdBy: "agent" as const,
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId,
+          providerThreadId: null,
+          childThreadId,
+          nativeTaskRef: null,
+          prompt: "Inspect",
+          title: null,
+          model: null,
+          status: "completed" as const,
+          result: "Done",
+          startedAt: occurredAt,
+          completedAt: occurredAt,
+          updatedAt: occurredAt,
+        },
+      });
+      const sink = yield* EventSink.EventSinkV2;
+      yield* sink.write({
+        events: [
+          parent,
+          child,
+          nested,
+          completedTask(parent.threadId, child.threadId),
+          completedTask(child.threadId, nested.threadId),
+        ],
+      });
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("self-send"),
+        messageId: MessageId.make("self-message"),
+        threadId: nested.threadId,
+        senderThreadId: nested.threadId,
+        text: "Continue",
+        attachments: [],
+        createdBy: "agent",
+        creationSource: "mcp",
+        dispatchMode: { type: "start_immediately" },
+      });
+      const [run] = (yield* orchestrator.getThreadProjection(nested.threadId)).runs;
+      if (!run) return assert.fail("The self-sent message must start a run.");
+      const service = yield* ProjectService.make.pipe(
+        Effect.provideService(EventSink.EventSinkV2, {
+          ...sink,
+          claimProjectDeletion: (id) =>
+            sink.claimProjectDeletion(id).pipe(
+              Effect.tap(() =>
+                sink.write({
+                  events: [
+                    {
+                      id: EventId.make("provider-started"),
+                      type: "run.updated",
+                      threadId: nested.threadId,
+                      occurredAt,
+                      payload: { ...run, status: "running" },
+                    },
+                  ],
+                }),
+              ),
+            ),
+        }),
+      );
+      const input = { projectId: a, commandId: CommandId.make("delete-owner"), force: true };
+      const refusal = yield* service.delete(input).pipe(Effect.flip);
+      assert.include(refusal.message, nested.threadId);
+      assert.include(refusal.message, "Stop");
+      assert.equal(
+        (yield* orchestrator.getThreadProjection(nested.threadId)).runs[0]?.status,
+        "running",
+      );
+      yield* orchestrator.dispatch({
+        type: "thread.stop",
+        threadId: nested.threadId,
+        commandId: CommandId.make("stop-nested"),
+      });
+      const retryEvent = {
+        id: EventId.make("queued-before-delete"),
+        type: "run.created" as const,
+        threadId: nested.threadId,
+        occurredAt,
+        payload: {
+          ...run,
+          id: RunId.make("run:continuation"),
+          ordinal: 2,
+          status: "queued" as const,
+        },
+      };
+      const lateEvents = [
+        retryEvent,
+        {
+          ...retryEvent,
+          id: EventId.make("retry-before-delete"),
+          type: "run.updated" as const,
+          payload: { ...run, status: "preparing" as const },
+        },
+      ];
+      let checkedDuringDeletion = false;
+      const gated = yield* ProjectService.make.pipe(
+        Effect.provideService(EventSink.EventSinkV2, {
+          ...sink,
+          commitCommand: (command) =>
+            Effect.gen(function* () {
+              // Replay the already-planned write after the guard's read, before any owner tombstone exists.
+              for (const event of lateEvents) {
+                const rejected = yield* sink.write({ events: [event] }).pipe(Effect.flip);
+                assert.include(String(rejected.cause), "Cannot start delegated work in nested");
+              }
+              checkedDuringDeletion = true;
+              return yield* sink.commitCommand(command);
+            }),
+        }),
+      );
+      yield* gated.delete(input);
+      assert.isTrue(checkedDuringDeletion);
+      const lateStart = yield* orchestrator
+        .dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("start-after-removal"),
+          messageId: MessageId.make("after-removal"),
+          threadId: nested.threadId,
+          text: "Continue",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+          dispatchMode: { type: "start_immediately" },
+        })
+        .pipe(Effect.flip);
+      assert.include(userFacingDispatchErrorMessage(lateStart) ?? "", "Start a new thread");
+      assert.isTrue(Option.isNone(yield* service.getById(a)));
+      assert.isTrue(Option.isSome(yield* service.getById(b)));
+      const survivor = yield* orchestrator.getThreadProjection(nested.threadId);
+      assert.isNull(survivor.thread.deletedAt);
+      assert.lengthOf(survivor.runs, 1);
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          layerServices.pipe(Layer.provideMerge(layerDatabase)),
+          ProviderReplayHarness.layerWithRegistry(
+            { name: "delete-owner" },
+            ProviderAdapterRegistry.layerFromAdapters([
+              {
+                instanceId: ProviderInstanceId.make("codex"),
+                driver: ProviderDriverKind.make("codex"),
+                getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+                planSelectionTransition: () =>
+                  Effect.succeed({ type: "apply_on_next_turn" as const }),
+                openSession: () => Effect.die("The test runs without an effect worker."),
+              } as ProviderAdapter.ProviderAdapterV2["Service"],
+            ]),
+            {
+              databaseLayer: layerDatabase,
+              runEffectWorker: false,
+            },
+          ),
+        ),
+      ),
+    ),
+);
 
 it.effect("retries a partial project deletion without repeating child events or cleanup", () =>
   Effect.gen(function* () {
