@@ -8,6 +8,8 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
+  ChatAttachmentId,
+  ChatFileAttachment,
   type ClaudeSettings,
   MessageId,
   type ModelSelection,
@@ -27,10 +29,10 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import type * as FileSystem from "effect/FileSystem";
+import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import type * as Path from "effect/Path";
+import * as Path from "effect/Path";
 import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Queue from "effect/Queue";
 import * as Random from "effect/Random";
@@ -38,6 +40,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
 
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import * as ClaudeKeepWarm from "../../provider/ClaudeKeepWarm.ts";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 
@@ -53,6 +56,7 @@ const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 type Terminal = Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "turn.terminal" }>;
 
 interface WakeHarness {
+  readonly attachmentsDir: string;
   readonly runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime;
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly threadId: ThreadId;
@@ -494,6 +498,123 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
       ),
     );
   });
+
+  it.effect("returns a dropped boundary input's PDF pages to the session budget", () =>
+    Effect.gen(function* () {
+      const document = ChatFileAttachment.make({
+        type: "file",
+        id: ChatAttachmentId.make("thread-boundary-pdf-abcdefab-1234-1234-1234-123456789abc"),
+        name: "requirements.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 4,
+      });
+      const offers: ProviderContinuationRequests.AgentMessageOffer[] = [0, 1].map((index) => ({
+        id: `00000000-0000-4000-8000-${String(index + 101).padStart(12, "0")}`,
+        queuedRunId: RunId.make(`pdf-queued-${index}`),
+        messageId: MessageId.make("pdf-message"),
+        text: "Read the attached spec.",
+        attachments: [document],
+        createdBy: "user",
+        creationSource: "web",
+      }));
+      let claims = 0;
+      const handoffs: Array<
+        NonNullable<Parameters<ClaudeAdapterV2.ClaudeAgentSdkQuerySession["offer"]>[2]>
+      > = [];
+      const withdrawals =
+        yield* Queue.unbounded<
+          Parameters<ProviderContinuationRequests.AcknowledgeAgentMessages>[0]
+        >();
+      const harness = yield* makeWakeHarnessWithOptions({
+        claimAgentMessages: () => Effect.sync(() => [offers[claims++]!]),
+        withdrawAgentMessages: (withdrawal) =>
+          Queue.offer(withdrawals, withdrawal).pipe(Effect.asVoid),
+        onHandoff: (handoff) => {
+          handoffs.push(handoff);
+        },
+      });
+      // 60 of the session's 100 PDF pages, so a second copy fits only if the first is refunded.
+      const pages = Array.from(
+        { length: 60 },
+        (_, i) => `${i + 3} 0 obj << /Type /Page /Parent 2 0 R >> endobj`,
+      ).join("\n");
+      yield* (yield* FileSystem.FileSystem).writeFile(
+        (yield* Path.Path).join(harness.attachmentsDir, attachmentRelativePath(document)!),
+        new TextEncoder().encode(
+          `%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Count 60 >> endobj\n${pages}\n%%EOF`,
+        ),
+      );
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("pdf-boundary-attempt"),
+          text: "Work.",
+          attachments: [],
+        }),
+      );
+      yield* harness.offerAndWait(
+        claudeSdkFrame({
+          type: "system",
+          subtype: "init",
+          capabilities: ["interrupt_cancel_queued_v1"],
+          user_message_uuid: harness.promptUuid(0),
+          session_id: WAKE_NATIVE_SESSION,
+        }),
+      );
+      const hook = harness.getOpenedOptions()?.hooks?.PostToolBatch?.[0]?.hooks[0];
+      assert.isDefined(hook);
+      if (hook === undefined) return;
+      const boundary = (index: number) =>
+        Effect.gen(function* () {
+          const pending = yield* Effect.promise((signal) =>
+            hook(
+              {
+                hook_event_name: "PostToolBatch",
+                session_id: WAKE_NATIVE_SESSION,
+                transcript_path: "/repo/session.jsonl",
+                cwd: "/repo",
+                tool_calls: [],
+              },
+              undefined,
+              { signal },
+            ),
+          ).pipe(Effect.forkChild);
+          yield* harness.until(() => handoffs.length === index + 1);
+          handoffs[index]!.onPulled();
+          handoffs[index]!.onConsumed();
+          yield* Fiber.join(pending);
+          const content = harness.offeredMessages.at(-1)!.message.content;
+          return typeof content === "string"
+            ? 0
+            : content.filter((block) => block.type === "document").length;
+        });
+      assert.equal(yield* boundary(0), 1);
+      yield* harness.offerAndWait(
+        claudeSdkFrame({
+          type: "command_lifecycle",
+          command_uuid: offers[0]!.id,
+          state: "cancelled",
+          session_id: WAKE_NATIVE_SESSION,
+        }),
+      );
+      assert.deepEqual(
+        (yield* Queue.take(withdrawals)).offers.map((offer) => offer.id),
+        [offers[0]!.id],
+      );
+      assert.equal(yield* boundary(1), 1);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
 
   it.effect("withdraws a never-pulled input discarded after its hook aborts", () =>
     Effect.gen(function* () {

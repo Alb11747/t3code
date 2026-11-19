@@ -5373,6 +5373,11 @@ interface ClaudeBoundaryBatch {
   readonly started: Set<string>;
   readonly emitted: Set<string>;
   readonly withdrawn: Set<string>;
+  /** Each offer's PDF pages, returned to the session budget when Claude drops it unread. */
+  readonly pdfReservations: ReadonlyMap<
+    string,
+    Effect.Success<ReturnType<typeof reserveClaudePdfBudget>>
+  >;
   reserved: boolean;
   accepting: boolean;
 }
@@ -12785,6 +12790,22 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           yield* flushBoundaryReceipts(batch);
         });
 
+        // Input Claude dropped unread never brought its files into the session.
+        const refundBoundaryPdfPages = Effect.fnUntraced(function* (
+          batch: ClaudeBoundaryBatch,
+          offers: ReadonlyArray<ProviderContinuationRequests.AgentMessageOffer>,
+        ) {
+          let refunded = false;
+          for (const offer of offers) {
+            const reservation = batch.pdfReservations.get(offer.id);
+            if (reservation === undefined || !reservation.delivered || reservation.refunded)
+              continue;
+            reservation.refund();
+            refunded = true;
+          }
+          if (refunded) yield* persistAttachmentBudget(batch.context.nativeThreadId);
+        });
+
         const withdrawBoundaryOffers = Effect.fnUntraced(function* (
           batch: ClaudeBoundaryBatch,
           offers: ReadonlyArray<ProviderContinuationRequests.AgentMessageOffer>,
@@ -12796,6 +12817,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             runId: batch.context.input.runId,
             offers,
           });
+          yield* refundBoundaryPdfPages(batch, offers);
           for (const offer of offers) batch.withdrawn.add(offer.id);
         });
 
@@ -13884,6 +13906,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       started: new Set(),
                       emitted: new Set(),
                       withdrawn,
+                      pdfReservations: new Map(
+                        prepared.map(({ offer, reservation }) => [offer.id, reservation]),
+                      ),
                       reserved: false,
                       accepting: true,
                     };
@@ -13923,6 +13948,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                                   runId: context.input.runId,
                                   offers: [preparedOffer.offer],
                                 }).pipe(
+                                  Effect.andThen(
+                                    refundBoundaryPdfPages(batch, [preparedOffer.offer]),
+                                  ),
                                   Effect.andThen(
                                     boundaryLock.withPermits(1)(
                                       Effect.sync(() => {
