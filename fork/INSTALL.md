@@ -169,9 +169,10 @@ before it reported it, the message counts as delivered and is never sent twice.
 cancel the tools it is running. Sending from the composer still waits for a
 boundary, and an agent's promotion never interrupts. If the turn ends before
 Claude reads the message, it stays open until Claude reads or drops it. If
-Claude drops it unread, or Claude or the server stops first, it goes back to
-its place in the queue, held until you resume it, because it may already have
-reached Claude. Messages after it still run.
+Claude drops it unread, it runs as the next turn, in its place in the queue.
+If the turn ends any other way first, such as an error, Stop, or Claude or the
+server stopping, T3 shows a notice with its text instead of sending it again,
+because it may already have reached Claude.
 
 After a restart or crash, messages that had not reached Claude resume on their
 own, in order. Messages held by Stop stay held: after Stop, an agent's message

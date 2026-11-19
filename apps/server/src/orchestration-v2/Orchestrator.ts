@@ -416,6 +416,7 @@ export interface OrchestratorV2Shape {
     options?: { readonly continuationSettled?: boolean },
   ) => Effect.Effect<void, OrchestratorV2Error>;
   readonly recoverDelegatedTasks: Effect.Effect<void>;
+  readonly recoverUnreadSteers: Effect.Effect<void>;
   readonly recoverDelegatedTask: (
     threadId: ThreadId,
     options?: { readonly sourceRunId?: RunId; readonly completedRunId?: RunId },
@@ -3616,7 +3617,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const released = held.filter(
       (run) =>
         unattended.has(run.userMessageId) &&
-        run.unconfirmedSteer !== true &&
         !(
           personHeld &&
           messages.find((message) => message.id === run.userMessageId)?.creationSource === "mcp"
@@ -3656,8 +3656,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
 
-  // A steer still pending after its run ended was never read: the provider marks one it read
-  // completed, and one Stop dropped cancelled. It runs next, in its place among waiting messages.
+  // A steer still pending after its run ended was dropped unread: the provider marks one it read
+  // completed and ends one it cannot account for with a notice. It runs next, in its place among
+  // waiting messages, unless Stop or a restart ended the run.
   const requeueUnreadSteers = Effect.fn("Orchestrator.requeueUnreadSteers")(function* (
     threadId: ThreadId,
     runIds?: ReadonlyArray<RunId>,
@@ -3686,8 +3687,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           candidate.runId === item.runId,
       );
       if (run === undefined || message === undefined || isActiveRun(run)) continue;
-      // Stop drops a steer it reached; say so, as the adapter does for steers it still held.
-      if (yield* projectionStore.hasRunInterruptRequest(threadId, run.id)) {
+      // Stop drops a steer it reached, and a restart cut its run off before the provider said
+      // whether it read the steer; say so, as the adapter does, and send nothing again.
+      if (
+        run.status === "cancelled" ||
+        (yield* projectionStore.hasRunInterruptRequest(threadId, run.id))
+      ) {
         const now = yield* DateTime.now;
         yield* writeSystemEvents([
           {
@@ -3722,7 +3727,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               type: "system_notice" as const,
               status: "completed" as const,
               title: "Steer delivery not confirmed",
-              message: `The agent did not confirm reading your steer before Stop. It may not have been delivered. Resend it if needed: "${message.text}"`,
+              message: `The agent did not confirm reading your steer before its run ended. It may not have been delivered. Resend it if needed: "${message.text}"`,
               startedAt: now,
               completedAt: now,
               updatedAt: now,
@@ -3766,8 +3771,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         messageId: message.id,
         steerFollowUpOfRunId: run.id,
         steerFollowUpAfterRunOrdinal: afterRunOrdinal,
-        // Claude may have read it before its process or the server stopped, so a person decides.
-        unconfirmedSteer: true,
         modelSelection: steer?.modelSelection ?? run.modelSelection,
         text: message.text,
         ...(message.context ? { context: message.context } : {}),
@@ -8564,11 +8567,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? {}
           : { afterCompactionMessageId: command.afterCompactionMessageId }),
         ...(steerWhenReadyRunId === undefined ? {} : { steerWhenReadyRunId }),
-        ...(command.unconfirmedSteer === true ? { unconfirmedSteer: true } : {}),
-        // A restart cancels its run; nobody knows whether the provider read the steer, so a person decides.
         ...(worktreeMissingRun !== undefined ||
-        command.unconfirmedSteer === true ||
-        steerFollowUpSource?.status === "cancelled" ||
         (heldRunsToRelease.length === 0 &&
           queueIsHeld &&
           !wakeSkipsHold &&
@@ -17819,6 +17818,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     Effect.forkScoped,
   );
 
+  // Recovery leaves a steer the provider had not read pending, and no run update follows it. Runs
+  // before the queue resumes, so a requeued steer keeps its place and a restart's notice comes first.
+  const recoverUnreadSteers = projectionStore.getRecoveryThreadIds("unread-steers").pipe(
+    Effect.flatMap((threadIds) =>
+      Effect.forEach(
+        threadIds,
+        (threadId) =>
+          threadDispatch.withLock(threadId, requeueUnreadSteers(threadId)).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Failed to requeue an unread steer during recovery", {
+                threadId,
+                cause,
+              }),
+            ),
+          ),
+        { discard: true },
+      ),
+    ),
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Failed to inspect unread steers during recovery", { cause }),
+    ),
+  );
+
   const recoverDelegatedTasks = Effect.gen(function* () {
     yield* projectionStore.getRecoveryThreadIds("subagent-results").pipe(
       Effect.tap((threadIds) =>
@@ -17910,27 +17932,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         Effect.logWarning("Failed to inspect delegated completion delivery during recovery", {
           cause,
         }),
-      ),
-    );
-    // Recovery leaves a steer the provider had not read pending, and no run update follows it.
-    yield* projectionStore.getRecoveryThreadIds("unread-steers").pipe(
-      Effect.flatMap((threadIds) =>
-        Effect.forEach(
-          threadIds,
-          (threadId) =>
-            threadDispatch.withLock(threadId, requeueUnreadSteers(threadId)).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("Failed to requeue an unread steer during recovery", {
-                  threadId,
-                  cause,
-                }),
-              ),
-            ),
-          { discard: true },
-        ),
-      ),
-      Effect.catchCause((cause) =>
-        Effect.logWarning("Failed to inspect unread steers during recovery", { cause }),
       ),
     );
   });
@@ -18109,6 +18110,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     resumeQueuedRuns,
     resumeQueue,
     recoverDelegatedTasks,
+    recoverUnreadSteers,
     recoverDelegatedTask,
     cancelDelegatedTask,
     delegatedTaskResultPending,

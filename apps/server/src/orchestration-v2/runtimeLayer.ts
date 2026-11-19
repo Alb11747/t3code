@@ -361,10 +361,12 @@ const layerProviderRuntimeRecoveryProvided = Layer.effect(
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     return {
       ...recovery,
-      // Settle open boundary offers before queued messages, which recovery leaves unheld, resume.
+      // Settle open boundary offers and unread steers before queued messages, which recovery
+      // leaves unheld, resume.
       recover: recovery.recover.pipe(
         Effect.tap(() =>
           recoverReceipts.pipe(
+            Effect.andThen(orchestrator.recoverUnreadSteers),
             Effect.andThen(orchestrator.resumeQueuedRuns),
             Effect.mapError(
               (cause) =>

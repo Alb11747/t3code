@@ -1163,10 +1163,9 @@ it.effect("offers a continuation for a later wake after a queued continuation is
   ),
 );
 
-// A steer Claude never read runs as the next turn, between the messages sent before and after
-// it, even when they share a millisecond and the later one picks another model. Claude steers
-// wait for a tool boundary in this fork, so the steer here is a person's Send now, which Claude
-// receives at once.
+// A steer Claude dropped unread runs next, between the messages sent before and after it, even in
+// one millisecond and on another model; one whose fate is unknown ends with a notice. Claude steers
+// wait for a tool boundary in this fork, so the steer here is a person's Send now, read at once.
 it.effect.each([
   "Claude cancels it twice",
   "the Claude process exits",
@@ -1268,6 +1267,23 @@ it.effect.each([
               (left.queuePosition ?? left.ordinal) - (right.queuePosition ?? right.ordinal),
           ),
       );
+      const expectUnconfirmed = () =>
+        Effect.gen(function* () {
+          const { turnItems } = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(
+            turnItems.find((item) => item.type === "user_message" && item.messageId === steerId)
+              ?.status,
+            "cancelled",
+          );
+          assert.isTrue(
+            turnItems.some(
+              (item) =>
+                item.type === "system_notice" &&
+                item.title === "Steer delivery not confirmed" &&
+                item.message.includes("Message steer"),
+            ),
+          );
+        });
       const queuedOrder = Effect.map(queued, (runs) =>
         runs.map((run) => [run.userMessageId, run.queueHeld === true]),
       );
@@ -1348,25 +1364,18 @@ it.effect.each([
         yield* Fiber.join(ended);
         yield* worker.drain();
         yield* Fiber.join(nextRunning);
-        // The older message runs first; the steer waits right behind it on its own model, held
-        // for a person, and the message after it is not held back.
+        // The older message runs first; the steer waits right behind it on its own model.
         const behind = yield* queued;
-        assert.deepEqual(yield* queuedOrder, [
-          [steerId, true],
-          [MessageId.make("after"), false],
-        ]);
-        assert.isTrue(behind[0]?.unconfirmedSteer);
+        assert.deepEqual(
+          behind.map((run) => run.userMessageId),
+          [steerId, MessageId.make("after")],
+        );
         assert.deepEqual(behind[0]?.modelSelection, modelSelection);
         assert.include(offeredText(offers[2]), "Message before");
-        // A person resumes it and sends it now into that run; Claude drops it again.
+        // Promoted into that run, Claude drops it again; it is queued again, then reaches Claude.
         const before = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
           (run) => run.userMessageId === MessageId.make("before"),
         )!;
-        yield* orchestrator.dispatch({
-          type: "queue.resume",
-          commandId: CommandId.make("resume"),
-          threadId,
-        });
         yield* sendNow(behind[0]!.id, before.id, "promote");
         yield* worker.drain();
         assert.equal(offers[3]?.priority, "now");
@@ -1375,29 +1384,29 @@ it.effect.each([
         yield* cancel(offers[3]!);
         yield* Fiber.join(beforeEnded);
         yield* worker.drain();
-        assert.deepEqual(yield* queuedOrder, [[steerId, true]]);
+        assert.deepEqual(yield* queuedOrder, [[MessageId.make("after"), false]]);
         assert.equal(offers.length, 5);
-        assert.include(offeredText(offers[4]), "Message after");
+        assert.equal(offers[4]?.priority, undefined);
+        assert.include(offeredText(offers[4]), "Message steer");
         return;
       }
 
       if (outcome === "the Claude process exits") {
-        const requeued = yield* watch(
+        // The run-end reaction places the failure hold after the run fails.
+        const held = yield* watch(
           (event) =>
             event.type === "run.updated" &&
-            event.payload.userMessageId === steerId &&
-            event.payload.status === "queued",
+            event.payload.userMessageId === MessageId.make("after") &&
+            event.payload.queueHeld === true,
         );
         yield* Queue.end(sdkMessages);
-        yield* Fiber.join(requeued);
+        yield* Fiber.join(held);
         yield* worker.drain();
-        assert.isTrue(
-          (yield* queued).find((run) => run.userMessageId === steerId)?.unconfirmedSteer,
-        );
-        // The provider failure holds the queue, the follow-up included, until someone resumes it.
+        // Claude may have read it before it exited, so it is not sent again.
+        yield* expectUnconfirmed();
+        // The provider failure holds the queue until someone resumes it.
         assert.deepEqual(yield* queuedOrder, [
           [MessageId.make("before"), true],
-          [steerId, true],
           [MessageId.make("after"), true],
         ]);
         assert.equal(offers.length, 2);
@@ -1417,11 +1426,10 @@ it.effect.each([
         assert.equal(offers.length, 2);
         yield* archive("thread.unarchive");
         yield* TestClock.adjust("1 second");
-        // The later send requeues it held, and as a person's send it also releases the hold.
         yield* send("later", { type: "queue_after_active" });
         yield* worker.drain();
-        assert.deepEqual(yield* queuedOrder, [[steerId, false]]);
-        assert.include(offeredText(offers[2]), "Message later");
+        assert.equal(offers.length, 3);
+        assert.include(offeredText(offers[2]), "Message steer");
         return;
       }
 
@@ -1489,7 +1497,8 @@ it.effect.each([
         return;
       }
 
-      // Recovery cancels the run, holds the queue and leaves the unread steer pending.
+      // Recovery cancels the run, holds the queue and leaves the unread steer pending; startup
+      // ends it with a notice before the queue resumes.
       const projection = yield* orchestrator.getThreadProjection(threadId);
       const now = yield* DateTime.now;
       yield* (yield* EventSink.EventSinkV2).write({
@@ -1506,11 +1515,11 @@ it.effect.each([
               : { ...run, queueHeld: true },
         })),
       });
-      yield* orchestrator.recoverDelegatedTasks;
+      yield* orchestrator.recoverUnreadSteers;
       yield* worker.drain();
+      yield* expectUnconfirmed();
       assert.deepEqual(yield* queuedOrder, [
         [MessageId.make("before"), true],
-        [steerId, true],
         [MessageId.make("after"), true],
       ]);
       assert.equal(offers.length, 2);

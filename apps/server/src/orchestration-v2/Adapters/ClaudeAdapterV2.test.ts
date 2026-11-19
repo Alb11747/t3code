@@ -2809,9 +2809,10 @@ describe("ClaudeAdapterV2 attachments", () => {
                 attachments,
               },
             } satisfies ProviderAdapter.ProviderAdapterV2SteerInput;
+            // A failed offer ends with a notice; the person's resend still carries the file.
             if (scenario === "delivery-failure") {
               failOffer = true;
-              assert.isTrue(Exit.isFailure(yield* runtime.steerTurn(steering).pipe(Effect.exit)));
+              assert.isTrue(Exit.isSuccess(yield* runtime.steerTurn(steering).pipe(Effect.exit)));
             }
             yield* runtime.steerTurn(steering);
 
@@ -4004,8 +4005,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           providerTurnId,
         });
         yield* Queue.take(harness.terminalReceipts);
-        // Never written, so Claude never read it and it may run again.
-        assert.deepEqual(steerStatuses(), ["pending", "cancelled"]);
+        // Never written, so it stays pending; the orchestrator's Stop handling posts its notice.
+        assert.deepEqual(steerStatuses(), ["pending"]);
         return;
       }
       yield* TestClock.adjust(retryDelay()!);
@@ -6895,7 +6896,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           },
         }),
       );
-      assert.isTrue(Exit.isFailure(steered));
+      // The failed offer ends with a notice, so nothing sends the steer again.
+      assert.isTrue(Exit.isSuccess(steered));
       yield* harness.awaitTerminal(1);
       assert.equal(harness.terminalEvents()[0]?.status, "completed");
     }).pipe(
