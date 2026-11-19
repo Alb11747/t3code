@@ -38,6 +38,7 @@ import { OrchestrationEffectRequestV2 } from "./EffectOutbox.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
+import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
@@ -816,6 +817,73 @@ it.effect("a message the user sends after Stop releases the held queue; an agent
       "queued",
     ]);
   }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("a run ending after Stop releases only agent messages ahead of the user's held one", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const sink = yield* EventSink.EventSinkV2;
+    const threadId = ThreadId.make("thread:stop-release-order");
+    const agentSend = (text: string, mode: "queue" | "restart") =>
+      threads.sendToThread({
+        projectId: ProjectId.make("project:thread-stop"),
+        commandId: CommandId.make(`agent-send:${text}`),
+        threadId,
+        messageId: MessageId.make(`message:${threadId}:${text}`),
+        text,
+        attachments: [],
+        mode,
+        createdBy: "agent",
+        creationSource: "mcp",
+      });
+    yield* createWatchingThread(threadId, 7);
+    yield* send(threadId, "active", "start_immediately");
+    const ahead = yield* agentSend("agent ahead", "queue");
+    yield* send(threadId, "user held", "queue_after_active");
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make("stop-release-order"),
+      threadId,
+    });
+    const behind = yield* agentSend("agent behind", "queue");
+    yield* agentSend("agent restart", "restart");
+    const restart = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+    const aheadStarted = yield* sink.stream({ threadId, eventType: "run.updated" }).pipe(
+      Stream.filter(
+        ({ event }) =>
+          event.type === "run.updated" &&
+          event.payload.id === ahead.run.id &&
+          event.payload.status === "starting",
+      ),
+      Stream.take(1),
+      Stream.runDrain,
+      Effect.forkScoped,
+    );
+    const now = yield* DateTime.now;
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("event:stop-release-order:restart-completed"),
+          type: "run.updated",
+          threadId,
+          runId: restart.id,
+          occurredAt: now,
+          payload: { ...restart, status: "completed", completedAt: now },
+        },
+      ],
+    });
+    yield* Fiber.join(aheadStarted);
+    const runs = (yield* orchestrator.getThreadProjection(threadId)).runs;
+    // The agent's later message stays behind the user's until the user resumes.
+    assert.deepInclude(
+      runs.find((run) => run.id === behind.run.id),
+      {
+        status: "queued",
+        queueHeld: true,
+      },
+    );
+  }).pipe(Effect.scoped, Effect.provide(layerTest)),
 );
 
 it.effect(

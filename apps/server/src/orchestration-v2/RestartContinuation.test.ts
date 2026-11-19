@@ -261,6 +261,7 @@ it.effect.each(["completed", "waiting", "cancelled"] as const)(
             Layer.mock(ThreadManagementService.ThreadManagementService)({
               getThreadRecords: () => Effect.succeed(projection),
               recoverDelegatedTask: () => Effect.void,
+              resumeQueue: () => Effect.void,
               dispatch: (command) => {
                 commands.push(command);
                 return Effect.succeed({} as never);
@@ -484,6 +485,7 @@ it.effect("does not duplicate delivery and yields to newer user work or opt-out"
     const layerThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
       getThreadRecords: () => Effect.succeed(projection),
       recoverDelegatedTask: () => Effect.void,
+      resumeQueue: () => Effect.void,
       dispatch: (command) => {
         commands.push(command);
         if (command.type === "message.dispatch")
@@ -919,6 +921,7 @@ it.effect("does not cancel or resume a run that completes while shutdown intent 
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: () => Effect.succeed(projection),
             recoverDelegatedTask: () => Effect.void,
+            resumeQueue: () => Effect.void,
             dispatch: () =>
               Effect.sync(() => {
                 dispatched = true;
@@ -944,6 +947,7 @@ const continuationDispatches = (
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: () => Effect.succeed(projection),
             recoverDelegatedTask: () => Effect.void,
+            resumeQueue: () => Effect.void,
             dispatch: (command) => {
               if (command.type === "message.dispatch") dispatches.push(command);
               return Effect.succeed({} as never);
@@ -1211,6 +1215,7 @@ it.effect.each([
               getThreadRecords: (id) =>
                 Effect.succeed((id === parentThreadId ? parent : child) as never),
               recoverDelegatedTask: () => Effect.void,
+              resumeQueue: () => Effect.void,
               dispatch: () =>
                 Effect.sync(() => {
                   dispatched += 1;

@@ -392,9 +392,9 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                     accessibilityRole="button"
                     accessibilityLabel={`Send now, ${deliveryLabel.toLowerCase()} message ${index + 1}`}
                     accessibilityHint={
-                      workflow?.canSendNow
-                        ? undefined
-                        : "Sends into the current turn now. Claude may cancel running tools to read it."
+                      workflow?.canSendNow !== true && workflow?.sendNowInterruptsTools === true
+                        ? "Sends into the current turn now. Claude may cancel running tools to read it."
+                        : undefined
                     }
                     disabled={!controls.canSend}
                     onPress={() => void act(run.id, "steer")}

@@ -3763,7 +3763,7 @@ const make = Effect.gen(function* () {
           ? {
               deliveryNote:
                 result.run.queueHeld === true
-                  ? 'Held behind a stopped queue: the user stopped this thread, and the message runs once they resume its queue. Resending adds a second copy. Only a new message sent with mode: "restart" starts ahead of the held queue.'
+                  ? 'Held: the thread\'s queue is on hold (stopped by the user, or paused after a provider failure or usage limit), and the message runs once it resumes. Resending adds a second copy. Only a new message sent with mode: "restart" starts ahead of the held queue.'
                   : result.message.atToolBoundary === true
                     ? "Pending delivery. Messages are delivered when the agent can safely receive them. For Claude, this update may arrive during the current turn at a tool boundary; otherwise it waits for a later turn. This receipt does not confirm the agent has read the message."
                     : "Queued for a later turn. This receipt does not confirm the agent has read the message.",

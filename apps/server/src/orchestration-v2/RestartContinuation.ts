@@ -380,6 +380,15 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         Effect.gen(function* () {
           const threads = yield* ThreadManagementService.ThreadManagementService;
           yield* threads.recoverDelegatedTask(input.threadId, { sourceRunId: input.sourceRunId });
+          // A declined continuation leaves the queue behind it to start; a started one owns it.
+          yield* threads.resumeQueue(input.threadId).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Failed to resume the queue after a restart continuation", {
+                threadId: input.threadId,
+                cause,
+              }),
+            ),
+          );
         }),
       ),
     ),

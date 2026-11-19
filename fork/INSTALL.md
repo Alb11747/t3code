@@ -158,7 +158,7 @@ queue and appears at the tool boundary where it was inserted. If Claude drops
 it unread, for example because you pressed Stop first, it returns to the queue
 and waits for the next safe boundary or turn. A message that missed the last
 boundary starts the next turn, ahead of messages you queued earlier. If Claude
-or the server stops, or the next turn starts, after Claude took a message but
+or the server stops, or a later prompt starts, after Claude took a message but
 before it reported it, the message counts as delivered and is never sent twice.
 
 **Send now** on a Pending or Queued message during a running Claude turn

@@ -19,6 +19,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -585,77 +586,148 @@ it.effect("a user's /compact that joins a held compaction resumes the queue", ()
   }).pipe(Effect.provide(layerTest)),
 );
 
+const restartCutQueue = Effect.fn("restartCutQueue")(function* (
+  threadId: ThreadId,
+  cut: (run: OrchestrationV2Run) => OrchestrationV2Run,
+  continuing: boolean,
+) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const sink = yield* EventSink.EventSinkV2;
+  yield* orchestrator.dispatch({
+    type: "thread.create",
+    commandId: CommandId.make(`create:${threadId}`),
+    threadId,
+    projectId: ProjectId.make("project:restart-queue"),
+    title: "Restart queue",
+    modelSelection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    createdBy: "user",
+    creationSource: "web",
+  });
+  const cutId = MessageId.make(`${threadId}:cut`);
+  yield* orchestrator.dispatch({
+    type: "message.dispatch",
+    commandId: CommandId.make(`send:${cutId}`),
+    threadId,
+    messageId: cutId,
+    text: "Work the restart cut",
+    attachments: [],
+    dispatchMode: { type: "start_immediately" },
+    createdBy: "user",
+    creationSource: "web",
+  });
+  const queuedId = MessageId.make(`${threadId}:queued`);
+  yield* sendFromWeb(threadId, queuedId, "Sent before the restart");
+  const run = (yield* orchestrator.getThreadRecords(threadId, ["runs"])).runs.find(
+    (candidate) => candidate.userMessageId === cutId,
+  )!;
+  const now = yield* DateTime.now;
+  // Recovery's own writes skip the run-end reactor, as a crash would leave them.
+  const commandId = CommandId.make(`command:runtime-reconcile:${threadId}`);
+  yield* sink.writeWithEffects({
+    commandId,
+    events: [
+      {
+        id: EventId.make(`${threadId}:cut-ended`),
+        type: "run.updated",
+        threadId,
+        runId: run.id,
+        occurredAt: now,
+        payload: cut({ ...run, startedAt: now, completedAt: now }),
+      },
+    ],
+    effects: continuing
+      ? [
+          {
+            id: `effect:restart-continuation:${run.id}`,
+            commandId,
+            threadId,
+            request: {
+              type: "provider-runtime.continue",
+              sourceRunId: run.id,
+              processLossCount: 1,
+            },
+          },
+        ]
+      : [],
+  });
+  const queuedRun = Effect.map(orchestrator.getThreadRecords(threadId, ["runs"]), ({ runs }) =>
+    runs.find((candidate) => candidate.userMessageId === queuedId)!,
+  );
+  return { queuedRun };
+});
+
 it.effect.each([false, true])(
   "startup resumes a queue that recovery left unheld unless a restart continuation is pending (%s)",
   (continuing) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const sink = yield* EventSink.EventSinkV2;
-      const threadId = ThreadId.make(`thread:restart-queue-${continuing}`);
-      yield* orchestrator.dispatch({
-        type: "thread.create",
-        commandId: CommandId.make(`create:${threadId}`),
-        threadId,
-        projectId: ProjectId.make("project:restart-queue"),
-        title: "Restart queue",
-        modelSelection,
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        branch: null,
-        worktreePath: null,
-        createdBy: "user",
-        creationSource: "web",
-      });
-      const cutId = MessageId.make(`${threadId}:cut`);
-      yield* orchestrator.dispatch({
-        type: "message.dispatch",
-        commandId: CommandId.make(`send:${cutId}`),
-        threadId,
-        messageId: cutId,
-        text: "Work the restart cut",
-        attachments: [],
-        dispatchMode: { type: "start_immediately" },
-        createdBy: "user",
-        creationSource: "web",
-      });
-      const queuedId = MessageId.make(`${threadId}:queued`);
-      yield* sendFromWeb(threadId, queuedId, "Sent before the restart");
-      const cut = (yield* orchestrator.getThreadRecords(threadId, ["runs"])).runs.find(
-        (run) => run.userMessageId === cutId,
-      )!;
-      const now = yield* DateTime.now;
-      const commandId = CommandId.make(`command:runtime-reconcile:${threadId}`);
-      yield* sink.writeWithEffects({
-        commandId,
-        events: [
-          {
-            id: EventId.make(`${threadId}:cut-interrupted`),
-            type: "run.updated",
-            threadId,
-            runId: cut.id,
-            occurredAt: now,
-            payload: { ...cut, status: "interrupted", startedAt: now, completedAt: now },
-          },
-        ],
-        effects: continuing
-          ? [
-              {
-                id: `effect:restart-continuation:${cut.id}`,
-                commandId,
-                threadId,
-                request: {
-                  type: "provider-runtime.continue",
-                  sourceRunId: cut.id,
-                  processLossCount: 1,
-                },
-              },
-            ]
-          : [],
-      });
-      yield* orchestrator.resumeQueuedRuns;
-      const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
-      expect(runs.find((run) => run.userMessageId === queuedId)?.status).toBe(
-        continuing ? "queued" : "starting",
+      const { queuedRun } = yield* restartCutQueue(
+        ThreadId.make(`thread:restart-queue-${continuing}`),
+        (run) => ({ ...run, status: "interrupted" }),
+        continuing,
       );
+      yield* orchestrator.resumeQueuedRuns;
+      expect((yield* queuedRun).status).toBe(continuing ? "queued" : "starting");
     }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("startup holds a queue behind a run whose worktree setup failed before the restart", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const { queuedRun } = yield* restartCutQueue(
+      ThreadId.make("thread:restart-queue-worktree"),
+      (run) => ({
+        ...run,
+        status: "failed",
+        workspacePreparation: { type: "worktree", baseRef: "main", startFromOrigin: false },
+      }),
+      false,
+    );
+    yield* orchestrator.resumeQueuedRuns;
+    expect(yield* queuedRun).toMatchObject({ status: "queued", queueHeld: true });
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("a restart continuation that declines starts the queue behind it", () =>
+  Effect.gen(function* () {
+    const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+    const { queuedRun } = yield* restartCutQueue(
+      ThreadId.make("thread:restart-queue-declined"),
+      (run) => ({ ...run, status: "interrupted" }),
+      true,
+    );
+    // This harness has continuing after an update turned off, so the continuation declines.
+    yield* worker.drain();
+    expect((yield* queuedRun).status).not.toBe("queued");
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("an agent's send is not held behind a follow-up its failed compaction holds", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const threadId = ThreadId.make("thread:agent-after-failed-compaction");
+    const { messageId, compactRun } = yield* compactionPair(threadId);
+    yield* endCompaction(threadId, compactRun, false);
+    yield* orchestrator.resumeQueuedRuns;
+    const agentId = MessageId.make("message:agent-after-failed-compaction");
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("send:agent-after-failed-compaction"),
+      threadId,
+      messageId: agentId,
+      text: "Agent update",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      deliveryIntent: "auto",
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+    expect(runs.find((run) => run.userMessageId === messageId)?.queueHeld).toBe(true);
+    expect(runs.find((run) => run.userMessageId === agentId)?.status).toBe("starting");
+  }).pipe(Effect.provide(layerTest)),
 );

@@ -748,6 +748,9 @@ it.effect.each([
     // A queued run is not held: it resumes on its own, and startup settles its open offer.
     if (scenario === "queued") {
       assert.isUndefined(command?.events.find((event) => event.type === "run.updated"));
+      // Nor does recovery start it: startup resumes the queue after settling the offer.
+      assert.deepEqual(command?.effects ?? [], []);
+      assert.deepEqual(written, []);
       return;
     }
     assert.isNotNull(command);

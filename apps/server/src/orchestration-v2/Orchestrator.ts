@@ -409,6 +409,8 @@ export interface OrchestratorV2DispatchResult {
 
 export interface OrchestratorV2Shape {
   readonly resumeQueuedRuns: Effect.Effect<number, OrchestratorV2Error>;
+  /** Starts one thread's queue if nothing holds it; for work that ends outside a run. */
+  readonly resumeQueue: (threadId: ThreadId) => Effect.Effect<void, OrchestratorV2Error>;
   readonly recoverDelegatedTasks: Effect.Effect<void>;
   readonly recoverDelegatedTask: (
     threadId: ThreadId,
@@ -2781,6 +2783,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
         return;
       }
+      // A pending restart continuation resumes the cut turn first; its end starts the queue.
+      if (options?.userStarted !== true && failedRun !== null) {
+        const continuation = yield* effectOutbox.get(`effect:restart-continuation:${failedRun.id}`);
+        if (Option.isSome(continuation) && continuation.value.status === "pending") return;
+      }
       // Move queued ordinals after runs that started while they waited to preserve transcript and checkpoint order.
       // Started runs have prompts; cancelled queued messages do not.
       const newerRunIds = projection.runs
@@ -3587,7 +3594,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .map((message) => message.id),
     );
     const now = yield* DateTime.now;
-    const released = held.filter((run) => unattended.has(run.userMessageId));
+    // An agent's MCP message held behind one a person is holding stays behind it, as it
+    // queued after Stop; server and provider messages, which nobody resumes, still go.
+    const ordered = queuedRunsInDeliveryOrder({ runs: held, messages });
+    const firstAttended = ordered.findIndex(
+      (run) => !unattended.has(run.userMessageId) && run.afterCompactionMessageId === undefined,
+    );
+    const released = ordered.filter(
+      (run, index) =>
+        unattended.has(run.userMessageId) &&
+        (firstAttended === -1 ||
+          index < firstAttended ||
+          messages.find((message) => message.id === run.userMessageId)?.creationSource !== "mcp"),
+    );
     if (released.length === 0) return;
     yield* writeSystemEvents(
       released.map((run) => ({
@@ -3601,26 +3620,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
   });
 
+  /** Starts a thread's queue as the end of its latest run would, honouring the holds it sets. */
+  const resumeQueue = (threadId: ThreadId) =>
+    threadDispatch.withLock(threadId, startNextQueuedRun(threadId, { latestRunEnded: true })).pipe(
+      Effect.mapError(
+        (cause) =>
+          new OrchestratorDispatchError({
+            commandId: CommandId.make(`command:system:resume-queue:${threadId}`),
+            commandType: "message.dispatch",
+            cause,
+          }),
+      ),
+    );
+
   const resumeQueuedRuns = Effect.gen(function* () {
     const threadIds = yield* projectionStore.getRecoveryThreadIds("queued-runs");
     let resumed = 0;
     for (const threadId of threadIds) {
       const resumedThread = yield* Effect.gen(function* () {
         if (!(yield* projectionStore.canStartQueuedRun(threadId))) return false;
-        // A pending restart continuation resumes the cut turn first; the queue follows it.
-        const latest = latestExecutedRun(
-          (yield* projectionStore.getThreadRecords(threadId, ["runs"])).runs,
-        );
-        const continuation =
-          latest === null
-            ? Option.none()
-            : yield* effectOutbox.get(`effect:restart-continuation:${latest.id}`);
-        if (
-          Option.isSome(continuation) &&
-          (continuation.value.status === "pending" || continuation.value.status === "running")
-        )
-          return false;
-        yield* threadDispatch.withLock(threadId, startNextQueuedRun(threadId));
+        yield* resumeQueue(threadId);
         return true;
       }).pipe(
         Effect.catch((cause) =>
@@ -7995,7 +8014,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.createdBy === "agent" &&
       command.creationSource === "mcp" &&
       command.deliveryIntent !== "restart" &&
-      projection.runs.some((run) => run.status === "queued" && run.queueHeld === true)
+      // A follow-up held for its failed compaction holds only itself.
+      projection.runs.some(
+        (run) =>
+          run.status === "queued" &&
+          run.queueHeld === true &&
+          run.afterCompactionMessageId === undefined,
+      )
         ? (latestRun ?? undefined)
         : undefined;
     const requiredCompactionRun =
@@ -12417,7 +12442,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         nodeId: queuedRootNode.id,
         providerInstanceId: queuedRun.providerInstanceId,
         occurredAt: now,
-        payload: { ...queuedRun, steerWhenReadyRunId: target.id, deliveryIntent: "steer" },
+        payload: {
+          ...queuedRun,
+          steerWhenReadyRunId: target.id,
+          deliveryIntent: "steer",
+          ...(command.interrupt === true && command.requestedBy !== "agent"
+            ? { steerNow: true as const }
+            : {}),
+        },
       });
       return;
     }
@@ -12434,12 +12466,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         Option.isSome(session) &&
         session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools === true &&
-        // A person's Send now interrupts Claude; an agent's promotion still waits for a boundary.
-        !(
-          command.interrupt === true &&
-          command.requestedBy !== "agent" &&
-          targetProviderThread?.driver === "claudeAgent"
-        ) &&
         !(
           targetProviderThread?.driver === "cursor" &&
           queuedMessage.createdBy === "user" &&
@@ -12459,6 +12485,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             cause: `Queued run ${queuedRun.id} cannot wait for the running turn's next tool boundary.`,
           });
         }
+      }
+      if (
+        Option.isSome(session) &&
+        session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools === true &&
+        // A person's Send now interrupts Claude; an agent's promotion still waits for a boundary.
+        !(
+          command.interrupt === true &&
+          command.requestedBy !== "agent" &&
+          targetProviderThread?.driver === "claudeAgent"
+        ) &&
+        !(
+          targetProviderThread?.driver === "cursor" &&
+          queuedMessage.createdBy === "user" &&
+          command.requestedBy !== "agent"
+        )
+      ) {
         yield* emitEvent({
           type: "message.updated",
           threadId: command.threadId,
@@ -17404,6 +17446,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               threadId,
               queuedRunId: next.queued.id,
               targetRunId: next.mode.targetRunId,
+              ...(next.queued.steerNow === true ? { interrupt: true as const } : {}),
             }).pipe(
               Effect.catch((cause) =>
                 Effect.logWarning("Failed to steer a message queued before the turn started", {
@@ -17758,6 +17801,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   return OrchestratorV2.of({
     resumeQueuedRuns,
+    resumeQueue,
     recoverDelegatedTasks,
     recoverDelegatedTask,
     cancelDelegatedTask,

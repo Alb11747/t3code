@@ -45,6 +45,8 @@ export interface ThreadQueueWorkflowState {
   /** The active run is a compaction, so promoting a queued message stops it instead of steering. */
   readonly promoteSkipsCompaction: boolean;
   readonly canSendNow: boolean;
+  /** Send now into this turn reaches Claude at once and can cancel the tools it is running. */
+  readonly sendNowInterruptsTools: boolean;
 }
 
 export function resolveActiveThreadRun(projection: Pick<Projection, "runs">): Run | null {
@@ -209,6 +211,7 @@ export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQu
           capabilities?.supportsSteeringByInterruptRestart === true)),
     awaitsProviderTurn: activeRun !== null && !activeProviderTurnRunning,
     promoteSkipsCompaction,
+    sendNowInterruptsTools: activeRun !== null && session?.driver === "claudeAgent",
   };
 }
 

@@ -962,6 +962,7 @@ it.effect.each([3, 4])(
             Ref.update(events, (entries) => [...entries, "dispatch"]).pipe(Effect.as({} as never)),
           recoverDelegatedTask: () =>
             Ref.update(events, (entries) => [...entries, "recover-child"]),
+          resumeQueue: () => Effect.void,
         },
       });
       yield* Effect.gen(function* () {
