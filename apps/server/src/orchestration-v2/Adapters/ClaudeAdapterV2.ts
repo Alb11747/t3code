@@ -9664,7 +9664,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const paused = yield* settleKeepWarm(budgeted.context, budgeted.status);
           const input = paused === null ? budgeted : { ...budgeted, ...paused };
           yield* cancelOverloadRetry(input.context);
-          input.context.pendingRetrySteers.length = 0;
+          // Never written, so Claude never read them.
+          for (const message of input.context.pendingRetrySteers.splice(0)) {
+            yield* emitSteerStatus(input.context, message.messageId, "cancelled");
+          }
           const nativeThreadId = input.context.nativeThreadId;
           const model = input.context.input.modelSelection.model;
           if (input.status === "failed" && input.failure?.class === "usage_limit") {
@@ -14200,9 +14203,20 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             pdfReservation.commit();
             context.pendingRetrySteers.splice(0, pendingCount);
           };
+          // Steers held through a backoff ride along; once written they count as delivered.
+          const heldSteers = steers.slice(0, pendingCount);
           return (query: ClaudeAgentSdkQuerySession) =>
             Effect.uninterruptibleMask((restore) =>
-              restore(query.offer(userMessage, commit)).pipe(Effect.tap(() => Effect.sync(commit))),
+              restore(query.offer(userMessage, commit)).pipe(
+                Effect.tap(() => Effect.sync(commit)),
+                Effect.tap(() =>
+                  Effect.forEach(
+                    heldSteers,
+                    (message) => emitSteerStatus(context, message.messageId, "completed"),
+                    { discard: true },
+                  ),
+                ),
+              ),
             );
         });
 
@@ -15043,6 +15057,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   !(yield* Ref.get(interruptedTurns)).has(currentTurn.providerTurnId)
                 ) {
                   currentTurn.pendingRetrySteers.push(turnInput.message);
+                  yield* emitSteerStatus(currentTurn, turnInput.message.messageId, "pending");
                   return true;
                 }
                 return false;
