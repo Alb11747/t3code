@@ -3938,104 +3938,113 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
 
-  it.effect.each(["read with the retry", "dropped unread", "stopped before the retry"] as const)(
-    "reports a direct steer held through an overload backoff (%s)",
-    (outcome) =>
-      Effect.gen(function* () {
-        const handoffs: Array<
-          NonNullable<Parameters<ClaudeAdapterV2.ClaudeAgentSdkQuerySession["offer"]>[2]>
-        > = [];
-        const harness = yield* makeWakeHarnessWithOptions({
-          freshQueueOnReopen: true,
-          close: Queue.shutdown,
-          onHandoff: (handoff) => handoffs.push(handoff),
-        });
-        const attemptId = RunAttemptId.make("backoff-steer");
-        const input = makeClaudeTestTurnInput({
-          threadId: harness.threadId,
-          providerThread: harness.providerThread,
-          now: yield* DateTime.now,
-          attemptId,
-          text: "Start the build.",
+  it.effect.each([
+    "read with the retry",
+    "dropped unread",
+    "cancelled after it was written",
+    "stopped before the retry",
+  ] as const)("reports a direct steer held through an overload backoff (%s)", (outcome) =>
+    Effect.gen(function* () {
+      const handoffs: Array<
+        NonNullable<Parameters<ClaudeAdapterV2.ClaudeAgentSdkQuerySession["offer"]>[2]>
+      > = [];
+      const harness = yield* makeWakeHarnessWithOptions({
+        freshQueueOnReopen: true,
+        close: Queue.shutdown,
+        onHandoff: (handoff) => handoffs.push(handoff),
+      });
+      const attemptId = RunAttemptId.make("backoff-steer");
+      const input = makeClaudeTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId,
+        text: "Start the build.",
+        attachments: [],
+      });
+      const providerTurnId = (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+        driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+        nativeTurnId: `turn:${attemptId}`,
+      });
+      yield* harness.runtime.startTurn(input);
+      const steerStatuses = () =>
+        harness.events.flatMap((event) => (event.type === "steer.updated" ? [event.status] : []));
+      yield* harness.offerAndWait(
+        makeResultFrame({ uuid: "overloaded", result: "Overloaded.", apiErrorStatus: 529 }),
+      );
+      const retryDelay = () =>
+        harness.events.flatMap((event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "error" &&
+          event.turnItem.status === "running" &&
+          event.turnItem.retry?.retryDelayMs != null
+            ? [event.turnItem.retry.retryDelayMs]
+            : [],
+        )[0];
+      yield* harness.until(() => retryDelay() !== undefined);
+      yield* harness.runtime.steerTurn({
+        threadId: harness.threadId,
+        runId: input.runId,
+        providerThread: harness.providerThread,
+        providerTurnId,
+        message: {
+          createdBy: "user",
+          creationSource: "web",
+          messageId: MessageId.make("message-backoff-steer"),
+          text: "Keep the failed build log.",
           attachments: [],
-        });
-        const providerTurnId = (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
-          driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-          nativeTurnId: `turn:${attemptId}`,
-        });
-        yield* harness.runtime.startTurn(input);
-        const steerStatuses = () =>
-          harness.events.flatMap((event) => (event.type === "steer.updated" ? [event.status] : []));
-        yield* harness.offerAndWait(
-          makeResultFrame({ uuid: "overloaded", result: "Overloaded.", apiErrorStatus: 529 }),
-        );
-        const retryDelay = () =>
-          harness.events.flatMap((event) =>
-            event.type === "turn_item.updated" &&
-            event.turnItem.type === "error" &&
-            event.turnItem.status === "running" &&
-            event.turnItem.retry?.retryDelayMs != null
-              ? [event.turnItem.retry.retryDelayMs]
-              : [],
-          )[0];
-        yield* harness.until(() => retryDelay() !== undefined);
-        yield* harness.runtime.steerTurn({
-          threadId: harness.threadId,
-          runId: input.runId,
+        },
+      });
+      assert.lengthOf(harness.offeredMessages, 1);
+      yield* harness.until(() => steerStatuses().length === 1);
+      assert.deepEqual(steerStatuses(), ["pending"]);
+      if (outcome === "stopped before the retry") {
+        yield* harness.runtime.interruptTurn({
           providerThread: harness.providerThread,
           providerTurnId,
-          message: {
-            createdBy: "user",
-            creationSource: "web",
-            messageId: MessageId.make("message-backoff-steer"),
-            text: "Keep the failed build log.",
-            attachments: [],
-          },
         });
-        assert.lengthOf(harness.offeredMessages, 1);
-        yield* harness.until(() => steerStatuses().length === 1);
-        assert.deepEqual(steerStatuses(), ["pending"]);
-        if (outcome === "stopped before the retry") {
-          yield* harness.runtime.interruptTurn({
-            providerThread: harness.providerThread,
-            providerTurnId,
-          });
-          yield* Queue.take(harness.terminalReceipts);
-          // Never written, so Claude never read it and it may run again.
-          assert.deepEqual(steerStatuses(), ["pending", "cancelled"]);
-          return;
-        }
-        yield* TestClock.adjust(retryDelay()!);
-        yield* harness.until(() => harness.offeredMessages.length === 2);
-        assert.include(
-          JSON.stringify(harness.offeredMessages[1]?.message.content),
-          "Keep the failed build log.",
-        );
-        // Queued with the resumed prompt is not yet read: Claude may still drop it.
-        assert.deepEqual(steerStatuses(), ["pending"]);
-        assert.lengthOf(handoffs, 1);
-        if (outcome === "dropped unread") {
-          handoffs[0]!.onDiscarded();
-          yield* harness.until(() => steerStatuses().length === 2);
-          assert.deepEqual(steerStatuses(), ["pending", "cancelled"]);
-          return;
-        }
-        // Written to Claude: it counts as delivered and is never sent again.
-        handoffs[0]!.onPulled();
-        handoffs[0]!.onConsumed();
+        yield* Queue.take(harness.terminalReceipts);
+        // Never written, so Claude never read it and it may run again.
+        assert.deepEqual(steerStatuses(), ["pending", "cancelled"]);
+        return;
+      }
+      yield* TestClock.adjust(retryDelay()!);
+      yield* harness.until(() => harness.offeredMessages.length === 2);
+      assert.include(
+        JSON.stringify(harness.offeredMessages[1]?.message.content),
+        "Keep the failed build log.",
+      );
+      // Queued with the resumed prompt is not yet read: Claude may still drop it.
+      assert.deepEqual(steerStatuses(), ["pending"]);
+      assert.lengthOf(handoffs, 1);
+      if (outcome === "dropped unread") {
+        handoffs[0]!.onDiscarded();
         yield* harness.until(() => steerStatuses().length === 2);
-        assert.deepEqual(steerStatuses(), ["pending", "completed"]);
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
-          ),
+        assert.deepEqual(steerStatuses(), ["pending", "cancelled"]);
+        return;
+      }
+      // Written to Claude: it counts as delivered and is never sent again.
+      handoffs[0]!.onPulled();
+      handoffs[0]!.onConsumed();
+      yield* harness.until(() => steerStatuses().length === 2);
+      assert.deepEqual(steerStatuses(), ["pending", "completed"]);
+      if (outcome === "cancelled after it was written") {
+        // Stop's receipt names the prompt as removed unread: a discard always wins.
+        handoffs[0]!.onDiscarded();
+        yield* harness.until(() => steerStatuses().length === 3);
+        assert.deepEqual(steerStatuses(), ["pending", "completed", "cancelled"]);
+      }
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
         ),
       ),
+    ),
   );
 
   runClaudeThinkingRecoverySuite({

@@ -12729,7 +12729,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
         // Claude takes input in order, so once a later turn's prompt starts it has reported every
         // earlier input it dropped. One it took but never reported counts as delivered, as when
-        // its process ends.
+        // its process ends; a drop reported after that start is unverified and stays delivered.
         const settleBoundaryOffersOfEarlierTurns = Effect.fnUntraced(function* (
           live: ClaudeLiveQueryContext,
           current: ActiveClaudeTurnContext,
@@ -14214,10 +14214,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           // Steers held through a backoff ride along: delivered once Claude reads the input,
           // returned to the queue if it is dropped first.
           const heldSteers = steers.slice(0, pendingCount);
-          let heldSettled = false;
+          // A discard always wins: Stop can remove input unread even after the SDK wrote it.
+          let heldStatus: "completed" | "cancelled" | undefined;
           const settleHeldSteers = (status: "completed" | "cancelled") => {
-            if (heldSettled) return;
-            heldSettled = true;
+            if (
+              heldStatus === "cancelled" ||
+              (heldStatus === "completed" && status === "completed")
+            )
+              return;
+            heldStatus = status;
             void runPromise(
               Effect.forEach(
                 heldSteers,
