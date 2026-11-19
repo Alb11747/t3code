@@ -933,6 +933,13 @@ const make = Effect.gen(function* () {
     >["dispatchMode"];
     if (compactBeforeSend) {
       dispatchMode = { type: "queue_after_active" };
+    } else if (
+      mode === "restart" &&
+      steerableRun === undefined &&
+      target.runs.some((run) => run.status === "queued" && run.queueHeld === true)
+    ) {
+      // After Stop, restart is how an agent starts a turn ahead of the held queue.
+      dispatchMode = { type: "start_immediately" };
     } else if (mode === "steer" || mode === "restart") {
       const targetRun = mode === "steer" ? (steerableRun ?? latestActiveRun(target)) : steerableRun;
       if (targetRun === undefined) {
@@ -992,7 +999,9 @@ const make = Effect.gen(function* () {
           : { modelSelection: input.modelSelection }),
       ...(input.freshContext ? { freshContext: true } : {}),
       ...(!compactBeforeSend &&
-      (mode === "steer" || (mode === "auto" && steerableRun === undefined))
+      (mode === "steer" ||
+        (mode === "auto" && steerableRun === undefined) ||
+        (mode === "restart" && dispatchMode.type === "start_immediately"))
         ? { deliveryIntent: mode }
         : {}),
       dispatchMode,

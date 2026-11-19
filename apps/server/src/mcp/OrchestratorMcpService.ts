@@ -3762,9 +3762,11 @@ const make = Effect.gen(function* () {
         ...(result.delivery === "queued"
           ? {
               deliveryNote:
-                result.message.atToolBoundary === true
-                  ? "Pending delivery. Messages are delivered when the agent can safely receive them. For Claude, this update may arrive during the current turn at a tool boundary; otherwise it waits for a later turn. This receipt does not confirm the agent has read the message."
-                  : "Queued for a later turn. This receipt does not confirm the agent has read the message.",
+                result.run.queueHeld === true
+                  ? 'Held behind a stopped queue: the user stopped this thread, and the message runs once they resume its queue. Resending adds a second copy. Only a new message sent with mode: "restart" starts ahead of the held queue.'
+                  : result.message.atToolBoundary === true
+                    ? "Pending delivery. Messages are delivered when the agent can safely receive them. For Claude, this update may arrive during the current turn at a tool boundary; otherwise it waits for a later turn. This receipt does not confirm the agent has read the message."
+                    : "Queued for a later turn. This receipt does not confirm the agent has read the message.",
             }
           : {}),
       } satisfies OrchestratorMcpThreadSendResult;

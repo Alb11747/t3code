@@ -3983,6 +3983,8 @@ it.effect("starts a restart that stops the running turn ahead of an older held q
           text: "second",
           attachments: [],
           dispatchMode: { type: "start_immediately" },
+          // After Stop, only an agent's restart starts ahead of the held queue.
+          deliveryIntent: "restart",
           createdBy: "agent",
           creationSource: "mcp",
         });

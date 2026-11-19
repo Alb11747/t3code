@@ -725,17 +725,18 @@ it.effect.each(["thread.stop", "run.interrupt"] as const)(
 it.effect("a message the user sends after Stop releases the held queue; an agent's does not", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const threadId = ThreadId.make("thread:stop-release");
-    const agentSend = (text: string) =>
-      orchestrator.dispatch({
-        type: "message.dispatch",
+    const agentSend = (text: string, mode: "auto" | "queue" | "restart" = "queue") =>
+      threads.sendToThread({
+        projectId: ProjectId.make("project:thread-stop"),
         commandId: CommandId.make(`agent-send:${text}`),
         threadId,
         messageId: MessageId.make(`message:${threadId}:${text}`),
         text,
         attachments: [],
-        dispatchMode: { type: "queue_after_active" },
+        mode,
         createdBy: "agent",
         creationSource: "mcp",
       });
@@ -749,22 +750,26 @@ it.effect("a message the user sends after Stop releases the held queue; an agent
     });
     assert.deepEqual((yield* threadState(threadId)).runs, ["interrupted", "queued:held"]);
 
-    // An agent's message starts on the idle thread, but the hold is the user's.
-    yield* agentSend("agent nudge");
+    // Stop means stopped: an agent's send waits behind the user's held message, and only an
+    // explicit restart starts a turn ahead of it.
+    const held = yield* agentSend("agent nudge", "auto");
+    assert.equal(held.run.queueHeld, true);
+    yield* agentSend("agent restart", "restart");
     assert.deepEqual((yield* threadState(threadId)).runs, [
       "interrupted",
       "queued:held",
+      "queued:held",
       "starting",
     ]);
-    const nudge = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+    const restart = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
     const now = yield* DateTime.now;
     yield* projections.apply({
-      id: EventId.make("event:stop-release:nudge-completed"),
+      id: EventId.make("event:stop-release:restart-completed"),
       type: "run.updated",
       threadId,
-      runId: nudge.id,
+      runId: restart.id,
       occurredAt: now,
-      payload: { ...nudge, status: "completed", completedAt: now },
+      payload: { ...restart, status: "completed", completedAt: now },
     });
 
     // A scheduled task the user created is not the user coming back.
@@ -784,6 +789,7 @@ it.effect("a message the user sends after Stop releases the held queue; an agent
     assert.deepEqual((yield* threadState(threadId)).runs, [
       "interrupted",
       "queued:held",
+      "queued:held",
       "completed",
       "starting",
     ]);
@@ -796,12 +802,13 @@ it.effect("a message the user sends after Stop releases the held queue; an agent
       payload: { ...scheduled, status: "completed", completedAt: now },
     });
 
-    // The user is back: the held message follows their run, and a wake that
+    // The user is back: the held messages follow their run, and a wake that
     // queues behind it is not held by the old Stop.
     yield* send(threadId, "back", "start_immediately");
     yield* agentSend("task finished");
     assert.deepEqual((yield* threadState(threadId)).runs, [
       "interrupted",
+      "queued",
       "queued",
       "completed",
       "completed",

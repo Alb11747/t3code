@@ -7986,6 +7986,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projection.thread.worktreePath === null
         ? latestRun
         : undefined;
+    // Stop holds the queue: an agent's ordinary send waits behind the user's held messages
+    // instead of starting first. An explicit restart still starts now.
+    const stoppedQueueRun =
+      activeRun === undefined &&
+      worktreeMissingRun === undefined &&
+      (dispatchMode.type === "queue_after_active" || dispatchMode.type === "start_immediately") &&
+      command.createdBy === "agent" &&
+      command.creationSource === "mcp" &&
+      command.deliveryIntent !== "restart" &&
+      projection.runs.some((run) => run.status === "queued" && run.queueHeld === true)
+        ? (latestRun ?? undefined)
+        : undefined;
     const requiredCompactionRun =
       command.afterCompactionMessageId === undefined
         ? undefined
@@ -8041,6 +8053,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const queueBehindRun =
       activeRun ??
       worktreeMissingRun ??
+      stoppedQueueRun ??
       (waitsForCompaction ? requiredCompactionRun : undefined) ??
       (startsAfterCompaction ? compactionFollowUp : undefined);
     const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(projection);
