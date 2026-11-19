@@ -167,7 +167,11 @@ before it reported it, the message counts as delivered and is never sent twice.
 **Send now** on a Pending or Queued message during a running Claude turn
 (or its keyboard shortcut) does not wait: Claude reads it at once, which can
 cancel the tools it is running. Sending from the composer still waits for a
-boundary, and an agent's promotion never interrupts.
+boundary, and an agent's promotion never interrupts. If the turn ends before
+Claude reads the message, it stays open until Claude reads or drops it. If
+Claude drops the message unread, it runs as the next turn, in its place in the
+queue. If Claude or the server stops first, it waits there, held, until you
+resume the queue, because it may already have reached Claude.
 
 After a restart or crash, messages that had not reached Claude resume on their
 own, in order. Messages held by Stop stay held: after Stop, an agent's message
