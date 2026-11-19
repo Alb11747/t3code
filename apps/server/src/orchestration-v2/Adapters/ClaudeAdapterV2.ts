@@ -5271,6 +5271,11 @@ interface ActiveClaudeTurnContext {
   promptUuid: string | null;
   overloadRetry: Deferred.Deferred<void> | null;
   readonly pendingRetrySteers: Array<ProviderAdapter.ProviderAdapterV2SteerInput["message"]>;
+  // Steers held through a backoff that rode an input, by its uuid, until Claude reads that input.
+  readonly retryRiders: Map<
+    string,
+    ReadonlyArray<ProviderAdapter.ProviderAdapterV2SteerInput["message"]>
+  >;
   promptEcho: "pending" | "confirmed";
   promptStarted: boolean;
   nativeWakeStarted: boolean;
@@ -5310,8 +5315,6 @@ interface ActiveClaudeTurnContext {
   // A completed result whose turn stays open while Claude still holds a steer; it settles the
   // turn if Claude drops that steer instead of starting it.
   heldResult: SDKResultMessage | undefined;
-  // An error result is held the same way; its failure stays the turn's outcome.
-  heldFailure: OrchestrationV2ProviderFailure | undefined;
   // Claude can run another model than requested, such as when an organization disallows it.
   executedModel: string | undefined;
 }
@@ -9662,7 +9665,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const emitUnreadSteerNotice = Effect.fnUntraced(function* (
           context: ActiveClaudeTurnContext,
           uuid: string,
-          steer: { readonly text: string; readonly liveQuery: ClaudeLiveQueryContext },
+          steer: { readonly text: string; readonly liveQuery: ClaudeLiveQueryContext | null },
           at: DateTime.Utc,
           when: string,
         ) {
@@ -9670,6 +9673,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           // other loss warns everywhere, since nothing else tells the person.
           if (
             when === "before Stop" &&
+            steer.liveQuery !== null &&
             steer.liveQuery.promptEchoMode !== "early" &&
             steer.liveQuery.promptEchoMode !== "result_only"
           )
@@ -9710,8 +9714,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const steer = context.pendingSteers.get(uuid);
           if (steer === undefined) return;
           context.pendingSteers.delete(uuid);
-          yield* emitSteerStatus(context, steer.messageId, "cancelled");
+          // The notice commits first: a crash before the cancel leaves it pending for recovery.
           yield* emitUnreadSteerNotice(context, uuid, steer, yield* DateTime.now, when);
+          yield* emitSteerStatus(context, steer.messageId, "cancelled");
         });
 
         // A process that ended or was replaced takes its steers with it.
@@ -9744,6 +9749,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           context.heldResult = undefined;
         };
 
+        const confirmRetryRiders = Effect.fnUntraced(function* (
+          context: ActiveClaudeTurnContext,
+          uuid: string | null,
+        ) {
+          const riders = uuid === null ? undefined : context.retryRiders.get(uuid);
+          if (riders === undefined || uuid === null) return;
+          context.retryRiders.delete(uuid);
+          for (const message of riders)
+            yield* emitSteerStatus(context, message.messageId, "completed");
+        });
+
         const markSteersAccepted = Effect.fnUntraced(function* (
           context: ActiveClaudeTurnContext,
           message: SDKMessage,
@@ -9758,6 +9774,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ? [lifecycle.uuid]
                 : [];
           for (const uuid of accepted) {
+            yield* confirmRetryRiders(context, uuid);
             const steer = context.pendingSteers.get(uuid);
             if (steer === undefined) continue;
             context.pendingSteers.delete(uuid);
@@ -9776,6 +9793,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               : undefined;
           if (dropped === undefined || lifecycle === null) return;
           context.pendingSteers.delete(lifecycle.uuid);
+          context.retryRiders.delete(lifecycle.uuid);
           // The follow-up turn sends the same files again.
           if (dropped.pdfReservation.delivered && !dropped.pdfReservation.refunded) {
             dropped.pdfReservation.refund();
@@ -9814,18 +9832,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         }) {
           // A turn stopped by the retry budget settles as failed with the retry's error.
           const retryBudgetFailure = requested.context.retryBudgetFailure;
-          const heldFailure = requested.context.heldFailure;
           const budgeted =
             requested.status === "interrupted" && retryBudgetFailure !== undefined
               ? { ...requested, status: "failed" as const, failure: retryBudgetFailure }
-              : requested.status === "completed" && heldFailure !== undefined
-                ? { ...requested, status: "failed" as const, failure: heldFailure }
-                : requested;
+              : requested;
           const paused = yield* settleKeepWarm(budgeted.context, budgeted.status);
           const input = paused === null ? budgeted : { ...budgeted, ...paused };
           yield* cancelOverloadRetry(input.context);
-          // Never written, so Claude never read them; they stay pending and are requeued.
-          input.context.pendingRetrySteers.splice(0);
+          // Held through a backoff, Claude has not confirmed reading them; the person decides.
+          const unreadRetrySteers = [
+            ...input.context.pendingRetrySteers.splice(0),
+            ...[...input.context.retryRiders.values()].flat(),
+          ];
+          input.context.retryRiders.clear();
           const nativeThreadId = input.context.nativeThreadId;
           const model = input.context.input.modelSelection.model;
           if (input.status === "failed" && input.failure?.class === "usage_limit") {
@@ -9856,13 +9875,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ([, { liveQuery }]) => input.status !== "completed" || liveQuery !== currentQuery,
           );
           for (const [, { messageId }] of droppedSteers) {
-            yield* emitSteerStatus(
-              input.context,
-              messageId,
-              unreadSteers.some(([, steer]) => steer.messageId === messageId)
-                ? "cancelled"
-                : "completed",
-            );
+            if (unreadSteers.every(([, steer]) => steer.messageId !== messageId))
+              yield* emitSteerStatus(input.context, messageId, "completed");
           }
           if (input.context.compaction?.status === "running") {
             const reason = input.result?.subtype === "success" ? input.result.result.trim() : "";
@@ -10006,14 +10020,20 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             });
           }
 
+          const when = input.status === "interrupted" ? "before Stop" : "before the turn ended";
           for (const [uuid, steer] of unreadSteers) {
+            yield* emitUnreadSteerNotice(input.context, uuid, steer, input.completedAt, when);
+            yield* emitSteerStatus(input.context, steer.messageId, "cancelled");
+          }
+          for (const message of unreadRetrySteers) {
             yield* emitUnreadSteerNotice(
               input.context,
-              uuid,
-              steer,
+              message.messageId,
+              { text: message.text, liveQuery: null },
               input.completedAt,
-              input.status === "interrupted" ? "before Stop" : "before the turn ended",
+              when,
             );
+            yield* emitSteerStatus(input.context, message.messageId, "cancelled");
           }
 
           const threadDisposition = input.threadDisposition ?? "reusable";
@@ -12535,15 +12555,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   completedAt,
                 });
               }
-              // Held like a completed result: it settles the turn if Claude drops the steer.
-              if (context.pendingSteers.size > 0) context.heldResult = message;
-              else {
-                context.steeredSegmentUsage.push(message.usage);
-                context.steeredLedgerUsage = addClaudeLedgerUsage(
-                  context.steeredLedgerUsage,
-                  resultLedgerUsage.get(message),
-                );
-              }
+              // Held like a completed result while Claude may still read a steer; once it dropped
+              // them all, nothing else ends the turn.
+              context.heldResult = message;
+              yield* settleHeldResult(context);
               return;
             }
             yield* Ref.update(steeredTurns, (current) => {
@@ -12697,14 +12712,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             // Claude answers a steer it has not read yet as the next native turn, which echoes
             // the steer. A result without echoes cannot prove that turn will come.
             if (
-              (status === "completed"
-                ? terminalFailure === null
-                : status === "failed" && terminalFailure !== null) &&
+              status === "completed" &&
+              terminalFailure === null &&
               context.pendingSteers.size > 0 &&
               claudeEchoedPromptUuids(message).length > 0
             ) {
               context.heldResult = message;
-              if (terminalFailure !== null) context.heldFailure = terminalFailure;
               return;
             }
             yield* finalizeActiveTurn({
@@ -12772,6 +12785,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           context: ActiveClaudeTurnContext,
         ) {
           context.promptEcho = "confirmed";
+          yield* confirmRetryRiders(context, context.promptUuid);
           const liveQuery = yield* Ref.get(queryContext);
           const held = context.heldRootFrames.splice(0);
           if (liveQuery === null) {
@@ -13043,6 +13057,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             }
             if (lifecycle.state === "started") {
               context.promptStarted = true;
+              yield* confirmRetryRiders(context, context.promptUuid);
             }
             // Previously recorded prompt uuids complete without starting a turn.
             if (lifecycle.state === "completed" && !context.promptStarted) {
@@ -14405,40 +14420,23 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (committed) return;
             committed = true;
             pdfReservation.commit();
-            context.pendingRetrySteers.splice(0, pendingCount);
-          };
-          // Steers held through a backoff ride along: delivered once Claude reads the input,
-          // returned to the queue if it is dropped first.
-          const heldSteers = steers.slice(0, pendingCount);
-          // A discard always wins: Stop can remove input unread even after the SDK wrote it.
-          let heldStatus: "completed" | "cancelled" | undefined;
-          const settleHeldSteers = (status: "completed" | "cancelled") => {
-            if (
-              heldStatus === "cancelled" ||
-              (heldStatus === "completed" && status === "completed")
-            )
-              return;
-            heldStatus = status;
-            void runPromise(
-              Effect.forEach(
-                heldSteers,
-                (message) => emitSteerStatus(context, message.messageId, status),
-                { discard: true },
-              ),
-            );
+            // Steers held through a backoff ride along until Claude reports reading this input.
+            const riders = context.pendingRetrySteers.splice(0, pendingCount);
+            if (uuid !== undefined && riders.length > 0) context.retryRiders.set(uuid, riders);
           };
           let discardedBeforeQueued = false;
           const handoff = {
             isCurrent: () => true,
             onPulled: () => {},
-            onConsumed: () => settleHeldSteers("completed"),
+            onConsumed: () => {},
             onDiscarded: () => {
               // Refused before it was queued, the steers stay held for the caller.
               if (!committed) {
                 discardedBeforeQueued = true;
                 return;
               }
-              settleHeldSteers("cancelled");
+              // Removed unread, so its riders stay pending for the requeue or Stop's notice.
+              if (uuid !== undefined) context.retryRiders.delete(uuid);
               // Stop removed it unread, so its files never entered the session.
               if (pdfReservation.delivered && !pdfReservation.refunded) {
                 pdfReservation.refund();
@@ -14801,6 +14799,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               promptUuid,
               overloadRetry: null,
               pendingRetrySteers: [],
+              retryRiders: new Map(),
               promptEcho:
                 isClaudeProviderContinuationTurn(turnInput) || turnInput.resume
                   ? "confirmed"
@@ -14812,7 +14811,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               pendingSteers: new Map(),
               steerUuids: new Set(),
               heldResult: undefined,
-              heldFailure: undefined,
               executedModel: undefined,
             };
             const attachTurn = Effect.gen(function* () {

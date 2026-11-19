@@ -1170,6 +1170,7 @@ it.effect.each([
   "Claude cancels it twice",
   "the Claude process exits",
   "the server restarts",
+  "the retry input carrying it is still queued when another result ends the turn",
   "Claude cancels it and the user stops",
   "Claude cancels it while the thread is archived",
 ] as const)("handles an unread steer when %s", (outcome) =>
@@ -1177,6 +1178,14 @@ it.effect.each([
     const cwd = yield* checkpointWorkspace("claude-unread-steer");
     const sdkMessages = yield* Queue.unbounded<SDKMessage, Cause.Done>();
     const offers: SDKUserMessage[] = [];
+    const retryCase =
+      outcome === "the retry input carrying it is still queued when another result ends the turn";
+    const retryOffer = yield* Deferred.make<{
+      message: SDKUserMessage;
+      handoff: NonNullable<Parameters<ClaudeAdapterV2.ClaudeAgentSdkQuerySession["offer"]>[2]>;
+      isOpen: () => boolean;
+    }>();
+    const written: SDKUserMessage[] = [];
     const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
       instanceId: modelSelection.instanceId,
       settings,
@@ -1189,21 +1198,35 @@ it.effect.each([
       queryRunner: {
         allocateSessionId: Effect.succeed(sessionId),
         open: () =>
-          Effect.succeed({
-            messages: Stream.fromQueue(sdkMessages),
-            offer: (message) => Effect.sync(() => void offers.push(message)),
-            setModel: () => Effect.void,
-            applyFlagSettings: () => Effect.void,
-            setPermissionMode: () => Effect.void,
-            renameSession: () => Effect.void,
-            backgroundTasks: () => Effect.succeed(false),
-            mcpServerStatus: Effect.succeed([]),
-            readMcpResource: () => Effect.die("unexpected MCP resource read"),
-            callMcpTool: () => Effect.die("unexpected MCP tool call"),
-            listPermissionRules: Effect.die("unexpected permission rules read"),
-            stopTask: () => Effect.void,
-            interrupt: Queue.shutdown(sdkMessages),
-            close: Effect.void,
+          Effect.sync(() => {
+            let open = true;
+            return {
+              messages: Stream.fromQueue(sdkMessages),
+              offer: (message, onQueued, handoff) =>
+                Effect.gen(function* () {
+                  offers.push(message);
+                  onQueued?.();
+                  if (retryCase && offers.length === 2 && handoff !== undefined) {
+                    yield* Deferred.succeed(retryOffer, { message, handoff, isOpen: () => open });
+                    return;
+                  }
+                  if (!retryCase || offers.length === 1) written.push(message);
+                }),
+              setModel: () => Effect.void,
+              applyFlagSettings: () => Effect.void,
+              setPermissionMode: () => Effect.void,
+              renameSession: () => Effect.void,
+              backgroundTasks: () => Effect.succeed(false),
+              mcpServerStatus: Effect.succeed([]),
+              readMcpResource: () => Effect.die("unexpected MCP resource read"),
+              callMcpTool: () => Effect.die("unexpected MCP tool call"),
+              listPermissionRules: Effect.die("unexpected permission rules read"),
+              stopTask: () => Effect.void,
+              interrupt: Queue.shutdown(sdkMessages),
+              close: Effect.sync(() => {
+                open = false;
+              }),
+            };
           }),
         forkSession: () => Effect.die("unused"),
         subagentLaunchToolUseId: () => Effect.succeed(null),
@@ -1223,7 +1246,7 @@ it.effect.each([
           Stream.runDrain,
           Effect.forkScoped,
         );
-      const settled = (runId: RunId, status: "waiting") =>
+      const settled = (runId: RunId, status: "waiting" | "completed") =>
         watch(
           (event) =>
             event.type === "run.updated" &&
@@ -1327,6 +1350,69 @@ it.effect.each([
       yield* worker.drain();
       yield* Fiber.join(running);
       const parent = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+      if (retryCase) {
+        const retryScheduled = yield* watch(
+          (event) =>
+            event.type === "turn-item.updated" &&
+            event.payload.type === "error" &&
+            event.payload.runId === parent.id &&
+            event.payload.retry?.retryDelayMs != null,
+        );
+        yield* Queue.offer(
+          sdkMessages,
+          frame({
+            ...result("overloaded"),
+            is_error: true,
+            terminal_reason: "api_error",
+            api_error_status: 529,
+            result: "API Error: Repeated 529 Overloaded errors",
+          }),
+        );
+        yield* Fiber.join(retryScheduled);
+        const unread = yield* pending();
+        yield* send("steer", { type: "queue_after_active" });
+        const queuedSteer = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+          (run) => run.userMessageId === steerId,
+        )!;
+        yield* orchestrator.dispatch({
+          type: "queued-message.promote-to-steer",
+          commandId: CommandId.make("send-now"),
+          threadId,
+          queuedRunId: queuedSteer.id,
+          targetRunId: parent.id,
+          interrupt: true,
+        });
+        yield* worker.drain();
+        yield* Fiber.join(unread);
+        assert.lengthOf(offers, 1);
+        yield* TestClock.adjust("1 minute");
+        const original = yield* Deferred.await(retryOffer);
+        assert.include(offeredText(original.message), "Message steer");
+        const waiting = yield* settled(parent.id, "waiting");
+        const completed = yield* settled(parent.id, "completed");
+        // A result from the live process arrives while the retry's input is still waiting to be pulled.
+        yield* Queue.offer(sdkMessages, result("prior-native-result"));
+        yield* Fiber.join(waiting);
+        yield* worker.drain();
+        yield* Fiber.join(completed);
+        // Dispatch checks for unread steers under the same thread lock as the run-end reaction.
+        yield* send("after-race", { type: "queue_after_active" });
+        yield* worker.drain();
+        // Claude never confirmed it, so the notice replaces any second copy; then let the
+        // original input be written, followed by any later offers in their order.
+        if (original.isOpen() && original.handoff.isCurrent()) {
+          original.handoff.onPulled();
+          written.push(original.message);
+          original.handoff.onConsumed();
+        }
+        written.push(...offers.slice(2));
+        assert.isAtMost(
+          written.filter((message) => offeredText(message).includes("Message steer")).length,
+          1,
+        );
+        yield* expectUnconfirmed();
+        return;
+      }
       yield* send("before", { type: "queue_after_active" });
       const unread = yield* pending();
       yield* send("steer", { type: "queue_after_active" });

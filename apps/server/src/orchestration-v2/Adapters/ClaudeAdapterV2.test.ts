@@ -4005,8 +4005,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           providerTurnId,
         });
         yield* Queue.take(harness.terminalReceipts);
-        // Never written, so it stays pending; the orchestrator's Stop handling posts its notice.
-        assert.deepEqual(steerStatuses(), ["pending"]);
+        // Claude never confirmed it, so it ends with the notice rather than being sent again.
+        assert.deepEqual(steerStatuses(), ["pending", "cancelled"]);
         return;
       }
       yield* TestClock.adjust(retryDelay()!);
@@ -4015,26 +4015,30 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         JSON.stringify(harness.offeredMessages[1]?.message.content),
         "Keep the failed build log.",
       );
-      // Queued with the resumed prompt is not yet read: Claude may still drop it.
-      assert.deepEqual(steerStatuses(), ["pending"]);
       assert.lengthOf(handoffs, 1);
-      if (outcome === "dropped unread") {
-        handoffs[0]!.onDiscarded();
+      if (outcome !== "dropped unread") {
+        handoffs[0]!.onPulled();
+        handoffs[0]!.onConsumed();
+      }
+      // Queued or written, it is unread until Claude reads the resumed prompt.
+      assert.deepEqual(steerStatuses(), ["pending"]);
+      if (outcome === "read with the retry") {
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "status",
+            status: null,
+            user_message_uuid: harness.offeredMessages[1]!.uuid,
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
         yield* harness.until(() => steerStatuses().length === 2);
-        assert.deepEqual(steerStatuses(), ["pending", "cancelled"]);
+        assert.deepEqual(steerStatuses(), ["pending", "completed"]);
         return;
       }
-      // Written to Claude: it counts as delivered and is never sent again.
-      handoffs[0]!.onPulled();
-      handoffs[0]!.onConsumed();
-      yield* harness.until(() => steerStatuses().length === 2);
-      assert.deepEqual(steerStatuses(), ["pending", "completed"]);
-      if (outcome === "cancelled after it was written") {
-        // Stop's receipt names the prompt as removed unread: a discard always wins.
-        handoffs[0]!.onDiscarded();
-        yield* harness.until(() => steerStatuses().length === 3);
-        assert.deepEqual(steerStatuses(), ["pending", "completed", "cancelled"]);
-      }
+      // Claude removed it unread, so it stays pending for the requeue or Stop's notice.
+      handoffs[0]!.onDiscarded();
+      assert.deepEqual(steerStatuses(), ["pending"]);
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -6687,98 +6691,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ),
       ),
     ),
-  );
-
-  // Claude still runs a steer it holds after an API error ends its turn, so the turn waits for
-  // Claude to start or drop it; the failure stays the turn's outcome either way.
-  it.effect.each(["started", "cancelled"] as const)(
-    "holds a failed result until Claude reports the unread steer %s",
-    (state) =>
-      Effect.gen(function* () {
-        const harness = yield* makeWakeHarness;
-        const idAllocator = yield* IdAllocator.IdAllocatorV2;
-        const attemptId = RunAttemptId.make(`attempt-steer-after-failure-${state}`);
-        const input = makeClaudeTestTurnInput({
-          threadId: harness.threadId,
-          providerThread: harness.providerThread,
-          now: yield* DateTime.now,
-          attemptId,
-          text: "Run the build.",
-          attachments: [],
-        });
-        yield* harness.runtime.startTurn(input);
-        yield* harness.runtime.steerTurn({
-          threadId: harness.threadId,
-          runId: input.runId,
-          providerThread: harness.providerThread,
-          providerTurnId: idAllocator.derive.providerTurn({
-            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-            nativeTurnId: `turn:${attemptId}`,
-          }),
-          message: {
-            createdBy: "user",
-            creationSource: "web",
-            messageId: MessageId.make("message-steer-after-failure"),
-            text: "Steer",
-            attachments: [],
-          },
-        });
-        const apiError = "API Error: 403 Your organization does not have access to this model.";
-        yield* harness.offerAndWait(
-          claudeSdkFrame({
-            ...makeResultFrame({
-              uuid: "00000000-0000-4000-8000-000000002520",
-              result: apiError,
-              isError: true,
-              apiErrorStatus: 403,
-              terminalReason: "api_error",
-            }),
-            user_message_uuid: harness.promptUuid(0),
-          }),
-        );
-        yield* harness.offerAndWait(
-          claudeSdkFrame({
-            type: "command_lifecycle",
-            command_uuid: harness.promptUuid(1),
-            state,
-            uuid: "00000000-0000-4000-8000-000000002521",
-            session_id: WAKE_NATIVE_SESSION,
-          }),
-        );
-        if (state === "started") {
-          yield* harness.offerAndWait(
-            makeAssistantTextFrame({
-              uuid: "00000000-0000-4000-8000-000000002522",
-              text: "Steer reply.",
-            }),
-          );
-          yield* harness.offerAndWait(
-            claudeSdkFrame({
-              ...makeResultFrame({ uuid: "00000000-0000-4000-8000-000000002523", result: "Done." }),
-              user_message_uuid: harness.promptUuid(1),
-            }),
-          );
-        }
-        yield* harness.awaitTerminal(1);
-        const terminal = harness.terminalEvents()[0];
-        assert.equal(terminal?.status, "failed");
-        assert.equal(terminal?.status === "failed" ? terminal.failure.code : null, "api_error_403");
-        // A dropped steer stays pending, so the orchestrator sends it as the next turn.
-        assert.deepEqual(
-          harness.events.flatMap((event) => (event.type === "steer.updated" ? [event.status] : [])),
-          state === "started" ? ["pending", "completed"] : ["pending"],
-        );
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
-          ),
-        ),
-      ),
   );
 
   // Claude can answer a steer while its offer is still being logged.

@@ -581,7 +581,7 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
   );
 
   // T3 cannot tell whether Claude read it, so the person sees a notice and nothing resends it.
-  it.effect.each(["without an echo", "while its offer fails"] as const)(
+  it.effect.each(["with an echo", "without an echo", "while its offer fails"] as const)(
     "ends a steer with a notice when an API error ends its turn %s",
     (when) =>
       Effect.gen(function* () {
@@ -616,48 +616,74 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
           assert.isTrue(
             Exit.isSuccess(yield* Effect.exit(sendNow(harness, input, "unread-error"))),
           );
+          failOffer = Effect.void;
         } else {
           yield* sendNow(harness, input, "unread-error");
-          yield* harness.offerAndWait(apiError("00000000-0000-4000-8000-000000002541"));
+          // An echo with no queued native turn: Claude will not start the steer on its own.
+          yield* harness.offerAndWait(
+            when === "with an echo"
+              ? claudeSdkFrame({
+                  ...apiError("00000000-0000-4000-8000-000000002541", harness.promptUuid(0)),
+                  queued_turn_count: 0,
+                })
+              : apiError("00000000-0000-4000-8000-000000002541"),
+          );
         }
         yield* harness.awaitTerminal(1);
         const terminal = harness.terminalEvents()[0];
         assert.equal(terminal?.status === "failed" ? terminal.failure.code : null, "api_error_403");
         assert.deepEqual(steerStatuses(harness), ["pending", "cancelled"]);
-        assert.isTrue(hasUnreadNotice(harness));
+        // The notice commits before the cancel, so a crash between them leaves the steer pending.
+        const noticeAt = harness.events.findIndex(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.title === "Steer delivery not confirmed",
+        );
+        const cancelAt = harness.events.findIndex(
+          (event) => event.type === "steer.updated" && event.status === "cancelled",
+        );
+        assert.isTrue(noticeAt >= 0 && noticeAt < cancelAt);
+        assert.isTrue(Exit.isSuccess(yield* Effect.exit(startTurn(harness, `after-${when}`))));
       }).pipe(Effect.scoped, Effect.provide(layers)),
   );
 
-  // Send now cut the tools off; once Claude also discards the steer, nothing else ends the turn.
-  it.effect("settles a turn whose aborting steer Claude discards", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeWakeHarness;
-      const input = yield* startTurn(harness, "attempt-aborted-then-discarded");
-      yield* sendNow(harness, input, "aborting-steer");
-      yield* harness.offerAndWait(
-        claudeSdkFrame({
-          ...makeResultFrame({
-            uuid: "00000000-0000-4000-8000-000000002550",
-            result: "",
-            subtype: "error_during_execution",
-            isError: true,
-            terminalReason: "aborted_tools",
+  // Send now cut the tools off; once Claude also discarded the steer, nothing else ends the turn.
+  it.effect.each(["after", "before"] as const)(
+    "settles a turn when Claude discards its aborting steer %s the abort result",
+    (order) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const input = yield* startTurn(harness, `attempt-aborted-discarded-${order}`);
+        yield* sendNow(harness, input, "aborting-steer");
+        const discard = harness.offerAndWait(
+          claudeSdkFrame({
+            type: "command_lifecycle",
+            command_uuid: harness.promptUuid(1),
+            state: "discarded",
+            uuid: "00000000-0000-4000-8000-000000002551",
+            session_id: WAKE_NATIVE_SESSION,
           }),
-          user_message_uuid: harness.promptUuid(0),
-        }),
-      );
-      yield* harness.offerAndWait(
-        claudeSdkFrame({
-          type: "command_lifecycle",
-          command_uuid: harness.promptUuid(1),
-          state: "discarded",
-          uuid: "00000000-0000-4000-8000-000000002551",
-          session_id: WAKE_NATIVE_SESSION,
-        }),
-      );
-      yield* harness.awaitTerminal(1);
-      assert.deepEqual(steerStatuses(harness), ["pending"]);
-    }).pipe(Effect.scoped, Effect.provide(layers)),
+        );
+        if (order === "before") yield* discard;
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            ...makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000002550",
+              result: "",
+              subtype: "error_during_execution",
+              isError: true,
+              terminalReason: "aborted_tools",
+            }),
+            user_message_uuid: harness.promptUuid(0),
+            queued_turn_count: 0,
+          }),
+        );
+        if (order === "after") yield* discard;
+        yield* harness.awaitTerminal(1);
+        // Claude dropped it unread, so it stays pending for the requeue.
+        assert.deepEqual(steerStatuses(harness), ["pending"]);
+        assert.isTrue(Exit.isSuccess(yield* Effect.exit(startTurn(harness, `after-${order}`))));
+      }).pipe(Effect.scoped, Effect.provide(layers)),
   );
 
   // Stop's interrupt receipt is the only report when the process closes before the lifecycle frame.
@@ -1613,38 +1639,62 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
         }),
       );
 
-    // A steer held through the backoff was never written, so the requeue may send it.
-    it.effect("keeps a steer sent during retry backoff pending when the retry cannot reopen", () =>
-      Effect.gen(function* () {
-        const harness = yield* makeWakeHarnessWithOptions({
-          freshQueueOnReopen: true,
-          reopenFailure: Effect.fail(
-            new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
-              method: "query",
-              cause: { errorClass: "configuration_error", startupFatal: true },
+    // Claude never confirmed a steer held through the backoff, so it is not sent again.
+    it.effect(
+      "ends a steer sent during retry backoff with a notice when the retry cannot reopen",
+      () =>
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarnessWithOptions({
+            freshQueueOnReopen: true,
+            reopenFailure: Effect.fail(
+              new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                method: "query",
+                cause: { errorClass: "configuration_error", startupFatal: true },
+              }),
+            ),
+          });
+          const input = yield* start(harness);
+          yield* overload(harness);
+          yield* Queue.shutdown(harness.sdkMessages);
+          yield* TestClock.adjust(1_000);
+          yield* harness.runtime.steerTurn({
+            threadId: harness.threadId,
+            runId: input.runId,
+            providerThread: harness.providerThread,
+            providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+              nativeTurnId: `turn:${input.attemptId}`,
             }),
-          ),
-        });
+            message: { ...input.message, messageId: MessageId.make("backoff-steer") },
+          });
+          yield* TestClock.adjust(15_000);
+          yield* harness.until(() => harness.terminalEvents().length > 0);
+          assert.equal(harness.terminalEvents()[0]?.status, "failed");
+          assert.deepEqual(
+            harness.events.flatMap((event) =>
+              event.type === "steer.updated" ? [event.status] : [],
+            ),
+            ["pending", "cancelled"],
+          );
+        }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
+    );
+
+    it.effect("ends a steer written with a failed retry but never read with a notice", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({ freshQueueOnReopen: true });
         const input = yield* start(harness);
         yield* overload(harness);
-        yield* Queue.shutdown(harness.sdkMessages);
-        yield* TestClock.adjust(1_000);
-        yield* harness.runtime.steerTurn({
-          threadId: harness.threadId,
-          runId: input.runId,
-          providerThread: harness.providerThread,
-          providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
-            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-            nativeTurnId: `turn:${input.attemptId}`,
-          }),
-          message: { ...input.message, messageId: MessageId.make("backoff-steer") },
-        });
+        yield* sendNow(harness, input, "review-retry-error");
+        assert.lengthOf(harness.offeredMessages, 1);
         yield* TestClock.adjust(15_000);
-        yield* harness.until(() => harness.terminalEvents().length > 0);
+        yield* harness.until(() => harness.offeredMessages.length === 2);
+        assert.include(String(harness.offeredMessages[1]?.message.content), "Steer.");
+        yield* harness.offerAndWait(apiError("00000000-0000-4000-8000-000000002563"));
+        yield* harness.awaitTerminal(1);
         assert.equal(harness.terminalEvents()[0]?.status, "failed");
         assert.deepEqual(
-          harness.events.flatMap((event) => (event.type === "steer.updated" ? [event.status] : [])),
-          ["pending"],
+          { statuses: steerStatuses(harness), notice: hasUnreadNotice(harness) },
+          { statuses: ["pending", "cancelled"], notice: true },
         );
       }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
     );
@@ -1706,68 +1756,6 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
           ),
         );
       }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
-    );
-
-    // Claude reported the turn's outcome before its process went away; the steer it held went
-    // with that process, so the turn settles with that outcome instead of continuing.
-    it.effect.each(["closes", "fails"] as const)(
-      "settles a held API error when Claude's process %s before reading the steer",
-      (exit) =>
-        Effect.gen(function* () {
-          const errors = yield* Queue.unbounded<ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>();
-          const harness = yield* makeWakeHarnessWithOptions({
-            freshQueueOnReopen: true,
-            queryFailure: Queue.take(errors).pipe(Effect.flatMap(Effect.fail)),
-          });
-          const input = yield* start(harness);
-          yield* harness.runtime.steerTurn({
-            threadId: harness.threadId,
-            runId: input.runId,
-            providerThread: harness.providerThread,
-            providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
-              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-              nativeTurnId: `turn:${input.attemptId}`,
-            }),
-            message: { ...input.message, messageId: MessageId.make("held-error-steer") },
-          });
-          yield* harness.offerAndWait(
-            claudeSdkFrame({
-              ...makeResultFrame({
-                uuid: "00000000-0000-4000-8000-000000000940",
-                result: "API Error: 403 Your organization does not have access to this model.",
-                isError: true,
-                apiErrorStatus: 403,
-                terminalReason: "api_error",
-              }),
-              user_message_uuid: harness.promptUuid(0),
-            }),
-          );
-          if (exit === "closes") yield* Queue.shutdown(harness.sdkMessages);
-          else
-            yield* Queue.offer(
-              errors,
-              new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
-                method: "fromAsyncIterable",
-                cause: { code: "ECONNRESET" },
-              }),
-            );
-          yield* TestClock.adjust("1 minute");
-          yield* harness.until(
-            () => harness.terminalEvents().length > 0 || harness.offeredMessages.length > 2,
-          );
-          const terminal = harness.terminalEvents()[0];
-          assert.equal(
-            terminal?.status === "failed" ? terminal.failure.code : null,
-            "api_error_403",
-          );
-          assert.lengthOf(harness.offeredMessages, 2);
-          assert.deepEqual(
-            harness.events.flatMap((event) =>
-              event.type === "steer.updated" ? [event.status] : [],
-            ),
-            ["pending", "cancelled"],
-          );
-        }).pipe(Effect.scoped, Effect.provide(recoveryLayers)),
     );
 
     it.effect("a second steer preserves an earlier steer after its SDK offer fails", () =>
