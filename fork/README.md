@@ -31,6 +31,14 @@ fork build or the source branch for an upstream PR lives on the fork.
 Check for an existing upstream report or fix before filing. If upstream
 already covers it, link the existing report or fix in your reply.
 
+Don't comment on a closed upstream issue or PR, whatever the close reason
+(no repro, stale, not planned, PR limit). Maintainers treat it as finished,
+so a comment there is ignored, and asking them to reopen it is just noise. If
+the problem still happens, open a new issue with fresh reproduction steps and
+a link to the closed one. For a closed PR, open a new PR that links it. Check
+the state (`gh issue view <n> -R pingdotgg/t3code --json state`) right before
+you post anything, because issues close while you work.
+
 If the user asks you to file an issue and you confirm the bug only affects
 the fork, that request also authorizes a fork fix. Fix it yourself, delegate
 the fix to a subagent, or start a new top-level T3 thread to fix it. Give
@@ -598,7 +606,7 @@ label, or request review for an upstream PR.
    check; before/after screenshots for UI). End with the model and harness
    that did the work. Add the new issue link to the drafted body, then open the PR:
    `gh pr create -R pingdotgg/t3code --base main --head Alb11747:fix/<slug> --title "…" --body-file pr.md`.
-   Then comment the PR link on the issue, if there is one.
+   Then comment the PR link on the issue, if there is one and it is still open.
 
 5. Call `link_pull_request` from the thread that opened the PR, then hand
    watching to a Sol thread on **Lazarus**: `t3_thread_launch` with model `gpt-6.1-sol` on
