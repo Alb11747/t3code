@@ -6360,6 +6360,81 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  // Stop can land while a result waits for a steer; Claude dropping that steer must not complete it.
+  it.effect("keeps a stopped turn interrupted when Claude drops the steer it held for", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const attemptId = RunAttemptId.make("attempt-steer-stopped");
+      const providerTurnId = idAllocator.derive.providerTurn({
+        driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+        nativeTurnId: `turn:${attemptId}`,
+      });
+      const input = makeClaudeTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId,
+        text: "Run the build.",
+        attachments: [],
+      });
+      yield* harness.runtime.startTurn(input);
+      yield* harness.runtime.steerTurn({
+        threadId: harness.threadId,
+        runId: input.runId,
+        providerThread: harness.providerThread,
+        providerTurnId,
+        message: {
+          createdBy: "user",
+          creationSource: "web",
+          messageId: MessageId.make("message-steer-stopped"),
+          text: "Steer",
+          attachments: [],
+        },
+      });
+      yield* harness.offerAndWait(
+        claudeSdkFrame({
+          ...makeResultFrame({ uuid: "00000000-0000-4000-8000-000000002700", result: "Built." }),
+          user_message_uuid: harness.promptUuid(0),
+        }),
+      );
+      // Stop records the turn as interrupted before it waits for the process to close.
+      yield* harness.runtime
+        .interruptTurn({ providerThread: harness.providerThread, providerTurnId })
+        .pipe(Effect.ignore, Effect.forkScoped({ startImmediately: true }));
+      yield* harness.offerAndWait(
+        claudeSdkFrame({
+          type: "command_lifecycle",
+          command_uuid: harness.promptUuid(1),
+          state: "cancelled",
+          uuid: "00000000-0000-4000-8000-000000002701",
+          session_id: WAKE_NATIVE_SESSION,
+        }),
+      );
+      yield* Queue.shutdown(harness.sdkMessages);
+      yield* harness.awaitTerminal(1);
+      assert.deepEqual(
+        harness.terminalEvents().map((event) => event.status),
+        ["interrupted"],
+      );
+      // Still unread: the orchestrator cancels it with the Stop notice when the run ends.
+      assert.deepEqual(
+        harness.events.flatMap((event) => (event.type === "steer.updated" ? [event.status] : [])),
+        ["pending"],
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
   // regression: #34393 a provider switch replayed a $skill from the handoff history
   it.effect("dispatches only skills from the user's text, not from inline handoff history", () =>
     Effect.gen(function* () {

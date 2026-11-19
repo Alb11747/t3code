@@ -9324,9 +9324,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           yield* settleHeldResult(context);
         });
 
-        // A result held for steers settles the turn once no steer is left for Claude to read.
+        // A result held for steers settles the turn once no steer is left for Claude to read. A
+        // stopped turn settles as interrupted when its process closes.
         const settleHeldResult = Effect.fnUntraced(function* (context: ActiveClaudeTurnContext) {
-          if (context.pendingSteers.size > 0 || context.heldResult === undefined) return;
+          if (
+            context.pendingSteers.size > 0 ||
+            context.heldResult === undefined ||
+            (yield* Ref.get(interruptedTurns)).has(context.providerTurnId)
+          )
+            return;
           yield* finalizeActiveTurn({
             context,
             status: "completed",
