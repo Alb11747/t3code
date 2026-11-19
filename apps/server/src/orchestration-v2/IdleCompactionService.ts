@@ -4,8 +4,10 @@ import {
   smartIdleCompactionOf,
   IDLE_COMPACTION_TEXT,
   MessageId,
+  pendingGuestMessageCount,
   resolveIdleCompaction,
   resolveProjectProviderInstanceEnabled,
+  type OrchestrationV2DomainEvent,
   type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -18,9 +20,27 @@ import * as Stream from "effect/Stream";
 import { forkParked } from "../serverActivation.ts";
 import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { compactOnceApplies, idleCompactionScope, idleCompactionWindow } from "./IdleCompaction.ts";
+import {
+  compactOnceApplies,
+  idleCompactionScope,
+  idleCompactionWindow,
+  isPendingMessageUserInput,
+} from "./IdleCompaction.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+
+function canAddIdleWake(event: OrchestrationV2DomainEvent): boolean {
+  switch (event.type) {
+    case "thread.guest-share-updated":
+      return pendingGuestMessageCount(event.payload.guestShare) > 0;
+    case "runtime-request.updated":
+      return isPendingMessageUserInput(event.payload);
+    case "plan.updated":
+      return event.payload.kind === "proposed_plan" && event.payload.status === "active";
+    default:
+      return false;
+  }
+}
 
 /**
  * Beta: when a run completes on a Claude instance set to compact before the
@@ -79,9 +99,9 @@ export const make = Effect.gen(function* () {
           {
             messageRunIds: runId === undefined ? [] : [runId],
             turnItemStatuses: ["pending", "running", "waiting"],
-            // The latest run, active runs that hold background work, and rolled-back runs whose
-            // items it ignores.
-            runStatuses: ["preparing", "starting", "running", "rolled_back"],
+            // Include older runs that can still block compaction, and rolled-back runs whose
+            // background items should be ignored.
+            runStatuses: ["queued", "preparing", "starting", "running", "waiting", "rolled_back"],
             includeLatestRun: true,
             // Without an active provider thread there is no session to compact.
             providerThreadIds: activeProviderThreadIds,
@@ -111,25 +131,31 @@ export const make = Effect.gen(function* () {
             undefined,
           );
         // A late update for an earlier run replaced the latest run's timer, so take it over.
-        if (latestRun?.status === "completed" && latestRun.id !== runId) {
+        if (latestRun?.status !== "completed") return;
+        if (latestRun.id !== runId) {
           runId = latestRun.id;
           continue;
         }
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
         const { tasks } = yield* scheduledTasks.list();
+        const wakes = tasks.filter(
+          (task) =>
+            task.threadId === threadId && task.enabled && task.blockedByPolicy === undefined,
+        );
         const window = idleCompactionWindow(records, nowMs, {
-          scope,
           compactSnoozed: compactSnoozedThreadsOf(current),
-          scheduledWakesMs: tasks.flatMap((task) =>
-            task.threadId === threadId &&
-            task.enabled &&
-            task.blockedByPolicy === undefined &&
-            task.nextRunAt !== null
-              ? [Date.parse(task.nextRunAt)]
-              : [],
+          scheduledWakesMs: wakes.flatMap((task) =>
+            task.nextRunAt === null ? [] : [Date.parse(task.nextRunAt)],
           ),
         });
         if (window === null || window.runId !== runId) return;
+        if (
+          scope === "waiting" &&
+          !window.hasWakeSignal &&
+          !wakes.some((task) => task.schedule.type === "webhook") &&
+          !(yield* projections.hasIdleCompactionWait(threadId))
+        )
+          return;
         if (nowMs < window.startMs) {
           yield* Effect.sleep(Duration.millis(window.startMs - nowMs));
           continue;
@@ -174,7 +200,10 @@ export const make = Effect.gen(function* () {
         if (
           event.type === "thread.metadata-updated" ||
           event.type === "thread.snoozed" ||
-          event.type === "thread.pull-request-link-updated"
+          event.type === "thread.pull-request-link-updated" ||
+          (event.type === "thread.pull-request-synced" &&
+            event.payload.pullRequests?.some((pr) => pr.watch !== undefined) === true) ||
+          canAddIdleWake(event)
         )
           return recheck(event.threadId);
         return Effect.void;

@@ -1,14 +1,18 @@
 import {
   isListedThreadLineage,
+  pendingGuestMessageCount,
   type IdleCompactionMode,
+  type OrchestrationV2RuntimeRequest,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import { COMPACTION_SUGGESTION_MIN_TOKENS } from "@t3tools/shared/claudeCompaction";
 import {
   backgroundWorkHoldsCompletion,
   derivePendingBackgroundWork,
+  isPullRequestWatchTask,
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as DateTime from "effect/DateTime";
+import { isActiveRun } from "./CommandPolicy.ts";
 
 // Claude Code's idleCompaction defaults to 200K and won't go below 100K. Below
 // that a cold re-read is cheap, so compacting mostly loses context for little
@@ -63,17 +67,48 @@ export function idleCompactionScope(
 }
 
 export interface IdleCompactionPolicy {
-  readonly scope: "all" | "waiting";
   readonly compactSnoozed: boolean;
   /** When scheduled tasks will next send to this thread. */
   readonly scheduledWakesMs: ReadonlyArray<number>;
 }
 
-const ALL_THREADS: IdleCompactionPolicy = {
-  scope: "all",
+const DEFAULT_POLICY: IdleCompactionPolicy = {
   compactSnoozed: false,
   scheduledWakesMs: [],
 };
+
+export function isPendingMessageUserInput(request: OrchestrationV2RuntimeRequest): boolean {
+  return (
+    request.status === "pending" &&
+    request.kind === "user_input" &&
+    request.responseCapability.type === "message"
+  );
+}
+
+export function hasBlockingIdleCompactionWork({
+  runs,
+  runtimeRequests,
+  contextTransfers,
+  thread,
+}: Pick<
+  IdleCompactionRecords,
+  "runs" | "runtimeRequests" | "contextTransfers" | "thread"
+>): boolean {
+  return (
+    // A secret card is only answerable while its run is live, including checkpoint wait.
+    runs.some((run) => run.status === "queued" || isActiveRun(run)) ||
+    runtimeRequests.some(
+      (request) => request.status === "pending" && !isPendingMessageUserInput(request),
+    ) ||
+    // A pending merge-back belongs to the user's next message.
+    contextTransfers.some(
+      (transfer) =>
+        transfer.type === "merge_back" &&
+        transfer.targetThreadId === thread.id &&
+        transfer.status === "pending",
+    )
+  );
+}
 
 /**
  * When an idle Claude thread should compact, or null when it should not. The
@@ -82,23 +117,12 @@ const ALL_THREADS: IdleCompactionPolicy = {
  * read.
  */
 export function idleCompactionWindow(
-  {
-    thread,
-    runs,
-    messages,
-    providerThreads,
-    providerTurns,
-    runtimeRequests,
-    turnItems,
-    contextTransfers,
-  }: IdleCompactionRecords,
+  records: IdleCompactionRecords,
   nowMs: number,
-  policy: IdleCompactionPolicy = ALL_THREADS,
-): {
-  readonly runId: (typeof runs)[number]["id"];
-  readonly startMs: number;
-  readonly endMs: number;
-} | null {
+  policy: IdleCompactionPolicy = DEFAULT_POLICY,
+) {
+  const { thread, runs, messages, providerThreads, providerTurns, runtimeRequests, turnItems } =
+    records;
   if (thread.deletedAt !== null || thread.archivedAt !== null) return null;
   if (thread.settledAt !== null || thread.settledOverride === "settled") return null;
   const snoozeEndMs =
@@ -117,29 +141,7 @@ export function idleCompactionWindow(
   const message = messages.find((candidate) => candidate.id === latestRun.userMessageId);
   // Never compact a compaction, so one idle spell compacts at most once.
   if (message === undefined || message.text.trim().toLowerCase() === "/compact") return null;
-  if (
-    runtimeRequests.some((request) => request.status === "pending") ||
-    // A pending merge-back belongs to the user's next message.
-    contextTransfers.some(
-      (transfer) =>
-        transfer.type === "merge_back" &&
-        transfer.targetThreadId === thread.id &&
-        transfer.status === "pending",
-    )
-  )
-    return null;
-  // Watches and awaited work wake the thread later; their reports queue behind the compaction
-  // turn. Smart compacts only threads with such a wake.
-  const backgroundWork = derivePendingBackgroundWork({
-    latestRun,
-    runs,
-    providerThreads,
-    turnItems,
-    activeProviderThreadId: thread.activeProviderThreadId,
-    pullRequests: thread.pullRequests,
-    issueWatches: thread.issueWatches,
-  });
-  const awaitedWork = backgroundWorkHoldsCompletion(backgroundWork);
+  if (hasBlockingIdleCompactionWork(records)) return null;
   const providerThread = providerThreads.find(
     (candidate) => candidate.id === thread.activeProviderThreadId,
   );
@@ -164,6 +166,24 @@ export function idleCompactionWindow(
   const wakesMs = [...policy.scheduledWakesMs, ...(snoozed ? [snoozeEndMs] : [])];
   // A wake before the cache expires reuses it, and its own run schedules the next check.
   if (wakesMs.some((wakeMs) => wakeMs < endMs)) return null;
-  if (policy.scope === "waiting" && !awaitedWork && wakesMs.length === 0) return null;
-  return { runId: latestRun.id, startMs: endMs - LEAD_MS, endMs };
+  const backgroundWork = derivePendingBackgroundWork({
+    latestRun,
+    runs,
+    providerThreads,
+    turnItems,
+    activeProviderThreadId: thread.activeProviderThreadId,
+    pullRequests: thread.pullRequests,
+    issueWatches: thread.issueWatches,
+  });
+  return {
+    runId: latestRun.id,
+    startMs: endMs - LEAD_MS,
+    endMs,
+    hasWakeSignal:
+      wakesMs.length > 0 ||
+      pendingGuestMessageCount(thread.guestShare) > 0 ||
+      runtimeRequests.some(isPendingMessageUserInput) ||
+      backgroundWorkHoldsCompletion(backgroundWork) ||
+      backgroundWork.some(isPullRequestWatchTask),
+  };
 }

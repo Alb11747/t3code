@@ -228,6 +228,7 @@ it.effect(
           getThread: () => Ref.get(projection).pipe(Effect.map((state) => state.thread)),
           findThread: () => Effect.die("unused findThread"),
           getSettlementCandidates: () => Effect.die("unused getSettlementCandidates"),
+          hasIdleCompactionWait: () => Effect.die("unused hasIdleCompactionWait"),
           getThreadsWithPullRequests: () => Effect.die("unused getThreadsWithPullRequests"),
           getThreadsWithIssueWatches: () => Effect.die("unused getThreadsWithIssueWatches"),
           getThreadsWithAccountChoices: () => Effect.die("unused getThreadsWithAccountChoices"),

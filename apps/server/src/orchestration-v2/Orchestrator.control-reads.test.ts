@@ -1458,6 +1458,20 @@ it.effect("implements a proposed plan that the command projection leaves out", (
 
     yield* orchestrator.dispatch({
       type: "message.dispatch",
+      commandId: CommandId.make("compact-before-implementing-plan"),
+      threadId,
+      messageId: MessageId.make("compact-before-implementing-plan"),
+      text: "/compact",
+      attachments: [],
+      idleCompaction: "beforeCacheExpires",
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "agent",
+      creationSource: "server",
+    });
+    assert.equal((yield* projections.getPlan(threadId, planId))?.status, "active");
+
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
       commandId: CommandId.make("implement-plan"),
       threadId,
       messageId: MessageId.make("implement-plan-input"),

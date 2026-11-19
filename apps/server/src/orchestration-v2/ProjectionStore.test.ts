@@ -604,6 +604,92 @@ it.effect("finds threads by their provider threads' native session ids", () =>
   }).pipe(Effect.provide(ProjectionStore.layer.pipe(Layer.provideMerge(layerReaderDatabase)))),
 );
 
+it.effect(
+  "idle compaction sees only still-asking machine links and actionable proposed plans",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = yield* addRolledBackRecoveryCandidate("idle-compaction-signals");
+      const now = yield* DateTime.now;
+      const later = DateTime.add(now, { seconds: 1 });
+      const nodeId = NodeId.make("node:idle-compaction-signals");
+      const link = {
+        id: TurnItemId.make("idle-compaction-link"),
+        threadId,
+        runId: null,
+        nodeId,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 2,
+        status: "waiting",
+        type: "link_request",
+        linkStatus: "pending",
+        title: null,
+        reason: "Continue on the other machine",
+        startedAt: now,
+        completedAt: null,
+        updatedAt: later,
+      } as const;
+      yield* store.apply({
+        id: EventId.make("idle-compaction-link"),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: now,
+        payload: link,
+      });
+      const isWaiting = store.hasIdleCompactionWait(threadId);
+      assert.isTrue(yield* isWaiting);
+      for (const createdBy of ["agent", "user"] as const) {
+        yield* store.apply({
+          id: EventId.make(`idle-compaction-reply-${createdBy}`),
+          type: "message.updated",
+          threadId,
+          occurredAt: later,
+          payload: {
+            id: MessageId.make(`idle-compaction-reply-${createdBy}`),
+            threadId,
+            runId: null,
+            nodeId: null,
+            role: "user",
+            text: "Continue",
+            createdBy,
+            creationSource: createdBy === "agent" ? "server" : "web",
+            attachments: [],
+            streaming: false,
+            createdAt: later,
+            updatedAt: later,
+          },
+        });
+        assert.equal(yield* isWaiting, createdBy === "agent");
+      }
+      for (const [kind, status, waits] of [
+        ["todo_list", "active", false],
+        ["proposed_plan", "draft", false],
+        ["proposed_plan", "active", true],
+        ["proposed_plan", "completed", false],
+        ["proposed_plan", "superseded", false],
+      ] as const) {
+        yield* store.apply({
+          id: EventId.make(`idle-compaction-plan-${kind}-${status}`),
+          type: "plan.updated",
+          threadId,
+          occurredAt: later,
+          payload: {
+            id: PlanId.make(`idle-compaction-plan-${kind}`),
+            threadId,
+            runId: null,
+            nodeId,
+            status,
+            ...(kind === "proposed_plan" ? { kind, markdown: "A plan" } : { kind, steps: [] }),
+          },
+        });
+        assert.equal(yield* isWaiting, waits);
+      }
+    }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("idle compaction filters keep the latest run, live work and the newest usage", () =>
   Effect.gen(function* () {
     const store = yield* ProjectionStore.ProjectionStoreV2;

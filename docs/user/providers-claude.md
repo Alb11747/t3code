@@ -75,18 +75,21 @@ over 200,000 tokens. Each Claude provider's settings can override it:
   still applies, and you can still compact by hand.
 - **When you return** shows the **Compact** chip described above. This is the default.
 - **Before the cache expires: waiting threads** compacts an idle thread shortly
-  before its prompt cache expires, while the history is still cached, but only if
-  something will wake it later: a watched pull request or issue, running subagents
-  or background work, or a scheduled task aimed at the thread. A thread you simply
-  stopped using keeps its full history.
+  before its prompt cache expires, while the history is still cached. It includes
+  threads with a watched pull request or issue, awaited subagents or background
+  work, or a scheduled task targeting the thread, including enabled webhooks.
+  It also includes threads waiting on a machine link, a question you can answer
+  in a new message, a guest message, or approval to implement a proposed plan.
+  To include a thread waiting for a plain-text reply, choose **This time only**.
 - **Before the cache expires: all threads** does the same for every idle thread.
 
 Before the cache expires, the compaction appears in the thread as a `/compact`
 turn sent by T3 Code. If the window is missed, such as when you choose this after
 the cache has expired or the server restarts before compaction runs, it falls back
 to **When you return**. Switch the chip to **Keep** to keep the full history for
-that message. A thread whose scheduled task or snooze ends before the cache
-expires isn't compacted, because the cache is still warm when it wakes. **Compact
+that message. A scheduled task or snooze that wakes the thread before the cache
+expires takes priority because the cache is still warm. A turn waiting for a live
+answer, approval, or secret must finish before the thread can compact. **Compact
 snoozed threads**, shown with these two choices, includes snoozed threads and
 counts a snooze as a wake. A Claude provider set to **Before the cache expires**
 follows the waiting or all threads choice.

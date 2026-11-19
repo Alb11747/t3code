@@ -654,6 +654,9 @@ export interface ProjectionStoreV2Shape {
     threadId?: ThreadId,
     options?: { readonly alwaysOnly?: boolean },
   ) => Effect.Effect<ReadonlyArray<ProjectionSettlementCandidate>, ProjectionStoreV2Error>;
+  readonly hasIdleCompactionWait: (
+    threadId: ThreadId,
+  ) => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly getThreadsWithPullRequests: (
     threadId?: ThreadId,
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadPullRequests>, ProjectionStoreV2Error>;
@@ -7982,6 +7985,39 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         )
       )`;
     };
+    const hasStillAskingLink = (threadId: Statement.Fragment) => sql`EXISTS (
+      SELECT 1 FROM orchestration_v2_projection_turn_items link
+        INDEXED BY orchestration_v2_projection_turn_items_waiting_link_idx
+      WHERE link.thread_id = ${threadId}
+        AND link.type = 'link_request' AND link.status = 'waiting'
+        -- Mirrors linkCardStillAsks: any later user-authored message dismisses the wait.
+        AND NOT EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_messages message
+          WHERE message.thread_id = ${threadId} AND message.role = 'user'
+            AND json_extract(message.payload_json, '$.createdBy') = 'user'
+            AND NOT ${isIdleCompactionMessage("message")}
+            AND message.updated_at > COALESCE(
+              json_extract(link.payload_json, '$.startedAt'), link.updated_at
+            )
+        )
+    )`;
+    const hasActionableProposedPlan = (threadId: Statement.Fragment) => sql`EXISTS (
+      SELECT 1 FROM orchestration_v2_projection_plans plan
+      WHERE plan.thread_id = ${threadId}
+        AND plan.kind = 'proposed_plan' AND plan.status = 'active'
+    )`;
+    const hasIdleCompactionWait: ProjectionStoreV2Shape["hasIdleCompactionWait"] = Effect.fn(
+      "ProjectionStore.hasIdleCompactionWait",
+    )(
+      function* (threadId) {
+        const id = sql`${threadId}`;
+        const rows = yield* sql<{ readonly waiting: number }>`
+          SELECT (${hasStillAskingLink(id)} OR ${hasActionableProposedPlan(id)}) AS waiting
+        `;
+        return rows[0]?.waiting === 1;
+      },
+      (effect, threadId) => effect.pipe(Effect.mapError(controlReadError(threadId))),
+    );
     // Mirrors isSilentRunForShell.
     const isSilentShellRun = (alias: string) => {
       const run = sql.literal(alias);
@@ -8208,13 +8244,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 ORDER BY message.updated_at DESC, message.message_id DESC
                 LIMIT 1
               ) AS latest_user_authored_message_at,
-              EXISTS (
-                SELECT 1
-                FROM orchestration_v2_projection_plans plan
-                WHERE plan.thread_id = t.thread_id
-                  AND plan.kind = 'proposed_plan'
-                  AND plan.status = 'active'
-              ) AS has_actionable_proposed_plan,
+              ${hasActionableProposedPlan(sql`t.thread_id`)} AS has_actionable_proposed_plan,
               CASE WHEN json_extract(t.payload_json, '$.compactOnceRequestedAt') IS NULL THEN NULL ELSE (
                 -- A steer can start ahead of an earlier queued run, so take the latest start.
                 SELECT CASE WHEN json_valid(r.payload_json) THEN json_extract(r.payload_json, '$.startedAt') END
@@ -8549,22 +8579,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 SELECT 1 FROM orchestration_v2_projection_runtime_requests request
                 WHERE request.thread_id = t.thread_id AND request.status = 'pending'
               )
-              AND NOT EXISTS (
-                SELECT 1 FROM orchestration_v2_projection_turn_items link
-                  INDEXED BY orchestration_v2_projection_turn_items_waiting_link_idx
-                WHERE link.thread_id = t.thread_id
-                  AND link.type = 'link_request' AND link.status = 'waiting'
-                  -- linkCardStillAsks: once the user writes after the card, it stops asking.
-                  AND NOT EXISTS (
-                    SELECT 1 FROM orchestration_v2_projection_messages message
-                    WHERE message.thread_id = t.thread_id AND message.role = 'user'
-                      AND json_extract(message.payload_json, '$.createdBy') = 'user'
-                      AND NOT ${isIdleCompactionMessage("message")}
-                      AND message.updated_at > COALESCE(
-                        json_extract(link.payload_json, '$.startedAt'), link.updated_at
-                      )
-                  )
-              )
+              AND NOT ${hasStillAskingLink(sql`t.thread_id`)}
             ORDER BY t.updated_at ASC, t.thread_id ASC
           `;
             if (rows.length === 0) return [];
@@ -9580,6 +9595,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getThread: readOnReader(getThread),
       findThread: readOnReader(findThread),
       getSettlementCandidates: readOnReader(getSettlementCandidates),
+      hasIdleCompactionWait: readOnReader(hasIdleCompactionWait),
       getThreadsWithPullRequests: readOnReader(getThreadsWithPullRequests),
       getThreadsWithIssueWatches: readOnReader(getThreadsWithIssueWatches),
       getThreadsWithAccountChoices: readOnReader(getThreadsWithAccountChoices),

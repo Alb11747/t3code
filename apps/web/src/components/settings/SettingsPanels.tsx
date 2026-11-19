@@ -1716,6 +1716,9 @@ export function CompactIdleThreadsRow() {
   return useOptionalSettingsScope() === null ? null : <ScopedCompactIdleThreadsRow />;
 }
 
+const waitingThreadsHelp =
+  "Waiting threads have a watched PR or issue, awaited work, a scheduled task or webhook, or a pending question, machine link, guest message, or proposed plan.";
+
 function ScopedCompactIdleThreadsRow() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
@@ -1731,7 +1734,7 @@ function ScopedCompactIdleThreadsRow() {
         <SettingsRow
           serverScoped
           {...searchableSetting("smart-idle-compaction")}
-          description="For providers that compact before the cache expires: only threads a watched PR or issue, subagent, background work, or scheduled task will wake."
+          description={`Applies to providers that compact before the cache expires. ${waitingThreadsHelp}`}
           settingKeys={["smartIdleCompaction"]}
           control={
             <ScopedSwitch
@@ -1793,7 +1796,7 @@ function IdleCompactionModeRow({
       {...searchableSetting("compact-idle-threads")}
       description={
         smartAvailable
-          ? "When to compact an idle Claude thread over 200K tokens. Waiting threads are ones a watched PR or issue, subagent, background work, or scheduled task will wake. Threads and providers can override this."
+          ? `When to compact an idle Claude thread over 200K tokens. ${waitingThreadsHelp} Threads and providers can override this.`
           : "When to compact an idle Claude thread over 200,000 tokens: after you return, just before its prompt cache expires, or never. Each Claude provider can override this."
       }
       resetAction={

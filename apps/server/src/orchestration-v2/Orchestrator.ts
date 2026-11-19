@@ -111,6 +111,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ProjectStore from "./ProjectStore.ts";
+import { hasBlockingIdleCompactionWork } from "./IdleCompaction.ts";
 import {
   isCheckpointRestoreIsolated,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
@@ -7410,20 +7411,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
 
-    // The service checked idleness before this command; a run or a delegated result that landed
-    // since makes the thread busy, and that turn refreshes the cache anyway.
+    // The service checked idleness before this command. Recheck under the dispatch lock so
+    // newly pending work or a delegated result can keep the next turn.
     if (
       command.idleCompaction === "beforeCacheExpires" &&
-      projection.runs.some(
-        (run) =>
-          run.status === "queued" ||
-          isActiveRun(run) ||
-          (run.delegatedCompletion?.disposition === "open" &&
+      (hasBlockingIdleCompactionWork(projection) ||
+        projection.runs.some(
+          (run) =>
+            run.delegatedCompletion?.disposition === "open" &&
             run.delegatedCompletion.delivery !== null &&
             !projection.messages.some(
               (message) => message.id === run.delegatedCompletion?.delivery?.messageId,
-            )),
-      )
+            ),
+        ))
     ) {
       yield* emit(
         events,
