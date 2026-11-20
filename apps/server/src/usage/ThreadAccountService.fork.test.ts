@@ -109,6 +109,7 @@ function testLayer(input: {
   readonly unpinError?: UsageLimitSourceError;
   readonly previousHubUnavailable?: boolean;
 }) {
+  const runsCodex = input.codex || input.separateCodexHub;
   const current = input.separateCodexHub
     ? ([
         ...snapshots,
@@ -134,9 +135,7 @@ function testLayer(input: {
         } as never),
     }),
     Layer.mock(ProviderRegistry.ProviderRegistry)({
-      getProviders: Effect.succeed(
-        input.codex || input.separateCodexHub ? [provider, codexProvider] : [provider],
-      ),
+      getProviders: Effect.succeed(runsCodex ? [provider, codexProvider] : [provider]),
     }),
     Layer.mock(UsageLimitSources.UsageLimitSources)({
       current: Effect.succeed(current),
@@ -182,14 +181,23 @@ function testLayer(input: {
       getThreadRecords: (id) =>
         Effect.succeed({
           thread: {
-            modelSelection: input.separateCodexHub
-              ? { instanceId: "codex", model: "gpt-5" }
-              : modelSelection,
+            modelSelection: runsCodex ? { instanceId: "codex", model: "gpt-5" } : modelSelection,
             accountChoice: input.choices?.[id] ?? input.accountChoice,
           },
           providerThreads: [
-            { nativeThreadRef: { nativeId: "native-session" } },
-            { nativeThreadRef: { nativeId: "older-session" } },
+            {
+              providerInstanceId: runsCodex ? "codex" : "claude",
+              nativeThreadRef: { nativeId: "native-session" },
+            },
+            { providerInstanceId: "claude", nativeThreadRef: { nativeId: "older-session" } },
+            ...(input.codex
+              ? [
+                  {
+                    providerInstanceId: "claude-other",
+                    nativeThreadRef: { nativeId: "other-session" },
+                  },
+                ]
+              : []),
             { nativeThreadRef: null },
           ],
         } as never),
@@ -260,6 +268,7 @@ function setAccount(input: {
   readonly heldByPin?: "moves" | "stays";
   readonly accountChoice?: unknown;
   readonly renamed?: Record<string, string>;
+  readonly codex?: boolean;
   readonly separateCodexHub?: boolean;
   readonly unpinError?: UsageLimitSourceError;
   readonly previousHubUnavailable?: boolean;
@@ -476,6 +485,50 @@ describe("ThreadAccountService.set", () => {
         {
           type: "thread.account-choice.set",
           accountChoice: { account: CODEX_ACCOUNT, stall: false },
+        },
+      ]);
+    }),
+  );
+
+  it.effect.each([
+    {
+      name: "unpins the former instance's sessions on a shared hub",
+      instanceId: "claude",
+      sessions: ["older-session"],
+    },
+    {
+      name: "clears historical pins for a choice without an instance on a shared hub",
+      instanceId: undefined,
+      sessions: ["older-session", "other-session"],
+    },
+    {
+      name: "keeps other pins when changing the account within one instance on a shared hub",
+      instanceId: "codex",
+      sessions: [],
+    },
+  ])("$name", ({ instanceId, sessions }) =>
+    Effect.gen(function* () {
+      const { controls, pins, commands, result } = yield* setAccount({
+        owner: null,
+        account: CODEX_ACCOUNT,
+        stall: false,
+        codex: true,
+        accountChoice: {
+          sourceId: "hub",
+          account: instanceId === "codex" ? "account-5555555555555555" : OTHER,
+          stall: instanceId !== "codex",
+          ...(instanceId === undefined ? {} : { instanceId }),
+        },
+      });
+      expect(Result.isSuccess(result)).toBe(true);
+      expect(controls).toEqual(
+        sessions.length ? [{ hub: "http://hub.test", unpin: sessions }] : [],
+      );
+      expect(pins).toMatchObject([{ sessions: ["native-session"], account: CODEX_ACCOUNT }]);
+      expect(commands).toMatchObject([
+        {
+          type: "thread.account-choice.set",
+          accountChoice: { sourceId: "hub", account: CODEX_ACCOUNT, instanceId: "codex" },
         },
       ]);
     }),

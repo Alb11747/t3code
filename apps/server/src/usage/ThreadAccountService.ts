@@ -433,14 +433,19 @@ export const make = Effect.gen(function* () {
   });
 
   // A pin listed for an older provider thread still names this thread.
-  const threadSessions = (threadId: ThreadId, current: string | undefined) =>
+  const threadSessions = (
+    threadId: ThreadId,
+    current: string | undefined,
+    instanceId?: ProviderInstanceId,
+  ) =>
     orchestrator.getThreadRecords(threadId, ["providerThreads"]).pipe(
       Effect.map((records) => records.providerThreads),
       Effect.map((providerThreads) => [
         ...new Set([
           ...(current ? [current] : []),
           ...providerThreads.flatMap((providerThread) =>
-            providerThread.nativeThreadRef?.nativeId
+            providerThread.nativeThreadRef?.nativeId &&
+            (instanceId === undefined || providerThread.providerInstanceId === instanceId)
               ? [providerThread.nativeThreadRef.nativeId]
               : [],
           ),
@@ -509,7 +514,8 @@ export const make = Effect.gen(function* () {
     const thread = yield* threadOf(input.threadId);
     const target = yield* resolveTarget(thread.modelSelection.instanceId);
     const session = yield* sessionOf(input.threadId, thread.modelSelection);
-    const storedSourceId = thread.accountChoice?.sourceId;
+    const storedChoice = thread.accountChoice;
+    const storedSourceId = storedChoice?.sourceId;
     const previousSourceId = storedSourceId === target?.source.id ? undefined : storedSourceId;
     const now = yield* DateTime.now;
     const commandId = CommandId.make(
@@ -540,7 +546,7 @@ export const make = Effect.gen(function* () {
       "on this thread's CLI Proxy hub",
     )).routerAlias as RouterAccountAlias;
     // Changing only the account keeps the stored wait-when-out setting.
-    const current = threadAccountChoiceFor(thread.accountChoice, target.instanceId);
+    const current = threadAccountChoiceFor(storedChoice, target.instanceId);
     const stall =
       canWait &&
       (input.stall ?? (current && rename(current.account) === account ? current.stall : false));
@@ -569,6 +575,14 @@ export const make = Effect.gen(function* () {
           "The previous CLI Proxy hub is unavailable. Clear the thread's account choice before picking an account on another hub.",
         );
       }
+    } else if (storedChoice && storedChoice.instanceId !== target.instanceId) {
+      // Legacy choices applied to all instances. Always leave the destination session for pin().
+      const sessions = (yield* threadSessions(
+        input.threadId,
+        undefined,
+        storedChoice.instanceId,
+      )).filter((id) => id !== session);
+      if (sessions.length > 0) yield* api.unpin(target.hub, sessions);
     }
     if (session) {
       yield* api.pin(target.hub, {
