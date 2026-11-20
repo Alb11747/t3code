@@ -103,8 +103,20 @@ function testLayer(input: {
   // The stored choice per thread now, where it differs from `accountChoice`.
   readonly choices?: Record<string, unknown>;
   readonly codex?: boolean;
+  readonly separateCodexHub?: boolean;
 }) {
-  const current = input.codex ? withCodex : snapshots;
+  const current = input.separateCodexHub
+    ? ([
+        ...snapshots,
+        {
+          ...withCodex[0]!,
+          id: "codex-hub",
+          accounts: withCodex[0]!.accounts.filter((account) => account.driver === "codex"),
+        },
+      ] as ReadonlyArray<UsageLimitSourceSnapshot>)
+    : input.codex
+      ? withCodex
+      : snapshots;
   return Layer.mergeAll(
     Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
       getInstance: () =>
@@ -118,14 +130,16 @@ function testLayer(input: {
         } as never),
     }),
     Layer.mock(ProviderRegistry.ProviderRegistry)({
-      getProviders: Effect.succeed(input.codex ? [provider, codexProvider] : [provider]),
+      getProviders: Effect.succeed(
+        input.codex || input.separateCodexHub ? [provider, codexProvider] : [provider],
+      ),
     }),
     Layer.mock(UsageLimitSources.UsageLimitSources)({
       current: Effect.succeed(current),
       streamChanges: Stream.make(current),
       routerAlias: () => Effect.succeed((alias) => input.renamed?.[alias] ?? alias),
       removedEndAlias: (_sourceId, _hub, alias) => Effect.succeed(input.renamed?.[alias] ?? alias),
-      hub: () => Effect.succeed({ url: "http://hub.test", managementKey: "key" }),
+      hub: (id) => Effect.succeed({ url: `http://${id}.test`, managementKey: "key" }),
       nextPick: (_hub, request) =>
         Effect.sync(() => {
           input.picks?.push(request);
@@ -141,7 +155,8 @@ function testLayer(input: {
           };
         }),
       pin: (_hub, pin) => Effect.sync(() => void input.pins?.push(pin)),
-      unpin: (_hub, sessions) => Effect.sync(() => void input.controls?.push({ unpin: sessions })),
+      unpin: (hub, sessions) =>
+        Effect.sync(() => void input.controls?.push({ hub: hub.url, unpin: sessions })),
       control: () => Effect.succeed(input.control ?? {}),
       steer: (_hub, account, expiresAt) =>
         Effect.sync(() => void input.controls?.push({ steer: account, expiresAt })),
@@ -156,7 +171,9 @@ function testLayer(input: {
       getThreadRecords: (id) =>
         Effect.succeed({
           thread: {
-            modelSelection,
+            modelSelection: input.separateCodexHub
+              ? { instanceId: "codex", model: "gpt-5" }
+              : modelSelection,
             accountChoice: input.choices?.[id] ?? input.accountChoice,
           },
           providerThreads: [
@@ -232,6 +249,7 @@ function setAccount(input: {
   readonly heldByPin?: "moves" | "stays";
   readonly accountChoice?: unknown;
   readonly renamed?: Record<string, string>;
+  readonly separateCodexHub?: boolean;
 }) {
   const pins: Array<Parameters<UsageLimitSources.UsageLimitSources["Service"]["pin"]>[1]> = [];
   const commands: OrchestrationV2ServerCommand[] = [];
@@ -389,14 +407,20 @@ describe("ThreadAccountService.set", () => {
     }),
   );
 
-  it.effect("clears a choice by unpinning every session the thread has had", () =>
+  it.effect.each([
+    { separateCodexHub: false, hubs: ["http://hub.test"] },
+    { separateCodexHub: true, hubs: ["http://hub.test", "http://codex-hub.test"] },
+  ])("unpins current and historical sessions on $hubs", ({ separateCodexHub, hubs }) =>
     Effect.gen(function* () {
       const { controls, commands } = yield* setAccount({
         owner: null,
         account: null,
         accountChoice: { sourceId: "hub", account: OTHER, stall: true },
+        separateCodexHub,
       });
-      expect(controls).toEqual([{ unpin: ["native-session", "older-session"] }]);
+      expect(controls).toEqual(
+        hubs.map((hub) => ({ hub, unpin: ["native-session", "older-session"] })),
+      );
       expect(commands).toMatchObject([{ type: "thread.account-choice.set", accountChoice: null }]);
     }),
   );

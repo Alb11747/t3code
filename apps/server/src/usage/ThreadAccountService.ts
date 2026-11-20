@@ -501,12 +501,17 @@ export const make = Effect.gen(function* () {
       `thread-account:${input.threadId}:${DateTime.toEpochMillis(now)}`,
     );
     if (input.account === null) {
-      // A stored choice stays removable after its provider stops routing through the hub.
-      const sourceId = target?.source.id ?? thread.accountChoice?.sourceId;
-      if (sourceId === undefined) return yield* fail(NOT_ROUTED);
-      const hub = target?.hub ?? (yield* sources.hub(sourceId));
+      const storedSourceId = thread.accountChoice?.sourceId;
+      if (target === null && storedSourceId === undefined) return yield* fail(NOT_ROUTED);
       const sessions = yield* threadSessions(input.threadId, session);
-      if (hub !== null && sessions.length > 0) yield* api.unpin(hub, sessions);
+      if (sessions.length > 0) {
+        // A provider switch can leave the pin on a different hub from the current model's.
+        if (storedSourceId !== undefined && storedSourceId !== target?.source.id) {
+          const storedHub = yield* sources.hub(storedSourceId);
+          if (storedHub !== null) yield* api.unpin(storedHub, sessions);
+        }
+        if (target !== null) yield* api.unpin(target.hub, sessions);
+      }
       yield* orchestrator.dispatch({
         type: "thread.account-choice.set",
         commandId,
