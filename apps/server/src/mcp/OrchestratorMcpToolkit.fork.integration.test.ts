@@ -23,6 +23,7 @@ import {
   type ScheduledTask,
   ThreadId,
   TurnItemId,
+  withMessageSenderNote,
 } from "@t3tools/contracts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
@@ -107,6 +108,11 @@ describe("orchestrator MCP toolkit", () => {
         Effect.gen(function* () {
           const cwd = yield* checkpointWorkspace("orchestrator-mcp-toolkit");
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+          const mcpPrompt = (senderThreadId: ThreadId, text: string) =>
+            withMessageSenderNote(
+              { createdBy: "agent", creationSource: "mcp", senderThreadId },
+              text,
+            );
           const steerReceivedGates = new Map<string, Deferred.Deferred<void>>();
           const parentTerminalGates = new Map<ThreadId, Deferred.Deferred<void>>();
           const deliveryTerminalGates = new Map<ThreadId, Deferred.Deferred<void>>();
@@ -122,7 +128,8 @@ describe("orchestrator MCP toolkit", () => {
               },
               capturedTurns,
               shouldComplete: (turn) =>
-                turn.threadId !== parentThreadId && turn.message.text !== cancellationPrompt,
+                turn.threadId !== parentThreadId &&
+                turn.message.text !== withMessageSenderNote(turn.message, cancellationPrompt),
               terminalGate: (turn) =>
                 turn.message.text.startsWith("Delegated task") ||
                 turn.message.text.startsWith("Delegated tasks")
@@ -136,14 +143,15 @@ describe("orchestrator MCP toolkit", () => {
               driver: ProviderDriverKind.make("claudeAgent"),
               capabilities: ClaudeProviderCapabilitiesV2,
               capturedTurns,
-              shouldComplete: (turn) => turn.message.text !== cancellationPrompt,
+              shouldComplete: (turn) =>
+                turn.message.text !== withMessageSenderNote(turn.message, cancellationPrompt),
               terminalGate: (turn) =>
                 turn.message.text.startsWith("Delegated task") ||
                 turn.message.text.startsWith("Delegated tasks")
                   ? deliveryTerminalGates.get(turn.threadId)
                   : parentTerminalGates.get(turn.threadId),
               response: (turn) =>
-                turn.message.text === delegatedPrompt
+                turn.message.text === withMessageSenderNote(turn.message, delegatedPrompt)
                   ? delegatedResult
                   : `Claude completed: ${turn.message.text}`,
               steerReceived: (steer) => steerReceivedGates.get(steer.message.text),
@@ -160,7 +168,8 @@ describe("orchestrator MCP toolkit", () => {
                 },
               },
               capturedTurns,
-              shouldComplete: (turn) => turn.message.text !== cancellationPrompt,
+              shouldComplete: (turn) =>
+                turn.message.text !== withMessageSenderNote(turn.message, cancellationPrompt),
               response: (turn) => `Codex completed: ${turn.message.text}`,
               steerReceived: (steer) => steerReceivedGates.get(steer.message.text),
             }),
@@ -352,6 +361,7 @@ describe("orchestrator MCP toolkit", () => {
             Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
             Layer.provide(
               Layer.mock(ProjectService.ProjectService)({
+                workspaceScanDirectory: Effect.succeed,
                 getById: (id) =>
                   Effect.succeed(
                     id === projectId || id === "project:mcp-foreign"
@@ -704,9 +714,10 @@ describe("orchestrator MCP toolkit", () => {
             ).toBeNull();
             yield* Ref.set(continuationOffers, []);
 
+            const directReadPrompt = "Complete before a parent reads this child result directly.";
             const directRead = yield* queueAutomaticCompletion(
               "direct-child-read",
-              "Complete before a parent reads this child result directly.",
+              directReadPrompt,
             );
             if (directRead.task.childThreadId === null) {
               return yield* Effect.die(new Error("Direct-read child thread missing."));
@@ -771,8 +782,7 @@ describe("orchestrator MCP toolkit", () => {
 
             const firstChunk = truncatedResultRead.items[0]!;
             expect(firstChunk.nextTextOffset).toBe(1);
-            const directReadResult =
-              "Claude completed: Complete before a parent reads this child result directly.";
+            const directReadResult = `Claude completed: [T3 Code: the agent in T3 thread "${parentThreadId}" sent this message, not the user.]\n\n${directReadPrompt}`;
             const pastEndCall = yield* invoke("t3_thread_read", {
               threadId: directChildThreadId,
               itemId: firstChunk.itemId,
@@ -819,7 +829,7 @@ describe("orchestrator MCP toolkit", () => {
             expect(terminalResultRead.items).toMatchObject([
               {
                 type: "assistant_message",
-                text: "Claude completed: Complete before a parent reads this child result directly.",
+                text: directReadResult,
                 textTruncated: false,
               },
             ]);
@@ -1456,7 +1466,7 @@ describe("orchestrator MCP toolkit", () => {
               {
                 instanceId: claudeInstanceId,
                 threadId: delegated.childThreadId,
-                text: delegatedPrompt,
+                text: mcpPrompt(parentThreadId, delegatedPrompt),
                 modelSelection: { ...claudeSelection, options: delegatedOptions },
               },
             ]);
@@ -1736,7 +1746,8 @@ describe("orchestrator MCP toolkit", () => {
 
             // Safe native steering joins the running turn without creating a task.
             const steerReceived = yield* Deferred.make<void>();
-            steerReceivedGates.set(childSteerText, steerReceived);
+            const expectedChildSteer = mcpPrompt(parentThreadId, childSteerText);
+            steerReceivedGates.set(expectedChildSteer, steerReceived);
             const steeredSend = yield* steerIntoUntaskedChildRun(
               { providerInstanceId: safeSteeringInstanceId, model: codexModel },
               "steer-untasked-run",
@@ -1744,7 +1755,7 @@ describe("orchestrator MCP toolkit", () => {
             // A steer that misses the turn is sent again as its own run, so
             // end the turn only once the steer reached it.
             yield* Deferred.await(steerReceived);
-            steerReceivedGates.delete(childSteerText);
+            steerReceivedGates.delete(expectedChildSteer);
             yield* invoke("t3_thread_interrupt", {
               threadId: steeredSend.child.childThreadId,
               runId: steeredSend.sent.runId,
@@ -2292,7 +2303,7 @@ describe("orchestrator MCP toolkit", () => {
             ).pipe(Effect.orDie);
             expect(promptedReadNext.items.map((item) => item.type)).toEqual(["assistant_message"]);
             expect(promptedReadNext.items[0]?.text).toBe(
-              `Claude completed: ${createdThreadPrompt}`,
+              `Claude completed: ${mcpPrompt(parentThreadId, createdThreadPrompt)}`,
             );
 
             const forkedThreadId = ThreadId.make("thread:mcp-orchestrator-inherited-read");
@@ -3741,7 +3752,9 @@ describe("orchestrator MCP toolkit", () => {
             const approvalParentGate = yield* Deferred.make<void>();
             const approvalChildGate = yield* Deferred.make<void>();
             parentTerminalGates.set(approvalParentId, approvalParentGate);
-            promptTerminalGates.set(approvalCompletionPrompt, approvalChildGate);
+            const approvalProviderPrompt = mcpPrompt(approvalParentId, approvalCompletionPrompt);
+            const approvalCompletionText = `Codex completed: ${approvalProviderPrompt}`;
+            promptTerminalGates.set(approvalProviderPrompt, approvalChildGate);
             yield* Ref.set(continuationOffers, []);
             const approvalStart = (yield* orchestrator.dispatch({
               type: "thread.create",
@@ -4000,7 +4013,7 @@ describe("orchestrator MCP toolkit", () => {
             expect(approvalCompletedTask).toMatchObject({
               status: "completed",
               completionWake: "always",
-              result: `Codex completed: ${approvalCompletionPrompt}`,
+              result: approvalCompletionText,
             });
             const offers = continuationReservations(
               (yield* Ref.get(continuationOffers)).filter(
@@ -4014,7 +4027,7 @@ describe("orchestrator MCP toolkit", () => {
             expect(offers[0]?.delegatedCompletion?.messageId).toBe(approvalDelivery?.messageId);
             expect(yield* readApprovalStatus()).toMatchObject({
               status: "completed",
-              summary: `Codex completed: ${approvalCompletionPrompt}`,
+              summary: approvalCompletionText,
               pendingApproval: null,
               waitTimedOut: false,
             });
