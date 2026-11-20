@@ -2681,13 +2681,16 @@ export default function ChatView(props: ChatViewProps) {
   );
   const keepWarmBanner =
     keepWarmHold !== null && activeThreadShell
-      ? keepWarmStallBannerItem({
-          environmentId,
-          threadId: activeThreadShell.id,
-          hold: keepWarmHold,
-          snoozedUntil: activeThreadShell.snoozedUntil,
-          timestampFormat,
-        })
+      ? keepWarmStallBannerItem(
+          {
+            environmentId,
+            threadId: activeThreadShell.id,
+            hold: keepWarmHold,
+            snoozedUntil: activeThreadShell.snoozedUntil,
+            timestampFormat,
+          },
+          messages,
+        )
       : null;
   const composerBannerItems = (() => {
     const fallbackSelection = draftFallback?.selection;

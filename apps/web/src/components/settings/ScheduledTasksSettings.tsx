@@ -878,7 +878,7 @@ function ScheduledTaskRow({
           ) : null}
           {task.script?.lastCheck?.outcome === "skip" ? (
             <Badge variant="warning" title={task.script.lastCheck.message ?? undefined}>
-              skipped by script
+              <T>skipped by script</T>
             </Badge>
           ) : null}
           {task.threadId !== null && scheduledTaskThreadMode(task) !== "new_thread" ? (
@@ -1909,7 +1909,9 @@ function ScheduledTaskEditorForm({
                 </SelectTrigger>
                 <SelectPopup>
                   {canSelectNoProject ? (
-                    <SelectItem value={NO_PROJECT_VALUE}>No project</SelectItem>
+                    <SelectItem value={NO_PROJECT_VALUE}>
+                      <T>No project</T>
+                    </SelectItem>
                   ) : null}
                   {projects.map((project) => (
                     <SelectItem key={project.id} value={project.id} label={project.title}>
@@ -2049,8 +2051,10 @@ function ScheduledTaskEditorForm({
             </div>
             {draft.threadId ? (
               <p className="text-xs text-muted-foreground">
-                Runs use this thread&apos;s current model, so this one applies only if the task
-                starts a new thread. A check script can choose a model per run.
+                <T>
+                  Runs use this thread&apos;s current model, so this one applies only if the task
+                  starts a new thread. A check script can choose a model per run.
+                </T>
               </p>
             ) : null}
             <label className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -2062,8 +2066,8 @@ function ScheduledTaskEditorForm({
                 }
               />
               {activeModelFamily === null
-                ? "Use the newest model of this family"
-                : `Use the newest ${activeModelFamily} model`}
+                ? gt("Use the newest model of this family")
+                : gt("Use the newest {family} model", { family: activeModelFamily })}
             </label>
           </Field>
 

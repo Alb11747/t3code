@@ -1,3 +1,5 @@
+import { m } from "~/i18n/messages";
+import { msg } from "gt-react";
 import type { ScopedThreadRef, UsageResetSnooze } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
@@ -64,8 +66,8 @@ export async function usageResetSnoozeChoice(
     const error = result._tag === "Failure" ? squashAtomCommandFailure(result) : undefined;
     toastManager.add({
       type: "warning",
-      title: "Could not snooze until usage resets",
-      description: error instanceof Error ? error.message : "The reset time is unknown.",
+      title: m(msg("Could not snooze until usage resets")),
+      description: error instanceof Error ? error.message : m(msg("The reset time is unknown.")),
     });
   }
   return undefined;

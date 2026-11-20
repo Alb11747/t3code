@@ -196,7 +196,7 @@ export function TurnForkButton({
         }
       >
         <GitForkIcon aria-hidden="true" className="size-3" />
-        {isCompaction ? (busy ? "Forking…" : "Fork") : null}
+        {isCompaction ? (busy ? gt("Forking…") : gt("Fork")) : null}
       </TooltipTrigger>
       <TooltipPopup side="top">{label}</TooltipPopup>
     </Tooltip>

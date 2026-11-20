@@ -1,3 +1,5 @@
+import { T, Var, msg, useGT, useMessages } from "gt-react";
+import type { MessageResolver } from "~/i18n/messages";
 import { useAtomValue } from "@effect/atom-react";
 import {
   SCHEDULED_TASK_SCRIPT_EXAMPLES,
@@ -30,7 +32,17 @@ import { Label } from "../ui/label";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Textarea } from "../ui/textarea";
 
-const OUTCOME_LABELS: Record<string, string> = { run: "Runs", skip: "Skips", error: "Failed" };
+const OUTCOME_LABELS: Partial<Record<string, string>> = {
+  run: msg("Runs"),
+  skip: msg("Skips"),
+  error: msg("Failed"),
+};
+const SCRIPT_PLACEHOLDER = "return true;";
+
+function outcomeLabel(outcome: string, resolve: MessageResolver) {
+  const label = OUTCOME_LABELS[outcome];
+  return label === undefined ? outcome : resolve(label);
+}
 
 function outcomeVariant(outcome: string) {
   if (outcome === "run") return "success";
@@ -86,6 +98,8 @@ export function ScheduledTaskScriptSection({
   };
   readonly disabled: boolean;
 }) {
+  const gt = useGT();
+  const messages = useMessages();
   const canEdit = useAtomValue(
     serverEnvironment.testScheduledTaskScript.permissionAtom(environmentId),
   );
@@ -125,10 +139,12 @@ export function ScheduledTaskScriptSection({
     <div className="rounded-lg border border-border/70">
       <Collapsible defaultOpen={hasSource}>
         <CollapsibleTrigger className="group flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-medium">
-          <span className="flex-1">Advanced</span>
+          <span className="flex-1">
+            <T>Advanced</T>
+          </span>
           {hasSource ? (
             <Badge variant="info" size="sm">
-              Script
+              <T>Script</T>
             </Badge>
           ) : null}
           <ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-panel-open:rotate-180" />
@@ -137,15 +153,39 @@ export function ScheduledTaskScriptSection({
           <div className="space-y-3 border-t border-border/70 px-3 py-3">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 space-y-1">
-                <Label htmlFor="scheduled-task-script">Check script</Label>
+                <Label htmlFor="scheduled-task-script">
+                  <T>Check script</T>
+                </Label>
                 <p className="text-xs text-muted-foreground">
-                  JavaScript that runs on the server before each run, including webhook runs. Return{" "}
-                  <code>false</code> to skip, or{" "}
-                  <code>{"{ run, prompt, model, nextRunAt, reason }"}</code>; <code>model</code>{" "}
-                  picks this run&apos;s model from <code>ctx.providers</code>. <code>ctx</code> also
-                  holds usage for every account, the bound thread (including its Claude cache
-                  expiry), the webhook request, and <code>ctx.state</code>, which is saved after
-                  each check. If it throws, the run fails.
+                  <T>
+                    JavaScript that runs on the server before each run, including webhook runs.
+                    Return{" "}
+                    <Var>
+                      <code>false</code>
+                    </Var>{" "}
+                    to skip, or{" "}
+                    <Var>
+                      <code>{"{ run, prompt, model, nextRunAt, reason }"}</code>
+                    </Var>
+                    .{" "}
+                    <Var>
+                      <code>model</code>
+                    </Var>{" "}
+                    picks this run&apos;s model from{" "}
+                    <Var>
+                      <code>ctx.providers</code>
+                    </Var>
+                    .{" "}
+                    <Var>
+                      <code>ctx</code>
+                    </Var>{" "}
+                    also holds usage for every account, the bound thread (including its Claude cache
+                    expiry), the webhook request, and{" "}
+                    <Var>
+                      <code>ctx.state</code>
+                    </Var>
+                    , which is saved after each check. If it throws, the run fails.
+                  </T>
                 </p>
               </div>
               <Menu>
@@ -153,7 +193,7 @@ export function ScheduledTaskScriptSection({
                   render={<Button size="sm" variant="outline" disabled={disabled || !canEdit} />}
                 >
                   <BookOpenIcon />
-                  Examples
+                  <T>Examples</T>
                 </MenuTrigger>
                 <MenuPopup align="end">
                   {SCHEDULED_TASK_SCRIPT_EXAMPLES.map((example) => (
@@ -175,7 +215,7 @@ export function ScheduledTaskScriptSection({
                 id="scheduled-task-script"
                 rows={8}
                 spellCheck={false}
-                placeholder="return true;"
+                placeholder={SCRIPT_PLACEHOLDER}
                 maxLength={MAX_SCHEDULED_TASK_SCRIPT_CHARS}
                 readOnly={!canEdit}
                 disabled={disabled}
@@ -185,7 +225,7 @@ export function ScheduledTaskScriptSection({
             </div>
             {!canEdit ? (
               <p className="text-xs text-muted-foreground">
-                Editing or testing a script needs terminal access to this environment.
+                <T>Editing or testing a script needs terminal access to this environment.</T>
               </p>
             ) : null}
             <div className="flex flex-wrap items-center gap-2">
@@ -196,10 +236,10 @@ export function ScheduledTaskScriptSection({
                 onClick={() => void runTest()}
               >
                 <FlaskConicalIcon />
-                {testing ? "Testing…" : "Test script"}
+                {testing ? gt("Testing…") : gt("Test script")}
               </Button>
               <span className="text-xs text-muted-foreground">
-                Runs it now without starting a run or saving state.
+                <T>Runs it now without starting a run or saving state.</T>
               </span>
             </div>
             {testError ? <p className="text-xs text-destructive-foreground">{testError}</p> : null}
@@ -207,41 +247,51 @@ export function ScheduledTaskScriptSection({
               <div className="space-y-2 rounded-md border border-border/60 p-2">
                 <div className="flex flex-wrap items-center gap-2 text-xs">
                   <Badge variant={outcomeVariant(result.outcome)}>
-                    {OUTCOME_LABELS[result.outcome] ?? result.outcome}
+                    {outcomeLabel(result.outcome, messages)}
                   </Badge>
                   <span className="text-muted-foreground">{result.durationMs} ms</span>
                   {result.decision?.reason ? <span>{result.decision.reason}</span> : null}
                 </div>
-                {result.error ? <CodeBlock label="Error" text={result.error} /> : null}
+                {result.error ? <CodeBlock label={gt("Error")} text={result.error} /> : null}
                 {result.decision?.prompt ? (
-                  <CodeBlock label="Prompt" text={result.decision.prompt} />
+                  <CodeBlock label={gt("Prompt")} text={result.decision.prompt} />
                 ) : null}
                 {result.decision?.modelSelection ? (
                   <p className="text-xs">
-                    Runs on {describeModel(result.decision.modelSelection)}.
+                    <T>
+                      Runs on <Var>{describeModel(result.decision.modelSelection)}</Var>.
+                    </T>
                   </p>
                 ) : null}
                 {result.decision?.nextRunAt ? (
                   <p className="text-xs">
-                    Next run moves to {new Date(result.decision.nextRunAt).toLocaleString()}.
+                    <T>
+                      Next run moves to{" "}
+                      <Var>{new Date(result.decision.nextRunAt).toLocaleString()}</Var>.
+                    </T>
                   </p>
                 ) : null}
-                {result.logs ? <CodeBlock label="Logs" text={result.logs} /> : null}
+                {result.logs ? <CodeBlock label={gt("Logs")} text={result.logs} /> : null}
                 {result.decision?.state ? (
-                  <CodeBlock label="State it would save" text={prettyJson(result.decision.state)} />
+                  <CodeBlock
+                    label={gt("State it would save")}
+                    text={prettyJson(result.decision.state)}
+                  />
                 ) : null}
                 <details>
                   <summary className="cursor-pointer text-xs text-muted-foreground">ctx</summary>
-                  <CodeBlock label="Context" text={prettyJson(result.context)} />
+                  <CodeBlock label={gt("Context")} text={prettyJson(result.context)} />
                 </details>
               </div>
             ) : null}
             {lastCheck ? (
               <div className="space-y-1 text-xs">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-muted-foreground">Last check</span>
+                  <span className="text-muted-foreground">
+                    <T>Last check</T>
+                  </span>
                   <Badge variant={outcomeVariant(lastCheck.outcome)} size="sm">
-                    {OUTCOME_LABELS[lastCheck.outcome] ?? lastCheck.outcome}
+                    {outcomeLabel(lastCheck.outcome, messages)}
                   </Badge>
                   <span className="text-muted-foreground">
                     {new Date(lastCheck.at).toLocaleString()}
@@ -249,25 +299,29 @@ export function ScheduledTaskScriptSection({
                 </div>
                 {lastCheck.message ? <p className="break-words">{lastCheck.message}</p> : null}
                 {lastCheck.modelSelection ? (
-                  <p>Ran on {describeModel(lastCheck.modelSelection)}.</p>
+                  <p>
+                    <T>
+                      Ran on <Var>{describeModel(lastCheck.modelSelection)}</Var>.
+                    </T>
+                  </p>
                 ) : null}
-                {lastCheck.logs ? <CodeBlock label="Logs" text={lastCheck.logs} /> : null}
+                {lastCheck.logs ? <CodeBlock label={gt("Logs")} text={lastCheck.logs} /> : null}
               </div>
             ) : null}
             {script?.state ? (
               <div className="space-y-1.5">
-                <CodeBlock label="Saved state" text={prettyJson(script.state)} />
+                <CodeBlock label={gt("Saved state")} text={prettyJson(script.state)} />
                 <Button
                   size="xs"
                   variant="outline"
                   disabled={disabled || !canEdit}
                   onClick={() => onChange({ ...draft, resetState: !draft.resetState })}
                 >
-                  {draft.resetState ? "Keep state" : "Reset state"}
+                  {draft.resetState ? gt("Keep state") : gt("Reset state")}
                 </Button>
                 {draft.resetState ? (
                   <span className="ms-2 text-xs text-muted-foreground">
-                    State clears when you save.
+                    <T>State clears when you save.</T>
                   </span>
                 ) : null}
               </div>

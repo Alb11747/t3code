@@ -242,7 +242,7 @@ const SOURCE_CONTROL_HOST_TERMS = sourceControlClients.definitions
 export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "legacy-context-window-indicator",
-    title: "Context window indicator (legacy)",
+    title: msg("Context window indicator (legacy)"),
     to: "/settings/labs",
     searchTerms: ["composer meter usage tokens circle old"],
   },
@@ -489,7 +489,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "agents-redeem-reset-credits",
-    title: "Let agents redeem reset credits",
+    title: msg("Let agents redeem reset credits"),
     to: "/settings/threads",
     scope: "environment-defaults",
     searchTerms: ["usage quota rate limit reset credit redeem agent mcp"],
@@ -941,7 +941,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "close-to-tray",
-    title: "Close to tray",
+    title: msg("Close to tray"),
     to: "/settings/general",
     searchTerms: ["minimize system tray notification area background keep running window"],
     desktopOnly: true,

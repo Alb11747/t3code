@@ -450,7 +450,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       : null;
   const openSendMenu = async (position: { x: number; y: number }) => {
     const action = await readLocalApi()?.contextMenu.show(
-      [{ id: "compact-and-send", label: "Compact and send" }],
+      [{ id: "compact-and-send", label: gt("Compact and send") }],
       position,
     );
     if (action === "compact-and-send") compactAndSend?.();
@@ -531,8 +531,11 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
         <div>{submitTooltip}</div>
         {compactAndSend ? (
           <div>
-            Right-click{compactAndSendShortcutLabel ? ` or ${compactAndSendShortcutLabel}` : ""} to
-            compact first
+            {compactAndSendShortcutLabel
+              ? gt("Right-click or {shortcut} to compact first", {
+                  shortcut: compactAndSendShortcutLabel,
+                })
+              : gt("Right-click to compact first")}
           </div>
         ) : null}
       </TooltipPopup>

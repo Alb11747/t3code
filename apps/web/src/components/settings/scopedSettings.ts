@@ -4,8 +4,6 @@ import {
   type ClientSettingsPatch,
   type EnvironmentId,
   globalIdleCompaction,
-  IDLE_COMPACTION_MODES,
-  type IdleCompactionMode,
   type ProviderInstanceId,
   idleCompactionPatch,
   isNullableProjectSettingsOverride,
@@ -217,20 +215,17 @@ export function scopedSettingsAreMixed(
  * environments are compared by the mode each resolves to, and "Never" is offered
  * only when every one of them can store it.
  */
-const modeLabel = (mode: IdleCompactionMode) =>
-  IDLE_COMPACTION_MODES.find((candidate) => candidate.value === mode)!.label;
-
 /**
  * The mode dropdown's choices, least compaction first. Smart is stored as its own boolean
  * (shipped clients reject unknown modes), so "waiting" and "all" each write mode and boolean.
  */
 export const IDLE_COMPACTION_CHOICES = [
-  { value: "off", label: modeLabel("off") },
-  { value: "onReturn", label: modeLabel("onReturn") },
+  { value: "off", label: msg("Never", { $context: "idle thread compaction mode" }) },
+  { value: "onReturn", label: msg("When you return") },
   // Servers without Smart compact every idle thread.
-  { value: "beforeCacheExpires", label: modeLabel("beforeCacheExpires") },
-  { value: "waiting", label: "Before the cache expires: waiting threads" },
-  { value: "all", label: "Before the cache expires: all threads" },
+  { value: "beforeCacheExpires", label: msg("Before the cache expires (beta)") },
+  { value: "waiting", label: msg("Before the cache expires: waiting threads") },
+  { value: "all", label: msg("Before the cache expires: all threads") },
 ] as const;
 export type IdleCompactionChoice = (typeof IDLE_COMPACTION_CHOICES)[number]["value"];
 

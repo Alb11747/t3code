@@ -1,8 +1,10 @@
-import { type ReactNode } from "react";
+import type { ReactNode } from "react";
 import type { DesktopUpdateState } from "@t3tools/contracts";
 
-import { isValidElement, type ReactElement } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
+
+import { render } from "../../test/render";
 
 const testState = vi.hoisted(() => ({
   addToast: vi.fn(),
@@ -13,26 +15,6 @@ vi.mock("./ui/toast", () => ({
 }));
 
 import { showDesktopUpdateDownloadedToast } from "./desktopUpdate.toast";
-
-type ClickableElement = ReactElement<{ readonly onClick?: () => void }>;
-
-function findReleaseNotesLink(node: ReactNode): ClickableElement | null {
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      const found = findReleaseNotesLink(child);
-      if (found) return found;
-    }
-    return null;
-  }
-  if (!isValidElement(node)) return null;
-  const element = node as ReactElement<{ readonly children?: ReactNode }>;
-  if (element.type === "button") return element as ClickableElement;
-  if (typeof element.type === "function") {
-    const render = element.type as (props: unknown) => ReactNode;
-    return findReleaseNotesLink(render(element.props));
-  }
-  return findReleaseNotesLink(element.props.children);
-}
 
 function getDescription(): ReactNode {
   const toast = testState.addToast.mock.calls[0]?.[0] as { description?: ReactNode } | undefined;
@@ -61,22 +43,25 @@ function downloadedState(overrides: Partial<DesktopUpdateState> = {}): DesktopUp
   };
 }
 
+function setup(repository = "pingdotgg/t3code"): Disposable {
+  testState.addToast.mockReset();
+  vi.stubEnv("T3CODE_DESKTOP_UPDATE_REPOSITORY", repository);
+  return { [Symbol.dispose]: () => vi.unstubAllEnvs() };
+}
+
+function renderDescription() {
+  // The toast has no router dependency.
+  return render(getDescription(), { router: false });
+}
+
 describe("showDesktopUpdateDownloadedToast", () => {
-  beforeEach(() => {
-    testState.addToast.mockReset();
-    vi.stubEnv("T3CODE_DESKTOP_UPDATE_REPOSITORY", "pingdotgg/t3code");
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
   it("opens release notes from the configured repository", async () => {
-    vi.stubEnv("T3CODE_DESKTOP_UPDATE_REPOSITORY", "JustYannicc/t3code");
+    using _repository = setup("JustYannicc/t3code");
     const openExternal = vi.fn().mockResolvedValue(true);
 
     showDesktopUpdateDownloadedToast({ openExternal }, downloadedState());
-    findReleaseNotesLink(getDescription())?.props.onClick?.();
+    await using screen = await renderDescription();
+    await userEvent.click(screen.getByRole("button", { name: "Read more" }));
 
     await vi.waitFor(() => {
       expect(openExternal).toHaveBeenCalledWith(
@@ -86,15 +71,18 @@ describe("showDesktopUpdateDownloadedToast", () => {
   });
 
   it("opens the downloaded version's release notes", async () => {
-    vi.stubEnv("T3CODE_DESKTOP_UPDATE_REPOSITORY", "Alb11747/t3code");
+    using _repository = setup("Alb11747/t3code");
     const openExternal = vi.fn().mockResolvedValue(true);
 
     showDesktopUpdateDownloadedToast(
       { openExternal },
-      downloadedState({ releaseHistoryUrl: "https://github.com/pingdotgg/t3code/releases" }),
+      downloadedState({
+        availableVersion: "0.0.31",
+        releaseHistoryUrl: "https://github.com/pingdotgg/t3code/releases",
+      }),
     );
-    const link = findReleaseNotesLink(getDescription());
-    link?.props.onClick?.();
+    await using screen = await renderDescription();
+    await userEvent.click(screen.getByRole("button", { name: "Read more" }));
     await vi.waitFor(() => {
       expect(openExternal).toHaveBeenCalledWith(
         "https://github.com/pingdotgg/t3code/releases/tag/v0.0.30",
@@ -104,6 +92,7 @@ describe("showDesktopUpdateDownloadedToast", () => {
   });
 
   it("falls back to the version the download was started for", async () => {
+    using _repository = setup();
     const openExternal = vi.fn().mockResolvedValue(true);
 
     // The `update-downloaded` event can land after the download RPC resolves.
@@ -111,7 +100,8 @@ describe("showDesktopUpdateDownloadedToast", () => {
       { openExternal },
       downloadedState({ downloadedVersion: null }),
     );
-    findReleaseNotesLink(getDescription())?.props.onClick?.();
+    await using screen = await renderDescription();
+    await userEvent.click(screen.getByRole("button", { name: "Read more" }));
 
     await vi.waitFor(() => {
       expect(openExternal).toHaveBeenCalledWith(
@@ -123,6 +113,7 @@ describe("showDesktopUpdateDownloadedToast", () => {
   it.each(["fork", "fork.1"])(
     "opens %s release notes using the desktop updater's repository",
     async (suffix) => {
+      using _repository = setup();
       const openExternal = vi.fn().mockResolvedValue(true);
       const version = `0.0.46-nightly.20261010.14.${suffix}`;
       showDesktopUpdateDownloadedToast(
@@ -132,7 +123,8 @@ describe("showDesktopUpdateDownloadedToast", () => {
           releaseHistoryUrl: "https://github.com/Alb11747/t3code/releases",
         }),
       );
-      findReleaseNotesLink(getDescription())?.props.onClick?.();
+      await using screen = await renderDescription();
+      await userEvent.click(screen.getByRole("button", { name: "Read more" }));
       await vi.waitFor(() => {
         expect(openExternal).toHaveBeenCalledWith(
           `https://github.com/Alb11747/t3code/releases/tag/v${version}`,
@@ -141,21 +133,28 @@ describe("showDesktopUpdateDownloadedToast", () => {
     },
   );
 
-  it("omits the link when the updater reports no version at all", () => {
+  it("omits the link when the updater reports no version at all", async () => {
+    using _repository = setup();
     showDesktopUpdateDownloadedToast(
       { openExternal: vi.fn() },
       downloadedState({ availableVersion: null, downloadedVersion: null }),
     );
 
-    expect(findReleaseNotesLink(getDescription())).toBeNull();
+    await using screen = await renderDescription();
+    await expect
+      .element(screen.getByText("Restart the app from the update button to install it."))
+      .toBeVisible();
+    await expect.element(screen.getByRole("button", { name: "Read more" })).not.toBeInTheDocument();
   });
 
   it.each([
     ["returns false", vi.fn().mockResolvedValue(false)],
     ["rejects", vi.fn().mockRejectedValue(new Error("open failed"))],
   ])("shows an error when opening release notes %s", async (_description, openExternal) => {
+    using _repository = setup();
     showDesktopUpdateDownloadedToast({ openExternal }, downloadedState());
-    findReleaseNotesLink(getDescription())?.props.onClick?.();
+    await using screen = await renderDescription();
+    await userEvent.click(screen.getByRole("button", { name: "Read more" }));
 
     await vi.waitFor(() => {
       expect(testState.addToast).toHaveBeenLastCalledWith({

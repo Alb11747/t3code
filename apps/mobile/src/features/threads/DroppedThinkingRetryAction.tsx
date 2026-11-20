@@ -1,3 +1,4 @@
+import { T, useGT } from "gt-react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -26,6 +27,7 @@ export function DroppedThinkingRetryAction(props: {
   readonly runId: RunId;
   readonly nodeId: NodeId | null;
 }) {
+  const gt = useGT();
   const target = useAtomValue(
     environmentThreadDetails.threadAtom(scopeThreadRef(props.environmentId, props.threadId)),
     (thread) => {
@@ -51,8 +53,10 @@ export function DroppedThinkingRetryAction(props: {
   if (dropped)
     return (
       <Text className="ml-7 mt-2 text-xs text-warning-foreground">
-        Retried with earlier thinking dropped. Claude may not recall its reasoning from before this
-        point.
+        <T>
+          Retried with earlier thinking dropped. Claude may not recall its reasoning from before
+          this point.
+        </T>
       </Text>
     );
   if (target?.runId !== props.runId) return null;
@@ -72,7 +76,7 @@ export function DroppedThinkingRetryAction(props: {
   return (
     <View className="ml-7 mt-2 gap-1">
       <Button
-        label="Retry with dropped thinking"
+        label={gt("Retry with dropped thinking")}
         tone="secondary"
         disabled={!canOperate || busy}
         loading={busy}
@@ -80,7 +84,7 @@ export function DroppedThinkingRetryAction(props: {
         icon="arrow.clockwise"
       />
       <Text className="text-xs text-foreground-subtle">
-        This retry may run without earlier reasoning.
+        <T>This retry may run without earlier reasoning.</T>
       </Text>
     </View>
   );

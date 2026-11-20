@@ -1,3 +1,4 @@
+import { T, useGT } from "gt-react-native";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { AuthOrchestrationOperateScope, type ThreadContextNoteInput } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -15,6 +16,7 @@ export function ThreadContextNoteSheet(props: {
   readonly thread: EnvironmentThreadShell;
   readonly onClose: () => void;
 }) {
+  const gt = useGT();
   const note = props.thread.contextNote;
   const [text, setText] = useState(note?.text ?? "");
   const [mode, setMode] = useState<ThreadContextNoteInput["mode"]>(note?.mode ?? "prepend");
@@ -26,7 +28,7 @@ export function ThreadContextNoteSheet(props: {
   };
   const save = async (value: ThreadContextNoteInput | null) => {
     if (!readEnvironmentScope(props.thread.environmentId, AuthOrchestrationOperateScope)) {
-      setError("This connection cannot change threads.");
+      setError(gt("This connection cannot change threads."));
       return;
     }
     setSaving(true);
@@ -42,7 +44,9 @@ export function ThreadContextNoteSheet(props: {
     if (result._tag === "Success") props.onClose();
     else {
       const failure = Cause.squash(result.cause);
-      setError(failure instanceof Error ? failure.message : "The context note could not be saved.");
+      setError(
+        failure instanceof Error ? failure.message : gt("The context note could not be saved."),
+      );
     }
   };
 
@@ -59,16 +63,20 @@ export function ThreadContextNoteSheet(props: {
           contentContainerStyle={{ padding: 24, paddingBottom: 24, gap: 20 }}
         >
           <AppText accessibilityRole="header" className="text-xl font-t3-semibold">
-            Context note
+            <T>Context note</T>
           </AppText>
           <AppText className="text-base text-foreground-secondary">
-            Give agents current context when they read or attach this thread. The note stays outside
-            its conversation history.
+            <T>
+              Give agents current context when they read or attach this thread. The note stays
+              outside its conversation history.
+            </T>
           </AppText>
           <View className="gap-2">
-            <AppText>Note (Markdown)</AppText>
+            <AppText>
+              <T>Note (Markdown)</T>
+            </AppText>
             <TextInput
-              accessibilityLabel="Context note (Markdown)"
+              accessibilityLabel={gt("Context note (Markdown)")}
               className="min-h-40 rounded-xl bg-subtle p-3 text-base text-foreground"
               multiline
               textAlignVertical="top"
@@ -80,24 +88,28 @@ export function ThreadContextNoteSheet(props: {
             <AppText className="text-sm text-foreground-secondary">{text.length}/4,000</AppText>
           </View>
           <View className="gap-2">
-            <AppText>Starting messages</AppText>
+            <AppText>
+              <T>Starting messages</T>
+            </AppText>
             <SegmentedControl
               options={
                 [
-                  { value: "prepend", label: "Show after note" },
-                  { value: "replace", label: "Replace with note" },
+                  { value: "prepend", label: gt("Show after note") },
+                  { value: "replace", label: gt("Replace with note") },
                 ] as const
               }
               selected={mode}
               onSelect={setMode}
             />
             <AppText className="text-sm text-foreground-secondary">
-              Original messages remain available in history.
+              <T>Original messages remain available in history.</T>
             </AppText>
           </View>
           {note && (
             <AppText className="text-sm text-foreground-secondary">
-              Edited by {note.author.kind === "agent" ? "agent" : "user"}
+              {gt("{kind, select, agent {Edited by agent} other {Edited by user}}", {
+                kind: note.author.kind,
+              })}
               {note.author.threadId ? ` (${note.author.threadId})` : ""} ·{" "}
               {new Date(note.updatedAt).toLocaleString()}
             </AppText>
@@ -109,9 +121,9 @@ export function ThreadContextNoteSheet(props: {
           )}
           <View className="gap-3">
             <View className="flex-row justify-end gap-3">
-              <Button label="Cancel" tone="text" disabled={saving} onPress={close} />
+              <Button label={gt("Cancel")} tone="text" disabled={saving} onPress={close} />
               <Button
-                label="Save"
+                label={gt("Save")}
                 loading={saving}
                 disabled={!text.trim()}
                 onPress={() => void save({ text, mode })}
@@ -119,7 +131,7 @@ export function ThreadContextNoteSheet(props: {
             </View>
             {note && (
               <Button
-                label="Remove note"
+                label={gt("Remove note")}
                 tone="danger"
                 disabled={saving}
                 onPress={() => void save(null)}

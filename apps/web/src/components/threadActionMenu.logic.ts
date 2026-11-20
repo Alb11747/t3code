@@ -283,7 +283,7 @@ export function buildThreadActionMenuItems(
                 : [
                     {
                       id: "auto-settle:always" as const,
-                      label: "When done",
+                      label: resolve(msg("When done")),
                       checked: state.autoSettleAlways,
                     },
                   ]),
@@ -300,12 +300,12 @@ export function buildThreadActionMenuItems(
       ? [
           {
             id: "compact-before-expiry" as const,
-            label: "Compact before cache expires",
+            label: resolve(msg("Compact before cache expires")),
             icon: "timer",
             children: [
               {
                 id: "compact-before-expiry:default" as const,
-                label: "Follow settings",
+                label: resolve(msg("Follow settings")),
                 checked: state.compactBeforeCacheExpires === null && state.compactOnce !== true,
               },
               // The server refuses a one-shot mark on a thread set to Never.
@@ -314,18 +314,18 @@ export function buildThreadActionMenuItems(
                 : [
                     {
                       id: "compact-before-expiry:once" as const,
-                      label: "This time only",
+                      label: resolve(msg("This time only")),
                       checked: state.compactOnce,
                     },
                   ]),
               {
                 id: "compact-before-expiry:on" as const,
-                label: "Always",
+                label: resolve(msg("Always")),
                 checked: state.compactBeforeCacheExpires === true && state.compactOnce !== true,
               },
               {
                 id: "compact-before-expiry:off" as const,
-                label: "Never",
+                label: resolve(msg("Never")),
                 checked: state.compactBeforeCacheExpires === false,
               },
             ],

@@ -99,7 +99,7 @@ it("waits for other attachment preparation and sends once after all images join 
   const first = state.queue.pasteImages(["first"]);
   const second = state.queue.pasteImages(["second"]);
   state.queue.deferSend("queue");
-  state.queue.deferSend("steer");
+  state.queue.deferSend("compact");
   await state.finish(true);
   expect(state.onSubmit).not.toHaveBeenCalled();
   state.setBlocked(true);
@@ -107,7 +107,7 @@ it("waits for other attachment preparation and sends once after all images join 
   await Promise.all([first, second]);
   expect(state.onSubmit).not.toHaveBeenCalled();
   state.setBlocked(false);
-  expect(state.onSubmit).toHaveBeenCalledExactlyOnceWith("steer");
+  expect(state.onSubmit).toHaveBeenCalledExactlyOnceWith("compact");
   state.setBlocked(true);
   state.setBlocked(false);
   expect(state.onSubmit).toHaveBeenCalledOnce();

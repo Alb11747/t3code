@@ -1,3 +1,4 @@
+import { useGT, useMessages, T } from "gt-react";
 import { useAtomValue } from "@effect/atom-react";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -144,6 +145,8 @@ function ThreadAccountPickerChip(
     readonly refresh: () => void;
   },
 ) {
+  const gt = useGT();
+  const messages = useMessages();
   const { environmentId, threadId, isDraft, state } = props;
   const threadKey = scopedThreadKey(scopeThreadRef(environmentId, threadId));
   const previews = useAccountPreviews(props);
@@ -171,12 +174,15 @@ function ThreadAccountPickerChip(
   const next = byAlias(nextAlias);
   const current = previews.next?.current ?? null;
   const compactionAlias = previewAccount(previews.compaction);
-  const compactionNote = compactionAccountNote({
-    accounts: state.accounts,
-    current,
-    next: nextAlias,
-    compaction: compactionAlias,
-  });
+  const compactionNote = compactionAccountNote(
+    {
+      accounts: state.accounts,
+      current,
+      next: nextAlias,
+      compaction: compactionAlias,
+    },
+    messages,
+  );
   // A pinned thread whose account is out spills elsewhere; show where. Without a session the
   // router answers as for a new thread, which the first turn's pin overrides.
   const deviates =
@@ -185,7 +191,7 @@ function ThreadAccountPickerChip(
     chosen !== undefined &&
     next !== undefined &&
     next.routerAlias !== chosen.routerAlias;
-  const provider = providerName(state);
+  const provider = PROVIDER_NAMES[state.accounts[0]?.driver ?? ""] ?? gt("Provider");
   const contextNote =
     props.contextTokens !== null && props.contextTokens > 0
       ? `Switching re-sends this thread's ${formatContextWindowTokens(props.contextTokens)} context as a cold cache write.`
@@ -196,7 +202,7 @@ function ThreadAccountPickerChip(
     toastManager.add({
       type: "error",
       title,
-      description: cause instanceof Error ? cause.message : "An error occurred.",
+      description: cause instanceof Error ? cause.message : gt("An error occurred."),
     });
   };
 
@@ -311,9 +317,9 @@ function ThreadAccountPickerChip(
                 accountShortLabel(chosen, state.accounts)
               )
             ) : next ? (
-              `Auto · ${accountShortLabel(next, state.accounts)}`
+              gt("Auto · {account}", { account: accountShortLabel(next, state.accounts) })
             ) : (
-              "Auto"
+              gt("Auto")
             )}
           </span>
           <ChevronDownIcon data-composer-control-chevron aria-hidden />
@@ -328,16 +334,20 @@ function ThreadAccountPickerChip(
           <div className="flex flex-col gap-1">
             <div className="flex items-center justify-between px-1 text-xs text-muted-foreground">
               <span>{provider} account</span>
-              <span>this thread</span>
+              <span>
+                <T>this thread</T>
+              </span>
             </div>
             <AccountOption
               selected={chosen === undefined}
               disabled={busy || (!isDraft && !permitted)}
-              title="Automatic"
+              title={gt("Automatic")}
               detail={
                 next
-                  ? `Router picks · would use ${accountShortLabel(next, state.accounts)} next`
-                  : "Router picks"
+                  ? gt("Router picks · would use {account} next", {
+                      account: accountShortLabel(next, state.accounts),
+                    })
+                  : gt("Router picks")
               }
               onSelect={() => pick(null)}
             />
@@ -359,11 +369,13 @@ function ThreadAccountPickerChip(
             <div className="mt-1 flex flex-col gap-2 border-t px-1 pt-2">
               <label className="flex items-center justify-between gap-3 text-sm">
                 <span className="flex flex-col">
-                  <span>Wait when it runs out</span>
+                  <span>
+                    <T>Wait when it runs out</T>
+                  </span>
                   <span className="text-xs text-muted-foreground">
                     {choice?.stall
-                      ? "On: waits for this account to reset."
-                      : "Off: falls back to another account."}
+                      ? gt("On: waits for this account to reset.")
+                      : gt("Off: falls back to another account.")}
                   </span>
                 </span>
                 <Switch
@@ -377,9 +389,13 @@ function ThreadAccountPickerChip(
               </label>
               {deviates && chosen && next ? (
                 <p className="text-xs text-warning-foreground">
-                  {accountShortLabel(chosen, state.accounts)} cannot take the next request, so it
-                  goes to {accountShortLabel(next, state.accounts)}. Turn on Wait when it runs out
-                  to wait instead.
+                  {gt(
+                    "{chosen} cannot take the next request, so it goes to {next}. Turn on Wait when it runs out to wait instead.",
+                    {
+                      chosen: accountShortLabel(chosen, state.accounts),
+                      next: accountShortLabel(next, state.accounts),
+                    },
+                  )}
                 </p>
               ) : null}
               {compactionNote ? (
@@ -393,7 +409,7 @@ function ThreadAccountPickerChip(
                   disabled={busy || !permitted}
                   onClick={() => void steer(chosen.routerAlias ?? null)}
                 >
-                  Use for new {provider} threads too
+                  {gt("Use for new {provider} threads too", { provider })}
                 </Button>
               ) : steered ? (
                 <Button
@@ -402,8 +418,10 @@ function ThreadAccountPickerChip(
                   disabled={busy || !permitted}
                   onClick={() => void steer(null)}
                 >
-                  Stop sending new {provider} threads to{" "}
-                  {accountShortLabel(steered, state.accounts)}
+                  {gt("Stop sending new {provider} threads to {account}", {
+                    provider,
+                    account: accountShortLabel(steered, state.accounts),
+                  })}
                 </Button>
               ) : null}
             </div>
@@ -419,17 +437,24 @@ function ThreadAccountPickerChip(
         <AlertDialogPopup>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              Switch this thread to {pendingMove ? accountLabel(pendingMove) : "another account"}?
+              {gt("Switch this thread to {account}?", {
+                account: pendingMove ? accountLabel(pendingMove) : gt("another account"),
+              })}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              Earlier thinking will be dropped. It is tied to{" "}
-              {owner ? accountLabel(owner) : "the current account"} and the new account cannot read
-              it. Messages, tool results and files stay.{" "}
+              {gt(
+                "Earlier thinking will be dropped. It is tied to {account} and the new account cannot read it. Messages, tool results and files stay.",
+                {
+                  account: owner ? accountLabel(owner) : gt("the current account"),
+                },
+              )}{" "}
               {contextNote.replace("Switching", "This also")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="ghost" />}>Cancel</AlertDialogClose>
+            <AlertDialogClose render={<Button variant="ghost" />}>
+              <T>Cancel</T>
+            </AlertDialogClose>
             <Button
               disabled={busy}
               onClick={() => {
@@ -438,7 +463,7 @@ function ThreadAccountPickerChip(
                 if (target) void apply(target, choice?.stall ?? false, true);
               }}
             >
-              Switch account
+              <T>Switch account</T>
             </Button>
           </AlertDialogFooter>
         </AlertDialogPopup>
@@ -454,10 +479,6 @@ function isMoveRefusal(cause: unknown): boolean {
     "requiresDropThinking" in cause &&
     cause.requiresDropThinking === true
   );
-}
-
-function providerName(state: NonNullable<ThreadAccountState>): string {
-  return PROVIDER_NAMES[state.accounts[0]?.driver ?? ""] ?? "Provider";
 }
 
 function describeAccount(
@@ -530,12 +551,15 @@ function UsageBar(props: {
   readonly label: string;
   readonly window: ServerProviderUsageWindow | undefined;
 }) {
+  const gt = useGT();
   const left = props.window ? Math.max(0, Math.min(100, 100 - props.window.usedPercent)) : null;
   return (
     <span
       className="flex items-center gap-1 text-3xs text-muted-foreground tabular-nums"
       aria-label={
-        left === null ? `${props.label}: unknown` : `${props.label}: ${Math.round(left)}% left`
+        left === null
+          ? gt("{label}: unknown", { label: props.label })
+          : gt("{label}: {left}% left", { label: props.label, left: Math.round(left) })
       }
     >
       <span className="w-4">{props.label}</span>

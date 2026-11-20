@@ -1,3 +1,4 @@
+import { T } from "gt-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   AuthOrchestrationOperateScope,
@@ -71,9 +72,11 @@ export function DroppedThinkingRetryAction(props: {
         onClick={() => void recover()}
       >
         <RotateCcwIcon aria-hidden />
-        Retry with dropped thinking
+        <T>Retry with dropped thinking</T>
       </Button>
-      <p className="text-xs text-muted-foreground">This retry may run without earlier reasoning.</p>
+      <p className="text-xs text-muted-foreground">
+        <T>This retry may run without earlier reasoning.</T>
+      </p>
     </div>
   );
 }

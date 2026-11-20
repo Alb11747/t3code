@@ -28,7 +28,7 @@ export function LabsSettingsPanel() {
         <SimlockHostsRow />
         <FastWorktreeCheckoutRow />
       </SettingsSection>
-      <SettingsSection id="legacy-features" title="Legacy">
+      <SettingsSection id="legacy-features" title={gt("Legacy")}>
         <ContextWindowMeterRow />
       </SettingsSection>
     </SettingsPageContainer>
@@ -296,19 +296,21 @@ function FastWorktreeCheckoutRow() {
 }
 
 function ContextWindowMeterRow() {
+  const gt = useGT();
+  const searchableSetting = useSearchableSetting();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   return (
     <SettingsRow
       {...searchableSetting("legacy-context-window-indicator")}
-      description="Shows context window usage as a circular indicator in the composer."
+      description={gt("Shows context window usage as a circular indicator in the composer.")}
       control={
         <Switch
           checked={settings.contextWindowMeterEnabled}
           onCheckedChange={(checked) =>
             updateSettings({ contextWindowMeterEnabled: Boolean(checked) })
           }
-          aria-label="Context window indicator (legacy)"
+          aria-label={gt("Context window indicator (legacy)")}
         />
       }
     />

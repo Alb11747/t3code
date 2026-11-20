@@ -1120,7 +1120,9 @@ export function GeneralSettingsPanel() {
         {isElectron && isWindowsPlatform(navigator.platform) ? (
           <SettingsRow
             {...setting("close-to-tray")}
-            description="Closing the window keeps T3 Code running in the notification area. Quit from its tray icon or with the quit shortcut."
+            description={gt(
+              "Closing the window keeps T3 Code running in the notification area. Quit from its tray icon or with the quit shortcut.",
+            )}
             resetAction={
               settings.closeToTray !== DEFAULT_UNIFIED_SETTINGS.closeToTray ? (
                 <SettingResetButton
@@ -1135,7 +1137,7 @@ export function GeneralSettingsPanel() {
               <Switch
                 checked={settings.closeToTray}
                 onCheckedChange={(checked) => updateSettings({ closeToTray: Boolean(checked) })}
-                aria-label="Close to tray"
+                aria-label={gt("Close to tray")}
               />
             }
           />
@@ -1810,14 +1812,6 @@ const WAITING_THREADS_HELP = msg(
   "Waiting threads have a watched PR or issue, awaited work, a scheduled task or webhook, or a pending question, machine link, guest message, or proposed plan.",
 );
 
-const IDLE_COMPACTION_MODE_LABELS = {
-  onReturn: msg("When you return"),
-  beforeCacheExpires: msg("Before the cache expires (beta)"),
-  off: msg("Never", { $context: "idle thread compaction mode" }),
-  waiting: msg("Before the cache expires: waiting threads"),
-  all: msg("Before the cache expires: all threads"),
-} satisfies Record<(typeof IDLE_COMPACTION_CHOICES)[number]["value"], string>;
-
 function ScopedCompactIdleThreadsRow() {
   const setting = useSearchableSetting();
   const gt = useGT();
@@ -1939,7 +1933,7 @@ function IdleCompactionModeRow({
               {(value: string | null) => {
                 if (value === null) return gt("Mixed");
                 const choice = choices.find((candidate) => candidate.value === value);
-                return choice ? messages(IDLE_COMPACTION_MODE_LABELS[choice.value]) : undefined;
+                return choice ? messages(choice.label) : undefined;
               }}
             </SelectValue>
           </SelectTrigger>
@@ -1952,7 +1946,7 @@ function IdleCompactionModeRow({
                 // A server from before modes has only the on/off switch, so it cannot store "Never".
                 disabled={choice.value === "off" && !idleCompaction.neverAvailable}
               >
-                {messages(IDLE_COMPACTION_MODE_LABELS[choice.value])}
+                {messages(choice.label)}
               </SelectItem>
             ))}
           </SelectPopup>
@@ -2135,7 +2129,9 @@ export function ThreadsSettingsPanel() {
           <SettingsRow
             serverScoped
             {...setting("agents-redeem-reset-credits")}
-            description="Agents can use a banked rate-limit reset when you ask them to or their instructions allow it. A redeemed reset cannot be taken back."
+            description={gt(
+              "Agents can use a banked rate-limit reset when you ask them to or their instructions allow it. A redeemed reset cannot be taken back.",
+            )}
             settingKeys={["agentsCanRedeemResetCredits"]}
             control={
               <ScopedSwitch
@@ -2144,7 +2140,7 @@ export function ThreadsSettingsPanel() {
                 onCheckedChange={(checked) =>
                   updateSettings({ agentsCanRedeemResetCredits: Boolean(checked) })
                 }
-                aria-label="Let agents redeem reset credits"
+                aria-label={gt("Let agents redeem reset credits")}
               />
             }
           />

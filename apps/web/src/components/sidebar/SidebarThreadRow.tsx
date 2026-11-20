@@ -311,16 +311,20 @@ function SidebarThreadTooltip({
         {thread.keepWarmHold?.kind === "pin" ? (
           <div className="text-warning-foreground">
             {thread.keepWarmHold.resetUnknown
-              ? `Waiting for ${thread.keepWarmHold.account ?? "its chosen account"}, which the hub cannot use right now.`
-              : `Waiting for ${thread.keepWarmHold.account ?? "its chosen account"} until its usage resets.`}
+              ? gt("Waiting for {account}, which the hub cannot use right now.", {
+                  account: thread.keepWarmHold.account ?? "its chosen account",
+                })
+              : gt("Waiting for {account} until its usage resets.", {
+                  account: thread.keepWarmHold.account ?? "its chosen account",
+                })}
           </div>
         ) : thread.keepWarmStalled ? (
           <div className="text-warning-foreground">
-            Stalled to keep cache warm until the usage reset.
+            <T>Stalled to keep cache warm until the usage reset.</T>
           </div>
         ) : (thread.stalledSubagentThreadIds?.length ?? 0) > 0 ? (
           <div className="text-warning-foreground">
-            A subagent is stalled to keep cache warm until the usage reset.
+            <T>A subagent is stalled to keep cache warm until the usage reset.</T>
           </div>
         ) : null}
         {projectDisplayName ? (

@@ -1,3 +1,4 @@
+import { T, useGT } from "gt-react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { scopedThreadKey } from "../../lib/scopedEntities";
@@ -41,6 +42,7 @@ export function KeepWarmStallCard({
   threadRef: ScopedThreadRef | null;
   environmentId: EnvironmentId;
 }) {
+  const gt = useGT();
   const structure = useQuietThreadStructure(threadRef);
   const runAction = useAtomCommand(orchestrationEnvironment.claudeKeepWarmAction, {
     reportFailure: false,
@@ -106,7 +108,7 @@ export function KeepWarmStallCard({
     }
     await run(
       () => runAction({ environmentId, input: { threadId: thread.id, action } }),
-      "Could not change the stalled thread.",
+      gt("Could not change the stalled thread."),
     );
   };
   const toggleSnooze = () =>
@@ -115,10 +117,12 @@ export function KeepWarmStallCard({
         snoozed
           ? unsnooze({ environmentId, input: { threadId: thread.id, reason: "user" } })
           : snooze({ environmentId, input: { threadId: thread.id, snoozedUntil: hold.resetAt } }),
-      snoozed ? "Could not wake the thread." : "Could not snooze the thread.",
+      snoozed ? gt("Could not wake the thread.") : gt("Could not snooze the thread."),
     );
   const disabled = pending || !permitted;
-  const limit = hold.account ? `The 5-hour limit of ${hold.account}` : "The 5-hour limit";
+  const limit = hold.account
+    ? gt("The 5-hour limit of {account}", { account: hold.account })
+    : gt("The 5-hour limit");
   const failure = error ? (
     <Text accessibilityRole="alert" className="text-sm text-destructive">
       {error}
@@ -127,23 +131,29 @@ export function KeepWarmStallCard({
 
   // Fork: a pin that waits for its account. Changing the pin moves the held request at once.
   if (hold.kind === "pin") {
-    const pinned = hold.account ?? "the chosen account";
+    const pinned = hold.account ?? gt("the chosen account");
     return (
       <View className="mx-3 mb-2 gap-2 rounded-xl border border-warning-foreground/25 bg-screen p-3">
         <Text className="text-sm text-warning-foreground">
           {hold.resetUnknown
-            ? `Waiting for ${pinned} (this thread is set to wait for it). The hub cannot use it right now; it checks again ${formatTime(hold.releaseAt)}.`
-            : `Waiting for ${pinned} to reset at ${formatTime(hold.resetAt)} (this thread is set to wait for it).`}
+            ? gt(
+                "Waiting for {pinned} (this thread is set to wait for it). The hub cannot use it right now. It checks again at {releaseAt}.",
+                { pinned, releaseAt: formatTime(hold.releaseAt) },
+              )
+            : gt(
+                "Waiting for {pinned} to reset at {resetAt} (this thread is set to wait for it).",
+                { pinned, resetAt: formatTime(hold.resetAt) },
+              )}
         </Text>
         <View className="flex-row flex-wrap gap-2">
           <Button
-            label="Switch account…"
+            label={gt("Switch account…")}
             tone="secondary"
             disabled={disabled}
             onPress={chooseAccount}
           />
           <Button
-            label="Stop waiting"
+            label={gt("Stop waiting")}
             tone="secondary"
             disabled={disabled}
             onPress={() => void act("stop_waiting")}
@@ -151,25 +161,27 @@ export function KeepWarmStallCard({
           {hold.resetUnknown ? null : showMore ? (
             <>
               <Button
-                label={snoozed ? "Wake now" : "Snooze until reset"}
+                label={snoozed ? gt("Wake now") : gt("Snooze until reset")}
                 tone="secondary"
                 disabled={disabled}
                 onPress={() => void toggleSnooze()}
               />
               <Button
-                label="Pause until reset"
+                label={gt("Pause until reset")}
                 tone="secondary"
                 disabled={disabled}
                 onPress={() => void act("pause")}
               />
             </>
           ) : (
-            <Button label="More" tone="secondary" onPress={() => setShowMore(true)} />
+            <Button label={gt("More")} tone="secondary" onPress={() => setShowMore(true)} />
           )}
         </View>
         <Text className="text-xs text-foreground-muted">
-          Stop waiting keeps this account but lets the request go to another one now, writing the
-          context to its cache once (cold cache write).
+          <T>
+            Stop waiting keeps this account but lets the request go to another one now, writing the
+            context to its cache once (cold cache write).
+          </T>
         </Text>
         {failure}
       </View>
@@ -180,11 +192,14 @@ export function KeepWarmStallCard({
     return (
       <View className="mx-3 mb-2 gap-2 rounded-xl border border-border bg-screen p-3">
         <Text className="text-sm">
-          {`No longer stalling to keep Claude's cache warm. ${limit} resets ${formatTime(hold.resetAt)}. Requests run normally until then; reaching the limit first can let the prompt cache expire.`}
+          {gt(
+            "No longer stalling to keep Claude's cache warm. {limit} resets at {resetAt}. Requests run normally until then. Reaching the limit first can let the prompt cache expire.",
+            { limit, resetAt: formatTime(hold.resetAt) },
+          )}
         </Text>
         <View className="flex-row flex-wrap gap-2">
           <Button
-            label="Stall again"
+            label={gt("Stall again")}
             tone="secondary"
             disabled={disabled}
             onPress={() => void act("restore")}
@@ -198,17 +213,20 @@ export function KeepWarmStallCard({
   return (
     <View className="mx-3 mb-2 gap-2 rounded-xl border border-warning-foreground/25 bg-screen p-3">
       <Text className="text-sm text-warning-foreground">
-        {`Stalled to keep Claude's cache warm. ${limit} resets ${formatTime(hold.resetAt)}; next request ${formatTime(hold.releaseAt)}.`}
+        {gt(
+          "Stalled to keep Claude's cache warm. {limit} resets at {resetAt}. The next request runs at {releaseAt}.",
+          { limit, resetAt: formatTime(hold.resetAt), releaseAt: formatTime(hold.releaseAt) },
+        )}
       </Text>
       <View className="flex-row flex-wrap gap-2">
         <Button
-          label="Back to normal"
+          label={gt("Back to normal")}
           tone="secondary"
           disabled={disabled}
           onPress={() => void act("release")}
         />
         <Button
-          label="Switch account"
+          label={gt("Switch account")}
           tone="secondary"
           disabled={disabled}
           onPress={() => (accounts?.owner ? chooseAccount() : void act("switch"))}
@@ -216,34 +234,36 @@ export function KeepWarmStallCard({
         {showMore ? (
           <>
             {accounts ? (
-              <Button label="Choose account…" tone="secondary" onPress={chooseAccount} />
+              <Button label={gt("Choose account…")} tone="secondary" onPress={chooseAccount} />
             ) : null}
             <Button
-              label="Compact"
+              label={gt("Compact")}
               tone="secondary"
               disabled={disabled}
               onPress={() => void act("compact")}
             />
             <Button
-              label={snoozed ? "Wake now" : "Snooze until reset"}
+              label={snoozed ? gt("Wake now") : gt("Snooze until reset")}
               tone="secondary"
               disabled={disabled}
               onPress={() => void toggleSnooze()}
             />
             <Button
-              label="Pause until reset"
+              label={gt("Pause until reset")}
               tone="secondary"
               disabled={disabled}
               onPress={() => void act("pause")}
             />
           </>
         ) : (
-          <Button label="More" tone="secondary" onPress={() => setShowMore(true)} />
+          <Button label={gt("More")} tone="secondary" onPress={() => setShowMore(true)} />
         )}
       </View>
       <Text className="text-xs text-foreground-muted">
-        Switching writes the context to the other account's cache once (cold cache write); a
-        conversation bound to its account also drops its earlier thinking.
+        <T>
+          Switching writes the context to the other account's cache once (cold cache write). A
+          conversation bound to its account also drops its earlier thinking.
+        </T>
       </Text>
       {failure}
     </View>

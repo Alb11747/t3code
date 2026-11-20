@@ -1,3 +1,4 @@
+import { T, useGT } from "gt-react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
@@ -38,6 +39,7 @@ export function UsageRouting(props: {
   readonly source: UsageLimitSourceSnapshot;
   readonly label: string;
 }) {
+  const gt = useGT();
   const query = useEnvironmentQuery<ThreadAccountRouting, unknown>(
     serverEnvironment.threadAccountRouting({
       environmentId: props.environmentId,
@@ -73,7 +75,7 @@ export function UsageRouting(props: {
       ? `until ${new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`
       : undefined;
   const titleOf = (thread: { readonly title: string } | null, session: string | null) =>
-    thread ? thread.title || "Untitled thread" : `${session}…`;
+    thread ? thread.title || gt("Untitled thread") : `${session}…`;
   const providers = ROUTER_PROVIDERS.filter((entry) =>
     source.accounts.some(
       (account) => account.driver === entry.driver && account.routerAlias !== undefined,
@@ -87,15 +89,19 @@ export function UsageRouting(props: {
     setPending(false);
     if (AsyncResult.isFailure(result)) {
       const cause = squashAtomCommandFailure(result);
-      setError(cause instanceof Error ? cause.message : "Could not change the routing.");
+      setError(cause instanceof Error ? cause.message : gt("Could not change the routing."));
     }
     query.refresh();
   }
 
   return (
     <View className="gap-3 rounded-xl border border-border-subtle p-4">
-      <Text className="text-base font-t3-medium text-foreground">Routing · {props.label}</Text>
-      <Text className="text-xs text-foreground-muted">New threads</Text>
+      <Text className="text-base font-t3-medium text-foreground">
+        {gt("Routing · {label}", { label: props.label })}
+      </Text>
+      <Text className="text-xs text-foreground-muted">
+        <T>New threads</T>
+      </Text>
       {providers.map(({ provider, name }) => {
         const steer = routing.steers.find((candidate) => candidate.provider === provider);
         return (
@@ -103,13 +109,13 @@ export function UsageRouting(props: {
             key={provider}
             title={name}
             detail={[
-              steer ? nameOf(steer.account) : "Automatic",
-              steer?.active === false ? "stored, not active" : undefined,
+              steer ? nameOf(steer.account) : gt("Automatic"),
+              steer?.active === false ? gt("stored, not active") : undefined,
             ]}
             action={
               steer
                 ? {
-                    label: "Clear",
+                    label: gt("Clear"),
                     disabled,
                     onPress: () =>
                       void run(() =>
@@ -125,23 +131,25 @@ export function UsageRouting(props: {
         );
       })}
       {routing.pins.length > 0 ? (
-        <Text className="text-xs text-foreground-muted">Pinned threads</Text>
+        <Text className="text-xs text-foreground-muted">
+          <T>Pinned threads</T>
+        </Text>
       ) : null}
       {routing.pins.map((pin) => {
         const thread = pin.thread;
         const detail = [
           nameOf(pin.account),
-          pin.stall ? "waits when it runs out" : "falls back when it runs out",
+          pin.stall ? gt("waits when it runs out") : gt("falls back when it runs out"),
           until(pin.expiresAt),
-          thread ? (pin.active ? undefined : "stored, not active") : "set outside T3",
+          thread ? (pin.active ? undefined : gt("stored, not active")) : gt("set outside T3"),
         ];
         return thread ? (
           <Row
             key={`thread:${thread.id}`}
-            title={thread.title || "Untitled thread"}
+            title={thread.title || gt("Untitled thread")}
             detail={detail}
             action={{
-              label: "Remove",
+              label: gt("Remove"),
               disabled,
               onPress: () =>
                 void run(() =>
@@ -158,21 +166,25 @@ export function UsageRouting(props: {
         );
       })}
       {routing.held?.length ? (
-        <Text className="text-xs text-foreground-muted">Held requests</Text>
+        <Text className="text-xs text-foreground-muted">
+          <T>Held requests</T>
+        </Text>
       ) : null}
       {routing.held?.map((hold) => (
         <Row
           key={`held:${hold.thread?.id ?? hold.session}:${hold.account}:${hold.kind}`}
           title={titleOf(hold.thread, hold.session)}
           detail={[
-            hold.account ? nameOf(hold.account) : "Unknown account",
-            hold.kind === "keep_warm" ? "keeping its cache warm" : "waiting for quota",
+            hold.account ? nameOf(hold.account) : gt("Unknown account"),
+            hold.kind === "keep_warm" ? gt("keeping its cache warm") : gt("waiting for quota"),
             until(hold.releaseAt),
           ]}
         />
       ))}
       {routing.margins?.length ? (
-        <Text className="text-xs text-foreground-muted">Safety-margin overrides</Text>
+        <Text className="text-xs text-foreground-muted">
+          <T>Safety-margin overrides</T>
+        </Text>
       ) : null}
       {routing.margins?.map((margin) => (
         <Row

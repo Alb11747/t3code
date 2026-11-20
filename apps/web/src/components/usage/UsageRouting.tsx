@@ -1,3 +1,4 @@
+import { T, Var, useGT } from "gt-react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   type AtomCommandResult,
@@ -76,6 +77,7 @@ function RoutingSection(props: {
   readonly routing: NonNullable<ThreadAccountRouting>;
   readonly refresh: () => void;
 }) {
+  const gt = useGT();
   const { environmentId, source, routing } = props;
   const [busy, setBusy] = useState(false);
   const runSet = useAtomCommand(serverEnvironment.setThreadAccount, { reportFailure: false });
@@ -98,7 +100,7 @@ function RoutingSection(props: {
         params={{ environmentId, threadId: thread.id }}
         className="truncate hover:underline"
       >
-        {thread.title || "Untitled thread"}
+        {thread.title || gt("Untitled thread")}
       </Link>
     ) : (
       <span className="font-mono">{session}…</span>
@@ -118,7 +120,7 @@ function RoutingSection(props: {
       toastManager.add({
         type: "error",
         title,
-        description: cause instanceof Error ? cause.message : "An error occurred.",
+        description: cause instanceof Error ? cause.message : gt("An error occurred."),
       });
     }
     props.refresh();
@@ -135,16 +137,22 @@ function RoutingSection(props: {
 
   return (
     <section className="flex flex-col gap-3 rounded-xl border p-4">
-      <h2 className="text-sm font-medium">Routing · {props.label}</h2>
+      <h2 className="text-sm font-medium">
+        <T>
+          Routing · <Var>{props.label}</Var>
+        </T>
+      </h2>
       <div className="flex flex-col gap-1">
-        <h3 className="text-xs text-muted-foreground">New threads</h3>
+        <h3 className="text-xs text-muted-foreground">
+          <T>New threads</T>
+        </h3>
         {providers.map(({ provider, name }) => {
           const steer = routing.steers.find((candidate) => candidate.provider === provider);
           return (
             <RoutingRow
               key={provider}
               title={name}
-              detail={steer ? nameOf(steer.account) : "Automatic"}
+              detail={steer ? nameOf(steer.account) : gt("Automatic")}
               inactive={
                 steer?.active === false
                   ? "Saved in T3; it is renewed on the hub shortly."
@@ -158,7 +166,7 @@ function RoutingSection(props: {
                     disabled={busy || !permitted}
                     onClick={() => void clearSteer(provider)}
                   >
-                    Clear
+                    <T>Clear</T>
                   </Button>
                 ) : null
               }
@@ -168,7 +176,9 @@ function RoutingSection(props: {
       </div>
       {routing.pins.length > 0 ? (
         <div className="flex flex-col gap-1">
-          <h3 className="text-xs text-muted-foreground">Pinned threads</h3>
+          <h3 className="text-xs text-muted-foreground">
+            <T>Pinned threads</T>
+          </h3>
           {routing.pins.map((pin) => {
             const detail = `${nameOf(pin.account)} · ${pin.stall ? "waits when it runs out" : "falls back when it runs out"}${until(pin.expiresAt)}`;
             return pin.thread ? (
@@ -188,7 +198,7 @@ function RoutingSection(props: {
                     disabled={busy || !permitted}
                     onClick={() => void removePin(pin.thread!.id)}
                   >
-                    Remove
+                    <T>Remove</T>
                   </Button>
                 }
               />
@@ -205,7 +215,9 @@ function RoutingSection(props: {
       ) : null}
       {routing.held?.length ? (
         <div className="flex flex-col gap-1">
-          <h3 className="text-xs text-muted-foreground">Held requests</h3>
+          <h3 className="text-xs text-muted-foreground">
+            <T>Held requests</T>
+          </h3>
           {routing.held.map((hold) => (
             <RoutingRow
               key={`held:${hold.thread?.id ?? hold.session}:${hold.account}:${hold.kind}`}
@@ -217,12 +229,18 @@ function RoutingSection(props: {
       ) : null}
       {routing.margins?.length ? (
         <div className="flex flex-col gap-1">
-          <h3 className="text-xs text-muted-foreground">Safety-margin overrides</h3>
+          <h3 className="text-xs text-muted-foreground">
+            <T>Safety-margin overrides</T>
+          </h3>
           {routing.margins.map((margin) => (
             <RoutingRow
               key={`margin:${margin.thread?.id ?? margin.session}`}
               title={sessionTitle(margin.thread, margin.session)}
-              detail={`${Math.round(margin.headroomScale * 100)}% of the usual headroom${margin.actor ? ` · set by ${margin.actor}` : ""}${until(margin.expiresAt)}`}
+              detail={gt("{percent}% of the usual headroom{actor}{until}", {
+                percent: Math.round(margin.headroomScale * 100),
+                actor: margin.actor ? ` · set by ${margin.actor}` : "",
+                until: until(margin.expiresAt),
+              })}
             />
           ))}
         </div>
@@ -245,7 +263,7 @@ function RoutingRow(props: {
         <span className="min-w-0 truncate">{props.title}</span>
         {props.inactive ? (
           <Badge size="sm" variant="warning" title={props.inactive}>
-            stored, not active
+            <T>stored, not active</T>
           </Badge>
         ) : null}
         {props.note ? (

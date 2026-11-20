@@ -272,7 +272,7 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
           ...(onDownloadFile &&
           threadRef &&
           readEnvironmentScope(threadRef.environmentId, AuthFilesystemReadScope)
-            ? ([{ id: "download", label: "Download file" }] as const)
+            ? ([{ id: "download", label: gt("Download file") }] as const)
             : []),
         ] as const,
         position,

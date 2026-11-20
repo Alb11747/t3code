@@ -1,13 +1,15 @@
+import { useGT } from "gt-react-native";
 import { SettingsRow } from "../settings/components/SettingsRow";
 import { checkForkUpdate, installForkUpdate, useForkUpdateState } from "./fork-updates";
 
 export function ForkUpdateSettings() {
+  const gt = useGT();
   const state = useForkUpdateState();
   return (
     <>
       <SettingsRow
         icon="arrow.clockwise"
-        label="Fork updates"
+        label={gt("Fork updates")}
         value={state.status}
         disabled={state.busy}
         onPress={() => {
@@ -15,11 +17,11 @@ export function ForkUpdateSettings() {
         }}
       />
       {state.lastCheck ? (
-        <SettingsRow icon="clock" label="Last checked" value={state.lastCheck} />
+        <SettingsRow icon="clock" label={gt("Last checked")} value={state.lastCheck} />
       ) : null}
       <SettingsRow
         icon="arrow.down.circle"
-        label="Check now"
+        label={gt("Check now")}
         disabled={state.busy}
         onPress={() => {
           void checkForkUpdate();
@@ -28,7 +30,7 @@ export function ForkUpdateSettings() {
       {state.ready ? (
         <SettingsRow
           icon="arrow.down.circle"
-          label="Install now"
+          label={gt("Install now")}
           disabled={state.busy}
           onPress={() => {
             void installForkUpdate();

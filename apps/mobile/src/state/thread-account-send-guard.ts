@@ -1,3 +1,4 @@
+import { msg } from "gt-react-native";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import {
   accountChangeMessage,
@@ -14,6 +15,7 @@ import type {
 import { AsyncResult } from "effect/reactivity";
 
 import * as Dialog from "../components/ui/Dialog";
+import { m } from "../i18n/messages";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { appAtomRegistry } from "./atom-registry";
 import { serverEnvironment } from "./server";
@@ -65,7 +67,7 @@ export async function confirmThreadAccountForSend(input: {
     () => null,
   );
   Dialog.alert(
-    input.kind === "compaction" ? "Compaction moves accounts" : "Account changes",
+    input.kind === "compaction" ? m(msg("Compaction moves accounts")) : m(msg("Account changes")),
     accountChangeMessage({ accounts: state?.accounts ?? [], ...decision, kind: input.kind }),
   );
   return false;

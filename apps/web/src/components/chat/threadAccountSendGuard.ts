@@ -1,3 +1,5 @@
+import { m, type MessageResolver } from "~/i18n/messages";
+import { msg, useMessages } from "gt-react";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import {
   accountChangeMessage,
@@ -52,20 +54,28 @@ export const threadAccountAttentionAtom = Atom.make<{
 } | null>(null).pipe(Atom.keepAlive);
 
 /** "After compacting, continues on work (Max 20x)" when a compaction would move the thread. */
-export function compactionAccountNote(input: {
-  readonly accounts: ReadonlyArray<UsageLimitSourceAccount>;
-  readonly current: RouterAccountAlias | null;
-  readonly next: RouterAccountAlias | null;
-  readonly compaction: RouterAccountAlias | null;
-}): string | null {
+export function compactionAccountNote(
+  input: {
+    readonly accounts: ReadonlyArray<UsageLimitSourceAccount>;
+    readonly current: RouterAccountAlias | null;
+    readonly next: RouterAccountAlias | null;
+    readonly compaction: RouterAccountAlias | null;
+  },
+  resolve: MessageResolver = m,
+): string | null {
   const from = input.current ?? input.next;
   if (input.compaction === null || from === null || input.compaction === from) return null;
   const account = input.accounts.find((candidate) => candidate.routerAlias === input.compaction);
-  return `After compacting, continues on ${account ? accountShortLabel(account, input.accounts) : input.compaction}.`;
+  return resolve(
+    msg("After compacting, continues on {account}.", {
+      account: account ? accountShortLabel(account, input.accounts) : input.compaction,
+    }),
+  );
 }
 
 /** The chip's note for the Compact controls; reads the chip's own queries, never more. */
 export function useCompactionAccountNote(target: AccountTarget | null): string | null {
+  const messages = useMessages();
   const state = useEnvironmentQuery(target ? threadAccountStateAtom(target) : null).data;
   const routed = target !== null && (state?.accounts.length ?? 0) >= 2;
   const next = useEnvironmentQuery(routed ? threadAccountPreviewAtom(target, "next") : null).data;
@@ -73,12 +83,15 @@ export function useCompactionAccountNote(target: AccountTarget | null): string |
     routed ? threadAccountPreviewAtom(target, "compaction") : null,
   ).data;
   if (!state || !routed) return null;
-  return compactionAccountNote({
-    accounts: state.accounts,
-    current: next?.current ?? null,
-    next: previewAccount(next) ?? state.next,
-    compaction: previewAccount(compaction),
-  });
+  return compactionAccountNote(
+    {
+      accounts: state.accounts,
+      current: next?.current ?? null,
+      next: previewAccount(next) ?? state.next,
+      compaction: previewAccount(compaction),
+    },
+    messages,
+  );
 }
 
 // What a mounted query already holds; reading a node that does not exist would start a request.
@@ -135,7 +148,7 @@ export async function confirmAccountForSend(
   if (decision.send) return true;
   toastManager.add({
     type: "warning",
-    title: kind === "compaction" ? "Compaction moved accounts" : "Account changed",
+    title: kind === "compaction" ? m(msg("Compaction moved accounts")) : m(msg("Account changed")),
     description: accountChangeMessage({ accounts: state?.accounts ?? [], ...decision, kind }),
   });
   const previous = appAtomRegistry.get(threadAccountAttentionAtom);

@@ -1,3 +1,4 @@
+import { T, useGT } from "gt-react";
 import { useState } from "react";
 
 import {
@@ -25,6 +26,7 @@ export function ScheduledTaskTimeZoneField({
   readonly value: string;
   readonly onChange: (value: string) => void;
 }) {
+  const gt = useGT();
   const [open, setOpen] = useState(false);
   const query = value.trim().toLowerCase().replaceAll(" ", "_");
   const matches = (
@@ -32,7 +34,9 @@ export function ScheduledTaskTimeZoneField({
   ).slice(0, MAX_SUGGESTIONS);
   return (
     <div className="flex items-center gap-2">
-      <Label htmlFor="scheduled-task-time-zone">Time zone</Label>
+      <Label htmlFor="scheduled-task-time-zone">
+        <T>Time zone</T>
+      </Label>
       <Autocomplete
         items={matches}
         mode="none"
@@ -45,7 +49,7 @@ export function ScheduledTaskTimeZoneField({
         <div className="w-56">
           <AutocompleteInput
             id="scheduled-task-time-zone"
-            placeholder="Server local"
+            placeholder={gt("Server local")}
             spellCheck={false}
             autoComplete="off"
           />
@@ -58,7 +62,9 @@ export function ScheduledTaskTimeZoneField({
               </AutocompleteItem>
             ))}
           </AutocompleteList>
-          <AutocompleteEmpty>No matching time zone.</AutocompleteEmpty>
+          <AutocompleteEmpty>
+            <T>No matching time zone.</T>
+          </AutocompleteEmpty>
         </AutocompletePopup>
       </Autocomplete>
     </div>

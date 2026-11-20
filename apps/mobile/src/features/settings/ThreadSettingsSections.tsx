@@ -159,8 +159,10 @@ export function AutoSettleSettingsRows(props: {
           {referenceSettings.agentsCanRedeemResetCredits === undefined ? null : (
             <SettingsSwitchRow
               icon="arrow.clockwise"
-              label="Let agents redeem reset credits"
-              subtitle="Agents can use a banked rate-limit reset when you ask them to or their instructions allow it. A redeemed reset cannot be taken back."
+              label={gt("Let agents redeem reset credits")}
+              subtitle={gt(
+                "Agents can use a banked rate-limit reset when you ask them to or their instructions allow it. A redeemed reset cannot be taken back.",
+              )}
               value={uniformMobileSetting(displayTargets, "agentsCanRedeemResetCredits") ?? null}
               disabled={disabledFor("agentsCanRedeemResetCredits")}
               onValueChange={(value) => writeToAll({ agentsCanRedeemResetCredits: value })}

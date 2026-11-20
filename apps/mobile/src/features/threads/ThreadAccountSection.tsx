@@ -1,3 +1,4 @@
+import { T, useGT } from "gt-react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { accountShortLabel, previewAccount } from "@t3tools/client-runtime/thread-account-guard";
@@ -74,6 +75,7 @@ export function ThreadAccountSection(props: {
   readonly onDraftChange?: (choice: ThreadAccountChoice | null) => void;
 }) {
   const { threadId, onDraftChange } = props;
+  const gt = useGT();
   const query = useEnvironmentQuery<ThreadAccountState, unknown>(
     serverEnvironment.threadAccountState({
       environmentId: props.environmentId,
@@ -124,7 +126,7 @@ export function ThreadAccountSection(props: {
       const cause = squashAtomCommandFailure(result);
       // The owner can change after the sheet loaded; ask instead of showing the refusal.
       if (onMoveRefused && isMoveRefusal(cause)) onMoveRefused();
-      else setError(cause instanceof Error ? cause.message : "Could not change the account.");
+      else setError(cause instanceof Error ? cause.message : gt("Could not change the account."));
     }
     query.refresh();
     nextPreview.refresh();
@@ -136,9 +138,16 @@ export function ThreadAccountSection(props: {
     stall: boolean,
   ) =>
     Dialog.confirm({
-      title: `Switch this thread to ${label(account)}?`,
-      message: `${THREAD_ACCOUNT_MOVE_WARNING} The earlier thinking is tied to ${owner ? label(owner) : "the current account"}.`,
-      confirmText: "Switch account",
+      title: gt("Switch this thread to {account}?", { account: label(account) }),
+      message: owner
+        ? gt("{warning} The earlier thinking is tied to {account}.", {
+            warning: THREAD_ACCOUNT_MOVE_WARNING,
+            account: label(owner),
+          })
+        : gt("{warning} The earlier thinking is tied to the current account.", {
+            warning: THREAD_ACCOUNT_MOVE_WARNING,
+          }),
+      confirmText: gt("Switch account"),
       destructive: true,
       onConfirm: () => set(alias, stall, true),
     });
@@ -186,7 +195,7 @@ export function ThreadAccountSection(props: {
     .filter(Boolean)
     .join(" · ");
   const rows = [
-    { key: "auto", title: "Automatic", detail: "Router picks", account: null },
+    { key: "auto", title: gt("Automatic"), detail: gt("Router picks"), account: null },
     ...state.accounts.map((account) => ({
       key: account.id,
       title: label(account),
@@ -204,7 +213,7 @@ export function ThreadAccountSection(props: {
   return (
     <View>
       <Text className="px-5 pb-2 pt-7 text-sm font-t3-medium text-foreground-muted">
-        {provider} account
+        {gt("{provider} account", { provider })}
       </Text>
       <View className="mx-4 overflow-hidden rounded-2xl bg-grouped-card">
         {rows.map((row) => {
@@ -241,15 +250,17 @@ export function ThreadAccountSection(props: {
         })}
         <View className="min-h-11 flex-row items-center justify-between border-b border-border-subtle bg-grouped-card px-4 py-1">
           <View className="flex-1">
-            <Text className="text-sm font-t3-medium text-foreground">Wait when it runs out</Text>
+            <Text className="text-sm font-t3-medium text-foreground">
+              <T>Wait when it runs out</T>
+            </Text>
             <Text className="text-xs text-foreground-muted">
               {choice?.stall
-                ? "On: waits for the account to reset."
-                : "Off: falls back to another account."}
+                ? gt("On: waits for the account to reset.")
+                : gt("Off: falls back to another account.")}
             </Text>
           </View>
           <ThemedSwitch
-            accessibilityLabel="Wait when it runs out"
+            accessibilityLabel={gt("Wait when it runs out")}
             disabled={disabled || !chosen?.routerAlias}
             value={choice?.stall ?? false}
             onValueChange={(stall) => {
@@ -271,7 +282,9 @@ export function ThreadAccountSection(props: {
             }
             className="min-h-11 justify-center bg-grouped-card px-4 py-2 active:bg-subtle"
           >
-            <Text className="text-sm text-foreground">Use for new {provider} threads too</Text>
+            <Text className="text-sm text-foreground">
+              {gt("Use for new {provider} threads too", { provider })}
+            </Text>
           </Pressable>
         ) : steered ? (
           <Pressable
@@ -288,7 +301,10 @@ export function ThreadAccountSection(props: {
             className="min-h-11 justify-center bg-grouped-card px-4 py-2 active:bg-subtle"
           >
             <Text className="text-sm text-foreground">
-              Stop sending new {provider} threads to {label(steered)}
+              {gt("Stop sending new {provider} threads to {account}", {
+                provider,
+                account: label(steered),
+              })}
             </Text>
           </Pressable>
         ) : null}
@@ -298,7 +314,7 @@ export function ThreadAccountSection(props: {
       ) : null}
       {threadId === null ? null : (
         <Text className="mx-8 mt-2 text-xs text-foreground-muted">
-          Switching re-sends the thread's context as a cold cache write.
+          <T>Switching re-sends the thread's context as a cold cache write.</T>
         </Text>
       )}
       {error ? (

@@ -26,7 +26,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { CircleArrowUpIcon } from "lucide-react";
 import { type ComponentProps, useRef, useState } from "react";
-import { msg, T, useGT, useMessages } from "gt-react";
+import { msg, T, useGT, useMessages, Var } from "gt-react";
 import { m, type MessageResolver } from "../i18n/messages";
 
 import { requestConfirmDialog } from "~/confirmDialog";
@@ -410,16 +410,18 @@ export function ServerUpdateAction({
   if (selfUpdate === null && manualCommand === null) {
     return (
       <span className="text-muted-foreground text-xs">
-        Install t3 {targetVersion} on that machine from{" "}
-        <a
-          className="underline"
-          href={cliReleasesPageUrl(targetVersion)}
-          target="_blank"
-          rel="noreferrer noopener"
-        >
-          the fork's releases
-        </a>
-        .
+        <T>
+          Install t3 <Var>{targetVersion}</Var> on that machine from{" "}
+          <a
+            className="underline"
+            href={cliReleasesPageUrl(targetVersion)}
+            target="_blank"
+            rel="noreferrer noopener"
+          >
+            the fork’s releases
+          </a>
+          .
+        </T>
       </span>
     );
   }

@@ -386,8 +386,8 @@ export function QueuedRunsControl({
                     </TooltipTrigger>
                     <TooltipPopup>
                       {item.delivery === "delivering"
-                        ? "Handing this message to the agent"
-                        : "Waiting for the next tool boundary or turn"}
+                        ? gt("Handing this message to the agent")
+                        : gt("Waiting for the next tool boundary or turn")}
                     </TooltipPopup>
                   </Tooltip>
                 ) : null}

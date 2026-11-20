@@ -1,3 +1,4 @@
+import { useGT, T } from "gt-react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
@@ -44,6 +45,7 @@ function ContextNoteDialog({
   threadRef: ScopedThreadRef;
   onClose: () => void;
 }) {
+  const gt = useGT();
   const id = useId();
   const thread = useThreadShell(threadRef);
   const note = thread?.contextNote;
@@ -70,7 +72,7 @@ function ContextNoteDialog({
       onClose();
     } else if (!isAtomCommandInterrupted(result)) {
       const failure = squashAtomCommandFailure(result);
-      setError(failure instanceof Error ? failure.message : "Could not save the context note.");
+      setError(failure instanceof Error ? failure.message : gt("Could not save the context note."));
     }
   };
 
@@ -89,16 +91,22 @@ function ContextNoteDialog({
           }}
         >
           <DialogHeader>
-            <DialogTitle>Context note</DialogTitle>
+            <DialogTitle>
+              <T>Context note</T>
+            </DialogTitle>
             <DialogDescription>
-              Give agents current context when they read or attach this thread. Markdown is
-              supported. The note does not send a message or change the conversation.
+              <T>
+                Give agents current context when they read or attach this thread. Markdown is
+                supported. The note does not send a message or change the conversation.
+              </T>
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
             <div className="flex flex-col gap-4">
               <div className="flex flex-col gap-2">
-                <Label htmlFor={id}>Note</Label>
+                <Label htmlFor={id}>
+                  <T>Note</T>
+                </Label>
                 <Textarea
                   id={id}
                   value={text}
@@ -112,7 +120,7 @@ function ContextNoteDialog({
                 </p>
               </div>
               <RadioGroup
-                aria-label="Opening context"
+                aria-label={gt("Opening context")}
                 value={mode}
                 disabled={!canUpdate || saving}
                 onValueChange={(value) => {
@@ -121,17 +129,19 @@ function ContextNoteDialog({
               >
                 <Label>
                   <Radio value="prepend" />
-                  Before the starting messages
+                  <T>Before the starting messages</T>
                 </Label>
                 <Label>
                   <Radio value="replace" />
-                  Instead of the starting messages
+                  <T>Instead of the starting messages</T>
                 </Label>
               </RadioGroup>
               {note && (
                 <p className="text-xs text-muted-foreground">
-                  Last edited by {note.author.kind === "agent" ? "an agent" : "a user"} ·{" "}
-                  {new Date(note.updatedAt).toLocaleString()}
+                  {gt("Last edited by {author} · {timestamp}", {
+                    author: note.author.kind === "agent" ? gt("an agent") : gt("a user"),
+                    timestamp: new Date(note.updatedAt).toLocaleString(),
+                  })}
                 </p>
               )}
               {error && (
@@ -149,14 +159,14 @@ function ContextNoteDialog({
                 disabled={!canUpdate || saving}
                 onClick={() => void save(true)}
               >
-                Remove note
+                <T>Remove note</T>
               </Button>
             )}
             <Button type="button" variant="outline" disabled={saving} onClick={onClose}>
-              Cancel
+              <T>Cancel</T>
             </Button>
             <Button type="submit" disabled={!canUpdate || saving || !text.trim()}>
-              {saving ? "Saving…" : "Save note"}
+              {saving ? gt("Saving…") : gt("Save note")}
             </Button>
           </DialogFooter>
         </form>

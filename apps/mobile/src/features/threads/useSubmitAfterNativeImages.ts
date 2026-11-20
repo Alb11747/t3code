@@ -1,17 +1,17 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
-import type { ActiveTurnComposerAction } from "@t3tools/client-runtime/state/composer-dispatch";
+import type { ComposerSendChoice } from "../../state/use-thread-composer-state";
 
 export function useSubmitAfterNativeImages(props: {
   readonly draftKey: string;
   readonly readResetGeneration: () => number;
   readonly blocked: boolean;
   readonly onPasteImages: (uris: ReadonlyArray<string>) => Promise<boolean>;
-  readonly onSubmit: (followUp?: ActiveTurnComposerAction) => void;
+  readonly onSubmit: (followUp?: ComposerSendChoice) => void;
 }) {
   type HeldSend = {
     readonly draftKey: string;
     readonly generation: number;
-    readonly followUp?: ActiveTurnComposerAction;
+    readonly followUp?: ComposerSendChoice;
   };
   const pendingCount = useRef(0);
   const failed = useRef(false);
@@ -30,7 +30,7 @@ export function useSubmitAfterNativeImages(props: {
     sendReleased(releasedSend);
   }, [releasedSend, props.blocked]);
   return {
-    deferSend: (followUp?: ActiveTurnComposerAction) => {
+    deferSend: (followUp?: ComposerSendChoice) => {
       if (pendingCount.current === 0) return false;
       heldSend.current = {
         draftKey: props.draftKey,

@@ -1,3 +1,5 @@
+import { m, type MessageResolver } from "~/i18n/messages";
+import { msg, useGT, T } from "gt-react";
 import { useAtomValue } from "@effect/atom-react";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -38,31 +40,54 @@ type StallProps = {
  * Fork: the quota router holds this Claude turn's requests, to keep its prompt cache warm or
  * because the thread's pin waits for its account.
  */
-export function keepWarmStallBannerItem(props: StallProps): ComposerBannerStackItem {
+export function keepWarmStallBannerItem(
+  props: StallProps,
+  resolve: MessageResolver = m,
+): ComposerBannerStackItem {
   const { hold, timestampFormat } = props;
   const reset = formatUpcomingTimestamp(hold.resetAt, timestampFormat);
   const id = `keep-warm-stall:${props.threadId}`;
   if (hold.kind === "pin") {
-    const pinned = hold.account ?? "the chosen account";
+    const pinned = hold.account ?? resolve(msg("the chosen account"));
     return {
       id,
       variant: "warning",
       icon: <HourglassIcon />,
-      title: `Waiting for ${pinned}`,
+      title: resolve(msg("Waiting for {account}", { account: pinned })),
       description: hold.resetUnknown
-        ? `This thread is set to wait for ${pinned}, which the hub cannot use right now. It checks again ${formatUpcomingTimestamp(hold.releaseAt, timestampFormat)}.`
-        : `This thread is set to wait for ${pinned}, which resets ${reset}.`,
+        ? resolve(
+            msg(
+              "This thread is set to wait for {account}, which the hub cannot use right now. It checks again {releaseAt}.",
+              {
+                account: pinned,
+                releaseAt: formatUpcomingTimestamp(hold.releaseAt, timestampFormat),
+              },
+            ),
+          )
+        : resolve(
+            msg("This thread is set to wait for {account}, which resets {resetAt}.", {
+              account: pinned,
+              resetAt: reset,
+            }),
+          ),
       actions: <StallActions key={hold.resetAt} {...props} />,
     };
   }
-  const account = hold.account ? `Claude account ${hold.account}` : "Claude";
+  const account = hold.account
+    ? resolve(msg("Claude account {account}", { account: hold.account }))
+    : "Claude";
   if (hold.released) {
     return {
       id,
       variant: "info",
       icon: <SnowflakeIcon />,
-      title: "No longer stalling to keep cache warm",
-      description: `${account} is nearly out of its 5-hour limit, which resets ${reset}. Requests run normally until then; reaching the limit first can let the prompt cache expire.`,
+      title: resolve(msg("No longer stalling to keep cache warm")),
+      description: resolve(
+        msg(
+          "{account} is nearly out of its 5-hour limit, which resets {resetAt}. Requests run normally until then; reaching the limit first can let the prompt cache expire.",
+          { account, resetAt: reset },
+        ),
+      ),
       // Same key as the stall's actions: a release still in flight keeps them disabled.
       actions: <StallActions key={hold.resetAt} {...props} />,
     };
@@ -71,8 +96,17 @@ export function keepWarmStallBannerItem(props: StallProps): ComposerBannerStackI
     id,
     variant: "warning",
     icon: <SnowflakeIcon />,
-    title: "Stalled to keep cache warm",
-    description: `${account} is nearly out of its 5-hour limit, which resets ${reset}. Next request ${formatUpcomingTimestamp(hold.releaseAt, timestampFormat)}.`,
+    title: resolve(msg("Stalled to keep cache warm")),
+    description: resolve(
+      msg(
+        "{account} is nearly out of its 5-hour limit, which resets {resetAt}. Next request {releaseAt}.",
+        {
+          account,
+          resetAt: reset,
+          releaseAt: formatUpcomingTimestamp(hold.releaseAt, timestampFormat),
+        },
+      ),
+    ),
     actions: <StallActions key={hold.resetAt} {...props} />,
   };
 }
@@ -87,6 +121,7 @@ const ACTION_FAILURES: Record<ClaudeKeepWarmAction, string> = {
 };
 
 function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProps) {
+  const gt = useGT();
   const runAction = useAtomCommand(orchestrationEnvironment.claudeKeepWarmAction, {
     reportFailure: false,
   });
@@ -129,7 +164,7 @@ function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProp
       toastManager.add({
         type: "error",
         title: ACTION_FAILURES[action],
-        description: cause instanceof Error ? cause.message : "An error occurred.",
+        description: cause instanceof Error ? cause.message : gt("An error occurred."),
       });
     }
   }
@@ -145,8 +180,8 @@ function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProp
       const cause = squashAtomCommandFailure(result);
       toastManager.add({
         type: "error",
-        title: snoozed ? "Could not wake thread" : "Could not snooze thread",
-        description: cause instanceof Error ? cause.message : "An error occurred.",
+        title: snoozed ? gt("Could not wake thread") : gt("Could not snooze thread"),
+        description: cause instanceof Error ? cause.message : gt("An error occurred."),
       });
     }
   }
@@ -157,7 +192,7 @@ function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProp
     return (
       <>
         <Button size="xs" variant="ghost" disabled={disabled} onClick={chooseAccount}>
-          Switch account…
+          <T>Switch account…</T>
         </Button>
         <Tooltip>
           <TooltipTrigger
@@ -168,28 +203,34 @@ function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProp
                 disabled={disabled}
                 onClick={() => void act("stop_waiting")}
               >
-                Stop waiting
+                <T>Stop waiting</T>
               </Button>
             }
           />
           <TooltipPopup side="top">
-            Keeps this account but turns off Wait when it runs out, so the request goes to another
-            account now (cold cache write).
+            <T>
+              Keeps this account but turns off Wait when it runs out, so the request goes to another
+              account now (cold cache write).
+            </T>
           </TooltipPopup>
         </Tooltip>
         {hold.resetUnknown ? null : (
           <Menu>
             <MenuTrigger
               disabled={disabled}
-              render={<Button size="icon-xs" variant="ghost" aria-label="More stall actions" />}
+              render={
+                <Button size="icon-xs" variant="ghost" aria-label={gt("More stall actions")} />
+              }
             >
               <EllipsisIcon />
             </MenuTrigger>
             <MenuPopup {...composerFloatingLayerProps} side="top" align="end" width="content">
               <MenuItem onClick={() => void toggleSnooze()}>
-                {snoozed ? "Wake now" : "Snooze until reset"}
+                {snoozed ? gt("Wake now") : gt("Snooze until reset")}
               </MenuItem>
-              <MenuItem onClick={() => void act("pause")}>Pause until reset</MenuItem>
+              <MenuItem onClick={() => void act("pause")}>
+                <T>Pause until reset</T>
+              </MenuItem>
             </MenuPopup>
           </Menu>
         )}
@@ -199,14 +240,14 @@ function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProp
   if (hold.released) {
     return (
       <Button size="xs" variant="ghost" disabled={disabled} onClick={() => void act("restore")}>
-        Stall again
+        <T>Stall again</T>
       </Button>
     );
   }
   return (
     <>
       <Button size="xs" variant="ghost" disabled={disabled} onClick={() => void act("release")}>
-        Back to normal
+        <T>Back to normal</T>
       </Button>
       <Tooltip>
         <TooltipTrigger
@@ -217,38 +258,49 @@ function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProp
               disabled={disabled}
               onClick={() => (accounts?.owner ? chooseAccount() : void act("switch"))}
             >
-              Switch account
+              <T>Switch account</T>
             </Button>
           }
         />
         <TooltipPopup side="top">
-          Moves this thread to another account. Its context is written to that account's cache once
-          (cold cache write). A conversation bound to its account also drops its earlier thinking.
+          <T>
+            Moves this thread to another account. Its context is written to that account's cache
+            once (cold cache write). A conversation bound to its account also drops its earlier
+            thinking.
+          </T>
         </TooltipPopup>
       </Tooltip>
       <Menu>
         <MenuTrigger
           disabled={disabled}
-          render={<Button size="icon-xs" variant="ghost" aria-label="More stall actions" />}
+          render={<Button size="icon-xs" variant="ghost" aria-label={gt("More stall actions")} />}
         >
           <EllipsisIcon />
         </MenuTrigger>
         <MenuPopup {...composerFloatingLayerProps} side="top" align="end" width="content">
-          {accounts ? <MenuItem onClick={chooseAccount}>Choose account…</MenuItem> : null}
+          {accounts ? (
+            <MenuItem onClick={chooseAccount}>
+              <T>Choose account…</T>
+            </MenuItem>
+          ) : null}
           <MenuItem onClick={() => void act("compact")}>
             {compactionNote ? (
               <span className="flex flex-col">
-                <span>Compact</span>
+                <span>
+                  <T>Compact</T>
+                </span>
                 <span className="text-xs text-muted-foreground">{compactionNote}</span>
               </span>
             ) : (
-              "Compact"
+              gt("Compact")
             )}
           </MenuItem>
           <MenuItem onClick={() => void toggleSnooze()}>
-            {snoozed ? "Wake now" : "Snooze until reset"}
+            {snoozed ? gt("Wake now") : gt("Snooze until reset")}
           </MenuItem>
-          <MenuItem onClick={() => void act("pause")}>Pause until reset</MenuItem>
+          <MenuItem onClick={() => void act("pause")}>
+            <T>Pause until reset</T>
+          </MenuItem>
         </MenuPopup>
       </Menu>
     </>

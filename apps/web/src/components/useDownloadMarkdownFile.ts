@@ -1,3 +1,5 @@
+import { m } from "~/i18n/messages";
+import { msg } from "gt-react";
 import { AuthFilesystemReadScope, type ScopedThreadRef } from "@t3tools/contracts";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -54,8 +56,8 @@ export function useDownloadMarkdownFile(threadRef: ScopedThreadRef | undefined) 
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Could not download file",
-          description: cause instanceof Error ? cause.message : "The download failed.",
+          title: m(msg("Could not download file")),
+          description: cause instanceof Error ? cause.message : m(msg("The download failed.")),
         }),
       );
     });

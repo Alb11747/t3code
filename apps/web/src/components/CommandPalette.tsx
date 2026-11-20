@@ -1558,7 +1558,7 @@ function OpenCommandPaletteDialog(props: {
       kind: "action",
       value: "action:context-note",
       searchTerms: ["context", "note", "thread", "prepend", "replace"],
-      title: "Context note…",
+      title: gt("Context note…"),
       icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
       run: async () => openContextNoteDialog(threadRef),
     });
