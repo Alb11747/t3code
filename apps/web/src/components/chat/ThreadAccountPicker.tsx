@@ -191,7 +191,16 @@ function ThreadAccountPickerChip(
     chosen !== undefined &&
     next !== undefined &&
     next.routerAlias !== chosen.routerAlias;
-  const provider = PROVIDER_NAMES[state.accounts[0]?.driver ?? ""] ?? gt("Provider");
+  const driver = state.accounts[0]?.driver;
+  const provider = PROVIDER_NAMES[driver ?? ""] ?? gt("Provider");
+  const canWaitForAccount = driver === "claudeAgent";
+  const fallbackNote =
+    deviates && chosen && next
+      ? {
+          chosen: accountShortLabel(chosen, state.accounts),
+          next: accountShortLabel(next, state.accounts),
+        }
+      : null;
   const contextNote =
     props.contextTokens !== null && props.contextTokens > 0
       ? gt("Switching re-sends the thread's {tokens} context as a cold cache write.", {
@@ -210,9 +219,10 @@ function ThreadAccountPickerChip(
 
   async function apply(
     account: RouterAccountAlias | null,
-    stall: boolean,
+    waitWhenOut: boolean,
     dropThinking = false,
   ): Promise<void> {
+    const stall = canWaitForAccount && waitWhenOut;
     if (isDraft) {
       accountSendGuard.noteOwnChange(threadKey);
       useComposerDraftStore
@@ -369,35 +379,39 @@ function ThreadAccountPickerChip(
               />
             ))}
             <div className="mt-1 flex flex-col gap-2 border-t px-1 pt-2">
-              <label className="flex items-center justify-between gap-3 text-sm">
-                <span className="flex flex-col">
-                  <span>
-                    <T>Wait when it runs out</T>
+              {canWaitForAccount ? (
+                <label className="flex items-center justify-between gap-3 text-sm">
+                  <span className="flex flex-col">
+                    <span>
+                      <T>Wait when it runs out</T>
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {choice?.stall
+                        ? gt("On: waits for this account to reset.")
+                        : gt("Off: falls back to another account.")}
+                    </span>
                   </span>
-                  <span className="text-xs text-muted-foreground">
-                    {choice?.stall
-                      ? gt("On: waits for this account to reset.")
-                      : gt("Off: falls back to another account.")}
-                  </span>
-                </span>
-                <Switch
-                  size="sm"
-                  checked={choice?.stall ?? false}
-                  disabled={busy || chosen === undefined || (!isDraft && !permitted)}
-                  onCheckedChange={(stall) => {
-                    if (chosen?.routerAlias) void apply(chosen.routerAlias, stall);
-                  }}
-                />
-              </label>
-              {deviates && chosen && next ? (
+                  <Switch
+                    size="sm"
+                    checked={choice?.stall ?? false}
+                    disabled={busy || chosen === undefined || (!isDraft && !permitted)}
+                    onCheckedChange={(stall) => {
+                      if (chosen?.routerAlias) void apply(chosen.routerAlias, stall);
+                    }}
+                  />
+                </label>
+              ) : null}
+              {fallbackNote ? (
                 <p className="text-xs text-warning-foreground">
-                  {gt(
-                    "{chosen} cannot take the next request, so it goes to {next}. Turn on Wait when it runs out to wait instead.",
-                    {
-                      chosen: accountShortLabel(chosen, state.accounts),
-                      next: accountShortLabel(next, state.accounts),
-                    },
-                  )}
+                  {canWaitForAccount
+                    ? gt(
+                        "{chosen} cannot take the next request, so it goes to {next}. Turn on Wait when it runs out to wait instead.",
+                        fallbackNote,
+                      )
+                    : gt(
+                        "{chosen} cannot take the next request, so it goes to {next}.",
+                        fallbackNote,
+                      )}
                 </p>
               ) : null}
               {compactionNote ? (

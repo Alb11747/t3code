@@ -4069,6 +4069,7 @@
   "66963ac464cf0115": "Activado: espera a que se restablezca el límite de esta cuenta.",
   "13d3fd53f83a046d": "Desactivado: usa otra cuenta como alternativa.",
   "1187afd714b99223": "{chosen} no puede recibir la siguiente solicitud, así que va a {next}. Activa «Esperar al agotar el límite» para esperar.",
+  "b100412a50dbe40d": "{chosen} no puede recibir la siguiente solicitud, así que va a {next}.",
   "6f744c59cf6143b9": "Usar también para nuevos hilos de {provider}",
   "bc9dbb905b443de9": "Dejar de enviar hilos nuevos de {provider} a {account}",
   "a5a7cfb376d234ff": "¿Cambiar este hilo a {account}?",

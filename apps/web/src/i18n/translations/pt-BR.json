@@ -4070,6 +4070,7 @@
   "66963ac464cf0115": "Ativado: aguarda a redefinição do limite desta conta.",
   "13d3fd53f83a046d": "Desativado: usa outra conta como alternativa.",
   "1187afd714b99223": "{chosen} não pode receber a próxima solicitação, então ela vai para {next}. Ative “Aguardar ao esgotar o limite” para esperar.",
+  "b100412a50dbe40d": "{chosen} não pode receber a próxima solicitação, então ela vai para {next}.",
   "6f744c59cf6143b9": "Usar também para novas conversas de {provider}",
   "bc9dbb905b443de9": "Parar de enviar novas conversas de {provider} para {account}",
   "a5a7cfb376d234ff": "Trocar esta conversa para {account}?",

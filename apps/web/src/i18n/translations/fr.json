@@ -4070,6 +4070,7 @@
   "66963ac464cf0115": "Activé : attend la réinitialisation du quota de ce compte.",
   "13d3fd53f83a046d": "Désactivé : utilise un autre compte si nécessaire.",
   "1187afd714b99223": "{chosen} ne peut pas accepter la prochaine requête, qui ira à {next}. Activez « Attendre quand le quota est épuisé » pour patienter.",
+  "b100412a50dbe40d": "{chosen} ne peut pas accepter la prochaine requête, qui ira à {next}.",
   "6f744c59cf6143b9": "Utiliser aussi pour les nouveaux fils {provider}",
   "bc9dbb905b443de9": "Ne plus envoyer les nouveaux fils {provider} à {account}",
   "a5a7cfb376d234ff": "Basculer ce fil sur {account} ?",

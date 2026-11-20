@@ -196,8 +196,8 @@ settings section when you no longer need it.
 When a Claude or Codex provider sends its requests through a hub running the quota router and
 the hub has two or more accounts for it, the composer shows an account chip next to the model
 picker (on mobile, in the thread's settings sheet). **Automatic** lets the router pick; choosing
-an account keeps the thread on it. With **Wait when it runs out** on, the thread waits for that
-account to reset instead of falling back to another one. **Use for new threads too** sends new
+an account keeps the thread on it. On Claude, **Wait when it runs out** waits for that account to
+reset instead of falling back to another one. **Use for new threads too** sends new
 threads of that provider to the account. A new thread can pick its account before its first
 message. The choice belongs to the provider it was made for: after switching the thread to
 another provider, it routes automatically until you pick again.

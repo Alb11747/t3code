@@ -4073,6 +4073,7 @@
   "66963ac464cf0115": "Ein: wartet auf die Limit-Zurücksetzung dieses Kontos.",
   "13d3fd53f83a046d": "Aus: weicht auf ein anderes Konto aus.",
   "1187afd714b99223": "{chosen} kann die nächste Anfrage nicht annehmen. Sie geht an {next}. Aktiviere „Bei ausgeschöpftem Limit warten“, um stattdessen zu warten.",
+  "b100412a50dbe40d": "{chosen} kann die nächste Anfrage nicht annehmen. Sie geht an {next}.",
   "6f744c59cf6143b9": "Auch für neue {provider}-Threads verwenden",
   "bc9dbb905b443de9": "Neue {provider}-Threads nicht mehr an {account} senden",
   "a5a7cfb376d234ff": "Diesen Thread zu {account} verschieben?",

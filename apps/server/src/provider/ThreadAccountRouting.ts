@@ -91,20 +91,23 @@ export const make = Effect.gen(function* () {
       input.providerThread.providerInstanceId,
     );
     const session = input.providerThread.nativeThreadRef?.nativeId;
-    if (!choice || !session || !routerProviderOf(input.providerThread.driver)) {
+    const routerProvider = routerProviderOf(input.providerThread.driver);
+    if (!choice || !session || !routerProvider) {
       failedWaitingPins.delete(input.appThread.id);
       return drops;
     }
+    const stall = routerProvider === "claude" && choice.stall;
+    if (!stall) failedWaitingPins.delete(input.appThread.id);
     yield* Effect.gen(function* () {
       const hub = yield* sources.hub(choice.sourceId);
       if (hub === null) {
-        if (choice.stall) failedWaitingPins.add(input.appThread.id);
+        if (stall) failedWaitingPins.add(input.appThread.id);
         return;
       }
       yield* sources.pin(hub, {
         sessions: [session],
         account: (yield* sources.routerAlias(choice.sourceId))(choice.account),
-        stall: choice.stall,
+        stall,
         expiresAt: controlExpiry(yield* DateTime.now),
         // Each pin replaces the last; a plain one would end the move that subagents still follow.
         move: drops,
@@ -120,7 +123,7 @@ export const make = Effect.gen(function* () {
           // A waiting choice's exclusivity is broken for this turn, which agents need to see.
           Effect.andThen(
             Effect.sync(() => {
-              if (choice.stall) failedWaitingPins.add(input.appThread.id);
+              if (stall) failedWaitingPins.add(input.appThread.id);
             }),
           ),
         ),

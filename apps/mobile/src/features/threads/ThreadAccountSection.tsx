@@ -111,7 +111,9 @@ export function ThreadAccountSection(props: {
   const chosen = byAlias(choice?.account);
   const owner = byAlias(state.owner);
   const steered = byAlias(state.steer);
-  const provider = PROVIDER_NAMES[state.accounts[0]?.driver ?? ""] ?? "Provider";
+  const driver = state.accounts[0]?.driver;
+  const provider = PROVIDER_NAMES[driver ?? ""] ?? "Provider";
+  const canWaitForAccount = driver === "claudeAgent";
   const disabled = pending || (threadId !== null && !permitted);
 
   async function run(
@@ -151,7 +153,8 @@ export function ThreadAccountSection(props: {
       destructive: true,
       onConfirm: () => set(alias, stall, true),
     });
-  const set = (account: RouterAccountAlias | null, stall: boolean, dropThinking = false) => {
+  const set = (account: RouterAccountAlias | null, waitWhenOut: boolean, dropThinking = false) => {
+    const stall = canWaitForAccount && waitWhenOut;
     if (threadId !== null) noteThreadAccountChange(props.environmentId, threadId);
     if (threadId === null) {
       onDraftChange?.(
@@ -248,26 +251,28 @@ export function ThreadAccountSection(props: {
             </Pressable>
           );
         })}
-        <View className="min-h-11 flex-row items-center justify-between border-b border-border-subtle bg-grouped-card px-4 py-1">
-          <View className="flex-1">
-            <Text className="text-sm font-t3-medium text-foreground">
-              <T>Wait when it runs out</T>
-            </Text>
-            <Text className="text-xs text-foreground-muted">
-              {choice?.stall
-                ? gt("On: waits for the account to reset.")
-                : gt("Off: falls back to another account.")}
-            </Text>
+        {canWaitForAccount ? (
+          <View className="min-h-11 flex-row items-center justify-between border-b border-border-subtle bg-grouped-card px-4 py-1">
+            <View className="flex-1">
+              <Text className="text-sm font-t3-medium text-foreground">
+                <T>Wait when it runs out</T>
+              </Text>
+              <Text className="text-xs text-foreground-muted">
+                {choice?.stall
+                  ? gt("On: waits for the account to reset.")
+                  : gt("Off: falls back to another account.")}
+              </Text>
+            </View>
+            <ThemedSwitch
+              accessibilityLabel={gt("Wait when it runs out")}
+              disabled={disabled || !chosen?.routerAlias}
+              value={choice?.stall ?? false}
+              onValueChange={(stall) => {
+                if (chosen?.routerAlias) set(chosen.routerAlias, stall);
+              }}
+            />
           </View>
-          <ThemedSwitch
-            accessibilityLabel={gt("Wait when it runs out")}
-            disabled={disabled || !chosen?.routerAlias}
-            value={choice?.stall ?? false}
-            onValueChange={(stall) => {
-              if (chosen?.routerAlias) set(chosen.routerAlias, stall);
-            }}
-          />
-        </View>
+        ) : null}
         {chosen?.routerAlias && steered?.routerAlias !== chosen.routerAlias ? (
           <Pressable
             accessibilityRole="button"

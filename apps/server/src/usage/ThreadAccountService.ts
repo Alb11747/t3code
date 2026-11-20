@@ -62,6 +62,10 @@ const isRouterAccountAlias = Schema.is(RouterAccountAlias);
 const isRouterProvider = Schema.is(RouterProvider);
 const NOT_ROUTED =
   "This thread's provider does not route through one CLI Proxy quota router with several accounts.";
+const unsupportedWait = (instanceId: ProviderInstanceId) =>
+  fail(
+    `waitWhenOut works only for Claude threads; ${instanceId} would look hung while it waits. Omit waitWhenOut.`,
+  );
 const MARGIN_ACTOR = "T3 Code";
 const MAX_CONTROL_MS = 7 * 24 * 60 * 60 * 1000;
 // Composers poll the preview while visible and check it before each send; one read per hub,
@@ -526,6 +530,8 @@ export const make = Effect.gen(function* () {
       return;
     }
     if (target === null) return yield* fail(NOT_ROUTED);
+    const canWait = target.routerProvider === "claude";
+    if (input.stall === true && !canWait) return yield* unsupportedWait(target.instanceId);
     const rename = yield* sources.routerAlias(target.source.id);
     const account = (yield* named(
       target.accounts,
@@ -536,7 +542,8 @@ export const make = Effect.gen(function* () {
     // Changing only the account keeps the stored wait-when-out setting.
     const current = threadAccountChoiceFor(thread.accountChoice, target.instanceId);
     const stall =
-      input.stall ?? (current && rename(current.account) === account ? current.stall : false);
+      canWait &&
+      (input.stall ?? (current && rename(current.account) === account ? current.stall : false));
     const pick = session
       ? yield* api.nextPick(target.hub, {
           provider: target.routerProvider,
@@ -600,9 +607,7 @@ export const make = Effect.gen(function* () {
     }
     // Only Claude turns show the router's holds, so a waiting Codex thread would look hung.
     if (input.stall && target.routerProvider !== "claude") {
-      return yield* fail(
-        `waitWhenOut works only for Claude threads; ${input.instanceId} would look hung while it waits. Omit waitWhenOut.`,
-      );
+      return yield* unsupportedWait(input.instanceId);
     }
     const rename = yield* sources.routerAlias(target.source.id);
     const account = (yield* named(

@@ -4070,6 +4070,7 @@
   "66963ac464cf0115": "På: väntar tills det här kontots användningsgräns återställs.",
   "13d3fd53f83a046d": "Av: växlar till ett annat konto.",
   "1187afd714b99223": "{chosen} kan inte ta nästa förfrågan, så den går till {next}. Aktivera ”Vänta när gränsen nås” för att vänta i stället.",
+  "b100412a50dbe40d": "{chosen} kan inte ta nästa förfrågan, så den går till {next}.",
   "6f744c59cf6143b9": "Använd även för nya {provider}-trådar",
   "bc9dbb905b443de9": "Sluta skicka nya {provider}-trådar till {account}",
   "a5a7cfb376d234ff": "Byta konto för den här tråden till {account}?",

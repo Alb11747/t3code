@@ -438,6 +438,49 @@ describe("ThreadAccountService.set", () => {
     }),
   );
 
+  it.effect("rejects Codex wait before changing either hub", () =>
+    Effect.gen(function* () {
+      const { result, pins, commands, controls } = yield* setAccount({
+        owner: null,
+        account: CODEX_ACCOUNT,
+        stall: true,
+        accountChoice: { sourceId: "hub", account: OTHER, stall: true, instanceId: "claude" },
+        separateCodexHub: true,
+      });
+      expect(Result.isFailure(result) && result.failure.detail).toContain(
+        "waitWhenOut works only for Claude threads",
+      );
+      expect(pins).toEqual([]);
+      expect(commands).toEqual([]);
+      expect(controls).toEqual([]);
+    }),
+  );
+
+  it.effect("turns off a legacy Codex wait when saving its account again", () =>
+    Effect.gen(function* () {
+      const { result, pins, commands } = yield* setAccount({
+        owner: null,
+        account: CODEX_ACCOUNT,
+        stall: undefined,
+        accountChoice: {
+          sourceId: "codex-hub",
+          account: CODEX_ACCOUNT,
+          stall: true,
+          instanceId: "codex",
+        },
+        separateCodexHub: true,
+      });
+      expect(Result.isSuccess(result)).toBe(true);
+      expect(pins).toMatchObject([{ account: CODEX_ACCOUNT, stall: false }]);
+      expect(commands).toMatchObject([
+        {
+          type: "thread.account-choice.set",
+          accountChoice: { account: CODEX_ACCOUNT, stall: false },
+        },
+      ]);
+    }),
+  );
+
   it.effect.each([
     { name: "clears the previous hub's pins before saving the new choice" },
     {
@@ -453,6 +496,7 @@ describe("ThreadAccountService.set", () => {
       const { commands, controls, pins, result } = yield* setAccount({
         owner: null,
         account: CODEX_ACCOUNT,
+        stall: false,
         accountChoice: { sourceId: "hub", account: OTHER, stall: true, instanceId: "claude" },
         separateCodexHub: true,
         ...(unpinError === undefined ? {} : { unpinError }),

@@ -4072,6 +4072,7 @@
   "66963ac464cf0115": "On: waits for this account to reset.",
   "13d3fd53f83a046d": "Off: falls back to another account.",
   "1187afd714b99223": "{chosen} cannot take the next request, so it goes to {next}. Turn on Wait when it runs out to wait instead.",
+  "b100412a50dbe40d": "{chosen} cannot take the next request, so it goes to {next}.",
   "6f744c59cf6143b9": "Use for new {provider} threads too",
   "bc9dbb905b443de9": "Stop sending new {provider} threads to {account}",
   "a5a7cfb376d234ff": "Switch this thread to {account}?",

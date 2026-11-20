@@ -73,6 +73,7 @@ function prepareTurn(input: {
   readonly accountChoice?: object;
   readonly accountMovedAt?: string;
   readonly instanceId?: string;
+  readonly driver?: "claudeAgent" | "codex";
   readonly pin?: Effect.Effect<undefined, UsageLimitSourceError>;
 }) {
   const pins: Pin[] = [];
@@ -87,7 +88,7 @@ function prepareTurn(input: {
           accountMovedAt: input.accountMovedAt,
         } as never,
         providerThread: {
-          driver: "claudeAgent",
+          driver: input.driver ?? "claudeAgent",
           providerInstanceId: input.instanceId ?? "claude",
           nativeThreadRef: { nativeId: "native" },
         } as never,
@@ -142,6 +143,16 @@ describe("ThreadAccountRouting.prepareTurn", () => {
       drops: true,
     },
     { name: "makes no router call without a choice", input: {}, pins: [], drops: false },
+    {
+      name: "refreshes a legacy Codex wait as a fallback pin",
+      input: {
+        accountChoice: { ...CHOICE, instanceId: "codex" },
+        instanceId: "codex",
+        driver: "codex" as const,
+      },
+      pins: [expect.objectContaining({ account: CHOICE.account, stall: false })],
+      drops: false,
+    },
     {
       name: "skips a choice made for another provider instance",
       input: { accountChoice: { ...CHOICE, instanceId: "claude-work" } },
