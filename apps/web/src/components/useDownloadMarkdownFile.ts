@@ -22,10 +22,10 @@ export function useDownloadMarkdownFile(threadRef: ScopedThreadRef | undefined) 
     const download = async () => {
       const { environmentId, threadId } = threadRef;
       if (!readEnvironmentScope(environmentId, AuthFilesystemReadScope)) {
-        throw new Error("This connection cannot read host files.");
+        throw new Error(m(msg("This connection cannot read host files.")));
       }
       const connection = readPreparedConnection(environmentId);
-      if (!connection) throw new Error("Reconnect to this environment and try again.");
+      if (!connection) throw new Error(m(msg("Reconnect to this environment and try again.")));
       const result = await createAssetUrl({
         environmentId,
         input: {
@@ -34,13 +34,13 @@ export function useDownloadMarkdownFile(threadRef: ScopedThreadRef | undefined) 
       });
       if (result._tag === "Failure") throw squashAtomCommandFailure(result);
       if (!readEnvironmentScope(environmentId, AuthFilesystemReadScope)) {
-        throw new Error("This connection cannot read host files.");
+        throw new Error(m(msg("This connection cannot read host files.")));
       }
       const url = resolveAssetUrl(connection.httpBaseUrl, result.value.relativeUrl);
-      if (!url) throw new Error("The environment returned an invalid file URL.");
+      if (!url) throw new Error(m(msg("The environment returned an invalid file URL.")));
       if (window.desktopBridge?.downloadFile) {
         if (!(await window.desktopBridge.downloadFile(url))) {
-          throw new Error("The desktop app could not start the download.");
+          throw new Error(m(msg("The desktop app could not start the download.")));
         }
         return;
       }
