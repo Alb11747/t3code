@@ -112,12 +112,12 @@ export function keepWarmStallBannerItem(
 }
 
 const ACTION_FAILURES: Record<ClaudeKeepWarmAction, string> = {
-  release: "Could not resume normal requests",
-  restore: "Could not turn stalling back on",
-  switch: "Could not switch accounts",
-  compact: "Could not compact the thread",
-  pause: "Could not pause the thread",
-  stop_waiting: "Could not stop waiting",
+  release: msg("Could not resume normal requests"),
+  restore: msg("Could not turn stalling back on"),
+  switch: msg("Could not switch accounts"),
+  compact: msg("Could not compact the thread"),
+  pause: msg("Could not pause the thread"),
+  stop_waiting: msg("Could not stop waiting"),
 };
 
 function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProps) {
@@ -163,8 +163,8 @@ function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProp
       const cause = squashAtomCommandFailure(result);
       toastManager.add({
         type: "error",
-        title: ACTION_FAILURES[action],
-        description: cause instanceof Error ? cause.message : gt("An error occurred."),
+        title: m(ACTION_FAILURES[action]),
+        description: cause instanceof Error ? cause.message : m(msg("An error occurred.")),
       });
     }
   }
