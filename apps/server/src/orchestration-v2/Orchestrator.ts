@@ -2545,6 +2545,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ["completed", "failed", "cancelled", "interrupted"].includes(task.status)
     )
       return true;
+    // DelegatedTaskHoldReactor's notice holds only while the task's message does. The child
+    // releases its queue before the parent's task leaves idle, so read the child's run.
+    if (messageId.startsWith("message:delegated-task-held:")) {
+      if (task.completionDelivery?.state === "disposed") return true;
+      const { runs } = yield* projectionStore
+        .getThreadRecords(childThreadId, ["runs"], { runStatuses: ["queued"] })
+        .pipe(
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: childThreadId, cause }),
+          ),
+        );
+      return !runs.some((run) => run.delegatedTaskId === task.id && run.queueHeld === true);
+    }
     const child = yield* projectionStore
       .getThreadRecords(childThreadId, ["runtimeRequests"])
       .pipe(
@@ -4102,7 +4115,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const source = message?.notification?.source;
         return (
           message?.creationSource === "server" &&
-          message.id.startsWith("message:delegated-task-question:") &&
+          (message.id.startsWith("message:delegated-task-question:") ||
+            message.id.startsWith("message:delegated-task-held:")) &&
           source?.kind === "delegated_task" &&
           (input.taskIds === undefined ||
             source.taskIds.some((taskId) => input.taskIds!.includes(taskId)))
@@ -12493,7 +12507,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         queuedRun.freshContext === true ||
         queuedRun.delegatedTaskId !== undefined ||
         queuedRun.queueHeld === true ||
-        (yield* stopReachedRun(command, command.threadId, command.targetRunId))
+        (yield* stopReachedRun(command, command.threadId, command.targetRunId)) ||
+        (queuedMessage.id.startsWith("message:delegated-task-held:") &&
+          (yield* isStaleQuestionWake(projection, queuedMessage.id, queuedMessage.notification)))
       ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -17460,7 +17476,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         if (
           command.type !== "message.dispatch" ||
           command.creationSource !== "server" ||
-          !command.messageId.startsWith("message:delegated-task-question:") ||
+          !(
+            command.messageId.startsWith("message:delegated-task-question:") ||
+            command.messageId.startsWith("message:delegated-task-held:")
+          ) ||
           command.notification?.source.kind !== "delegated_task"
         ) {
           return yield* dispatchWithReceiptEffect(command);

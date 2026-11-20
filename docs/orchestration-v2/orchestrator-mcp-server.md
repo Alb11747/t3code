@@ -323,7 +323,8 @@ Stops every task the child delegated, then the child thread with the internal
 parent delivery. Like a user Stop, `thread.stop` interrupts the running turn, holds
 queued turns, and ends pull request watches. The task's own queued turn is cancelled
 even if Stop already held it, so a task that is only queued can be cancelled; other
-queued turns in the child stay held for Resume. A nonterminal task is rejected when
+queued turns in the child stay held for Resume. Another task whose turn is held this way
+goes `idle`, and its owner gets one notice that it is held. A nonterminal task is rejected when
 it has no interruptible run, no queued turn of its own, and its finished turn no
 longer waits on background work or delegated tasks. Once a cancelled task's turn
 ends, a completed result settles as `interrupted` and a failed one stays `failed`. A

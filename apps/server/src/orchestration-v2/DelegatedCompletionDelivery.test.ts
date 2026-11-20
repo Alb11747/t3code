@@ -62,6 +62,10 @@ import * as ProviderContinuationRequests from "@t3tools/provider-core/server/Pro
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { PROVIDER_STOP_REASON_SIGNAL } from "@t3tools/provider-core/server/subagentProjection";
 import * as ProviderContinuationService from "./ProviderContinuationService.ts";
+import {
+  verifyHeldFollowUpWakesOwner,
+  verifySettledFollowUpSaysUnread,
+} from "./DelegatedTaskHold.fork.testkit.ts";
 
 const layerPlatformTest = Layer.merge(
   Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
@@ -159,7 +163,8 @@ const layerTest = Layer.mergeAll(
   ),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(McpProviderSessions.layer),
-  Layer.provide(SqlitePersistence.layerMemory),
+  // The hold reactor's fork tests read projections from the same database.
+  Layer.provideMerge(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStoreTest),
   Layer.provide(layerServerConfig),
   Layer.provide(ServerSettings.layerTest()),
@@ -2438,6 +2443,43 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
         assert.equal(resumed.subagents.find((row) => row.id === task.id)?.status, "running");
         assert.isNull(resumed.subagents.find((row) => row.id === task.id)?.result);
       }),
+    );
+
+    const seedFinishedChild = (name: string, { parentBusy }: { readonly parentBusy: boolean }) =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const parentThreadId = ThreadId.make(`thread:${name}-parent`);
+        const projectId = ProjectId.make(`project:${name}`);
+        const parentRunId = RunId.make(`run:${name}-parent`);
+        const rootNodeId = NodeId.make(`node:${name}-parent`);
+        yield* seedParentWithTerminalTask({
+          threadId: parentThreadId,
+          projectId,
+          runId: parentRunId,
+          rootNodeId,
+          taskId: NodeId.make(`node:${name}-seed`),
+          deliveryState: "acknowledged",
+          parentRunStatus: parentBusy ? "running" : "completed",
+          now,
+        });
+        const child = yield* seedRestartCancelledChild({
+          parentThreadId,
+          projectId,
+          parentRunId,
+          rootNodeId,
+          name: `${name}-child`,
+          completionWake: "always",
+          continuationPending: false,
+          runStatus: "completed",
+          now,
+        });
+        return { parentThreadId, childThreadId: child.childThreadId };
+      });
+    it.effect("a held follow-up wakes its owner once", () =>
+      verifyHeldFollowUpWakesOwner(seedFinishedChild),
+    );
+    it.effect("a follow-up settled unread says it never ran", () =>
+      verifySettledFollowUpSaysUnread(seedFinishedChild),
     );
 
     it.effect("checkpoint retry releases a pending sibling after its wake offer failed", () =>

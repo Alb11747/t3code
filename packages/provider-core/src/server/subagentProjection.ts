@@ -277,7 +277,7 @@ export function delegatedTaskReportRuns(
  * `delegatedTaskReportRuns`. The projection must hold the assistant records of every run given.
  */
 export function subagentResultForRun(
-  projection: Pick<OrchestrationV2ThreadProjection, "messages" | "turnItems" | "providerTurns"> & {
+  projection: ResultProjection & {
     readonly runs?: ReadonlyArray<OrchestrationV2Run>;
   },
   run: OrchestrationV2Run,
@@ -300,8 +300,21 @@ export function subagentResultForRun(
   return result;
 }
 
+type ResultProjection = Pick<
+  OrchestrationV2ThreadProjection,
+  "messages" | "turnItems" | "providerTurns"
+> & { readonly thread?: Pick<OrchestrationV2ThreadProjection["thread"], "settledOverride"> };
+
+/** A message cancelled before its run started never reached the child, so say why instead of "cancelled". */
+function unreadMessageResult(run: OrchestrationV2Run, projection: ResultProjection): string {
+  const held = run.queueHeld === true ? ", while held in the child's queue" : "";
+  const settled =
+    projection.thread?.settledOverride === "settled" ? ", when the child's thread settled" : "";
+  return `The child never read this message: it was cancelled before its run started${held}${settled}. Send it again if it is still needed.`;
+}
+
 function resultOfRun(
-  projection: Pick<OrchestrationV2ThreadProjection, "messages" | "turnItems" | "providerTurns">,
+  projection: ResultProjection,
   run: OrchestrationV2Run,
 ): {
   readonly text: string;
@@ -356,7 +369,9 @@ function resultOfRun(
       ? ["Child task completed without an assistant result.", stopNotice(projection, run)]
           .filter((part) => part !== undefined)
           .join("\n\n")
-      : `Child task ended with status ${run.status}.`);
+      : run.status === "cancelled" && run.startedAt === null
+        ? unreadMessageResult(run, projection)
+        : `Child task ended with status ${run.status}.`);
   const executedModel = latestProviderTurnForAttempt(
     projection.providerTurns,
     run.activeAttemptId,

@@ -4353,7 +4353,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ${
                     filter?.queuedQuestionTaskIds === undefined
                       ? sql``
-                      : sql`AND message_id GLOB 'message:delegated-task-question:*'
+                      : sql`AND (message_id GLOB 'message:delegated-task-question:*'
+                            OR message_id GLOB 'message:delegated-task-held:*')
                           AND json_extract(payload_json, '$.creationSource') = 'server'
                           AND json_extract(payload_json, '$.notification.source.kind') = 'delegated_task'
                           AND run_id IN (
