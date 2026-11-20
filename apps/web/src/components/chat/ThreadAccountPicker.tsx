@@ -194,8 +194,10 @@ function ThreadAccountPickerChip(
   const provider = PROVIDER_NAMES[state.accounts[0]?.driver ?? ""] ?? gt("Provider");
   const contextNote =
     props.contextTokens !== null && props.contextTokens > 0
-      ? `Switching re-sends this thread's ${formatContextWindowTokens(props.contextTokens)} context as a cold cache write.`
-      : "Switching re-sends this thread's context as a cold cache write.";
+      ? gt("Switching re-sends the thread's {tokens} context as a cold cache write.", {
+          tokens: formatContextWindowTokens(props.contextTokens),
+        })
+      : gt("Switching re-sends the thread's context as a cold cache write.");
 
   const fail = (title: string, result: Parameters<typeof squashAtomCommandFailure>[0]) => {
     const cause = squashAtomCommandFailure(result);
@@ -448,7 +450,7 @@ function ThreadAccountPickerChip(
                   account: owner ? accountLabel(owner) : gt("the current account"),
                 },
               )}{" "}
-              {contextNote.replace("Switching", "This also")}
+              {contextNote}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

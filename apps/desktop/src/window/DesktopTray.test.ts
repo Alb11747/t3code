@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
+import * as Electron from "electron";
 import { vi } from "vite-plus/test";
 
 const trays = vi.hoisted(() => [] as Array<{ icon: string; destroy: () => void }>);
@@ -30,6 +31,7 @@ import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
+import { applyLanguage } from "../i18n/messages.ts";
 import * as DesktopClientSettings from "../settings/DesktopClientSettings.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopTray from "./DesktopTray.ts";
@@ -39,17 +41,6 @@ const layerTest = (ico: Option.Option<string>, enabled = false) =>
   DesktopTray.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        DesktopEnvironment.layer({
-          dirname: "C:\\T3\\resources\\app\\dist-electron",
-          homeDirectory: "C:\\Users\\alice",
-          platform: "win32",
-          processArch: "x64",
-          appVersion: "1.2.3",
-          appPath: "C:\\T3\\resources\\app",
-          isPackaged: true,
-          resourcesPath: "C:\\T3\\resources",
-          runningUnderArm64Translation: false,
-        }).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({})))),
         Layer.succeed(DesktopAssets.DesktopAssets, {
           iconPaths: Effect.succeed({ ico, icns: Option.none(), png: Option.none() }),
           resolveResourcePath: () => Effect.succeedNone,
@@ -62,10 +53,28 @@ const layerTest = (ico: Option.Option<string>, enabled = false) =>
           mainWindowHiddenToTray: true,
         }),
         Layer.mock(DesktopWindow.DesktopWindow)({ activate: Effect.void }),
-        Layer.mock(ElectronApp.ElectronApp)({ quit: Effect.void }),
       ),
     ),
     Layer.provideMerge(DesktopState.layer),
+    Layer.provideMerge(
+      DesktopEnvironment.layer({
+        dirname: "C:\\T3\\resources\\app\\dist-electron",
+        homeDirectory: "C:\\Users\\alice",
+        platform: "win32",
+        processArch: "x64",
+        appVersion: "1.2.3",
+        appPath: "C:\\T3\\resources\\app",
+        isPackaged: true,
+        resourcesPath: "C:\\T3\\resources",
+        runningUnderArm64Translation: false,
+      }).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({})))),
+    ),
+    Layer.provideMerge(
+      Layer.mock(ElectronApp.ElectronApp)({
+        quit: Effect.void,
+        preferredSystemLanguages: Effect.succeed(["en-US"]),
+      }),
+    ),
   );
 
 const closeToTray = (enabled: boolean) => ({ ...DEFAULT_CLIENT_SETTINGS, closeToTray: enabled });
@@ -105,6 +114,31 @@ describe("DesktopTray", () => {
       assert.isFalse(yield* Ref.get(state.closeToTray));
       assert.equal(trays.length, 0);
     }).pipe(Effect.provide(layerTest(Option.none(), true))),
+  );
+
+  it.effect("updates the existing tray menu when the UI language changes", () =>
+    Effect.gen(function* () {
+      trays.length = 0;
+      const tray = yield* DesktopTray.DesktopTray;
+      const { displayName } = yield* DesktopEnvironment.DesktopEnvironment;
+      const menuLabels = () =>
+        vi.mocked(Electron.Menu.buildFromTemplate).mock.lastCall?.[0].map((item) => item.label);
+
+      yield* applyLanguage("en");
+      yield* tray.initialize;
+      assert.deepEqual(menuLabels(), [`Open ${displayName}`, undefined, `Quit ${displayName}`]);
+
+      yield* applyLanguage("fr");
+      assert.deepEqual(menuLabels(), [
+        `Ouvrir ${displayName}`,
+        undefined,
+        `Quitter ${displayName}`,
+      ]);
+      assert.lengthOf(trays, 1);
+    }).pipe(
+      Effect.ensuring(applyLanguage("en")),
+      Effect.provide(layerTest(Option.some("C:\\T3\\resources\\icon.ico"), true)),
+    ),
   );
 
   it.effect("ignores a saved tray state when close to tray is disabled", () =>

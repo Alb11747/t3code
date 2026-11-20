@@ -4057,6 +4057,8 @@
   "b3336a0e9a6e3fba": "Inspelad terminalutdata",
   "8d24730972ce4fd3": "Terminalutdrag, {label}, utgånget",
   "dd8f1439c88ef92b": "Terminalkontexten har gått ut. Ta bort och lägg till {label} igen för att ta med den i ditt meddelande.",
+  "7d7f95bbf11cfda6": "Vid byte skickas trådens kontext ({tokens}) om och skrivs till en kall cache.",
+  "9688fc8f7232657c": "Vid byte skickas trådens kontext om och skrivs till en kall cache.",
   "4e9a45bf0524d3e4": "Auto · {account}",
   "fd064d8807f0aaa2": "Auto",
   "e88c9d8769544731": "Automatisk",

@@ -4056,6 +4056,8 @@
   "b3336a0e9a6e3fba": "Salida de terminal capturada",
   "8d24730972ce4fd3": "Fragmento de terminal, {label}, caducado",
   "dd8f1439c88ef92b": "El contexto de la terminal caducó. Quita y vuelve a añadir {label} para incluirlo en tu mensaje.",
+  "7d7f95bbf11cfda6": "Al cambiar, el contexto del hilo ({tokens}) se vuelve a enviar mediante una escritura en caché en frío.",
+  "9688fc8f7232657c": "Al cambiar, el contexto del hilo se vuelve a enviar mediante una escritura en caché en frío.",
   "4e9a45bf0524d3e4": "Automático · {account}",
   "fd064d8807f0aaa2": "Automático",
   "e88c9d8769544731": "Automático",

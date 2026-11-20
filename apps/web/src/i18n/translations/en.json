@@ -4059,6 +4059,8 @@
   "b3336a0e9a6e3fba": "Captured terminal output",
   "8d24730972ce4fd3": "Terminal excerpt, {label}, expired",
   "dd8f1439c88ef92b": "Terminal context expired. Remove and re-add {label} to include it in your message.",
+  "7d7f95bbf11cfda6": "Switching re-sends the thread's {tokens} context as a cold cache write.",
+  "9688fc8f7232657c": "Switching re-sends the thread's context as a cold cache write.",
   "4e9a45bf0524d3e4": "Auto · {account}",
   "fd064d8807f0aaa2": "Auto",
   "e88c9d8769544731": "Automatic",

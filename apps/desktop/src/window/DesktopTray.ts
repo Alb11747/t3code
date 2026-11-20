@@ -6,12 +6,14 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
 import * as Electron from "electron";
+import { msg } from "gt-i18n";
 
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import { makeComponentLogger } from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
+import { m, onLocaleChange } from "../i18n/messages.ts";
 import * as DesktopClientSettings from "../settings/DesktopClientSettings.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
@@ -52,6 +54,25 @@ export const make = Effect.gen(function* () {
   );
   const showMainWindow = () => void runPromise(revealMainWindow);
 
+  const updateTrayMenu = () =>
+    tray?.setContextMenu(
+      Electron.Menu.buildFromTemplate([
+        { label: m(msg("Open {app}"), { app: environment.displayName }), click: showMainWindow },
+        { type: "separator" },
+        {
+          label: m(msg("Quit {appName}"), { appName: environment.displayName }),
+          click: () => void runPromise(electronApp.quit),
+        },
+      ]),
+    );
+
+  if (environment.platform === "win32") {
+    yield* Effect.acquireRelease(
+      Effect.sync(() => onLocaleChange(updateTrayMenu)),
+      (unsubscribe) => Effect.sync(unsubscribe),
+    );
+  }
+
   const createTray = Effect.gen(function* () {
     const icon = (yield* assets.iconPaths).ico;
     if (Option.isNone(icon)) {
@@ -61,16 +82,7 @@ export const make = Effect.gen(function* () {
     }
     tray = new Electron.Tray(icon.value);
     tray.setToolTip(environment.displayName);
-    tray.setContextMenu(
-      Electron.Menu.buildFromTemplate([
-        { label: `Open ${environment.displayName}`, click: showMainWindow },
-        { type: "separator" },
-        {
-          label: `Quit ${environment.displayName}`,
-          click: () => void runPromise(electronApp.quit),
-        },
-      ]),
-    );
+    updateTrayMenu();
     tray.on("click", showMainWindow);
     return true;
   });
