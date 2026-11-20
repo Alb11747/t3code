@@ -8,6 +8,7 @@ import type {
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
 import {
+  allowsPreviewTunnel,
   EnvironmentId,
   ThreadId,
   type ComposerContextRecord,
@@ -21,13 +22,14 @@ import {
   guessThreadLinkRef,
   hasThreadLinks,
   parseThreadLinkHref,
-  relabelThreadLinks,
   threadLinkCandidates,
   threadLinkRefs,
   type ThreadLink,
 } from "@t3tools/shared/threadLinks";
+import { relabelThreadLinks } from "@t3tools/shared/threadLinksCopy";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { msg, useMessages } from "gt-react-native";
 
 import { threadChipTargets } from "../lib/enrichedLinkPresentation";
 import { resolveProjectChipIcon } from "../lib/projectIcon";
@@ -53,9 +55,13 @@ const EMPTY_THREAD_ATOM = Atom.make<EnvironmentThread | null>(null).pipe(
 const EMPTY_RUN_SERVED_MODEL_NOTE_ATOM = Atom.make<string | null>(null).pipe(
   Atom.withLabel("mobile-run-served-model-note:empty"),
 );
-const EMPTY_THREAD_LINK_TITLES_ATOM = Atom.make<ReadonlyMap<string, string>>(new Map()).pipe(
-  Atom.withLabel("mobile-thread-link-titles:empty"),
-);
+/** Stands for the localized fallback title, resolved where the link renders. */
+const FALLBACK_THREAD_TITLE = Symbol("fallback-thread-title");
+type ThreadLinkTitle = string | typeof FALLBACK_THREAD_TITLE;
+
+const EMPTY_THREAD_LINK_TITLES_ATOM = Atom.make<ReadonlyMap<string, ThreadLinkTitle>>(
+  new Map(),
+).pipe(Atom.withLabel("mobile-thread-link-titles:empty"));
 
 const decodeThreadKey = Schema.decodeUnknownSync(Schema.Tuple([EnvironmentId, ThreadId]));
 const threadKey = (ref: ScopedThreadRef) => JSON.stringify([ref.environmentId, ref.threadId]);
@@ -63,7 +69,7 @@ const threadKey = (ref: ScopedThreadRef) => JSON.stringify([ref.environmentId, r
 // Omitted and archived targets need only a metadata lookup, not their conversation history.
 const threadTitleAtom = Atom.family((key: string) => {
   const ref = scopeThreadRef(...decodeThreadKey(JSON.parse(key)));
-  return Atom.make((get) => {
+  return Atom.make((get): ThreadLinkTitle | null => {
     const shell = get(environmentThreadShells.threadShellAtom(ref));
     if (shell !== null) return shell.title;
     const titles = get(
@@ -73,8 +79,8 @@ const threadTitleAtom = Atom.family((key: string) => {
       }),
     );
     return AsyncResult.isSuccess(titles)
-      ? (titles.value[ref.threadId]?.title ?? (titles.waiting ? "Thread" : null))
-      : "Thread";
+      ? (titles.value[ref.threadId]?.title ?? (titles.waiting ? FALLBACK_THREAD_TITLE : null))
+      : FALLBACK_THREAD_TITLE;
   }).pipe(Atom.withLabel(`mobile-thread-title:${key}`));
 });
 
@@ -83,7 +89,7 @@ const decodeThreadKeys = Schema.decodeUnknownSync(Schema.Array(Schema.String));
 const threadLinkTitlesAtom = Atom.family((key: string) => {
   const refKeys = decodeThreadKeys(JSON.parse(key));
   return Atom.make((get) => {
-    const titles = new Map<string, string>();
+    const titles = new Map<string, ThreadLinkTitle>();
     for (const refKey of refKeys) {
       const title = get(threadTitleAtom(refKey));
       if (title !== null) titles.set(refKey, title);
@@ -239,12 +245,23 @@ export function useSideChats(ref: ScopedThreadRef) {
 }
 
 export function useLiveThreadLinkLabels(markdown: string, environmentId: EnvironmentId): string {
+  const resolve = useMessages();
   const titles = useAtomValue(
     hasThreadLinks(markdown)
       ? threadLinkTitlesAtom(JSON.stringify(threadLinkRefs(markdown, environmentId).map(threadKey)))
       : EMPTY_THREAD_LINK_TITLES_ATOM,
   );
-  return relabelThreadLinks(markdown, environmentId, (ref) => titles.get(threadKey(ref)));
+  return relabelThreadLinks(
+    markdown,
+    environmentId,
+    (ref) => {
+      const title = titles.get(threadKey(ref));
+      return title === FALLBACK_THREAD_TITLE
+        ? resolve(msg("Thread", { $context: "fallback title of a linked thread" }))
+        : title;
+    },
+    resolve,
+  );
 }
 
 /** Keyed reads; every thread is read only to place a v1 link its message's environment lacks. */
@@ -290,6 +307,12 @@ export function useEnvironmentServerConfig(
       ? EMPTY_SERVER_CONFIG_ATOM
       : serverEnvironment.configValueAtom(environmentId),
   );
+}
+
+/** Whether the environment turned its preview tunnel off; false until its config loads. */
+export function useEnvironmentPreviewTunnelOff(environmentId: EnvironmentId | null): boolean {
+  const config = useEnvironmentServerConfig(environmentId);
+  return config !== null && !allowsPreviewTunnel(config);
 }
 
 export function useServerConfigs(): ReadonlyMap<EnvironmentId, ServerConfig> {

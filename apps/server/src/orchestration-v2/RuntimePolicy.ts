@@ -93,7 +93,7 @@ export const layer: Layer.Layer<RuntimePolicyV2> = Layer.succeed(RuntimePolicyV2
 const threadAutoCompactLimit = (thread: OrchestrationV2AppThread) =>
   thread.autoCompactLimit == null ? {} : { autoCompactLimit: thread.autoCompactLimit };
 
-function providerRuntimeMode(
+export function providerRuntimeMode(
   runtimeMode: RuntimeMode,
   supportedRuntimeModes: ReadonlyArray<RuntimeMode> | undefined,
 ): RuntimeMode {

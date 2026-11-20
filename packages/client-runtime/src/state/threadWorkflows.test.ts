@@ -5,6 +5,7 @@ import {
   canForkProjectedAssistantItem,
   canForkProjectedCompactionItem,
   deriveThreadQueueWorkflowState,
+  getUserQueuedThreadRuns,
   resolveLatestMergeBackRun,
   threadSupportsProviderHandoff,
 } from "./threadWorkflows.ts";
@@ -44,6 +45,24 @@ const compactionForkInput = () =>
   }) as unknown as Parameters<typeof canForkProjectedCompactionItem>[0];
 
 describe("thread workflows", () => {
+  it("skips message history classification when no runs are queued", () => {
+    let metadataReads = 0;
+    const message = {
+      id: "message",
+      get delegatedCompletion() {
+        metadataReads++;
+        return undefined;
+      },
+    };
+    const projection = {
+      runs: [{ id: "active", status: "running", userMessageId: "message", ordinal: 1 }],
+      messages: [message],
+    } as never;
+
+    expect(getUserQueuedThreadRuns(projection)).toEqual([]);
+    expect(metadataReads).toBe(0);
+  });
+
   it("forks paged compactions without source control records while respecting live run status", () => {
     const input = compactionForkInput();
     const projectedItem = {

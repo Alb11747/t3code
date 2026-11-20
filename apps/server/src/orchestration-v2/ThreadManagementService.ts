@@ -69,6 +69,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
 import { projectTurnItemForDetail } from "./WireProjection.ts";
+import { cancelledBeforeStart } from "./RestartBackgroundNote.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ThreadWorktreeRestore } from "../workspace/restoreMissingWorktree.ts";
@@ -931,33 +932,35 @@ const make = Effect.gen(function* () {
       input.freshContext && (input.mode === "steer" || input.mode === "restart")
         ? "queue"
         : input.mode;
+    const explicitSteer = mode === "steer" || mode === "restart";
+    const steeringTarget =
+      mode === "steer" ? (steerableRun ?? latestActiveRun(target)) : steerableRun;
+    // After Stop, an explicit restart can start ahead of the held queue.
+    const restartAfterHold =
+      mode === "restart" &&
+      steeringTarget === undefined &&
+      target.runs.some((run) => run.status === "queued" && run.queueHeld === true);
+    const missingSteeringTarget =
+      explicitSteer && steeringTarget === undefined && !restartAfterHold && !compactBeforeSend;
+    // A command receipt outlives its target turn. Dispatch validates and replays it.
+    if (missingSteeringTarget && !(yield* hasReceipt(input.commandId))) {
+      return yield* new ThreadManagementNoSteerableRunError({
+        threadId: input.threadId,
+        mode,
+      });
+    }
+
     let dispatchMode: Extract<
       OrchestrationV2Command,
       { readonly type: "message.dispatch" }
     >["dispatchMode"];
     if (compactBeforeSend) {
       dispatchMode = { type: "queue_after_active" };
-    } else if (
-      mode === "restart" &&
-      steerableRun === undefined &&
-      target.runs.some((run) => run.status === "queued" && run.queueHeld === true)
-    ) {
-      // After Stop, restart is how an agent starts a turn ahead of the held queue.
-      dispatchMode = { type: "start_immediately" };
-    } else if (mode === "steer" || mode === "restart") {
-      const targetRun = mode === "steer" ? (steerableRun ?? latestActiveRun(target)) : steerableRun;
-      if (targetRun === undefined) {
-        return yield* new ThreadManagementNoSteerableRunError({
-          threadId: input.threadId,
-          mode,
-        });
-      }
+    } else if ((explicitSteer || mode === "auto") && steeringTarget !== undefined) {
       dispatchMode = {
-        type: mode === "steer" ? "steer_active" : "restart_active",
-        targetRunId: targetRun.id,
+        type: mode === "restart" ? "restart_active" : "steer_active",
+        targetRunId: steeringTarget.id,
       };
-    } else if (mode === "auto" && steerableRun !== undefined) {
-      dispatchMode = { type: "steer_active", targetRunId: steerableRun.id };
     } else {
       dispatchMode = {
         type: mode === "queue" ? "queue_after_active" : "start_immediately",
@@ -965,8 +968,8 @@ const make = Effect.gen(function* () {
     }
 
     // Turn start would fail on its own after the send reported success; a replay keeps its answer.
-    // A live steer starts no turn, so it needs no workspace.
-    if (dispatchMode.type !== "steer_active") {
+    // A live steer and a receipt replay without a target turn need no workspace.
+    if (!missingSteeringTarget && dispatchMode.type !== "steer_active") {
       yield* worktreeRestore
         .restore(target.thread)
         .pipe(
@@ -1282,9 +1285,13 @@ const make = Effect.gen(function* () {
           )
         )
           return false;
+        // A wake cancelled before it started (its result was already read in-turn) did nothing.
         if (
           following.some(
-            (candidate) => candidate.status !== "queued" && candidate.status !== "completed",
+            (candidate) =>
+              candidate.status !== "queued" &&
+              candidate.status !== "completed" &&
+              !cancelledBeforeStart(candidate),
           )
         )
           return true;

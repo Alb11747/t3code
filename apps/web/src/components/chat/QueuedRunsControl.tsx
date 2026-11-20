@@ -28,6 +28,8 @@ import {
   XIcon,
 } from "lucide-react";
 import * as DateTime from "effect/DateTime";
+import { msg, T, useGT, useMessages } from "gt-react";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useId, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
 
 import { useAssetUrls } from "../../assets/assetUrls";
@@ -39,6 +41,7 @@ import { isImageAttachment, type ChatImageAttachment, type ChatMessage } from ".
 import { cn } from "~/lib/utils";
 import { Button, InlineButton } from "../ui/button";
 import { toastManager } from "../ui/toast";
+import { m } from "../../i18n/messages";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { GuestMessageName } from "./guestMessageStyle";
@@ -95,6 +98,8 @@ export function QueuedRunsControl({
   readonly onOpenThread: (threadId: ThreadId, environmentId?: EnvironmentId) => void;
   readonly onImageExpand: (preview: ExpandedImagePreview) => void;
 }) {
+  const gt = useGT();
+  const messages = useMessages();
   const projection = useQuietThreadProjection(
     scopeThreadRef(props.environmentId, props.threadId),
   )?.projection;
@@ -112,7 +117,7 @@ export function QueuedRunsControl({
     props.environmentId,
     queuedImageAttachmentResources,
   );
-  const workflow = projection ? deriveThreadQueueWorkflowState(projection) : null;
+  const workflow = projection ? deriveThreadQueueWorkflowState(projection, messages) : null;
   const queued = workflow?.queuedRuns ?? [];
   const activeRun = workflow?.activeRun ?? null;
   // A fresh message starts its own turn: it may skip compaction, but not steer into a turn.
@@ -164,7 +169,7 @@ export function QueuedRunsControl({
       messageId: null,
       freshContext: false,
       delivery: "queued" as const,
-      deliveryLabel: "Queued" as const,
+      deliveryLabel: gt("Queued"),
       editBlockedReason: null,
       serverIndex: null,
       text: message.text,
@@ -207,8 +212,11 @@ export function QueuedRunsControl({
       const error = squashAtomCommandFailure(result);
       toastManager.add({
         type: "error",
-        title: "Could not send queued message",
-        description: error instanceof Error ? error.message : "An error occurred.",
+        title: m(msg("Could not send queued message")),
+        description:
+          error instanceof Error
+            ? (thrownErrorMessage(error, m) ?? error.message)
+            : m(msg("An error occurred.")),
       });
     }
   };
@@ -265,9 +273,9 @@ export function QueuedRunsControl({
   const hasQueued = items.some((item) => item.delivery === "queued");
   const heading = hasPending
     ? hasQueued
-      ? "Pending and queued messages"
-      : "Pending messages"
-    : "Queued messages";
+      ? gt("Pending and queued messages")
+      : gt("Pending messages")
+    : gt("Queued messages");
 
   return (
     <section
@@ -277,15 +285,22 @@ export function QueuedRunsControl({
       className="relative mx-auto flex w-full max-w-(--chat-content-max-width) flex-col gap-2 pb-4"
     >
       <span className="sr-only" aria-live="polite">
-        {items.length} messages awaiting delivery
+        {gt(
+          "{count, plural, one {{count} message awaiting delivery} other {{count} messages awaiting delivery}}",
+          {
+            count: items.length,
+          },
+        )}
       </span>
       <h3 className="self-end pe-1 text-xs">
         <Tooltip>
           <TooltipTrigger render={<InlineButton tone="muted" />}>{heading}</TooltipTrigger>
           <TooltipPopup>
-            {hasPending ? "Messages are delivered when the agent can safely receive them." : null}
+            {hasPending ? (
+              <T>Messages are delivered when the agent can safely receive them.</T>
+            ) : null}
             {hasPending && hasQueued ? <br /> : null}
-            {hasQueued ? "Queued messages wait for a later turn." : null}
+            {hasQueued ? <T>Queued messages wait for a later turn.</T> : null}
           </TooltipPopup>
         </Tooltip>
       </h3>
@@ -298,10 +313,22 @@ export function QueuedRunsControl({
               ).trim();
           const isEditing = item.runId !== null && item.runId === props.editingRunId;
           const deliveryLabel = item.deliveryLabel;
+          const sendShortcut = item.serverIndex === 0 ? props.steerShortcutLabel : null;
+          const sendDescription = workflow?.canSendNow
+            ? gt("Start a turn with this message")
+            : workflow?.promoteSkipsCompaction
+              ? gt("Skip compaction and send this message")
+              : workflow?.sendNowInterruptsTools
+                ? gt("Send into the current turn now. Claude may cancel running tools to read it.")
+                : gt("Send into the current turn");
           return (
             <li
               key={item.key}
-              aria-label={`Queued message ${position + 1} of ${items.length}, ${item.deliveryLabel}`}
+              aria-label={gt("Message {position} of {total}, {delivery}", {
+                position: position + 1,
+                total: items.length,
+                delivery: item.deliveryLabel,
+              })}
               aria-posinset={position + 1}
               aria-setsize={items.length}
               aria-current={isEditing ? "true" : undefined}
@@ -332,11 +359,16 @@ export function QueuedRunsControl({
                           }}
                         >
                           <ArrowUpIcon />
-                          Send now
+                          <T>Send now</T>
                         </Button>
                       </TooltipTrigger>
                       <TooltipPopup>
-                        {`${workflow?.canSendNow ? "Start a turn with this message" : workflow?.promoteSkipsCompaction ? "Skip compaction and send this message" : workflow?.sendNowInterruptsTools ? "Send into the current turn now. Claude may cancel running tools to read it." : "Send into the current turn"}${item.serverIndex === 0 && props.steerShortcutLabel ? ` (${props.steerShortcutLabel})` : ""}`}
+                        {sendShortcut
+                          ? gt("{description} ({shortcut})", {
+                              description: sendDescription,
+                              shortcut: sendShortcut,
+                            })
+                          : sendDescription}
                       </TooltipPopup>
                     </Tooltip>
                   </>
@@ -344,7 +376,7 @@ export function QueuedRunsControl({
                 {item.pending ? (
                   <span className="flex items-center gap-1 px-1">
                     <Clock3Icon aria-hidden className="size-3" />
-                    Saving
+                    <T>Saving</T>
                   </span>
                 ) : null}
                 {item.delivery !== "queued" ? (
@@ -361,14 +393,18 @@ export function QueuedRunsControl({
                 ) : null}
                 {isEditing ? (
                   <>
-                    <span className="px-1 text-foreground">Editing in the composer</span>
+                    <span className="px-1 text-foreground">
+                      <T>Editing in the composer</T>
+                    </span>
                     <Button
                       size="xs"
                       variant="ghost"
-                      aria-label={`Cancel editing ${deliveryLabel.toLowerCase()} message`}
+                      aria-label={gt("Cancel editing {delivery} message", {
+                        delivery: deliveryLabel.toLowerCase(),
+                      })}
                       onClick={props.onCancelEdit}
                     >
-                      Cancel
+                      <T>Cancel</T>
                     </Button>
                   </>
                 ) : (
@@ -379,7 +415,9 @@ export function QueuedRunsControl({
                         <Button
                           size="icon-xs"
                           variant="ghost-muted"
-                          aria-label={`Edit ${deliveryLabel.toLowerCase()} message`}
+                          aria-label={gt("Edit {delivery} message", {
+                            delivery: deliveryLabel.toLowerCase(),
+                          })}
                           disabled={
                             item.runId === null ||
                             !item.editable ||
@@ -404,7 +442,11 @@ export function QueuedRunsControl({
                       <TooltipPopup>
                         {props.editBlockedReason ??
                           item.editBlockedReason ??
-                          `Edit in the composer${item.serverIndex === queued.length - 1 && props.editShortcutLabel ? ` (${props.editShortcutLabel})` : ""}`}
+                          (item.serverIndex === queued.length - 1 && props.editShortcutLabel
+                            ? gt("Edit in the composer ({shortcut})", {
+                                shortcut: props.editShortcutLabel,
+                              })
+                            : gt("Edit in the composer"))}
                       </TooltipPopup>
                     </Tooltip>
                     <Tooltip>
@@ -413,7 +455,9 @@ export function QueuedRunsControl({
                           <Button
                             size="icon-xs"
                             variant="ghost-muted"
-                            aria-label={`Remove ${deliveryLabel.toLowerCase()} message`}
+                            aria-label={gt("Remove {delivery} message", {
+                              delivery: deliveryLabel.toLowerCase(),
+                            })}
                             disabled={item.runId === null || busyRunId !== null}
                             onClick={() => {
                               if (item.runId !== null) void remove(item.runId);
@@ -423,7 +467,9 @@ export function QueuedRunsControl({
                       >
                         <XIcon />
                       </TooltipTrigger>
-                      <TooltipPopup>Remove {deliveryLabel.toLowerCase()} message</TooltipPopup>
+                      <TooltipPopup>
+                        {gt("Remove {delivery} message", { delivery: deliveryLabel.toLowerCase() })}
+                      </TooltipPopup>
                     </Tooltip>
                   </>
                 )}
@@ -442,7 +488,12 @@ export function QueuedRunsControl({
             onPointerDown={(event) => event.preventDefault()}
             onClick={() => setShowAll((value) => !value)}
           >
-            {showAll ? "Show fewer" : `Show all ${items.length} messages`}
+            {showAll
+              ? gt("Show fewer")
+              : gt(
+                  "{count, plural, one {Show {count} message} other {Show all {count} messages}}",
+                  { count: items.length },
+                )}
             <ChevronDownIcon
               aria-hidden
               className={cn(
@@ -471,6 +522,7 @@ function QueuedMessage(props: {
   readonly children: ReactNode;
   readonly onImageExpand: (preview: ExpandedImagePreview) => void;
 }) {
+  const gt = useGT();
   const presentation = props.message ? resolveUserMessagePresentation(props.message) : null;
   const attribution = presentation?.attribution ?? null;
   const scheduledTaskId = presentation?.scheduledTaskId;
@@ -485,18 +537,22 @@ function QueuedMessage(props: {
   const linkedSenderEnvironment = useEnvironment(
     props.message?.linkedSender?.environmentId ?? null,
   );
+  const senderTitle = senderShell?.title.trim() || props.message?.linkedSender?.title.trim();
   const fold =
     attribution === "automation"
       ? {
           icon: CalendarClockIcon,
-          label: "Automation",
+          label: gt("Automation"),
+          fitLabel: true,
           summary: taskTitle ?? props.previewText.split(/\r?\n/, 1)[0] ?? "",
         }
       : attribution === "agent"
         ? {
             icon: MessagesSquareIcon,
             label:
-              senderShell?.title.trim() || props.message?.linkedSender?.title.trim() || "Agent",
+              senderTitle ||
+              gt("Agent", { $context: "fallback name of the agent that sent a message" }),
+            fitLabel: !senderTitle,
             summary: props.previewText.split(/\r?\n/).find((line) => line.trim()) ?? "",
           }
         : null;
@@ -505,7 +561,9 @@ function QueuedMessage(props: {
   return (
     <>
       {attribution === "t3code" ? (
-        <p className="me-1 text-2xs text-muted-foreground/70">Sent by T3 Code</p>
+        <p className="me-1 text-2xs text-muted-foreground/70">
+          <T>Sent by T3 Code</T>
+        </p>
       ) : null}
       {presentation?.guestName === undefined ? null : (
         <GuestMessageName name={presentation.guestName} />
@@ -527,6 +585,7 @@ function QueuedMessage(props: {
           <FoldedMessageHeader
             icon={fold.icon}
             label={fold.label}
+            fitLabel={fold.fitLabel}
             summary={fold.summary}
             expanded={expanded}
             onToggle={() => setExpanded((value) => !value)}
@@ -545,7 +604,7 @@ function QueuedMessage(props: {
                   <button
                     key={thumbnail.id}
                     type="button"
-                    aria-label={`Preview ${thumbnail.name}`}
+                    aria-label={gt("Preview {name}", { name: thumbnail.name })}
                     disabled={!thumbnail.previewUrl}
                     className="size-8 overflow-hidden rounded-md border border-border/70 bg-background enabled:cursor-zoom-in"
                     onPointerDown={(event) => event.preventDefault()}
@@ -585,7 +644,7 @@ function QueuedMessage(props: {
                 tone="muted"
                 onClick={() => props.onOpenThread(senderRef.threadId, senderRef.environmentId)}
               >
-                Open thread
+                <T>Open thread</T>
               </InlineButton>
             ) : null}
             {scheduledTaskId ? (
@@ -598,7 +657,7 @@ function QueuedMessage(props: {
                   />
                 }
               >
-                Open automation
+                <T>Open automation</T>
               </InlineButton>
             ) : null}
             <TimelineRowTimestamp

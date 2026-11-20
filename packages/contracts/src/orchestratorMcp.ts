@@ -207,18 +207,24 @@ export const OrchestratorMcpTerminalDelegatedTaskStatus = Schema.Literals([
 export type OrchestratorMcpTerminalDelegatedTaskStatus =
   typeof OrchestratorMcpTerminalDelegatedTaskStatus.Type;
 
+const OrchestratorMcpDelegateTarget = Schema.Struct({
+  ...OrchestratorMcpTarget.fields,
+  projectId: Schema.optional(
+    ProjectId.annotate({
+      description:
+        "Destination project. Defaults to the parent project locally or the matching repository remotely.",
+    }),
+  ),
+});
+
 export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   task: OrchestratorMcpPrompt,
+  // Some providers send the whole target object as JSON text.
   target: Schema.optional(
-    Schema.Struct({
-      ...OrchestratorMcpTarget.fields,
-      projectId: Schema.optional(
-        ProjectId.annotate({
-          description:
-            "Destination project. Defaults to the parent project locally or the matching repository remotely.",
-        }),
-      ),
-    }),
+    Schema.Union([
+      OrchestratorMcpDelegateTarget,
+      Schema.fromJsonString(OrchestratorMcpDelegateTarget),
+    ]),
   ),
   title: Schema.optional(OrchestratorMcpTitle),
   role: Schema.optional(OrchestratorMcpTaskRole),
