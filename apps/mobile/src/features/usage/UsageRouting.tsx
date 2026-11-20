@@ -1,4 +1,4 @@
-import { T, useGT } from "gt-react-native";
+import { T, useGT, useLocale } from "gt-react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
@@ -40,6 +40,7 @@ export function UsageRouting(props: {
   readonly label: string;
 }) {
   const gt = useGT();
+  const locale = useLocale();
   const query = useEnvironmentQuery<ThreadAccountRouting, unknown>(
     serverEnvironment.threadAccountRouting({
       environmentId: props.environmentId,
@@ -72,7 +73,9 @@ export function UsageRouting(props: {
   };
   const until = (iso: string | undefined) =>
     iso
-      ? `until ${new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`
+      ? gt("until {time}", {
+          time: new Date(iso).toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" }),
+        })
       : undefined;
   const titleOf = (thread: { readonly title: string } | null, session: string | null) =>
     thread ? thread.title || gt("Untitled thread") : `${session}…`;
@@ -191,8 +194,10 @@ export function UsageRouting(props: {
           key={`margin:${margin.thread?.id ?? margin.session}`}
           title={titleOf(margin.thread, margin.session)}
           detail={[
-            `${Math.round(margin.headroomScale * 100)}% of the usual headroom`,
-            margin.actor ? `set by ${margin.actor}` : undefined,
+            gt("{percent}% of the usual headroom", {
+              percent: Math.round(margin.headroomScale * 100),
+            }),
+            margin.actor ? gt("set by {actor}", { actor: margin.actor }) : undefined,
             until(margin.expiresAt),
           ]}
         />

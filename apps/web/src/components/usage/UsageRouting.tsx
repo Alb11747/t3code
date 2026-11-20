@@ -1,4 +1,4 @@
-import { T, Var, useGT } from "gt-react";
+import { T, Var, useGT, useMessages } from "gt-react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   type AtomCommandResult,
@@ -78,6 +78,7 @@ function RoutingSection(props: {
   readonly refresh: () => void;
 }) {
   const gt = useGT();
+  const messages = useMessages();
   const { environmentId, source, routing } = props;
   const [busy, setBusy] = useState(false);
   const runSet = useAtomCommand(serverEnvironment.setThreadAccount, { reportFailure: false });
@@ -89,7 +90,11 @@ function RoutingSection(props: {
   };
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const until = (iso: string | undefined) =>
-    iso ? ` · until ${formatUpcomingTimestamp(iso, timestampFormat)}` : "";
+    iso
+      ? gt("until {time}", {
+          time: formatUpcomingTimestamp(iso, timestampFormat, undefined, undefined, messages),
+        })
+      : undefined;
   const sessionTitle = (
     thread: { readonly id: ThreadId; readonly title: string } | null,
     session: string | null,
@@ -127,11 +132,11 @@ function RoutingSection(props: {
   }
 
   const clearSteer = (provider: RouterProvider) =>
-    run("Could not clear the account for new threads", () =>
+    run(gt("Could not clear the account for new threads"), () =>
       runSteer({ environmentId, input: { sourceId: source.id, provider, account: null } }),
     );
   const removePin = (threadId: ThreadId) =>
-    run("Could not set the thread back to Automatic", () =>
+    run(gt("Could not set the thread back to Automatic"), () =>
       runSet({ environmentId, input: { threadId, account: null } }),
     );
 
@@ -155,7 +160,7 @@ function RoutingSection(props: {
               detail={steer ? nameOf(steer.account) : gt("Automatic")}
               inactive={
                 steer?.active === false
-                  ? "Saved in T3; it is renewed on the hub shortly."
+                  ? gt("Saved in T3. It will be renewed on the hub shortly.")
                   : undefined
               }
               action={
@@ -180,7 +185,13 @@ function RoutingSection(props: {
             <T>Pinned threads</T>
           </h3>
           {routing.pins.map((pin) => {
-            const detail = `${nameOf(pin.account)} · ${pin.stall ? "waits when it runs out" : "falls back when it runs out"}${until(pin.expiresAt)}`;
+            const detail = [
+              nameOf(pin.account),
+              pin.stall ? gt("waits when it runs out") : gt("falls back when it runs out"),
+              until(pin.expiresAt),
+            ]
+              .filter(Boolean)
+              .join(" · ");
             return pin.thread ? (
               <RoutingRow
                 key={`thread:${pin.thread.id}`}
@@ -189,7 +200,7 @@ function RoutingSection(props: {
                 inactive={
                   pin.active
                     ? undefined
-                    : "The hub does not list this pin; the next turn pins it again."
+                    : gt("The hub does not list this pin. The next turn pins it again.")
                 }
                 action={
                   <Button
@@ -207,7 +218,7 @@ function RoutingSection(props: {
                 key={`session:${pin.session}:${pin.account}`}
                 title={sessionTitle(null, pin.session)}
                 detail={detail}
-                note="set outside T3"
+                note={gt("set outside T3")}
               />
             );
           })}
@@ -222,7 +233,13 @@ function RoutingSection(props: {
             <RoutingRow
               key={`held:${hold.thread?.id ?? hold.session}:${hold.account}:${hold.kind}`}
               title={sessionTitle(hold.thread, hold.session)}
-              detail={`${hold.account ? nameOf(hold.account) : "Unknown account"} · ${hold.kind === "keep_warm" ? "keeping its cache warm" : "waiting for quota"}${until(hold.releaseAt)}`}
+              detail={[
+                hold.account ? nameOf(hold.account) : gt("Unknown account"),
+                hold.kind === "keep_warm" ? gt("keeping its cache warm") : gt("waiting for quota"),
+                until(hold.releaseAt),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             />
           ))}
         </div>
@@ -236,11 +253,15 @@ function RoutingSection(props: {
             <RoutingRow
               key={`margin:${margin.thread?.id ?? margin.session}`}
               title={sessionTitle(margin.thread, margin.session)}
-              detail={gt("{percent}% of the usual headroom{actor}{until}", {
-                percent: Math.round(margin.headroomScale * 100),
-                actor: margin.actor ? ` · set by ${margin.actor}` : "",
-                until: until(margin.expiresAt),
-              })}
+              detail={[
+                gt("{percent}% of the usual headroom", {
+                  percent: Math.round(margin.headroomScale * 100),
+                }),
+                margin.actor ? gt("set by {actor}", { actor: margin.actor }) : undefined,
+                until(margin.expiresAt),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             />
           ))}
         </div>
