@@ -295,6 +295,7 @@ interface CreateDevRunnerEnvInput {
   readonly serverOffset: number;
   readonly webOffset: number;
   readonly t3Home: string | undefined;
+  readonly allowLiveHome?: boolean | undefined;
   readonly browser: boolean | undefined;
   readonly autoBootstrapProjectFromCwd: boolean | undefined;
   readonly logWebSocketEvents: boolean | undefined;
@@ -309,6 +310,7 @@ export const createDevRunnerEnv = Effect.fn("dev-runner.createDevRunnerEnv")(fun
   serverOffset,
   webOffset,
   t3Home,
+  allowLiveHome,
   browser,
   autoBootstrapProjectFromCwd,
   logWebSocketEvents,
@@ -334,7 +336,7 @@ export const createDevRunnerEnv = Effect.fn("dev-runner.createDevRunnerEnv")(fun
   // The server stores an explicit home's state in userdata, which for ~/.t3 is the live
   // install. Left implicit, dev state goes to ~/.t3/dev.
   const isLiveHome = resolvedBaseDir === path.join(yield* HostProcess.HomeDirectory, ".t3");
-  if (configuredBaseDir !== undefined && !isLiveHome) {
+  if (configuredBaseDir !== undefined && (allowLiveHome || !isLiveHome)) {
     output.T3CODE_HOME = resolvedBaseDir;
   } else {
     delete output.T3CODE_HOME;
@@ -793,6 +795,7 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
     serverOffset,
     webOffset,
     t3Home: resolvedT3Home,
+    allowLiveHome: input.allowLiveHome,
     browser: input.browser,
     autoBootstrapProjectFromCwd: input.autoBootstrapProjectFromCwd,
     logWebSocketEvents: input.logWebSocketEvents,
@@ -810,8 +813,8 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
   yield* Effect.logInfo(
     `[dev-runner] mode=${input.mode} source=${source}${selectionSuffix} serverPort=${String(env.T3CODE_PORT)} webPort=${String(env.PORT)} baseDir=${baseDir}`,
   );
-  if (input.mode !== "dev:web" && !input.allowLiveHome && env.T3CODE_HOME !== undefined) {
-    yield* assertNotLiveHome(env.T3CODE_HOME);
+  if (input.mode !== "dev:web" && !input.allowLiveHome && resolvedT3Home !== undefined) {
+    yield* assertNotLiveHome(yield* resolveBaseDir(resolvedT3Home));
   }
 
   // Before the share block: --dry-run only resolves and prints. Sharing would
