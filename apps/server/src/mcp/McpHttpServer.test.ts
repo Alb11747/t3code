@@ -688,6 +688,7 @@ it.effect("decodes a JSON-stringified delegate target as the same object", () =>
   return Effect.gen(function* () {
     const task = "Inspect";
     const target = {
+      projectId: "project:target",
       providerInstanceId: "codex",
       model: "gpt-6.2-sol",
       options: { reasoningEffort: "medium" },

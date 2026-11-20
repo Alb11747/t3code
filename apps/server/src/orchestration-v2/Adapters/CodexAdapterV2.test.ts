@@ -5037,7 +5037,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ...(outcome === "completion-only" ? failureEntries(0).slice(1) : failureEntries(0)),
         );
         if (outcome === "completion-only") entries.push(...failureEntries(0).slice(1));
-        const retries = outcome === "past-limit" ? 5 : outcome === "stop" ? 0 : 1;
+        const retries =
+          outcome === "past-limit" ? 5 : outcome === "stop" ? 0 : changedTier === undefined ? 1 : 2;
         const steeredText = "Use the smaller change.";
         for (let attempt = 1; attempt <= retries; attempt++) {
           const startId = 3 + attempt + (changedTier === undefined ? 0 : 1);
@@ -5108,7 +5109,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                         error: { code: -32603, message: "Start failed" },
                       },
                     }
-                  : withReplayRequestId(entry, 3 + attempt),
+                  : withReplayRequestId(entry, startId),
               );
             } else if (outcome !== "start-fails") {
               entries.push(
@@ -5131,10 +5132,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               }
             }
           }
-          if (outcome === "past-limit") entries.push(...failureEntries(attempt));
+          if (outcome === "past-limit" || (changedTier !== undefined && attempt < retries)) {
+            entries.push(...failureEntries(attempt));
+          }
           if (
             outcome === "recover" ||
-            outcome === "keep-changed-tier" ||
+            (changedTier !== undefined && attempt === retries) ||
             outcome === "completion-only" ||
             outcome === "started-first" ||
             outcome === "stop-starting"
@@ -9546,11 +9549,21 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       Effect.gen(function* () {
         const scenario = "mcp-resource-thread-recovery";
         const nativeThreadId = `native-${scenario}`;
+        const config = {
+          ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+          model_auto_compact_token_limit: 250_000,
+        };
         const preamble = codexReplayPreamble({
           nativeThreadId,
           nativeTurnId: "unused-turn",
           prompt: "unused-prompt",
-        }).slice(0, 5);
+        })
+          .slice(0, 5)
+          .map((entry) =>
+            entry.type === "expect_outbound" && entry.label === "thread/start"
+              ? { ...entry, frame: { id: 2, method: "thread/start", params: { config } } }
+              : entry,
+          );
 
         const resourceResult = {
           contents: [
@@ -9600,7 +9613,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 params: {
                   threadId: nativeThreadId,
                   excludeTurns: true,
-                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                  config,
                 },
               },
             },
@@ -9636,10 +9649,20 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         });
 
         const resumeParams: Array<unknown> = [];
-        const harness = yield* makeCodexReplayHarness(transcript, undefined, (method, params) =>
-          Effect.sync(() => {
-            if (method === "thread/resume") resumeParams.push(params);
-          }),
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          undefined,
+          (method, params) =>
+            Effect.sync(() => {
+              if (method === "thread/resume") resumeParams.push(params);
+            }),
+          undefined,
+          {
+            settings: {
+              ...DEFAULT_CODEX_SETTINGS,
+              autoCompactLimits: { [CODEX_TEST_MODEL_SELECTION.model]: 250_000 },
+            },
+          },
         );
         const mcpApps = harness.runtime.mcpApps;
         assert.ok(mcpApps, "Codex runtime should expose MCP apps");
@@ -11437,9 +11460,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const resumeParams = {
         threadId: nativeThreadId,
         excludeTurns: true,
-        cwd: CODEX_TEST_RUNTIME_POLICY.cwd,
-        model: CODEX_TEST_MODEL_SELECTION.model,
-        config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+        config: {
+          ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+          model_auto_compact_token_limit: 250_000,
+        },
       };
       const thread = codexReplayThreadResult({ nativeThreadId, forkedFromId: null });
       const exchange = (
@@ -11503,7 +11527,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ),
         ],
       });
-      const harness = yield* makeCodexReplayHarness(transcript);
+      const resumeRequests: Array<unknown> = [];
+      const harness = yield* makeCodexReplayHarness(transcript, undefined, (method, params) =>
+        Effect.sync(() => {
+          if (method === "thread/resume") resumeRequests.push(params);
+        }),
+      );
       const now = yield* DateTime.now;
       const firstTurn = codexReplaySourceTurn({
         id: "provider-turn-first",
@@ -11529,8 +11558,15 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           providerTurn: firstTurn,
         },
         providerThreadTurns: [firstTurn, secondTurn],
+        modelSelection: CODEX_TEST_MODEL_SELECTION,
+        runtimePolicy: { ...CODEX_TEST_RUNTIME_POLICY, autoCompactLimit: 250_000 },
       });
 
+      assert.lengthOf(resumeRequests, 2);
+      for (const params of resumeRequests) {
+        assert.isFalse(Predicate.hasProperty(params, "cwd"));
+        assert.isFalse(Predicate.hasProperty(params, "model"));
+      }
       assert.equal(snapshot.providerThread.nativeThreadRef?.nativeId, nativeThreadId);
       assert.deepEqual(snapshot.providerThread.nativeConversationHeadRef, firstTurn.nativeTurnRef);
     }).pipe(

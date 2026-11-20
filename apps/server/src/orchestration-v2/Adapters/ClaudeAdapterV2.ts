@@ -643,7 +643,7 @@ export const ClaudeProviderCapabilitiesV2 = {
     supportsInterrupt: true,
     supportsNativeResume: true,
     supportsActiveSteering: true,
-    activeSteeringInterruptsTools: false,
+    activeSteeringInterruptsTools: true,
     supportsSteeringByInterruptRestart: false,
     supportsQueuedMessages: true,
     terminalStatusQuality: "strong",

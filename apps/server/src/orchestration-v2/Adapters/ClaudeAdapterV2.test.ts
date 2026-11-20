@@ -6229,7 +6229,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           },
         });
         const attachmentNote = `\n\n[Attached file "requirements.pdf" is saved at: ${path.join(harness.attachmentsDir, attachmentRelativePath(attachment)!)}]`;
-        assert.equal(harness.offeredMessages[1]?.priority, "next");
+        assert.equal(harness.offeredMessages[1]?.priority, "now");
         assert.deepEqual(harness.offeredMessages[1]?.message.content, [
           {
             type: "text",
@@ -6728,7 +6728,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       let settleDuringOffer: (message: SDKUserMessage) => Effect.Effect<void> = () => Effect.void;
       const harness = yield* makeWakeHarnessWithOptions({
         offer: (message) =>
-          message.priority === "next"
+          message.priority === "now"
             ? Effect.suspend(() => settleDuringOffer(message))
             : Effect.void,
       });
@@ -9035,7 +9035,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             attachments: [],
           },
         });
-        assert.equal(harness.offeredMessages[1]?.priority, "next");
+        assert.equal(harness.offeredMessages[1]?.priority, "now");
       }
       const partialText = "The audit covers the `integ";
       if (!queryExits)

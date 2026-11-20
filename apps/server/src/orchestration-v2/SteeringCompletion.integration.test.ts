@@ -3513,7 +3513,11 @@ it.effect.each([
             createdBy === "agent" ? "auto" : "steer",
           );
           assert.equal(result.delivery, "steered");
-          assert.deepEqual(steered, ["progress update"]);
+          assert.deepEqual(steered, [
+            createdBy === "agent"
+              ? "[T3 Code: this message came through T3 Code's tools, not from the user typing in this chat.]\n\nprogress update"
+              : "progress update",
+          ]);
           assert.equal(started.length, 1);
         }).pipe(Effect.provide(layer));
       }),
@@ -3944,7 +3948,11 @@ it.effect.each([
             (providerDriver === "claudeAgent" && requester === "user" && interrupt)
           ) {
             const projection = yield* orchestrator.getThreadProjection(threadId);
-            assert.deepEqual(steered, ["queued"]);
+            assert.deepEqual(steered, [
+              author === "agent"
+                ? "[T3 Code: this message came through T3 Code's tools, not from the user typing in this chat.]\n\nqueued"
+                : "queued",
+            ]);
             assert.equal(started.length, 1);
             assert.equal(
               projection.runs.find((run) => run.id === queuedRun.id)?.status,

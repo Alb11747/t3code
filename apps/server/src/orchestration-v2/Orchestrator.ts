@@ -8664,6 +8664,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.dispatchMode.type === "steer_active" ||
           command.delegatedCompletion !== undefined ||
           command.notification?.source.kind === "delegated_task");
+      if (
+        steerWhenReadyRunId === undefined &&
+        (startupDeliveryIntent !== undefined || deliverAtToolBoundary)
+      ) {
+        yield* ensureSteeringMessage(command, { ...command, text: dispatchText });
+      }
       const queueProviderThread =
         activeProviderThread ??
         projection.providerThreads.find(
