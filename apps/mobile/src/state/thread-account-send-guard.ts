@@ -68,7 +68,7 @@ export async function confirmThreadAccountForSend(input: {
   );
   Dialog.alert(
     input.kind === "compaction" ? m(msg("Compaction moves accounts")) : m(msg("Account changes")),
-    accountChangeMessage({ accounts: state?.accounts ?? [], ...decision, kind: input.kind }),
+    accountChangeMessage({ accounts: state?.accounts ?? [], ...decision, kind: input.kind }, m),
   );
   return false;
 }

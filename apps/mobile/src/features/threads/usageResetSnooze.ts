@@ -42,7 +42,7 @@ export async function chooseUsageResetSnooze(
     }
     return undefined;
   }
-  const options = usageResetSnoozeOptions(result.value);
+  const options = usageResetSnoozeOptions(result.value, m);
   if (options.length === 1) {
     if (!options[0]!.snoozedUntil) {
       Dialog.alert(

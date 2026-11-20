@@ -5,6 +5,8 @@ import type {
   ThreadAccountRequestKind,
   UsageLimitSourceAccount,
 } from "@t3tools/contracts";
+import { mFallback, msg } from "gt-i18n";
+import type { MFunctionType } from "gt-i18n/types";
 
 /**
  * Fork: the check before a send that the CLI Proxy account the composer showed is still where
@@ -73,19 +75,28 @@ export function accountShortLabel(
   return tier ? `${name} (${tier})` : name;
 }
 
-export function accountChangeMessage(input: {
-  readonly accounts: ReadonlyArray<AccountNaming>;
-  readonly from: RouterAccountAlias;
-  readonly to: RouterAccountAlias;
-  readonly kind: ThreadAccountRequestKind;
-}): string {
+export function accountChangeMessage(
+  input: {
+    readonly accounts: ReadonlyArray<AccountNaming>;
+    readonly from: RouterAccountAlias;
+    readonly to: RouterAccountAlias;
+    readonly kind: ThreadAccountRequestKind;
+  },
+  resolve: MFunctionType = mFallback,
+): string {
   const name = (alias: RouterAccountAlias) => {
     const account = input.accounts.find((candidate) => candidate.routerAlias === alias);
     return account ? accountShortLabel(account, input.accounts) : alias;
   };
+  const accounts = { from: name(input.from), to: name(input.to) };
   return input.kind === "compaction"
-    ? `After compacting, this thread will now continue on ${name(input.to)}, not ${name(input.from)}. Press again to confirm.`
-    : `This will now use ${name(input.to)}, not ${name(input.from)}. Send again to confirm.`;
+    ? resolve(
+        msg(
+          "After compacting, this thread will now continue on {to}, not {from}. Press again to confirm.",
+          accounts,
+        ),
+      )
+    : resolve(msg("This will now use {to}, not {from}. Send again to confirm.", accounts));
 }
 
 export type AccountSendCheck =

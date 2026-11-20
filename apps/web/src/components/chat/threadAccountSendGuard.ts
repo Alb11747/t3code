@@ -149,7 +149,7 @@ export async function confirmAccountForSend(
   toastManager.add({
     type: "warning",
     title: kind === "compaction" ? m(msg("Compaction moved accounts")) : m(msg("Account changed")),
-    description: accountChangeMessage({ accounts: state?.accounts ?? [], ...decision, kind }),
+    description: accountChangeMessage({ accounts: state?.accounts ?? [], ...decision, kind }, m),
   });
   const previous = appAtomRegistry.get(threadAccountAttentionAtom);
   appAtomRegistry.set(threadAccountAttentionAtom, { threadKey, count: (previous?.count ?? 0) + 1 });

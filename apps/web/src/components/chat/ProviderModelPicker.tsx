@@ -6,7 +6,7 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { RegistryContext } from "@effect/atom-react";
-import { T, useGT } from "gt-react";
+import { T, useGT, useMessages } from "gt-react";
 import {
   createContext,
   memo,
@@ -150,6 +150,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     if (isMenuOpen) refreshModelCatalog();
   }, [isMenuOpen]);
   const gt = useGT();
+  const messages = useMessages();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popupRef = useRef<HTMLDivElement | null>(null);
@@ -278,7 +279,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     !selectedEntries && props.triggerLabel === undefined ? selectedModel?.servedBy : undefined;
   const triggerTooltipContent = [
     props.triggerLabel ?? allModelNames ?? triggerLabel,
-    servedBy ? servedByNote(servedBy) : undefined,
+    servedBy ? servedByNote(servedBy, messages) : undefined,
     props.triggerDetail,
     shortcutLabel,
   ]
@@ -452,7 +453,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             </Badge>
           ) : null}
           {servedBy ? (
-            <span className="shrink-0 text-muted-foreground text-xs">{servedByNote(servedBy)}</span>
+            <span className="shrink-0 text-muted-foreground text-xs">
+              {servedByNote(servedBy, messages)}
+            </span>
           ) : null}
         </span>
       </PopoverTrigger>

@@ -202,8 +202,10 @@ export function ScheduledTaskScriptSection({
                       onClick={() => onChange({ ...draft, source: example.source })}
                     >
                       <div className="flex flex-col">
-                        <span>{example.label}</span>
-                        <span className="text-xs text-muted-foreground">{example.description}</span>
+                        <span>{messages(example.label)}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {messages(example.description)}
+                        </span>
                       </div>
                     </MenuItem>
                   ))}

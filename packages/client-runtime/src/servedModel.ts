@@ -1,6 +1,8 @@
 // Fork: when a CLI Proxy hub answers a retired model ID with another model, say which one ran.
 import type { OrchestrationV2ThreadProjection, RunId } from "@t3tools/contracts";
 import { formatModelSlugName } from "@t3tools/shared/model";
+import { mFallback, msg } from "gt-i18n";
+import type { MFunctionType } from "gt-i18n/types";
 
 // Claude Code's 1M-context suffix selects an option of the same model, not another model.
 const baseModel = (slug: string) => slug.replace(/\[1m\]$/i, "");
@@ -38,6 +40,6 @@ export function runServedModelNotes(
 }
 
 /** The picker note for a retired ID the hub answers with `servedBy`. */
-export function servedByNote(servedBy: string): string {
-  return `Answered by ${formatModelSlugName(servedBy)}`;
+export function servedByNote(servedBy: string, resolve: MFunctionType = mFallback): string {
+  return resolve(msg("Answered by {model}", { model: formatModelSlugName(servedBy) }));
 }

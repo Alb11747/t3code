@@ -45,7 +45,7 @@ export function loadUsageResetSnoozeOptions(
       ]);
       const answer: UsageResetSnooze | undefined =
         result?._tag === "Success" ? result.value : undefined;
-      return usageResetSnoozeOptions(answer);
+      return usageResetSnoozeOptions(answer, m);
     }),
   );
 }

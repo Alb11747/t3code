@@ -501,7 +501,7 @@ export function buildModelOptions(
         key,
         label: model?.name ?? fallbackModelSelection.model,
         ...(shortName ? { shortName } : {}),
-        subtitle: model?.servedBy ? servedByNote(model.servedBy) : (model?.subProvider ?? ""),
+        subtitle: model?.servedBy ? servedByNote(model.servedBy, m) : (model?.subProvider ?? ""),
         providerKey: fallbackModelSelection.instanceId,
         providerLabel,
         providerDriver,

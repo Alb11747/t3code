@@ -1,6 +1,6 @@
 import { type ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts";
 import { servedByNote } from "@t3tools/client-runtime/served-model";
-import { T, useGT } from "gt-react";
+import { T, useGT, useMessages } from "gt-react";
 import { memo } from "react";
 import { CheckIcon, StarIcon } from "lucide-react";
 import { getDisplayModelName } from "./providerIconUtils";
@@ -39,6 +39,7 @@ export const ModelListRow = memo(function ModelListRow(props: {
   onToggleFavorite: (instanceId: ProviderInstanceId, slug: string) => void;
 }) {
   const gt = useGT();
+  const messages = useMessages();
   const model = {
     slug: props.slug,
     name: props.name,
@@ -105,7 +106,7 @@ export const ModelListRow = memo(function ModelListRow(props: {
         ) : null}
         {props.servedBy ? (
           <span className="min-w-0 shrink truncate text-xs text-muted-foreground/70">
-            {servedByNote(props.servedBy)}
+            {servedByNote(props.servedBy, messages)}
           </span>
         ) : null}
       </div>

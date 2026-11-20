@@ -1,4 +1,5 @@
 import type { ScheduledTask, ScheduledTaskUpsertInput } from "@t3tools/contracts";
+import { msg } from "gt-i18n";
 
 /** Fork: the script part of a scheduled-task form, kept apart from the upstream draft. */
 export interface ScheduledTaskScriptDraft {
@@ -37,9 +38,10 @@ export interface ScheduledTaskScriptExample {
 export const SCHEDULED_TASK_SCRIPT_EXAMPLES: ReadonlyArray<ScheduledTaskScriptExample> = [
   {
     id: "usage-gate",
-    label: "Skip when usage is high",
-    description:
+    label: msg("Skip when usage is high"),
+    description: msg(
       "Runs only while every Codex account has weekly usage left, and skips without a reading.",
+    ),
     source: `// ctx.usage.accounts lists native and CLI Proxy accounts with their usage windows.
 const codex = ctx.usage.accounts.filter((account) => account.driver === "codex");
 const weekly = codex.flatMap((account) => account.windows.filter((w) => w.kind === "weekly"));
@@ -53,8 +55,10 @@ return true;
   },
   {
     id: "slow-down",
-    label: "Run less often when usage is low",
-    description: "A daily task that waits three days between runs while weekly usage left is low.",
+    label: msg("Run less often when usage is low"),
+    description: msg(
+      "A daily task that waits three days between runs while weekly usage left is low.",
+    ),
     source: `// ctx.state is saved after every check. Return false to skip this run.
 const weekly = ctx.usage.accounts
   .filter((account) => account.driver === "claudeAgent")
@@ -71,9 +75,10 @@ return true;
   },
   {
     id: "cheaper-model",
-    label: "Switch to a cheaper model near the limit",
-    description:
+    label: msg("Switch to a cheaper model near the limit"),
+    description: msg(
       "Runs on the newest Haiku or Luna model while every account has a 5-hour or weekly window above 90%.",
+    ),
     source: `// ctx.model is what this run uses unless you return one; ctx.providers lists each
 // provider's models, and its \`hub\` names the CLI Proxy usage source its accounts are under.
 const provider = ctx.providers.find((entry) => entry.instanceId === ctx.model?.instanceId);
@@ -109,9 +114,10 @@ return { model: cheaper.slug, reason: \`Usage is nearly used up; using \${cheape
   },
   {
     id: "keep-warm",
-    label: "Keep a Claude cache warm",
-    description:
+    label: msg("Keep a Claude cache warm"),
+    description: msg(
       "Post runs in a Claude thread on an interval such as 15 minutes; it pings just before the prompt cache expires.",
+    ),
     source: `// Pings the bound thread a few minutes before Claude's prompt cache expires.
 const thread = ctx.thread;
 const expiresAt = Date.parse(thread?.promptCache?.expiresAt ?? "");

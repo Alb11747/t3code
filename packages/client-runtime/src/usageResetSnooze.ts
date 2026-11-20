@@ -3,6 +3,8 @@ import type {
   UsageResetSnoozeWindow,
   UsageResetWindowKind,
 } from "@t3tools/contracts";
+import { mFallback, msg } from "gt-i18n";
+import type { MFunctionType } from "gt-i18n/types";
 
 /** Fork: the snooze menu entries that wake a thread when its account's usage resets. */
 const USAGE_RESET_SNOOZE_ACTION = "snooze:usage-reset";
@@ -14,12 +16,15 @@ export interface UsageResetSnoozeOption {
   readonly snoozedUntil?: string;
 }
 
-const windowName = (reading: UsageResetSnoozeWindow) =>
-  reading.window === "weekly"
-    ? "Weekly"
-    : reading.windowDurationMins && reading.windowDurationMins % 60 === 0
-      ? `${reading.windowDurationMins / 60}h`
-      : "Session";
+function windowSnoozeLabel(reading: UsageResetSnoozeWindow, resolve: MFunctionType): string {
+  if (reading.window === "weekly") return resolve(msg("Until usage resets (Weekly)"));
+  if (reading.windowDurationMins && reading.windowDurationMins % 60 === 0) {
+    return resolve(
+      msg("Until usage resets ({hours}h)", { hours: reading.windowDurationMins / 60 }),
+    );
+  }
+  return resolve(msg("Until usage resets (Session)"));
+}
 
 /**
  * A thread's options from its server's answer: one per window of the account it last used, else
@@ -27,19 +32,20 @@ const windowName = (reading: UsageResetSnoozeWindow) =>
  */
 export function usageResetSnoozeOptions(
   answer: UsageResetSnooze | undefined,
+  resolve: MFunctionType = mFallback,
 ): ReadonlyArray<UsageResetSnoozeOption> {
   const windows = answer?.windows ?? [];
   if (windows.length > 0) {
     return windows.map((reading) => ({
       id: `${USAGE_RESET_SNOOZE_ACTION}:${reading.window}`,
-      label: `Until usage resets (${windowName(reading)})`,
+      label: windowSnoozeLabel(reading, resolve),
       snoozedUntil: reading.resetsAt,
     }));
   }
   return [
     {
       id: USAGE_RESET_SNOOZE_ACTION,
-      label: "Until usage resets",
+      label: resolve(msg("Until usage resets")),
       ...(answer?.resetsAt ? { snoozedUntil: answer.resetsAt } : {}),
     },
   ];
