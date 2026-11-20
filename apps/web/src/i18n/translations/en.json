@@ -3579,6 +3579,7 @@
   "99c183d2407cd36d": "Add a project to start",
   "06b6bb85f2e34802": "What should we build in {project}?",
   "5a405f15d9985bd6": "What should we build?",
+  "f3e390a8dd9a4f7f": "Retried with earlier thinking dropped. Claude may not recall its reasoning from before this point.",
   "84bd480e448a8d52": "Retry with dropped thinking",
   "9fff55b95b3f990c": "This retry may run without earlier reasoning.",
   "613f8257a433cec4": "Media",

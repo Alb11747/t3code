@@ -20,9 +20,6 @@ import { threadEnvironment } from "../../state/threads";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { Button } from "../ui/button";
 
-const DROPPED_THINKING_NOTICE =
-  "Retried with earlier thinking dropped. Claude may not recall its reasoning from before this point.";
-
 export function DroppedThinkingRetryAction(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
@@ -39,7 +36,10 @@ export function DroppedThinkingRetryAction(props: {
     return (
       <p className="ms-7 flex items-center gap-1.5 pb-1 text-xs text-warning-foreground">
         <TriangleAlertIcon aria-hidden className="size-3.5 shrink-0" />
-        {DROPPED_THINKING_NOTICE}
+        <T>
+          Retried with earlier thinking dropped. Claude may not recall its reasoning from before
+          this point.
+        </T>
       </p>
     );
   if (

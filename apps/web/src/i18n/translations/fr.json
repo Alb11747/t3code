@@ -3578,6 +3578,7 @@
   "99c183d2407cd36d": "Ajoutez un projet pour commencer",
   "06b6bb85f2e34802": "Que devons-nous construire dans {project} ?",
   "5a405f15d9985bd6": "Que construit-on ?",
+  "f3e390a8dd9a4f7f": "Nouvelle tentative sans le raisonnement précédent. Claude pourrait ne pas se souvenir de son raisonnement avant ce point.",
   "84bd480e448a8d52": "Réessayer en abandonnant le raisonnement précédent",
   "9fff55b95b3f990c": "Ce nouvel essai peut s’exécuter sans le raisonnement précédent.",
   "613f8257a433cec4": "Médias",

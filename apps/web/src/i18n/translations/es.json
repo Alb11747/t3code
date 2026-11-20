@@ -3578,6 +3578,7 @@
   "99c183d2407cd36d": "Añade un proyecto para empezar",
   "06b6bb85f2e34802": "¿Qué construimos en {project}?",
   "5a405f15d9985bd6": "¿Qué construimos?",
+  "f3e390a8dd9a4f7f": "Se reintentó sin el razonamiento previo. Es posible que Claude no recuerde su razonamiento anterior a este punto.",
   "84bd480e448a8d52": "Reintentar sin el razonamiento anterior",
   "9fff55b95b3f990c": "Este nuevo intento puede ejecutarse sin el razonamiento anterior.",
   "613f8257a433cec4": "Multimedia",

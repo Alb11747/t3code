@@ -3578,6 +3578,7 @@
   "99c183d2407cd36d": "Lägg till ett projekt för att starta",
   "06b6bb85f2e34802": "Vad ska vi bygga i {project}?",
   "5a405f15d9985bd6": "Vad ska vi bygga?",
+  "f3e390a8dd9a4f7f": "Ett nytt försök gjordes utan tidigare resonemang. Claude kanske inte minns resonemanget före den här punkten.",
   "84bd480e448a8d52": "Försök igen utan tidigare resonemang",
   "9fff55b95b3f990c": "Det här försöket kan köras utan tidigare resonemang.",
   "613f8257a433cec4": "Media",
