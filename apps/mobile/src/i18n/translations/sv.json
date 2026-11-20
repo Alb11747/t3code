@@ -4980,6 +4980,16 @@
   "a6f6f92c132e0412": "En ny version har laddats ned och installeras automatiskt nästa gång du lämnar appen. Vill du installera den nu i stället?",
   "b0d022fe9d78def7": "Senare",
   "9d3fd34ff062c44b": "Installera nu",
+  "79c5c6a7f2683001": "Uppdateringar är inte tillgängliga. Androids uppdateringsmodul saknas",
+  "e8c316fda5a3c260": "Inte kontrollerat",
+  "00af17e4db7e2288": "Uppdateringen misslyckades: {detail}",
+  "1089f59f4fd30d56": "Söker efter uppdateringar för förgreningen…",
+  "1d16f08536330271": "Hämtar och verifierar uppdateringen…",
+  "93b70ce1fc673f41": "Klar: {version}. Uppdateringen installeras vid nästa start. Du kan också välja Installera nu.",
+  "de5cbf41334d4e98": "Tillåt uppdateringar från T3 Code Fork och gå sedan tillbaka för att slutföra installationen.",
+  "28096cb6bc4cdac9": "Uppdateringsbehörighet saknas. Välj Installera nu för att försöka igen.",
+  "bdf8f5360959e516": "Installationsprogrammet har öppnats. Bekräfta uppdateringen i Android.",
+  "045ab504f21ef60d": "Klar: {version}",
   "6753deea17e91bf5": "Delad användning i ChatGPT",
   "207a400af41d5310": [
     {

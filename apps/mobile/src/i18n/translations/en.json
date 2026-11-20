@@ -4981,6 +4981,16 @@
   "a6f6f92c132e0412": "A new version has been downloaded and installs automatically the next time you leave the app. Install it now instead?",
   "b0d022fe9d78def7": "Later",
   "9d3fd34ff062c44b": "Install Now",
+  "79c5c6a7f2683001": "Updates unavailable: Android updater module is missing",
+  "e8c316fda5a3c260": "Not checked",
+  "00af17e4db7e2288": "Update failed: {detail}",
+  "1089f59f4fd30d56": "Checking for fork updates…",
+  "1d16f08536330271": "Downloading and verifying update…",
+  "93b70ce1fc673f41": "Ready: {version}. Installs on next launch, or choose Install now.",
+  "de5cbf41334d4e98": "Allow updates from T3 Code Fork, then return to finish installing.",
+  "28096cb6bc4cdac9": "Update permission was not granted. Choose Install now to try again.",
+  "bdf8f5360959e516": "Installer opened. Confirm the update in Android.",
+  "045ab504f21ef60d": "Ready: {version}",
   "6753deea17e91bf5": "ChatGPT shared usage",
   "207a400af41d5310": [
     {

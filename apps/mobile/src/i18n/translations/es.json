@@ -4973,6 +4973,16 @@
   "a6f6f92c132e0412": "Se ha descargado una versión nueva que se instala automáticamente la próxima vez que salgas de la app. ¿Instalarla ahora?",
   "b0d022fe9d78def7": "Más tarde",
   "9d3fd34ff062c44b": "Instalar ahora",
+  "79c5c6a7f2683001": "Actualizaciones no disponibles: falta el módulo de actualización de Android",
+  "e8c316fda5a3c260": "Sin comprobar",
+  "00af17e4db7e2288": "Error al actualizar: {detail}",
+  "1089f59f4fd30d56": "Buscando actualizaciones de la bifurcación…",
+  "1d16f08536330271": "Descargando y verificando la actualización…",
+  "93b70ce1fc673f41": "Lista: {version}. Se instalará en el próximo inicio. También puedes elegir «Instalar ahora».",
+  "de5cbf41334d4e98": "Permite las actualizaciones de T3 Code Fork y vuelve para terminar la instalación.",
+  "28096cb6bc4cdac9": "No se concedió permiso para actualizar. Elige «Instalar ahora» para volver a intentarlo.",
+  "bdf8f5360959e516": "Se abrió el instalador. Confirma la actualización en Android.",
+  "045ab504f21ef60d": "Lista: {version}",
   "6753deea17e91bf5": "Uso compartido de ChatGPT",
   "207a400af41d5310": [
     {

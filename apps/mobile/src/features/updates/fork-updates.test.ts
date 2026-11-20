@@ -1,3 +1,4 @@
+import { mFallback } from "gt-react-native";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 interface Snapshot {
@@ -19,7 +20,8 @@ vi.mock("expo", () => ({ requireOptionalNativeModule: () => mocks }));
 vi.mock("expo-constants", () => ({
   default: { expoConfig: { extra: { androidFork: true, androidForkUpdatePublicKey: "test-key" } } },
 }));
-vi.mock("react", () => ({
+vi.mock("react", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react")>()),
   useSyncExternalStore: (subscribe: (listener: () => void) => () => void, read: () => Snapshot) => {
     mocks.subscribe = subscribe;
     return read();
@@ -85,7 +87,7 @@ describe("Android fork update lifecycle", () => {
     const completed = until((state) => state.ready && !state.busy);
     const dispose = service.installForkUpdateChecks();
     try {
-      expect((await completed).status).toContain("Ready: fork-2");
+      expect(mFallback((await completed).status)).toContain("Ready: fork-2");
       expect(mocks.install).not.toHaveBeenCalled();
     } finally {
       dispose();
@@ -97,12 +99,14 @@ describe("Android fork update lifecycle", () => {
     mocks.pending.mockResolvedValue({ version: "fork-2", attempted: false });
     mocks.install.mockResolvedValueOnce("permission").mockResolvedValueOnce("denied");
     using fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => releases());
-    const permission = until((state) => !state.busy && state.status.startsWith("Allow updates"));
+    const permission = until(
+      (state) => !state.busy && mFallback(state.status).startsWith("Allow updates"),
+    );
     const dispose = service.installForkUpdateChecks();
     try {
       await permission;
       const denied = until(
-        (state) => !state.busy && state.status.includes("permission was not granted"),
+        (state) => !state.busy && mFallback(state.status).includes("permission was not granted"),
       );
       mocks.appState?.("active");
       expect((await denied).ready).toBe(true);
@@ -122,7 +126,7 @@ describe("Android fork update lifecycle", () => {
     const completed = until((state) => state.lastCheck !== null && !state.busy);
     const dispose = service.installForkUpdateChecks();
     try {
-      expect((await completed).status).toContain("Ready: fork-2");
+      expect(mFallback((await completed).status)).toContain("Ready: fork-2");
       expect(mocks.install).not.toHaveBeenCalled();
     } finally {
       dispose();

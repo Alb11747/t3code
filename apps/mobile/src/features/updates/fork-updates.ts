@@ -1,5 +1,6 @@
 import { requireOptionalNativeModule } from "expo";
 import Constants from "expo-constants";
+import { msg } from "gt-react-native";
 import { useSyncExternalStore } from "react";
 import { AppState, Platform } from "react-native";
 import { selectForkUpdate } from "./fork-updates.logic";
@@ -19,6 +20,7 @@ const native = isAndroidFork
   : null;
 const publicKey = Constants.expoConfig?.extra?.androidForkUpdatePublicKey ?? "";
 interface ForkUpdateState {
+  /** Marked message resolved by Settings so an open status follows language changes. */
   readonly status: string;
   readonly busy: boolean;
   readonly ready: boolean;
@@ -27,8 +29,8 @@ interface ForkUpdateState {
 let state: ForkUpdateState = {
   status:
     isAndroidFork && !native
-      ? "Updates unavailable: Android updater module is missing"
-      : "Not checked",
+      ? msg("Updates unavailable: Android updater module is missing")
+      : msg("Not checked"),
   busy: false,
   ready: false,
   lastCheck: null,
@@ -55,11 +57,15 @@ export function useForkUpdateState() {
   );
 }
 function fail(error: unknown) {
-  update({ status: `Update failed: ${error instanceof Error ? error.message : String(error)}` });
+  update({
+    status: msg("Update failed: {detail}", {
+      detail: error instanceof Error ? error.message : String(error),
+    }),
+  });
 }
 export async function checkForkUpdate(): Promise<void> {
   if (!native || state.busy) return;
-  update({ busy: true, status: "Checking for fork updates…" });
+  update({ busy: true, status: msg("Checking for fork updates…") });
   checkedAt = Date.now();
   try {
     const response = await fetch(
@@ -71,13 +77,13 @@ export async function checkForkUpdate(): Promise<void> {
     );
     if (!response.ok) throw new Error(`Release check HTTP ${response.status}`);
     const { manifestUrl, signatureUrl } = selectForkUpdate(await response.json());
-    update({ status: "Downloading and verifying update…" });
+    update({ status: msg("Downloading and verifying update…") });
     const version = await native.download(manifestUrl, signatureUrl, publicKey);
     update({
       ready: version !== null,
       status: version
-        ? `Ready: ${version}. Installs on next launch, or choose Install now.`
-        : "Up to date",
+        ? msg("Ready: {version}. Installs on next launch, or choose Install now.", { version })
+        : msg("Up to date"),
       lastCheck: new Date().toLocaleString(),
     });
   } catch (error) {
@@ -99,10 +105,10 @@ export async function installForkUpdate(requestPermission = true): Promise<void>
     permissionPending = result === "permission";
     update({
       status: permissionPending
-        ? "Allow updates from T3 Code Fork, then return to finish installing."
+        ? msg("Allow updates from T3 Code Fork, then return to finish installing.")
         : result === "denied"
-          ? "Update permission was not granted. Choose Install now to try again."
-          : "Installer opened. Confirm the update in Android.",
+          ? msg("Update permission was not granted. Choose Install now to try again.")
+          : msg("Installer opened. Confirm the update in Android."),
     });
   } catch (error) {
     permissionPending = false;
@@ -122,7 +128,9 @@ export function installForkUpdateChecks(): () => void {
       update({
         busy: false,
         ready: pending !== null,
-        status: pending ? `Ready: ${pending.version}` : "Not checked",
+        status: pending
+          ? msg("Ready: {version}", { version: pending.version })
+          : msg("Not checked"),
       });
       if (pending && !pending.attempted) await installForkUpdate();
       else await checkForkUpdate();

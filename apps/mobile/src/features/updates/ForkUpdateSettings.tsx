@@ -1,16 +1,17 @@
-import { useGT } from "gt-react-native";
+import { useGT, useMessages } from "gt-react-native";
 import { SettingsRow } from "../settings/components/SettingsRow";
 import { checkForkUpdate, installForkUpdate, useForkUpdateState } from "./fork-updates";
 
 export function ForkUpdateSettings() {
   const gt = useGT();
+  const messages = useMessages();
   const state = useForkUpdateState();
   return (
     <>
       <SettingsRow
         icon="arrow.clockwise"
         label={gt("Fork updates")}
-        value={state.status}
+        value={messages(state.status)}
         disabled={state.busy}
         onPress={() => {
           void checkForkUpdate();

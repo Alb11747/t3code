@@ -4980,6 +4980,16 @@
   "a6f6f92c132e0412": "Eine neue Version wurde heruntergeladen und wird automatisch installiert, wenn du die App das nächste Mal verlässt. Stattdessen jetzt installieren?",
   "b0d022fe9d78def7": "Später",
   "9d3fd34ff062c44b": "Jetzt installieren",
+  "79c5c6a7f2683001": "Updates nicht verfügbar: Das Android-Update-Modul fehlt",
+  "e8c316fda5a3c260": "Noch nicht geprüft",
+  "00af17e4db7e2288": "Update fehlgeschlagen: {detail}",
+  "1089f59f4fd30d56": "Suche nach Updates für den Fork…",
+  "1d16f08536330271": "Update wird heruntergeladen und überprüft…",
+  "93b70ce1fc673f41": "Bereit: {version}. Wird beim nächsten Start installiert. Sie können auch „Jetzt installieren“ wählen.",
+  "de5cbf41334d4e98": "Erlauben Sie Updates von T3 Code Fork und kehren Sie zurück, um die Installation abzuschließen.",
+  "28096cb6bc4cdac9": "Die Berechtigung für Updates wurde nicht erteilt. Wählen Sie „Jetzt installieren“, um es erneut zu versuchen.",
+  "bdf8f5360959e516": "Das Installationsprogramm wurde geöffnet. Bestätigen Sie das Update in Android.",
+  "045ab504f21ef60d": "Bereit: {version}",
   "6753deea17e91bf5": "Geteilte ChatGPT-Nutzung",
   "207a400af41d5310": [
     {

@@ -4974,6 +4974,16 @@
   "a6f6f92c132e0412": "Une nouvelle version a été téléchargée et s’installera automatiquement la prochaine fois que vous quitterez l’app. L’installer maintenant ?",
   "b0d022fe9d78def7": "Plus tard",
   "9d3fd34ff062c44b": "Installer maintenant",
+  "79c5c6a7f2683001": "Mises à jour indisponibles : le module de mise à jour Android est absent",
+  "e8c316fda5a3c260": "Pas encore vérifié",
+  "00af17e4db7e2288": "Échec de la mise à jour : {detail}",
+  "1089f59f4fd30d56": "Recherche de mises à jour du fork…",
+  "1d16f08536330271": "Téléchargement et vérification de la mise à jour…",
+  "93b70ce1fc673f41": "Prête : {version}. Elle s’installera au prochain lancement. Vous pouvez aussi choisir « Installer maintenant ».",
+  "de5cbf41334d4e98": "Autorisez les mises à jour provenant de T3 Code Fork, puis revenez pour terminer l’installation.",
+  "28096cb6bc4cdac9": "L’autorisation de mise à jour n’a pas été accordée. Choisissez « Installer maintenant » pour réessayer.",
+  "bdf8f5360959e516": "Le programme d’installation est ouvert. Confirmez la mise à jour dans Android.",
+  "045ab504f21ef60d": "Prête : {version}",
   "6753deea17e91bf5": "Utilisation partagée ChatGPT",
   "207a400af41d5310": [
     {

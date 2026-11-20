@@ -4974,6 +4974,16 @@
   "a6f6f92c132e0412": "Uma nova versão foi baixada e será instalada automaticamente na próxima vez que você sair do app. Instalar agora?",
   "b0d022fe9d78def7": "Depois",
   "9d3fd34ff062c44b": "Instalar agora",
+  "79c5c6a7f2683001": "Atualizações indisponíveis: o módulo de atualização do Android está ausente",
+  "e8c316fda5a3c260": "Ainda não verificado",
+  "00af17e4db7e2288": "Falha na atualização: {detail}",
+  "1089f59f4fd30d56": "Verificando atualizações da versão fork…",
+  "1d16f08536330271": "Baixando e verificando a atualização…",
+  "93b70ce1fc673f41": "Pronta: {version}. Será instalada na próxima inicialização. Você também pode escolher «Instalar agora».",
+  "de5cbf41334d4e98": "Permita as atualizações do T3 Code Fork e volte para concluir a instalação.",
+  "28096cb6bc4cdac9": "A atualização não foi autorizada. Escolha «Instalar agora» para tentar novamente.",
+  "bdf8f5360959e516": "O instalador foi aberto. Confirme a atualização no Android.",
+  "045ab504f21ef60d": "Pronta: {version}",
   "6753deea17e91bf5": "Uso compartilhado do ChatGPT",
   "207a400af41d5310": [
     {
