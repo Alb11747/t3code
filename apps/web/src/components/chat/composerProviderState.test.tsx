@@ -260,22 +260,22 @@ describe("getComposerFastModeToggle", () => {
     );
   });
 
-  it("moves the Codex service tier between Normal and Fast", () => {
-    const tiers = [
-      selectDescriptor("serviceTier", [
-        { id: "default", label: "Normal", isDefault: true },
-        { id: "priority", label: "Fast" },
-        { id: "ultra", label: "Ultrafast" },
-      ]),
-    ];
-    for (const [from, to] of [
-      ["default", "priority"],
-      ["priority", "default"],
-      ["ultra", "default"],
-    ]) {
-      expect(toggle("codex", tiers, selections(["serviceTier", from!]))).toStrictEqual(
-        selections(["serviceTier", to!]),
-      );
+  const standardTier = { id: "default", label: "Standard", isDefault: true };
+  const fastTier = { id: "priority", label: "Fast" };
+  const ultrafastTier = { id: "ultrafast", label: "Ultrafast" };
+
+  it.each([
+    ["Standard, Fast, and Ultrafast", [standardTier, fastTier, ultrafastTier]],
+    ["Standard and Fast", [standardTier, fastTier]],
+    ["Standard and Ultrafast", [standardTier, ultrafastTier]],
+  ] as const)("cycles through %s when those tiers are available", (_label, options) => {
+    const tiers = [selectDescriptor("serviceTier", options)];
+    const [first] = options;
+    let modelOptions = selections(["serviceTier", first.id]);
+    for (const next of [...options.slice(1), first]) {
+      const expected = selections(["serviceTier", next.id]);
+      expect(toggle("codex", tiers, modelOptions)).toStrictEqual(expected);
+      modelOptions = expected;
     }
   });
 

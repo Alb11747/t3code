@@ -282,7 +282,7 @@ export function getReasoningTraitStep(input: {
   return change?.modelOptions ? { prompt: change.prompt, modelOptions: change.modelOptions } : null;
 }
 
-/** Claude-style `fastMode` flips; Codex's service tier moves between Normal and Fast. */
+/** Flip a boolean fast mode or cycle through Codex's selectable service tiers. */
 export function getFastModeTraitToggle(input: {
   provider: ProviderDriverKind;
   instanceId: ProviderInstanceId;
@@ -318,15 +318,17 @@ export function getFastModeTraitToggle(input: {
     input.provider === "codex"
       ? selected.selectDescriptors.find((descriptor) => descriptor.id === "serviceTier")
       : undefined;
-  const fastTier = tier?.options.find(({ label }) => label === "Fast");
-  if (!tier || !fastTier) return null;
+  if (!tier) return null;
+  const choices = selectableProviderOptionChoices(tier);
+  if (choices.length < 2) return null;
   const current = getDescriptorStringValue(
     tier,
     { instanceId: input.instanceId, model: input.model, options: input.modelOptions ?? [] },
     input.reportedModelSelection,
   );
-  const next = current === "default" ? fastTier.id : "default";
-  return getTraitSelectChange(selected, tier, "", next)?.modelOptions ?? null;
+  const position = choices.findIndex((option) => option.id === current);
+  const next = choices[(position + 1) % choices.length]!;
+  return getTraitSelectChange(selected, tier, "", next.id)?.modelOptions ?? null;
 }
 
 export interface TraitsMenuContentProps {
