@@ -3,7 +3,6 @@ import {
   collectLimitAccounts,
   collectLimitPools,
   displayLimitWindows,
-  formatUsageCredits,
   type LimitAccount,
   type LimitPool,
   type LimitPoolMember,
@@ -44,6 +43,7 @@ import {
   collectLimitNotices,
   cursorUsageWindowDetails,
   formatResetsIn,
+  formatUsageCredits,
   resetCreditChoices,
 } from "@t3tools/shared/usageLimitsCopy";
 
@@ -191,7 +191,7 @@ function SegmentPopover({
           </Row>
         ) : null}
         {account.limits.usageCredits ? (
-          <Row label={gt("Credits")}>{formatUsageCredits(account.limits.usageCredits)}</Row>
+          <Row label={gt("Credits")}>{formatUsageCredits(account.limits.usageCredits, m)}</Row>
         ) : null}
         {where ? (
           <Row

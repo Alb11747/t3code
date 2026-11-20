@@ -11,7 +11,6 @@ import {
   isProviderAvailable,
   PROVIDER_DISPLAY_NAMES,
   type ServerProvider,
-  type ServerProviderUsageCredits,
   type ServerProviderUsageLimits,
   type ServerProviderUsageWindow,
   type UsageLimitSourceSnapshot,
@@ -727,14 +726,6 @@ function limitsNotice(limits: ServerProviderUsageLimits): string | null {
     return limits.unavailable.message ?? "Could not read limits.";
   }
   return limits.windows.length === 0 ? "No limits reported." : null;
-}
-
-/** Fork: Codex usage credits as one short value, such as "36,120.76" or "unlimited". */
-export function formatUsageCredits(credits: ServerProviderUsageCredits): string {
-  if (credits.unlimited) return "Unlimited";
-  if (credits.balance !== undefined)
-    return credits.balance.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  return credits.hasCredits ? "Available" : "None";
 }
 
 export function remainingPercent(window: ServerProviderUsageWindow): number {

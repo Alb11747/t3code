@@ -7,7 +7,6 @@ import {
   collectLimitAccounts,
   collectLimitPools,
   displayLimitWindows,
-  formatUsageCredits,
   paceRemainingPercent,
   remainingPercent,
   type LimitAccount,
@@ -17,6 +16,7 @@ import {
   collectExternalUsageLinks,
   collectLimitNotices,
   cursorUsageWindowDetails,
+  formatUsageCredits,
 } from "@t3tools/shared/usageLimitsCopy";
 import { msg, T, useGT, useMessages, Var } from "gt-react-native";
 import { Fragment, type ReactNode, useId, useState } from "react";
@@ -631,6 +631,7 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
   const reset = pool?.resets.find((candidate) => candidate.member.account.key === accountKey);
   const [revealed, setRevealed] = useState(false);
   const gt = useGT();
+  const m = useMessages();
   return (
     <SettingsScreen title={gt("Account", { $context: "screen title" })}>
       <ScrollView
@@ -675,7 +676,7 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
               {account.limits.usageCredits ? (
                 <Text selectable className="text-sm text-foreground-muted">
                   {gt("Credits {value}", {
-                    value: formatUsageCredits(account.limits.usageCredits),
+                    value: formatUsageCredits(account.limits.usageCredits, m),
                   })}
                 </Text>
               ) : null}

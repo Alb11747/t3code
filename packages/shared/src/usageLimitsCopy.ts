@@ -1,6 +1,7 @@
 import type {
   ProviderConsumeResetCreditInput,
   ServerProviderResetCredits,
+  ServerProviderUsageCredits,
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
@@ -76,6 +77,19 @@ export function limitsNotice(
     return limits.unavailable.message ?? resolve(msg("Could not read limits."));
   }
   return limits.windows.length === 0 ? resolve(msg("No limits reported.")) : null;
+}
+
+export function formatUsageCredits(
+  credits: ServerProviderUsageCredits,
+  resolve: MFunctionType = mFallback,
+): string {
+  if (credits.unlimited) return resolve(msg("Unlimited", { $context: "usage credit balance" }));
+  if (credits.balance !== undefined) {
+    return credits.balance.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  }
+  return credits.hasCredits
+    ? resolve(msg("Available", { $context: "usage credit balance" }))
+    : resolve(msg("None", { $context: "usage credit balance" }));
 }
 
 /** @public */
