@@ -1,4 +1,4 @@
-import { useGT, useMessages, T } from "gt-react";
+import { msg, T, useGT, useMessages } from "gt-react";
 import { useAtomValue } from "@effect/atom-react";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -19,6 +19,7 @@ import { useEffect, useEffectEvent, useState } from "react";
 
 import { useComposerDraftAccountChoice, useComposerDraftStore } from "../../composerDraftStore";
 import { usePrimarySettings } from "../../hooks/useSettings";
+import type { MessageResolver } from "../../i18n/messages";
 import {
   getDocumentActivity,
   subscribeDocumentActivity,
@@ -64,6 +65,11 @@ import {
 } from "./threadAccountSendGuard";
 
 const PROVIDER_NAMES: Record<string, string> = { claudeAgent: "Claude", codex: "Codex" };
+const WINDOW_LIMIT_LABELS = {
+  session: msg("Session limit"),
+  weekly: msg("Weekly limit"),
+  monthly: msg("Monthly limit"),
+};
 // The pick moves with usage across every thread on the hub. A send re-checks it anyway, so this
 // only keeps the chip honest while it is looked at: two small reads per visible composer, which
 // the server shares across clients.
@@ -193,6 +199,16 @@ function ThreadAccountPickerChip(
     next.routerAlias !== chosen.routerAlias;
   const driver = state.accounts[0]?.driver;
   const provider = PROVIDER_NAMES[driver ?? ""] ?? gt("Provider");
+  const triggerLabel = [
+    gt("{provider} account: {account}", {
+      provider,
+      account: chosen ? accountLabel(chosen) : gt("Automatic"),
+    }),
+    next ? gt("Next request: {account}", { account: accountLabel(next) }) : undefined,
+    compactionNote,
+  ]
+    .filter(Boolean)
+    .join(". ");
   const canWaitForAccount = driver === "claudeAgent";
   const fallbackNote =
     deviates && chosen && next
@@ -249,7 +265,7 @@ function ThreadAccountPickerChip(
         setPendingMove(target);
         return;
       }
-      fail("Could not switch accounts", result);
+      fail(gt("Could not switch accounts"), result);
     } else {
       accountSendGuard.noteOwnChange(threadKey);
     }
@@ -274,7 +290,7 @@ function ThreadAccountPickerChip(
       input: { instanceId: state.instanceId, account },
     });
     setBusy(false);
-    if (result._tag === "Failure") fail("Could not change the account for new threads", result);
+    if (result._tag === "Failure") fail(gt("Could not change the account for new threads"), result);
     // A steer moves where Automatic sends the next request; that is the user's own change.
     else accountSendGuard.noteOwnChange(threadKey);
     props.refresh();
@@ -301,9 +317,7 @@ function ThreadAccountPickerChip(
           render={
             <ComposerControl
               size={props.size}
-              aria-label={`${provider} account: ${chosen ? accountLabel(chosen) : "automatic"}${
-                next ? `, next request on ${accountLabel(next)}` : ""
-              }${compactionNote ? `. ${compactionNote}` : ""}`}
+              aria-label={triggerLabel}
               title={compactionNote ?? undefined}
             />
           }
@@ -345,7 +359,7 @@ function ThreadAccountPickerChip(
         >
           <div className="flex flex-col gap-1">
             <div className="flex items-center justify-between px-1 text-xs text-muted-foreground">
-              <span>{provider} account</span>
+              <span>{gt("{provider} account", { provider })}</span>
               <span>
                 <T>this thread</T>
               </span>
@@ -369,11 +383,9 @@ function ThreadAccountPickerChip(
                 selected={chosen?.routerAlias === account.routerAlias}
                 disabled={busy || (!isDraft && !permitted)}
                 title={accountLabel(account)}
-                marks={[
-                  ...(next?.routerAlias === account.routerAlias ? ["in use"] : []),
-                  ...(steered?.routerAlias === account.routerAlias ? ["new threads"] : []),
-                ]}
-                detail={describeAccount(account, timestampFormat)}
+                inUse={next?.routerAlias === account.routerAlias}
+                forNewThreads={steered?.routerAlias === account.routerAlias}
+                detail={describeAccount(account, timestampFormat, messages)}
                 windows={accountWindows(account)}
                 onSelect={() => pick(account)}
               />
@@ -500,18 +512,23 @@ function isMoveRefusal(cause: unknown): boolean {
 function describeAccount(
   account: UsageLimitSourceAccount,
   timestampFormat: Parameters<typeof formatUpcomingTimestamp>[1],
+  resolve: MessageResolver,
 ): string {
-  const at = (iso: string) => formatUpcomingTimestamp(iso, timestampFormat);
+  const at = (iso: string) =>
+    formatUpcomingTimestamp(iso, timestampFormat, undefined, undefined, resolve);
   const parts = account.plan ? [account.plan] : [];
   const exhausted = exhaustedWindow(account);
   const { session } = accountWindows(account);
   if (exhausted?.resetsAt) {
-    const name = exhausted.kind === "weekly" ? "weekly" : exhausted.label;
-    parts.push(`${name} limit · back ${at(exhausted.resetsAt)}`);
+    const limit =
+      exhausted.kind === "other" ? exhausted.label : resolve(WINDOW_LIMIT_LABELS[exhausted.kind]);
+    parts.push(resolve(msg("{limit} · back {time}", { limit, time: at(exhausted.resetsAt) })));
   } else if (session?.resetsAt) {
-    parts.push(`5h resets ${at(session.resetsAt)}`);
+    parts.push(resolve(msg("5-hour limit resets {time}", { time: at(session.resetsAt) })));
   }
-  if (account.subscriptionEndsAt) parts.push(`ends ${at(account.subscriptionEndsAt)}`);
+  if (account.subscriptionEndsAt) {
+    parts.push(resolve(msg("Plan ends {date}", { date: at(account.subscriptionEndsAt) })));
+  }
   return parts.join(" · ");
 }
 
@@ -520,10 +537,12 @@ function AccountOption(props: {
   readonly disabled: boolean;
   readonly title: string;
   readonly detail: string;
-  readonly marks?: ReadonlyArray<string>;
+  readonly inUse?: boolean;
+  readonly forNewThreads?: boolean;
   readonly windows?: ReturnType<typeof accountWindows>;
   readonly onSelect: () => void;
 }) {
+  const gt = useGT();
   return (
     <button
       type="button"
@@ -543,11 +562,16 @@ function AccountOption(props: {
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="flex min-w-0 items-center gap-1.5 text-sm">
           <span className="truncate">{props.title}</span>
-          {props.marks?.map((mark) => (
-            <Badge key={mark} size="sm" variant={mark === "in use" ? "info" : "secondary"}>
-              {mark}
+          {props.inUse ? (
+            <Badge size="sm" variant="info">
+              {gt("in use")}
             </Badge>
-          ))}
+          ) : null}
+          {props.forNewThreads ? (
+            <Badge size="sm" variant="secondary">
+              {gt("new threads")}
+            </Badge>
+          ) : null}
         </span>
         {props.detail ? (
           <span className="truncate text-xs text-muted-foreground">{props.detail}</span>
@@ -555,8 +579,11 @@ function AccountOption(props: {
       </span>
       {props.windows ? (
         <span className="flex shrink-0 flex-col gap-1 pt-1">
-          <UsageBar label="5h" window={props.windows.session} />
-          <UsageBar label="wk" window={props.windows.weekly} />
+          <UsageBar label={gt("5h")} window={props.windows.session} />
+          <UsageBar
+            label={gt("wk", { $context: "short weekly quota label" })}
+            window={props.windows.weekly}
+          />
         </span>
       ) : null}
     </button>
@@ -571,14 +598,14 @@ function UsageBar(props: {
   const left = props.window ? Math.max(0, Math.min(100, 100 - props.window.usedPercent)) : null;
   return (
     <span
-      className="flex items-center gap-1 text-3xs text-muted-foreground tabular-nums"
+      className="flex items-center justify-end gap-1 text-3xs text-muted-foreground tabular-nums"
       aria-label={
         left === null
           ? gt("{label}: unknown", { label: props.label })
           : gt("{label}: {left}% left", { label: props.label, left: Math.round(left) })
       }
     >
-      <span className="w-4">{props.label}</span>
+      <span className="min-w-4 whitespace-nowrap">{props.label}</span>
       <span className="h-1 w-12 overflow-hidden rounded-full bg-muted">
         {left === null ? null : (
           <span

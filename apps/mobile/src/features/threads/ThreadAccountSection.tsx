@@ -1,9 +1,8 @@
-import { T, useGT } from "gt-react-native";
+import { msg, T, useGT, useLocale, useMessages } from "gt-react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { accountShortLabel, previewAccount } from "@t3tools/client-runtime/thread-account-guard";
 import {
-  THREAD_ACCOUNT_MOVE_WARNING,
   type EnvironmentId,
   type ModelSelection,
   type RouterAccountAlias,
@@ -22,6 +21,7 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import * as Dialog from "../../components/ui/Dialog";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
+import type { MessageResolver } from "../../i18n/messages";
 import { cn } from "../../lib/cn";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
@@ -38,15 +38,19 @@ function leftPercent(account: UsageLimitSourceAccount, kind: "session" | "weekly
   return window ? Math.max(0, Math.round(100 - window.usedPercent)) : null;
 }
 
-function describe(account: UsageLimitSourceAccount) {
+function describe(account: UsageLimitSourceAccount, locale: string, resolve: MessageResolver) {
   const session = leftPercent(account, "session");
   const weekly = leftPercent(account, "weekly");
   return [
     account.plan,
-    session === null ? undefined : `5h ${session}% left`,
-    weekly === null ? undefined : `week ${weekly}% left`,
+    session === null ? undefined : resolve(msg("5-hour limit: {left}% left", { left: session })),
+    weekly === null ? undefined : resolve(msg("Weekly limit: {left}% left", { left: weekly })),
     account.subscriptionEndsAt
-      ? `ends ${new Date(account.subscriptionEndsAt).toLocaleDateString()}`
+      ? resolve(
+          msg("Plan ends {date}", {
+            date: new Date(account.subscriptionEndsAt).toLocaleDateString(locale),
+          }),
+        )
       : undefined,
   ]
     .filter(Boolean)
@@ -76,6 +80,8 @@ export function ThreadAccountSection(props: {
 }) {
   const { threadId, onDraftChange } = props;
   const gt = useGT();
+  const locale = useLocale();
+  const messages = useMessages();
   const query = useEnvironmentQuery<ThreadAccountState, unknown>(
     serverEnvironment.threadAccountState({
       environmentId: props.environmentId,
@@ -112,7 +118,7 @@ export function ThreadAccountSection(props: {
   const owner = byAlias(state.owner);
   const steered = byAlias(state.steer);
   const driver = state.accounts[0]?.driver;
-  const provider = PROVIDER_NAMES[driver ?? ""] ?? "Provider";
+  const provider = PROVIDER_NAMES[driver ?? ""] ?? gt("Provider");
   const canWaitForAccount = driver === "claudeAgent";
   const disabled = pending || (threadId !== null && !permitted);
 
@@ -141,14 +147,13 @@ export function ThreadAccountSection(props: {
   ) =>
     Dialog.confirm({
       title: gt("Switch this thread to {account}?", { account: label(account) }),
-      message: owner
-        ? gt("{warning} The earlier thinking is tied to {account}.", {
-            warning: THREAD_ACCOUNT_MOVE_WARNING,
-            account: label(owner),
-          })
-        : gt("{warning} The earlier thinking is tied to the current account.", {
-            warning: THREAD_ACCOUNT_MOVE_WARNING,
-          }),
+      message: [
+        gt(
+          "Earlier thinking will be dropped. It is tied to {account} and the new account cannot read it. Messages, tool results and files stay.",
+          { account: owner ? label(owner) : gt("the current account") },
+        ),
+        gt("Switching re-sends the thread's context as a cold cache write."),
+      ].join(" "),
       confirmText: gt("Switch account"),
       destructive: true,
       onConfirm: () => set(alias, stall, true),
@@ -190,9 +195,13 @@ export function ThreadAccountSection(props: {
   const afterCompaction = byAlias(previewAccount(compactionPreview.data));
   const current = nextPreview.data?.current ?? null;
   const routeNote = [
-    next ? `Next request: ${accountShortLabel(next, state.accounts)}` : undefined,
+    next
+      ? gt("Next request: {account}", { account: accountShortLabel(next, state.accounts) })
+      : undefined,
     afterCompaction && afterCompaction.routerAlias !== (current ?? nextAlias)
-      ? `after compacting: ${accountShortLabel(afterCompaction, state.accounts)}`
+      ? gt("after compacting: {account}", {
+          account: accountShortLabel(afterCompaction, state.accounts),
+        })
       : undefined,
   ]
     .filter(Boolean)
@@ -203,9 +212,9 @@ export function ThreadAccountSection(props: {
       key: account.id,
       title: label(account),
       detail: [
-        nextAlias === account.routerAlias ? "in use" : undefined,
-        steered?.routerAlias === account.routerAlias ? "new threads" : undefined,
-        describe(account),
+        nextAlias === account.routerAlias ? gt("in use") : undefined,
+        steered?.routerAlias === account.routerAlias ? gt("new threads") : undefined,
+        describe(account, locale, messages),
       ]
         .filter(Boolean)
         .join(" · "),
