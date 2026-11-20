@@ -1237,7 +1237,7 @@ export const layer: Layer.Layer<
           );
         }
         if (nativeForkTransfer !== undefined) {
-          let sourceProjection = yield* projectionStore.getThreadRecords(
+          const sourceProjection = yield* projectionStore.getThreadRecords(
             nativeForkTransfer.sourceThreadId,
             ["runs", "providerThreads", "attempts", "providerTurns"],
           );
@@ -1261,16 +1261,15 @@ export const layer: Layer.Layer<
               cause: `Native fork transfer ${nativeForkTransfer.id} has no source provider execution.`,
             });
           }
-          // The source may have started a turn after dispatch planned this fork.
+          // Providers refuse to fork a busy thread, so a source that started a turn after
+          // dispatch planned this fork gets the portable context dispatch gives a busy source.
           const sourceBusy = sourceProjection.runs.some(
             (candidate) => candidate.ordinal > sourceRun.ordinal && isActiveRun(candidate),
           );
           let nativeForkFailure: string | undefined;
           if (
-            (sourceRun.status === "completed" || sourceRun.status === "waiting") &&
-            (!sourceBusy ||
-              (session.providerSession.capabilities.threads.canForkWhileSourceRunning === true &&
-                sourceProviderTurn?.nativeTurnRef != null))
+            !sourceBusy ||
+            session.providerSession.capabilities.threads.canForkWhileSourceRunning === true
           ) {
             // Rolled-back turns are no longer in the source conversation, so they cannot bound a fork.
             const rolledBackAttemptIds = new Set(
@@ -1314,13 +1313,6 @@ export const layer: Layer.Layer<
               message: startFailureMessage(forked.failure),
               class: "provider_error",
             }).message;
-            sourceProjection = {
-              ...sourceProjection,
-              ...(yield* projectionStore.getThreadRecords(nativeForkTransfer.sourceThreadId, [
-                "runs",
-                "attempts",
-              ])),
-            };
           }
           const nativeForkFailed = nativeForkFailure !== undefined;
           const sourceItems = yield* ContextHandoffService.readForkHistoryItems(

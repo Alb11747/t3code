@@ -310,7 +310,6 @@ layer("CommandPolicyV2", (it) => {
         capabilities: CursorProviderCapabilitiesV2,
         sameProvider: true,
         hasStrongNativeSource: true,
-        hasNativeTurnBoundary: false,
         sourceRunStatus: "completed",
         fromSpecificTurn: true,
         sourceBusy: false,
@@ -321,56 +320,38 @@ layer("CommandPolicyV2", (it) => {
   );
 
   it.effect.each([
-    { canForkWhileSourceRunning: true, hasNativeTurnBoundary: true, busyStrategy: "native_fork" },
     {
-      canForkWhileSourceRunning: undefined,
-      hasNativeTurnBoundary: true,
+      capabilities: CodexProviderCapabilitiesV2,
+      providerInstanceId: ProviderInstanceId.make("codex"),
       busyStrategy: "portable_context",
     },
     {
-      canForkWhileSourceRunning: true,
-      hasNativeTurnBoundary: false,
-      busyStrategy: "portable_context",
+      capabilities: ClaudeProviderCapabilitiesV2,
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      busyStrategy: "native_fork",
     },
-  ] as const)(
-    "forks a busy source with canForkWhileSourceRunning=$canForkWhileSourceRunning and hasNativeTurnBoundary=$hasNativeTurnBoundary",
-    ({ canForkWhileSourceRunning, hasNativeTurnBoundary, busyStrategy }) =>
-      Effect.gen(function* () {
-        const policy = yield* CommandPolicy.CommandPolicyV2;
-        const decide = (sourceBusy: boolean) =>
-          policy.decideForkExecution({
-            commandId,
-            threadId,
-            providerInstanceId: ProviderInstanceId.make("codex"),
-            capabilities: {
-              ...CodexProviderCapabilitiesV2,
-              threads: { ...CodexProviderCapabilitiesV2.threads, canForkWhileSourceRunning },
-            },
-            sameProvider: true,
-            hasStrongNativeSource: true,
-            hasNativeTurnBoundary,
-            sourceRunStatus: "completed",
-            fromSpecificTurn: true,
-            sourceBusy,
-          });
+  ] as const)("forks a busy source with $providerInstanceId", ({
+    capabilities,
+    providerInstanceId,
+    busyStrategy,
+  }) =>
+    Effect.gen(function* () {
+      const policy = yield* CommandPolicy.CommandPolicyV2;
+      const decide = (sourceBusy: boolean) =>
+        policy.decideForkExecution({
+          commandId,
+          threadId,
+          providerInstanceId,
+          capabilities,
+          sameProvider: true,
+          hasStrongNativeSource: true,
+          sourceRunStatus: "completed",
+          fromSpecificTurn: true,
+          sourceBusy,
+        });
 
-        assert.equal(yield* decide(false), "native_fork");
-        assert.equal(yield* decide(true), busyStrategy);
-        assert.equal(
-          yield* policy.decideForkExecution({
-            commandId,
-            threadId,
-            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
-            capabilities: ClaudeProviderCapabilitiesV2,
-            sameProvider: true,
-            hasStrongNativeSource: true,
-            hasNativeTurnBoundary: true,
-            sourceRunStatus: "completed",
-            fromSpecificTurn: true,
-            sourceBusy: true,
-          }),
-          "native_fork",
-        );
-      }),
+      assert.equal(yield* decide(false), "native_fork");
+      assert.equal(yield* decide(true), busyStrategy);
+    }),
   );
 });

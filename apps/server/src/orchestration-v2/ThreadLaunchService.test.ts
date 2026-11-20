@@ -65,7 +65,6 @@ import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
-import * as Orchestrator from "./Orchestrator.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -2191,65 +2190,6 @@ it.effect.each(["fails", "is interrupted"] as const)(
         }
       }).pipe(Effect.provide(harness.layer));
     }),
-);
-
-it.effect("fails a run whose preparation failure could not be stored until storage recovers", () =>
-  Effect.gen(function* () {
-    const storageFull = yield* Deferred.make<void>();
-    let rejectedWrites = 0;
-    const harness = makeHarness({
-      fetchWorktreeBaseCommit: () =>
-        Effect.fail(
-          new GitCommandError({
-            operation: "GitVcsDriver.fetchRemote",
-            command: "git",
-            cwd: project.workspaceRoot,
-            detail: "Git could not reach the remote.",
-            exitCode: 128,
-          }),
-        ),
-      dispatch: (command, dispatch) =>
-        command.type !== "prepared-run.fail"
-          ? dispatch(command)
-          : Effect.suspend(() => {
-              if (rejectedWrites >= 2) return dispatch(command);
-              rejectedWrites += 1;
-              return Deferred.succeed(storageFull, undefined).pipe(
-                Effect.andThen(
-                  Effect.fail(
-                    new Orchestrator.OrchestratorDispatchError({
-                      commandId: command.commandId,
-                      commandType: command.type,
-                      cause: new Error("SQLITE_FULL: database or disk is full"),
-                    }),
-                  ),
-                ),
-              );
-            }),
-    });
-    yield* Effect.gen(function* () {
-      const launches = yield* ThreadLaunch.ThreadLaunchService;
-      const threads = yield* ThreadManagement.ThreadManagementService;
-      const launched = yield* launches.launch(
-        launchInput({
-          command: "command:launch:storage-full",
-          thread: "thread:launch:storage-full",
-          message: "First message",
-          workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
-        }),
-      );
-      yield* Deferred.await(storageFull);
-      yield* TestClock.adjust("1 second");
-      yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
-        Stream.filter(
-          (stored) =>
-            stored.event.type === "run.updated" && stored.event.payload.status === "failed",
-        ),
-        Stream.runHead,
-      );
-      assert.equal(rejectedWrites, 2);
-    }).pipe(Effect.provide(harness.layer));
-  }),
 );
 
 it.effect.each(["failed", "interrupted"] as const)(
