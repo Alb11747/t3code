@@ -1,8 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
-import type {
-  OrchestrationV2ServerCommand,
-  ServerProvider,
-  UsageLimitSourceSnapshot,
+import {
+  type OrchestrationV2ServerCommand,
+  type ServerProvider,
+  UsageLimitSourceError,
+  type UsageLimitSourceSnapshot,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -23,6 +24,7 @@ import * as UsageLimitSources from "./UsageLimitSources.ts";
 const OWNER = "account-1111111111111111";
 const OTHER = "account-2222222222222222";
 const ELSEWHERE = "account-3333333333333333";
+const CODEX_ACCOUNT = "account-4444444444444444";
 // The aliases routers before 0.28.0 gave OWNER and OTHER.
 const LEGACY_OWNER = "account-aaaaaaaaaaaaaaa1";
 const LEGACY_OTHER = "account-aaaaaaaaaaaaaaa2";
@@ -71,7 +73,7 @@ const withCodex = snapshots.map((source) => ({
   ...source,
   accounts: [
     ...source.accounts,
-    { ...hubAccount("account-4444444444444444", "codex@example.com"), driver: "codex" },
+    { ...hubAccount(CODEX_ACCOUNT, "codex@example.com"), driver: "codex" },
     { ...hubAccount("account-5555555555555555", "codex2@example.com"), driver: "codex" },
   ],
 })) as unknown as ReadonlyArray<UsageLimitSourceSnapshot>;
@@ -104,6 +106,8 @@ function testLayer(input: {
   readonly choices?: Record<string, unknown>;
   readonly codex?: boolean;
   readonly separateCodexHub?: boolean;
+  readonly unpinError?: UsageLimitSourceError;
+  readonly previousHubUnavailable?: boolean;
 }) {
   const current = input.separateCodexHub
     ? ([
@@ -139,7 +143,12 @@ function testLayer(input: {
       streamChanges: Stream.make(current),
       routerAlias: () => Effect.succeed((alias) => input.renamed?.[alias] ?? alias),
       removedEndAlias: (_sourceId, _hub, alias) => Effect.succeed(input.renamed?.[alias] ?? alias),
-      hub: (id) => Effect.succeed({ url: `http://${id}.test`, managementKey: "key" }),
+      hub: (id) =>
+        Effect.succeed(
+          input.previousHubUnavailable && id === "hub"
+            ? null
+            : { url: `http://${id}.test`, managementKey: "key" },
+        ),
       nextPick: (_hub, request) =>
         Effect.sync(() => {
           input.picks?.push(request);
@@ -156,7 +165,9 @@ function testLayer(input: {
         }),
       pin: (_hub, pin) => Effect.sync(() => void input.pins?.push(pin)),
       unpin: (hub, sessions) =>
-        Effect.sync(() => void input.controls?.push({ hub: hub.url, unpin: sessions })),
+        Effect.sync(() => void input.controls?.push({ hub: hub.url, unpin: sessions })).pipe(
+          Effect.andThen(input.unpinError ? Effect.fail(input.unpinError) : Effect.void),
+        ),
       control: () => Effect.succeed(input.control ?? {}),
       steer: (_hub, account, expiresAt) =>
         Effect.sync(() => void input.controls?.push({ steer: account, expiresAt })),
@@ -250,6 +261,8 @@ function setAccount(input: {
   readonly accountChoice?: unknown;
   readonly renamed?: Record<string, string>;
   readonly separateCodexHub?: boolean;
+  readonly unpinError?: UsageLimitSourceError;
+  readonly previousHubUnavailable?: boolean;
 }) {
   const pins: Array<Parameters<UsageLimitSources.UsageLimitSources["Service"]["pin"]>[1]> = [];
   const commands: OrchestrationV2ServerCommand[] = [];
@@ -422,6 +435,50 @@ describe("ThreadAccountService.set", () => {
         hubs.map((hub) => ({ hub, unpin: ["native-session", "older-session"] })),
       );
       expect(commands).toMatchObject([{ type: "thread.account-choice.set", accountChoice: null }]);
+    }),
+  );
+
+  it.effect.each([
+    { name: "clears the previous hub's pins before saving the new choice" },
+    {
+      name: "keeps the saved choice when the previous hub refuses cleanup",
+      unpinError: new UsageLimitSourceError({ detail: "The previous hub rejected the request." }),
+    },
+    {
+      name: "keeps the saved choice when the previous hub cannot be looked up",
+      previousHubUnavailable: true,
+    },
+  ])("$name", ({ unpinError, previousHubUnavailable }) =>
+    Effect.gen(function* () {
+      const { commands, controls, pins, result } = yield* setAccount({
+        owner: null,
+        account: CODEX_ACCOUNT,
+        accountChoice: { sourceId: "hub", account: OTHER, stall: true, instanceId: "claude" },
+        separateCodexHub: true,
+        ...(unpinError === undefined ? {} : { unpinError }),
+        ...(previousHubUnavailable === undefined ? {} : { previousHubUnavailable }),
+      });
+      expect(controls).toEqual(
+        previousHubUnavailable
+          ? []
+          : [{ hub: "http://hub.test", unpin: ["native-session", "older-session"] }],
+      );
+      if (unpinError || previousHubUnavailable) {
+        expect(Result.isFailure(result) && result.failure.detail).toContain(
+          unpinError?.detail ?? "The previous CLI Proxy hub is unavailable.",
+        );
+        expect(pins).toEqual([]);
+        expect(commands).toEqual([]);
+      } else {
+        expect(Result.isSuccess(result)).toBe(true);
+        expect(pins).toMatchObject([{ sessions: ["native-session"], account: CODEX_ACCOUNT }]);
+        expect(commands).toMatchObject([
+          {
+            type: "thread.account-choice.set",
+            accountChoice: { sourceId: "codex-hub", instanceId: "codex", account: CODEX_ACCOUNT },
+          },
+        ]);
+      }
     }),
   );
 });

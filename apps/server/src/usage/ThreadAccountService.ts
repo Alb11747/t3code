@@ -428,12 +428,10 @@ export const make = Effect.gen(function* () {
     } as ThreadAccountState;
   });
 
-  // Clearing a choice unpins every session the thread has had, since a pin listed for an older
-  // provider thread still names this thread.
+  // A pin listed for an older provider thread still names this thread.
   const threadSessions = (threadId: ThreadId, current: string | undefined) =>
     orchestrator.getThreadRecords(threadId, ["providerThreads"]).pipe(
       Effect.map((records) => records.providerThreads),
-      Effect.orElseSucceed(() => []),
       Effect.map((providerThreads) => [
         ...new Set([
           ...(current ? [current] : []),
@@ -445,6 +443,17 @@ export const make = Effect.gen(function* () {
         ]),
       ]),
     );
+
+  const unpinSource = Effect.fn("ThreadAccounts.unpinSource")(function* (
+    sourceId: UsageLimitSourceId,
+    sessions: ReadonlyArray<string>,
+  ) {
+    if (sessions.length === 0) return true;
+    const hub = yield* sources.hub(sourceId);
+    if (hub === null) return false;
+    yield* api.unpin(hub, sessions);
+    return true;
+  });
 
   // Since quota router 0.27.0 a pin change re-places the requests it holds, so a pin hold's notice
   // ends now and the next poll reads the router afresh. A keep-warm hold forwards its request to
@@ -496,22 +505,17 @@ export const make = Effect.gen(function* () {
     const thread = yield* threadOf(input.threadId);
     const target = yield* resolveTarget(thread.modelSelection.instanceId);
     const session = yield* sessionOf(input.threadId, thread.modelSelection);
+    const storedSourceId = thread.accountChoice?.sourceId;
+    const previousSourceId = storedSourceId === target?.source.id ? undefined : storedSourceId;
     const now = yield* DateTime.now;
     const commandId = CommandId.make(
       `thread-account:${input.threadId}:${DateTime.toEpochMillis(now)}`,
     );
     if (input.account === null) {
-      const storedSourceId = thread.accountChoice?.sourceId;
       if (target === null && storedSourceId === undefined) return yield* fail(NOT_ROUTED);
       const sessions = yield* threadSessions(input.threadId, session);
-      if (sessions.length > 0) {
-        // A provider switch can leave the pin on a different hub from the current model's.
-        if (storedSourceId !== undefined && storedSourceId !== target?.source.id) {
-          const storedHub = yield* sources.hub(storedSourceId);
-          if (storedHub !== null) yield* api.unpin(storedHub, sessions);
-        }
-        if (target !== null) yield* api.unpin(target.hub, sessions);
-      }
+      if (previousSourceId !== undefined) yield* unpinSource(previousSourceId, sessions);
+      if (target !== null && sessions.length > 0) yield* api.unpin(target.hub, sessions);
       yield* orchestrator.dispatch({
         type: "thread.account-choice.set",
         commandId,
@@ -533,20 +537,33 @@ export const make = Effect.gen(function* () {
     const current = threadAccountChoiceFor(thread.accountChoice, target.instanceId);
     const stall =
       input.stall ?? (current && rename(current.account) === account ? current.stall : false);
-    let moved = false;
-    if (session) {
-      const pick = yield* api.nextPick(target.hub, {
-        provider: target.routerProvider,
-        session,
-        model: thread.modelSelection.model,
+    const pick = session
+      ? yield* api.nextPick(target.hub, {
+          provider: target.routerProvider,
+          session,
+          model: thread.modelSelection.model,
+        })
+      : null;
+    const moved = !!pick?.owner && rename(pick.owner) !== account;
+    if (moved && input.dropThinking !== true) {
+      return yield* new ThreadAccountError({
+        detail: `${THREAD_ACCOUNT_MOVE_WARNING} Pass dropThinking: true to switch anyway, and say that its earlier thinking was dropped.`,
+        requiresDropThinking: true,
       });
-      moved = !!pick?.owner && rename(pick.owner) !== account;
-      if (moved && input.dropThinking !== true) {
-        return yield* new ThreadAccountError({
-          detail: `${THREAD_ACCOUNT_MOVE_WARNING} Pass dropThinking: true to switch anyway, and say that its earlier thinking was dropped.`,
-          requiresDropThinking: true,
-        });
+    }
+    // Clean up while the stored choice still identifies the previous hub.
+    if (previousSourceId !== undefined) {
+      const cleared = yield* unpinSource(
+        previousSourceId,
+        yield* threadSessions(input.threadId, session),
+      );
+      if (!cleared) {
+        return yield* fail(
+          "The previous CLI Proxy hub is unavailable. Clear the thread's account choice before picking an account on another hub.",
+        );
       }
+    }
+    if (session) {
       yield* api.pin(target.hub, {
         sessions: [session],
         account: rename(account),
