@@ -213,6 +213,9 @@ attempt at the previous one.
    files' structure: every line touched in an upstream file is a potential
    conflict on each sync. Prefer new files and narrow hooks over edits spread
    across upstream files (_Reducing conflict surface_).
+
+   **A fork change that needs a database migration needs the user's approval first.** That covers new or changed tables, columns and indexes, and changes to persisted events, projections or checkpoint formats that old data must be migrated for. The installed fork's database can't be rolled back, and a fork migration id can collide with the ids upstream assigns later. Ask with the reason and a design that avoids the migration, if there is one.
+
 3. Unless the PR was taken over (see _Maintaining your upstream PRs_),
    if the change has an upstream PR (yours or someone else's), end the commit
    message with a trailer so sync reverts it automatically once upstream merges:
@@ -765,6 +768,7 @@ the Actions tab, which syncs immediately.
    or after a failed delivery, the issue says **Needs local resolution** with
    the reason, and the run fails.
 5. The candidate is pushed to `sync/candidate` and checked with `fork-checks.yml`.
+   Migrations already in upstream `main` count as tested upstream. A sync that brings them in needs only a quick check or a code review of the migration files, for example that they only add columns or tables and that the sync resolution left them unchanged. They don't need the user's approval or a test against copied data.
 6. Clean merge and green checks: `main` fast-forwards to the exact checked SHA,
    leased against the original main, and a release follows. The release reuses
    those checks instead of running them again (_Adding a change_, step 6). T3-resolved or failing candidates get a review PR
