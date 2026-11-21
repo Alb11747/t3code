@@ -132,13 +132,18 @@ minimal.
    tests, and change an expectation only where the fork intentionally changes
    that behavior. Dismiss a Codex finding only with a reason you can show, such
    as a flagged file that belongs to an open upstream PR the fork carries
-   unchanged. A failure is upstream's when it also fails on the exact upstream
-   commit, or when the failing test and the code it exercises match upstream:
-   it needs no fork change. Say so with that evidence and publish the same
-   commit again to rerun the checks; it need not be a proven flake. If it fails
-   again the same way, use the failure path and name it as upstream's, with that evidence, so the maintainer files it upstream (README, _Upstream bugs found during fork work_) (fixes
-   to `fork-checks.yml` take effect only once on main, so the maintainer lands
-   those). Also use the failure path when you cannot find the cause. Otherwise rerun step 6 including the
+   unchanged. When the failing test and the code it exercises
+   match upstream, first rule out a fork change or resolution of yours in
+   what surrounds them (shared setup, configuration, dependencies). With
+   those ruled out, say so with that evidence and publish the same commit again to rerun the checks; it need not
+   be a proven flake. If it fails again the same way, use the failure path and
+   say whose it is. It is upstream's when it also fails on the exact upstream
+   commit or in upstream's own CI; say so with that evidence, so the thread
+   you hand off to reports it upstream. Otherwise the cause is in what the
+   fork owns around the test, usually `fork-checks.yml` or its runner. A fix
+   there takes effect only once on main, which you never push, so say that a
+   workflow fix on main is needed (README, _A stuck sync_). Also use the
+   failure path when you cannot find the cause. Otherwise rerun step 6 including the
    failing tests, rewrite the summary to also cover what failed and how you
    fixed it, and repeat steps 7 and 8. The helper allows two fix rounds, then
    leaves the candidate for human review.
@@ -156,7 +161,9 @@ Before ending, hand off and tidy up:
   `$FORK_RESOLVER_HOME/maintainer-thread` exists, send one message to the T3
   address it contains with AgentBridge `send` (mode `queue`, `wait` false).
   Start it with `[from the fork sync resolver on Lazarus]`. Give the outcome
-  and its reason, the request run ID if known, the issue comment URL if one
+  and its reason, what has to happen next (for example a workflow fix on
+  main, an upstream report, or a review of named resolutions), the request
+  run ID if known, the issue comment URL if one
   was posted, and the candidate SHA if one was published. Explicitly identify
   unavailable metadata; never invent it.
 - If the run finished (promotion dispatched, or a quiet stop in step 2) and the
