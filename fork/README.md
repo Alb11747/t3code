@@ -106,8 +106,19 @@ still need a request (_Planning a fork feature_, step 7).
 These come up often and need no question either:
 
 - **A hosted check failed and looks intermittent.** Rerun the failed jobs
-  once: `gh run rerun <run id> --failed -R Alb11747/t3code`. A second failure
-  of the same kind is a real problem, so stop rerunning and find it.
+  once to get your task moving: `gh run rerun <run id> --failed -R Alb11747/t3code`.
+  A pass on the rerun doesn't close it. An intermittent failure is still a
+  bug that will stop the next agent, so classify it like any other problem
+  and fix or report it: yourself once your task is unblocked, or through a
+  subagent or top-level thread given the failed run's link. A second failure
+  of the same kind means rerunning won't get you through, so fix it before
+  going on.
+- **A fork limit is used up** (the hosted job budget, Codex's review usage).
+  Don't ask and don't push again to retry. Say in the thread which limit you
+  hit and when it frees up, then create a `schedule_task` with
+  `bindToCurrentThread: true` for that time, which continues the work
+  (rerunning the failed run, _Adding a change_, step 6). Remove the task once
+  it has done so.
 - **You can't find the cause.** Compare where it passes (upstream's CI, a
   Labs run, your machine) with where it fails, and remove the difference the
   fork owns. You don't need the root cause to do that; say in your report
@@ -117,8 +128,8 @@ These come up often and need no question either:
 - **The fix belongs in a workflow on `main` while a sync is open.** Follow
   _A stuck sync_.
 
-Ask first only for a decision that is the user's: paying for runners or
-going past the job budget, promoting a candidate whose checks failed or whose
+Ask first only for a decision that is the user's: paying for runners,
+raising the job budget, promoting a candidate whose checks failed or whose
 review has findings, weakening or removing a test because of a fork bug,
 rewriting `main`, or filing something upstream that isn't a bug. Ask with
 your recommendation, and keep doing whatever doesn't depend on the answer.
@@ -385,7 +396,8 @@ attempt at the previous one.
    before the checks and builds start. Local validation saves the hosted check
    matrix; release builds still count against this budget. If
    one fails this way, rerun it once older runs age out rather than pushing
-   again to retry.
+   again to retry; schedule that rerun instead of waiting for the user
+   (_When something blocks your work_).
 
 To change or fix a fork change already on `main`, add a commit with the same
 `Upstream-PR:` trailer (if it has one) and rewrite its `CHANGES.md` entry to
@@ -914,9 +926,10 @@ kind of push to `main` allowed while a sync is open:
 If the same check fails again, the fix missed the cause. Try once more with a
 different fix, pushing a second workflow commit if that is where it belongs;
 each round spends about a dozen jobs of the daily budget. After two rounds,
-or when the job budget or Codex's review usage runs out, tell the user what
-you found and what you would try next, and keep a watch on the issue
-(_Waiting for a sync_) so you resume when the limit lifts or they answer.
+tell the user what you found and what you would try next, and keep a watch on
+the issue (_Waiting for a sync_) so you resume when they answer. When the job
+budget or Codex's review usage runs out first, schedule the continuation
+instead (_When something blocks your work_).
 
 To resolve a conflict locally (use the artifact's `upstream_sha` to reconstruct
 the original request, or omit `--onto` to sync to today's upstream):
