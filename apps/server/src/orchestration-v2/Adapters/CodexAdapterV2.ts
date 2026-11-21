@@ -6325,6 +6325,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload,
               );
             }
+            const policy = context.input.runtimePolicy;
+            // Granular defaults keep MCP consent reachable and still let Codex's command check ask.
+            if (
+              policy.runtimeMode === "full-access" &&
+              policy.approvalPolicy === undefined &&
+              policy.sandboxPolicy === undefined &&
+              (payload.kind ?? "command") === "command" &&
+              payload.networkApprovalContext == null &&
+              payload.proposedExecpolicyAmendment == null &&
+              (payload.proposedNetworkPolicyAmendments ?? []).length === 0
+            ) {
+              return {
+                decision: "accept",
+              } satisfies CodexSchema.CommandExecutionRequestApprovalResponse;
+            }
             const allowance = sessionAllowance(payload.threadId, context);
             if (allowance.has("command")) {
               return {
