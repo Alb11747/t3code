@@ -61,7 +61,7 @@ A failing check, a stuck sync or a bug you hit along the way is part of your tas
 These need no question either:
 
 - **An intermittent hosted failure.** Rerun the failed jobs once: `gh run rerun <run id> --failed -R Alb11747/t3code`. A pass doesn't close it: fix or report the flake once your task is unblocked, or hand it to a subagent or thread with the run link. If it fails again the same way, fix it before going on.
-- **A fork limit is used up** (the hosted job budget, Codex's review usage). Say which limit you hit and when it frees up, then create a `schedule_task` with `bindToCurrentThread: true` for that time to continue the work, and remove it afterwards. Don't push again to retry.
+- **A fork limit is used up** (the hosted job budget, say). Say which limit you hit and when it frees up, then create a `schedule_task` with `bindToCurrentThread: true` for that time to continue the work, and remove it afterwards. Don't push again to retry.
 - **No root cause.** Compare where it passes (upstream's CI, a Labs run, your machine) with where it fails and remove the difference the fork owns. Say that the fix rests on an inference.
 - **Not enough evidence.** Add diagnostics to a fork workflow, or run the checks on Labs (_Labs checks_).
 - **A workflow fix is needed on `main` while a sync is open.** Follow _A stuck sync_.
@@ -747,7 +747,7 @@ the Actions tab, which syncs immediately.
    old, onto the newest nightly at that point, so the fork runs at most about
    three days behind upstream. Fork pushes no longer sync first (_Adding a
    change_, step 6), so these are the only automatic syncs. Each sync that
-   conflicts starts a gpt-6.1-sol resolver run, a Codex review and often
+   conflicts starts a gpt-6.1-sol resolver run, its review and often
    follow-up fixes; in November 2026, with pushes syncing first and a 24-hour
    cap, that was more than one conflict a day and about 15% of the owner's
    model tokens. Batching three days of upstream into one sync costs one
@@ -771,9 +771,7 @@ the Actions tab, which syncs immediately.
    (`sync/candidate` into `upstream-main`) instead. Ship one by running
    **Fork sync** with `mode=promote` and `candidate_sha=<full reviewed SHA>`;
    promotion fails if `sync/candidate` changed since review. Merging the PR does nothing.
-   Codex's GitHub code review reviews these PRs when automatic review is on
-   for this repository in ChatGPT's Codex settings. That uses the plan's Code
-   Review usage; Codex ignores `@codex` comments from the workflow's bot.
+   A candidate is reviewed locally by a Codex subagent: the resolver's own review in `T3-RESOLVER.md` step 7, or `delegate_task` to Sol at `xhigh` when you take a sync over. Codex's GitHub code review also reviews these PRs when automatic review is on for this repository in ChatGPT's Codex settings. That draws on the plan's Code Review usage, which is separate from its other Codex usage and can run out; Codex ignores `@codex` comments from the workflow's bot.
 
 Workflow modes are `sync` (default, including the watchdog's), `resume` (the resolver
 dispatches with a full `candidate_sha` and numeric `request_run_id`), and
@@ -787,13 +785,9 @@ summary. Promotion closes the PR and tracking issue with a comment.
 
 When the resolver has no concerns about its own resolution, it settles the
 candidate itself with `t3-resolver/settle-candidate.sh`: it waits for the
-review PR's checks and Codex's review of that exact SHA, and dispatches
-promotion only if checks passed, Codex found nothing, and main is unchanged.
-Codex reviews automatically only when the PR opens, so for a reused PR the
-helper comments `@codex review` as the owner. When checks fail or Codex has
-findings, the helper reopens the request and the resolver fixes the cause in
-a commit on top and publishes again, at most twice. Otherwise, including
-when Codex is out of review usage, it comments the reason on the tracking issue
+review PR's checks and Codex's GitHub review of that exact SHA, and dispatches
+promotion only if checks passed, Codex found nothing, and main is unchanged. Codex reviews automatically only when the PR opens, so for a reused PR the helper comments `@codex review` as the owner. The resolver has a local Codex subagent review its resolutions before it publishes, so when Codex is out of Code Review usage, or posts no review within 20 minutes of the checks passing, the helper promotes on the checks alone. When checks fail or Codex has findings, the helper reopens the request and the resolver fixes the cause in
+a commit on top and publishes again, at most twice. Otherwise it comments the reason on the tracking issue
 and the candidate waits for a person.
 
 ### A stuck sync
@@ -812,8 +806,8 @@ A fix to the fork's workflows has to land on `main`, because a sync's checks run
 
 1. Commit only under `.github/workflows/**`, `.github/actions/**` and `fork/**`, which starts no desktop release, and leave out `fork-android.yml` and `fork/mobile/**`, which start an Android build. Validate it as tooling (_Adding a change_, step 5) and push to `main`; `check-sync-request.sh` exiting 3 is expected.
 2. Merge the new `origin/main` into the candidate with a plain merge commit. Don't rebase it or start a fresh sync, which can pick a newer nightly and bring every conflict back. Confirm the merge adds only your commit's changes and still contains the request's upstream commit, then fast-forward `sync/candidate`.
-3. Check that SHA with `gh workflow run fork-pr-checks.yml -R Alb11747/t3code -f ref=<sha>`, and comment `@codex review` on the review PR as the owner.
-4. Promotion verifies only the ref and ancestry, so confirm yourself that every job in that run passed and Codex's review of that SHA finished with no findings. Then run `gh workflow run fork-sync.yml -R Alb11747/t3code -f mode=promote -f candidate_sha=<sha>`. Promote through the workflow rather than pushing the candidate to `main`.
+3. Check that SHA with `gh workflow run fork-pr-checks.yml -R Alb11747/t3code -f ref=<sha>`. If you changed more than workflow files, get a local Codex review of your commits (`delegate_task` to Sol at `xhigh`); you may also comment `@codex review` on the review PR as the owner, but don't wait on it when Code Review usage is used up.
+4. Promotion verifies only the ref and ancestry, so confirm yourself that every job in that run passed and any review finding is resolved. Then run `gh workflow run fork-sync.yml -R Alb11747/t3code -f mode=promote -f candidate_sha=<sha>`. Promote through the workflow rather than pushing the candidate to `main`.
 5. Comment on the issue with what you changed and why.
 
 If the same check fails again, try one different fix; a second workflow commit is allowed, and each round costs about a dozen jobs. After two rounds, report what you found and what you would try next, and keep watching the issue (_Waiting for a sync_).

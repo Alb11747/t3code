@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Promote a published candidate once its checks pass and Codex's review of that
-# exact SHA finds nothing. Failed checks or Codex findings return the request to
-# the resolver to fix and publish again, a limited number of times; anything else
-# leaves the review PR for a person.
+# Promote a published candidate once its checks pass and Codex's GitHub review of
+# that exact SHA finds nothing. Failed checks or Codex findings return the request
+# to the resolver to fix and publish again, a limited number of times. The
+# resolver already reviewed its work locally (T3-RESOLVER.md, step 7), so the
+# GitHub review is a second look: when Codex is out of Code Review usage, or
+# posts no review in time, passing checks are enough.
 # Exit 0 dispatched promotion, 3 left the candidate for review, 5 returned the
 # request for a fix (details on stderr); others are errors.
 set -euo pipefail
@@ -46,6 +48,7 @@ send_back() {
 codex='chatgpt-codex-connector[bot]'
 deadline=$((SECONDS + ${FORK_SETTLE_TIMEOUT:-3600}))
 requested_review=false
+review_deadline=
 settled=false
 while [[ $settled == false ]] && ((SECONDS < deadline)); do
   # An unchanged SHA can leave a previous run's result in the PR while its retry runs.
@@ -67,6 +70,15 @@ while [[ $settled == false ]] && ((SECONDS < deadline)); do
       settled=true
       continue
     fi
+    # Code Review usage is separate from the plan's other Codex usage and runs out.
+    out_of_usage=$(fork_gh api --paginate "repos/$fork_repo/issues/$number/comments" \
+      --jq ".[] | select(.user.login == \"$codex\" and (.created_at | fromdateiso8601) >= $published_at and (.body | test(\"usage limits.*code reviews\"; \"i\"))) | .id" | wc -l)
+    [[ -n $review_deadline ]] || review_deadline=$((SECONDS + ${FORK_REVIEW_WAIT:-1200}))
+    if ((out_of_usage > 0)) || ((SECONDS >= review_deadline)); then
+      echo "No Codex GitHub review of $candidate_sha (out of Code Review usage or none in time); promoting on checks and the local review." >&2
+      settled=true
+      continue
+    fi
     # Codex reviews automatically only when a PR opens, not when a later
     # candidate updates it. It ignores the workflow bot, so ask as the owner.
     if [[ $requested_review == false ]] && (($(jq -r '.createdAt | fromdateiso8601' <<<"$pr") < published_at)); then
@@ -76,10 +88,10 @@ while [[ $settled == false ]] && ((SECONDS < deadline)); do
   fi
   sleep 60
 done
-[[ $settled == true ]] || leave_for_review "checks or Codex review did not finish in time"
+[[ $settled == true ]] || leave_for_review "checks did not finish in time"
 
 flock 9
 [[ $(remote_main) == "$main_sha" ]] || leave_for_review "fork main changed since the request"
 fork_gh workflow run fork-sync.yml --repo "$fork_repo" --ref main -f mode=promote -f "candidate_sha=$candidate_sha"
 jq --argjson now "$(date +%s)" '. + {promote_dispatched_at:$now}' "$ledger" | write_ledger
-echo "Checks and Codex review are clean; dispatched promotion of $candidate_sha."
+echo "Checks passed with no Codex findings; dispatched promotion of $candidate_sha."
