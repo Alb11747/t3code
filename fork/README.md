@@ -523,6 +523,42 @@ artifact download. Other jobs use Labs' normal `GITHUB_TOKEN` for public reads
 and Labs artifacts. A token-free publisher would still need a job in the
 budget-blocked fork; this fallback deliberately spends no fork jobs.
 
+## Upstream bugs found during fork work
+
+When fork work turns up a bug, such as a failing sync check, a test failure or
+broken behaviour, and you verify that it's upstream's, open an upstream issue
+without waiting for the user to ask. This standing permission covers bug
+reports only. Upstream PRs, discussions and feature requests still need a
+request.
+
+Verify before filing. A bug is upstream's when it reproduces on fetched
+`upstream/main` (or the exact upstream commit a sync pinned), or when the
+failing code and test match upstream and the failure depends on nothing
+fork-only, such as a fork change or the fork's CI setup (runner size,
+sharding, workflow). Keep that evidence. A bug that doesn't reproduce upstream,
+or that depends on the fork, is a fork bug: fix it in the fork and file
+nothing. When you can't tell, say so in your report rather than filing.
+
+Before filing, search for an existing report or fix as in _Fixing bugs_,
+step 1, and follow the closed-issue rule above. When a reproduction is
+feasible, have a cost-efficient model build it, for example Sol
+(`gpt-6.2-sol` at `high`; in T3 Code, `delegate_task` with provider `codex`).
+Give it the evidence and have it work from `upstream/main` in its own
+worktree. It writes minimal reproduction steps and the fewest tests that fail
+on `upstream/main` for that reason, then reports the commands and their
+output. Check its result yourself before filing. Skip the helper when the
+evidence already reproduces the bug, such as an upstream CI run that shows the
+same failure. Write the issue as _Fixing bugs_, step 4 describes (the
+`via-triage` sections and the redaction rule), with the steps, the failing test
+(inline, or a link to a pushed fork branch) and the evidence.
+
+The issue doesn't commit you to an upstream PR. If you're preparing one now,
+follow _Fixing bugs_ instead, which files the issue together with the fix.
+Otherwise fix the bug in the fork as usual and link the issue in the fork
+change's `CHANGES.md` entry. When a test fails only because of the upstream
+bug, blocks fork work and has no fork fix yet, skip that one test with
+`// quarantine: <issue URL> <why>` on the line above it.
+
 ## Fixing bugs
 
 Bug fixes usually go into the fork **and** upstream. Features and

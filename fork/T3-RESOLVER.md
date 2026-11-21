@@ -136,7 +136,7 @@ minimal.
    commit, or when the failing test and the code it exercises match upstream:
    it needs no fork change. Say so with that evidence and publish the same
    commit again to rerun the checks; it need not be a proven flake. If it fails
-   again the same way, use the failure path and name it as upstream's (fixes
+   again the same way, use the failure path and name it as upstream's, with that evidence, so the maintainer files it upstream (README, _Upstream bugs found during fork work_) (fixes
    to `fork-checks.yml` take effect only once on main, so the maintainer lands
    those). Also use the failure path when you cannot find the cause. Otherwise rerun step 6 including the
    failing tests, rewrite the summary to also cover what failed and how you
