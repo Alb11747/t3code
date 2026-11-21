@@ -46,93 +46,27 @@ the agent or thread the reproduction and the evidence that the bug is fork-only.
 
 ## When something blocks your work
 
-A failing check, a stuck sync or a bug you run into along the way is part of
-the task you were given. Work out whose problem it is, act on it, and report
-what you did. Neither step needs a request from the user, and "cause unknown"
-is not a place to stop.
+A failing check, a stuck sync or a bug you hit along the way is part of your task. Decide whose it is, act, and report what you did. "Cause unknown" is not a stopping point.
 
-**Whose is it?** A problem is upstream's only when you can show it there: it
-reproduces on fetched `upstream/main` (or the upstream commit a sync pinned),
-or upstream's own CI shows the same failure. Everything else is the fork's,
-including a cause you haven't found yet. Code that matches upstream does not
-settle it: a test identical to upstream's that fails only in the fork's runs
-depends on something the fork owns, such as a fork patch, a workflow, the
-runner size, sharding or the order the tests run in. Checking upstream decides
-this, so don't hand the question to the user.
+**Whose is it?** Upstream's only if you can show it there: it reproduces on fetched `upstream/main` (or the commit a sync pinned), or upstream's CI shows the same failure. Everything else is the fork's, including an unknown cause and a test identical to upstream's that fails only in the fork's runs (the fork owns its patches, workflows, runners, sharding and test order).
 
-**The fork's: fix it.** Fix it in this thread when it's small, give it to a
-subagent when it's separable, or start a top-level T3 thread when it would
-swamp your task; give that agent the reproduction and have it report back.
-Fork workflows, CI and tooling count as much as app code. Then carry on with
-the task that was blocked.
+**The fork's: fix it**, in this thread, a subagent or a top-level T3 thread that reports back. Workflows, CI and tooling count. Then resume the blocked task.
 
-**Upstream's: unblock the fork, then report it.** This is standing permission
-to file bug issues and bug-fix PRs in `pingdotgg/t3code`, and it is the
-explicit request `AGENTS.md` asks for before a PR. Features and discussions
-still need a request (_Planning a fork feature_, step 7).
+**Upstream's: unblock the fork, then report it.** This is standing permission to file bug issues and bug-fix PRs in `pingdotgg/t3code`, and the explicit request `AGENTS.md` requires for a PR. Features and discussions still need a request (_Planning a fork feature_, step 7).
 
-1. Search for an existing report or fix (_Fixing bugs_, step 1) and follow
-   the closed-issue rule above. If upstream already covers it, link that and
-   file nothing.
-2. Unblock the fork without waiting on upstream. Carry the fix as a fork
-   change, or inside the candidate during a sync. With no fix yet, skip the
-   one test that fails only because of the bug, with
-   `// quarantine: <upstream issue URL> <why>` on the line above it; file the
-   issue first (step 3) when none exists, since the comment needs its URL.
-   Never skip a whole job or suite.
-3. Report it. With a fix upstream could take (one problem, with a focused
-   test), open the issue and the PR together by following _Fixing bugs_ from
-   step 2. Don't hold the fork's copy for the PR's review as _Release lineage_
-   otherwise asks: carry it once the PR is open, with its `Upstream-PR:`
-   trailer, which completes step 6 there, so the watching thread doesn't
-   carry it again. A fix that already went into a sync candidate has no
-   trailer, so name the PR in its `CHANGES.md` entry and have the PR's
-   watching thread remove the fork's copy once a sync has brought the merged
-   PR into `main`.
+1. Search for an existing report or fix (_Fixing bugs_, step 1, and the closed-issue rule above). If one exists, link it and file nothing.
+2. Unblock the fork without waiting on upstream: carry the fix as a fork change, or in the candidate during a sync. With no fix yet, skip only the one failing test, with `// quarantine: <upstream issue URL> <why>` above it; file the issue first to get its URL.
+3. Report it. With a fix upstream could take, open the issue and PR together (_Fixing bugs_ from step 2) and carry the fix once the PR is open, with its `Upstream-PR:` trailer, instead of waiting for its review (_Release lineage_); that completes step 6 there. Otherwise open the issue alone, written as _Fixing bugs_, step 4 describes, with reproduction steps and the evidence that it is upstream's. If no upstream CI run shows the failure, have a cost-efficient model such as Sol (`gpt-6.2-sol` at `high`) build a minimal failing test on `upstream/main` or the pinned commit, and check its result before filing. Link the issue in the fork change's `CHANGES.md` entry.
 
-   With no fix, or when the fork's fix is only a workaround, open the issue
-   alone. Write it as _Fixing bugs_, step 4 describes (the `via-triage`
-   sections and the redaction rule), with reproduction steps and the evidence
-   that it is upstream's. An upstream CI run showing the failure is enough
-   evidence. Without one, add a failing test (inline, or a link to a pushed
-   fork branch) when a reproduction is feasible, and have a cost-efficient
-   model build it, for example Sol (`gpt-6.2-sol` at `high`; in T3 Code,
-   `delegate_task` with provider `codex`): it works in its own worktree from
-   `upstream/main`, or from the pinned commit if `upstream/main` no longer
-   fails, writes minimal steps and the fewest tests that fail there for that
-   reason, and reports the commands and their output. Check its result before
-   filing. Link the issue in the fork change's `CHANGES.md` entry.
+These need no question either:
 
-These come up often and need no question either:
+- **An intermittent hosted failure.** Rerun the failed jobs once: `gh run rerun <run id> --failed -R Alb11747/t3code`. A pass doesn't close it: fix or report the flake once your task is unblocked, or hand it to a subagent or thread with the run link. If it fails again the same way, fix it before going on.
+- **A fork limit is used up** (the hosted job budget, Codex's review usage). Say which limit you hit and when it frees up, then create a `schedule_task` with `bindToCurrentThread: true` for that time to continue the work, and remove it afterwards. Don't push again to retry.
+- **No root cause.** Compare where it passes (upstream's CI, a Labs run, your machine) with where it fails and remove the difference the fork owns. Say that the fix rests on an inference.
+- **Not enough evidence.** Add diagnostics to a fork workflow, or run the checks on Labs (_Labs checks_).
+- **A workflow fix is needed on `main` while a sync is open.** Follow _A stuck sync_.
 
-- **A hosted check failed and looks intermittent.** Rerun the failed jobs
-  once to get your task moving: `gh run rerun <run id> --failed -R Alb11747/t3code`.
-  A pass on the rerun doesn't close it. An intermittent failure is still a
-  bug that will stop the next agent, so classify it like any other problem
-  and fix or report it: yourself once your task is unblocked, or through a
-  subagent or top-level thread given the failed run's link. A second failure
-  of the same kind means rerunning won't get you through, so fix it before
-  going on.
-- **A fork limit is used up** (the hosted job budget, Codex's review usage).
-  Don't ask and don't push again to retry. Say in the thread which limit you
-  hit and when it frees up, then create a `schedule_task` with
-  `bindToCurrentThread: true` for that time, which continues the work
-  (rerunning the failed run, _Adding a change_, step 6). Remove the task once
-  it has done so.
-- **You can't find the cause.** Compare where it passes (upstream's CI, a
-  Labs run, your machine) with where it fails, and remove the difference the
-  fork owns. You don't need the root cause to do that; say in your report
-  that the fix rests on an inference.
-- **You need more evidence.** Add diagnostics to a fork workflow, or run the
-  checks on Labs (_Labs checks_).
-- **The fix belongs in a workflow on `main` while a sync is open.** Follow
-  _A stuck sync_.
-
-Ask first only for a decision that is the user's: paying for runners,
-raising the job budget, promoting a candidate whose checks failed or whose
-review has findings, weakening or removing a test because of a fork bug,
-rewriting `main`, or filing something upstream that isn't a bug. Ask with
-your recommendation, and keep doing whatever doesn't depend on the answer.
+Ask first only for a decision that is the user's: paying for runners, raising the job budget, promoting a candidate with failed checks or review findings, weakening or removing a test because of a fork bug, rewriting `main`, or filing something upstream that isn't a bug. Ask with a recommendation and keep doing what doesn't depend on the answer.
 
 ## Layout
 
@@ -864,72 +798,25 @@ and the candidate waits for a person.
 
 ### A stuck sync
 
-An open sync request blocks every push to `main`, so a sync nobody is working
-on blocks the whole fork. A sync is stuck when its tracking issue says
-**Needs local resolution** or leaves a candidate for a person, or when it is
-open with no update for three hours (the resolver's limit with both fix
-rounds). A sync that merged cleanly but failed its checks is stuck too, and
-it has no tracking issue: look for an open review PR from `sync/candidate`
-into `upstream-main`, and use that PR wherever these steps say "the issue".
-If a stuck sync blocks you, or the resolver handed one to you, take it over
-without asking, then fix what stopped it (_When something blocks your work_).
-Waiting (_Waiting for a sync_) is only for a sync someone is working on, and
-a watcher takes over when the sync it watches becomes stuck.
+An open sync request blocks every push to `main`. A sync is stuck when its tracking issue says **Needs local resolution** or leaves a candidate for a person, when it has had no update for three hours, or when a clean merge failed its checks. That last case has no tracking issue, so use the open review PR from `sync/candidate` into `upstream-main` as "the issue". If a stuck sync blocks you or was handed to you, take it over without asking and fix what stopped it (_When something blocks your work_). A watcher does the same when the sync it watches becomes stuck.
 
-One agent owns a stuck sync. Read the issue's newest comments first: if
-another agent said it has the sync within the last three hours, wait for it
-instead. Otherwise comment that you have it. Fetch `origin` again right
-before each push to `main` or `sync/candidate`, and stop if either moved
-without you.
+One agent owns it: if another agent claimed it on the issue within the last three hours, wait; otherwise comment that you have it. Fetch `origin` before each push to `main` or `sync/candidate`, and stop if either moved without you.
 
-Where the fix goes depends on the state:
+Where the fix goes:
 
-- **No candidate was published.** Resolve the conflict yourself with the
-  local steps at the end of this section.
-- **The resolver failed and `main` hasn't moved.** On Lazarus, claim the
-  request again (`claim-request.sh <request run id>` in the resolver home),
-  commit the fix on top of the candidate, publish with the helpers and let
-  `settle-candidate.sh` promote it.
-- **Anything else** (the helpers refuse the request, the candidate waits for
-  a person, or there is no tracking issue): commit the fix on top of the
-  candidate in a worktree, fast-forward `sync/candidate` to it, and continue
-  at step 3 below.
+- **No candidate was published:** resolve locally with the steps at the end of this section.
+- **The resolver failed and `main` hasn't moved:** on Lazarus, reclaim with `claim-request.sh <request run id>`, commit on top of the candidate, publish with the helpers and let `settle-candidate.sh` promote it.
+- **Anything else:** commit on top of the candidate in a worktree, fast-forward `sync/candidate` to it, and continue at step 3.
 
-A fix to the fork's own workflows can't go into the candidate, because a
-sync's checks run `main`'s workflows, not the candidate's. This is the one
-kind of push to `main` allowed while a sync is open:
+A fix to the fork's workflows has to land on `main`, because a sync's checks run `main`'s workflows. It is the one kind of push allowed while a sync is open:
 
-1. Make a commit confined to `.github/workflows/**`, `.github/actions/**` and
-   `fork/**`, so it starts no desktop release. Leave out
-   `fork-android.yml` and `fork/mobile/**`, which start an Android build.
-   Validate it as tooling (_Adding a change_, step 5) and push it to `main`.
-   `check-sync-request.sh` exits 3 here, as expected.
-2. `resume` now rejects the request, because `main` moved. Don't start a
-   fresh sync: it can select a newer nightly and bring every conflict back.
-   Merge the new `origin/main` into the candidate with a plain merge commit
-   (never rebase the candidate). Confirm that the merge adds only the changes
-   of the commit you pushed (`git diff <old candidate> <new candidate>` shows
-   the same changes as `git diff <old main> <new main>`) and that the new
-   candidate still contains the request's upstream commit, then fast-forward
-   `sync/candidate` to it.
-3. Check that exact SHA with
-   `gh workflow run fork-pr-checks.yml -R Alb11747/t3code -f ref=<sha>`, and
-   comment `@codex review` on the review PR as the owner.
-4. Promotion checks only the ref and ancestry, so the evidence is yours to
-   confirm: the run you dispatched finished with every job passing, and
-   Codex's review of that SHA is complete with no findings. Then promote:
-   `gh workflow run fork-sync.yml -R Alb11747/t3code -f mode=promote -f candidate_sha=<sha>`.
-   Promote through the workflow rather than pushing the candidate to `main`.
-5. Comment on the issue with what you changed and why the candidate was
-   refreshed this way.
+1. Commit only under `.github/workflows/**`, `.github/actions/**` and `fork/**`, which starts no desktop release, and leave out `fork-android.yml` and `fork/mobile/**`, which start an Android build. Validate it as tooling (_Adding a change_, step 5) and push to `main`; `check-sync-request.sh` exiting 3 is expected.
+2. Merge the new `origin/main` into the candidate with a plain merge commit. Don't rebase it or start a fresh sync, which can pick a newer nightly and bring every conflict back. Confirm the merge adds only your commit's changes and still contains the request's upstream commit, then fast-forward `sync/candidate`.
+3. Check that SHA with `gh workflow run fork-pr-checks.yml -R Alb11747/t3code -f ref=<sha>`, and comment `@codex review` on the review PR as the owner.
+4. Promotion verifies only the ref and ancestry, so confirm yourself that every job in that run passed and Codex's review of that SHA finished with no findings. Then run `gh workflow run fork-sync.yml -R Alb11747/t3code -f mode=promote -f candidate_sha=<sha>`. Promote through the workflow rather than pushing the candidate to `main`.
+5. Comment on the issue with what you changed and why.
 
-If the same check fails again, the fix missed the cause. Try once more with a
-different fix, pushing a second workflow commit if that is where it belongs;
-each round spends about a dozen jobs of the daily budget. After two rounds,
-tell the user what you found and what you would try next, and keep a watch on
-the issue (_Waiting for a sync_) so you resume when they answer. When the job
-budget or Codex's review usage runs out first, schedule the continuation
-instead (_When something blocks your work_).
+If the same check fails again, try one different fix; a second workflow commit is allowed, and each round costs about a dozen jobs. After two rounds, report what you found and what you would try next, and keep watching the issue (_Waiting for a sync_).
 
 To resolve a conflict locally (use the artifact's `upstream_sha` to reconstruct
 the original request, or omit `--onto` to sync to today's upstream):
