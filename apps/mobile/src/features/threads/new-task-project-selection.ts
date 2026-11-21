@@ -3,6 +3,7 @@ import { availableScratchWorkspaceRoot } from "@t3tools/client-runtime/operation
 import {
   isPickableProjectMember,
   isRepositoryRootProject,
+  selectGroupDefaultProject,
 } from "@t3tools/client-runtime/state/project-grouping";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { repositoryGroupingKeyOf, type EnvironmentId, type ServerConfig } from "@t3tools/contracts";
@@ -33,14 +34,20 @@ function selectOpenProjectScopeMember(
     );
   if (remembered) return remembered;
 
-  const rank = (project: EnvironmentProject) =>
-    project.environmentId === preferredEnvironmentId ? 0 : project === scope.representative ? 1 : 2;
-  open.sort(
-    (left, right) =>
-      rank(left) - rank(right) ||
-      Number(isRepositoryRootProject(right)) - Number(isRepositoryRootProject(left)),
+  const connected = open.filter((project) => connectedEnvironmentIds.has(project.environmentId));
+  const candidates = connected.length > 0 ? connected : open;
+  const preferred = selectGroupDefaultProject(
+    candidates.filter((project) => project.environmentId === preferredEnvironmentId),
   );
-  return open.find((project) => connectedEnvironmentIds.has(project.environmentId)) ?? open[0];
+  if (preferred) return preferred;
+  if (candidates.includes(scope.representative)) return scope.representative;
+  const first = candidates.find(isRepositoryRootProject) ?? candidates[0];
+  return (
+    first &&
+    selectGroupDefaultProject(
+      candidates.filter((project) => project.environmentId === first.environmentId),
+    )
+  );
 }
 
 /**
@@ -123,11 +130,8 @@ export function resolveEnvironmentProjectMatch(
   };
   return (
     (repositoryKey !== null
-      ? projectsOnTarget.find(
-          (project) =>
-            (project.repositoryIdentity
-              ? repositoryGroupingKeyOf(project.repositoryIdentity)
-              : null) === repositoryKey,
+      ? selectGroupDefaultProject(
+          projectsOnTarget.filter((project) => isSameRepository(project, selectedProject)),
         )
       : undefined) ??
     (workspaceBasename !== null

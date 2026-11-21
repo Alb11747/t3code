@@ -291,6 +291,7 @@ describe("buildProjectGroups", () => {
     const remote = { ...repositoryIdentity, rootPath: "/srv/workspace" };
     const archivedTool = makeProject("old-tool", "/work/workspace/_archive/old-tool", {
       repositoryIdentity: local,
+      createdAt: "2026-06-01T00:00:00.000Z",
     });
     const app = makeProject("app-a", "/work/workspace/app-a", { repositoryIdentity: local });
     const remoteApp = makeProject("remote-app", "/srv/workspace/app-a", {
@@ -310,6 +311,14 @@ describe("buildProjectGroups", () => {
         ?.representative.id;
 
     expect(representativeOf([archivedTool, app, root])).toBe("workspace");
+    const newerRoot = makeProject("newer", "/work/newer", {
+      repositoryIdentity: { ...local, rootPath: "/work/newer" },
+      createdAt: "2026-07-02T00:00:00.000Z",
+    });
+    expect(representativeOf([newerRoot, archivedTool, app, root])).toBe("workspace");
+    expect(
+      representativeOf([archivedTool, app, { ...root, archivedAt: "2026-07-02T00:00:00.000Z" }]),
+    ).toBe("old-tool");
     expect(representativeOf([archivedTool, app, remoteApp, remoteRoot, root], environmentId)).toBe(
       "workspace",
     );

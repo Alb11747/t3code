@@ -244,7 +244,12 @@ it.effect(
 it.effect.each([
   { label: "fails a send that starts a turn", running: false },
   { label: "still steers a running turn", running: true },
-])("sendToThread with a missing worktree that cannot be recreated $label", ({ running }) => {
+  {
+    label: "fails a result request that needs its own turn",
+    running: true,
+    outputSchema: { type: "object" },
+  },
+])("Send when a worktree cannot be restored $label", ({ running, outputSchema }) => {
   const projectId = ProjectId.make("project:thread-management:worktree-gone");
   const threadId = ThreadId.make("thread:thread-management:worktree-gone");
   const dispatched: Array<string> = [];
@@ -322,17 +327,17 @@ it.effect.each([
         text: "Reply with ok.",
         attachments: [],
         mode: "auto",
+        ...(outputSchema === undefined ? {} : { outputSchema }),
         createdBy: "agent",
         creationSource: "mcp",
       }),
     );
     // The mock records no message, so a dispatched send ends in the projection read.
+    const steers = running && outputSchema === undefined;
     expect(error._tag).toBe(
-      running
-        ? "ThreadManagementDurableRunProjectionError"
-        : "ThreadManagementWorktreeRestoreError",
+      steers ? "ThreadManagementDurableRunProjectionError" : "ThreadManagementWorktreeRestoreError",
     );
-    expect(dispatched).toEqual(running ? ["message.dispatch"] : []);
+    expect(dispatched).toEqual(steers ? ["message.dispatch"] : []);
   }).pipe(Effect.provide(layerTest));
 });
 

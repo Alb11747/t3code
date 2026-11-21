@@ -101,7 +101,7 @@ describe("getProjectScopeSelectionTarget", () => {
     expect(target([])).toBe(mac);
   });
 
-  it("starts in the repository root over an earlier sub-folder in the same environment", () => {
+  it("starts in the first-added repository root in the same environment", () => {
     const identity = (project: EnvironmentProject) => ({
       ...project.repositoryIdentity!,
       rootPath: "/work/workspace",
@@ -115,9 +115,14 @@ describe("getProjectScopeSelectionTarget", () => {
       ...makeProject("workspace", "mac", { workspaceRoot: "/work/workspace" }),
       repositoryIdentity: identity(base),
     };
+    const newerClone = {
+      ...makeProject("workspace-clone", "mac"),
+      createdAt: "2026-07-02T00:00:00.000Z",
+      repositoryIdentity: { ...identity(base), rootPath: "/work/workspace-clone" },
+    };
     expect(
       getProjectScopeSelectionTarget(
-        { ...makeScope([subfolder, root]), representative: root },
+        makeScope([subfolder, newerClone, root]),
         EnvironmentId.make("mac"),
         new Set([EnvironmentId.make("mac")]),
       ),
@@ -161,10 +166,16 @@ describe("resolveEnvironmentProjectMatch", () => {
     const selected = makeProject("t3code", "mac", { repositoryKey: "github.com/t3tools/t3code" });
     const target = [
       makeProject("other", "server", { repositoryKey: "github.com/t3tools/other" }),
+      {
+        ...makeProject("t3code-newer-clone", "server", {
+          repositoryKey: "github.com/t3tools/t3code",
+        }),
+        createdAt: "2026-07-02T00:00:00.000Z",
+      },
       makeProject("t3code-clone", "server", { repositoryKey: "github.com/t3tools/t3code" }),
     ];
-    expect(resolveEnvironmentProjectMatch(target, selected)).toBe(target[1]);
-    expect(isSameRepository(target[1]!, selected)).toBe(true);
+    expect(resolveEnvironmentProjectMatch(target, selected)).toBe(target[2]);
+    expect(isSameRepository(target[2]!, selected)).toBe(true);
   });
 
   it("falls back to workspace basename, then title, for unindexed projects", () => {

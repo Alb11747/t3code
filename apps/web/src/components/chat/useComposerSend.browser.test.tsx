@@ -216,6 +216,7 @@ function setup(
     phase: "ready",
     runtimeMode: "full-access",
     sendEnvMode: "local",
+    worktreeRepositories: undefined,
     startFromOrigin: false,
     localCheckoutBranchMismatch: null,
     logicalProjectEnvironments: [],

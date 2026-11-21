@@ -1116,6 +1116,7 @@ describe("VcsStatusBroadcaster", () => {
                   : Effect.succeed({ ...baseLocalStatus, isDefaultRef: true, refName: "main" }),
               ),
             currentBranch: () => Effect.succeed("main"),
+            readRefSnapshot: () => Effect.succeed("refs"),
             remoteStatus: () => Effect.sync(() => remote),
             invalidateLocalStatus: () => Effect.void,
             invalidateRemoteStatus: () => Effect.void,
