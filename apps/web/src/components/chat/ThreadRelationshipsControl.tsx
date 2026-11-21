@@ -58,7 +58,7 @@ import {
   UnplugIcon,
 } from "lucide-react";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
-import { useRef, useState, type ReactNode } from "react";
+import { Fragment, useRef, useState, type ReactNode } from "react";
 import type { MessageResolver } from "~/i18n/messages";
 
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
@@ -74,6 +74,7 @@ import {
   useAnyEnvironmentHiding,
 } from "../../state/entities";
 import { useEnvironment, useEnvironmentProviders } from "../../state/environments";
+import { useNestedSubagentTree } from "../../state/nestedSubagents.fork";
 import { serverEnvironment } from "../../state/server";
 import {
   applyProviderInstanceSettings,
@@ -88,6 +89,7 @@ import { AgentElapsed } from "./AgentElapsed";
 import { ThreadRelationshipIcon, threadRelationshipStatusLabel } from "./ThreadRelationshipIcon";
 import { ThreadLineageWorkflowRow } from "./ThreadLineageWorkflowRow";
 import { useSideThreadTrigger } from "../../hooks/useSideThreadTrigger";
+import { ThreadLineageNestedRows } from "./ThreadLineageNestedRows.fork";
 import { openSideThread, resolveThreadOpenRoute } from "../../lib/sideChatPane";
 
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
@@ -153,8 +155,8 @@ type RemoteSubagent = OrchestrationV2Subagent & {
 /** A task delegated to a linked environment has no thread here, so it gets its own row kind. */
 type LineageRow = ThreadRelationshipWalkRow | { readonly remote: RemoteSubagent };
 
-const lineageHeading = (title: string, running: string | null, stalled: string | null) =>
-  [title, running, stalled].filter((part) => part !== null).join(" · ");
+const lineageHeading = (title: string, ...counts: ReadonlyArray<string | null>) =>
+  [title, ...counts].filter((part) => part !== null).join(" · ");
 
 const lineageRowStatus = (row: LineageRow) =>
   "remote" in row ? row.remote.status : row.edge.status;
@@ -479,6 +481,7 @@ export function ThreadRelationshipsPanel(props: {
   const providersByEnvironment = useEnvironmentProviders();
   const settings = useAtomValue(serverEnvironment.settingsValueAtom(props.environmentId));
   const relationshipShells = useThreadRelationshipShells(ref);
+  const nestedTree = useNestedSubagentTree(ref);
   const hiddenKeys = useHiddenThreadKeys();
   const hidingAnywhere = useAnyEnvironmentHiding();
   const allProjects = useProjects();
@@ -634,7 +637,10 @@ export function ThreadRelationshipsPanel(props: {
     if (!isParent && graph.nodes.get(threadId)?.thread?.lineage.sideChat === true)
       return "sideChats";
     if (edge.kind !== "subagent" || isParent) return "related";
-    return isFinishedAgentStatus(edge.status) ? "previous" : "active";
+    // A finished subagent whose own subagents still run stays in view with them.
+    return isFinishedAgentStatus(edge.status) && !nestedTree.rowsByChild.has(threadId)
+      ? "previous"
+      : "active";
   });
   const { remoteActive = [], remotePrevious = [] } = groupBy(
     (projection?.subagents ?? [])
@@ -1065,6 +1071,12 @@ export function ThreadRelationshipsPanel(props: {
           title={lineageHeading(
             gt("Lineage", { $context: "thread details section: parent and child agents" }),
             runningCount > 0 ? gt("{count} running", { count: runningCount }) : null,
+            nestedTree.runningCount > 0
+              ? gt("{count, plural, one {{count} nested} other {{count} nested}}", {
+                  count: nestedTree.runningCount,
+                  $context: "running agents started by this thread's subagents, or deeper",
+                })
+              : null,
             stalledCount > 0 ? gt("{count} stalling", { count: stalledCount }) : null,
           )}
           // A lone "Previous agents" row names itself; the heading returns for status or actions.
@@ -1127,6 +1139,16 @@ export function ThreadRelationshipsPanel(props: {
                         ?.find((entry) => entry.instanceId === row.remote.providerInstanceId)}
                       anyInstanceBadge={hasInstanceBadge(providerEntries)}
                     />
+                  ) : row.edge.kind === "subagent" && row.edge.sourceThreadId === props.threadId ? (
+                    <Fragment key={row.threadId}>
+                      {renderRelationshipRow(row)}
+                      <ThreadLineageNestedRows
+                        rows={nestedTree.rowsByChild.get(row.threadId)}
+                        providers={providers}
+                        providerEntries={providerEntries}
+                        onOpenThread={openThread}
+                      />
+                    </Fragment>
                   ) : (
                     renderRelationshipRow(row)
                   ),

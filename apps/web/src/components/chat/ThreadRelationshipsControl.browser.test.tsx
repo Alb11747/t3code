@@ -41,6 +41,9 @@ vi.mock(import("../../state/entities"), () => ({
   useHiddenThreadKeys: (() => new Set()) as never,
   useAnyEnvironmentHiding: (() => false) as never,
 }));
+vi.mock(import("../../state/nestedSubagents.fork"), () => ({
+  useNestedSubagentTree: (() => ({ runningCount: 0, rowsByChild: new Map() })) as never,
+}));
 vi.mock(import("../../state/environments"), () => ({
   // The click rule reads the client setting, whose module asks for these.
   useEnvironments: (() => []) as never,
