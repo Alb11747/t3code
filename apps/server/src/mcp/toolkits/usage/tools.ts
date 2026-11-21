@@ -25,11 +25,21 @@ const UsageTool = Tool.make("t3_usage", {
   parameters: Schema.Struct({
     action: Schema.optional(Schema.Literals(["read", "steer", "margin", "end", "redeem"])),
     threadId: Schema.optional(ThreadId),
-    account: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+    account: Schema.optional(
+      Schema.Union([
+        TrimmedNonEmptyString,
+        Schema.Null.annotate({ description: "Clear the steer for the named provider." }),
+      ]),
+    ),
     provider: Schema.optional(RouterProvider),
     headroomScale: Schema.optional(ThreadAccountMarginInput.fields.headroomScale),
     until: Schema.optional(IsoDateTime),
-    endsAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+    endsAt: Schema.optional(
+      Schema.Union([
+        IsoDateTime,
+        Schema.Null.annotate({ description: "Remove the account's declared subscription end." }),
+      ]),
+    ),
     instanceId: Schema.optional(ProviderInstanceId),
     creditId: Schema.optional(TrimmedNonEmptyString),
   }),

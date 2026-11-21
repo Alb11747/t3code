@@ -13,6 +13,7 @@ import { McpSchema, McpServer } from "effect/ai";
 
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadAccountService from "../../../usage/ThreadAccountService.ts";
+import { advertisedJsonSchema } from "../../advertisedJsonSchema.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccessTestkit from "../../McpToolAccess.testkit.ts";
@@ -89,8 +90,23 @@ const layer = (
 
 const account = "account-2222222222222222";
 
+it("advertises explicit null for removing steers and subscription ends", () => {
+  const nullable = expect.objectContaining({
+    anyOf: expect.arrayContaining([expect.objectContaining({ type: "null" })]),
+  });
+  expect(advertisedJsonSchema(UsageToolkit.tools.t3_usage)).toMatchObject({
+    properties: { account: nullable, endsAt: nullable },
+  });
+});
+
 it.effect.each([
   { action: "steer", args: { account }, call: { steer: { account } } },
+  {
+    action: "steer",
+    args: { account: null, provider: "claude" },
+    call: { steer: { account: null, provider: "claude" } },
+  },
+  { action: "end", args: { account, endsAt: null }, call: { end: { account, endsAt: null } } },
   { action: "redeem", args: { account }, call: { redeem: { account } } },
 ])("$action needs a caller that can control threads, not full access", ({ action, args, call }) => {
   const calls: Array<unknown> = [];
