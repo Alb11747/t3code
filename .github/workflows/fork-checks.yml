@@ -1,7 +1,7 @@
 name: Fork checks
 
-# The release gate from upstream's release.yml (quality, tests, sharded server
-# tests) on GitHub-hosted runners, which this fork has instead of Blacksmith.
+# The release gate from upstream's release.yml (quality, tests, sharded web
+# and server tests) on GitHub-hosted runners.
 # Called by fork-sync.yml before promoting a sync, by fork-pr-checks.yml, and
 # by fork-release.yml when no exact-commit validation has been recorded.
 #
@@ -90,12 +90,15 @@ jobs:
         if: hashFiles('fork/scripts/*.test.cjs') != ''
         run: node --test 'fork/scripts/*.test.cjs'
 
-  # The web suite gets its own job, as in upstream's ci.yml: sharing a 4-vCPU
-  # runner with the other packages starved its 30 s import hooks into timeouts.
+  # Four shards keep the 639-file web run to about 160 files per 4-vCPU runner.
   test_web:
-    name: Web tests
+    name: Web tests ${{ matrix.shard }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -124,11 +127,14 @@ jobs:
       # layout, and a whole-app mount that upstream's 8-vCPU runners finish in 7s
       # of its 15s limit but these 4-vCPU ones under parallel load do not.
       - name: Test attachment previews and app mount
+        if: matrix.shard == 1
         run: vp run --filter @t3tools/web test src/components/files/AttachmentFilePreview.browser.test.tsx src/components/ChatView.browser.test.tsx --no-file-parallelism
 
       - name: Test
         if: ${{ !cancelled() }}
-        run: vp run --filter @t3tools/web test --exclude '**/AttachmentFilePreview.browser.test.tsx' --exclude '**/ChatView.browser.test.tsx'
+        run: >-
+          vp run --filter @t3tools/web test --shard ${{ matrix.shard }}/${{ strategy.job-total }}
+          --exclude '**/AttachmentFilePreview.browser.test.tsx' --exclude '**/ChatView.browser.test.tsx'
 
   test_server:
     name: Server tests ${{ matrix.shard }}
