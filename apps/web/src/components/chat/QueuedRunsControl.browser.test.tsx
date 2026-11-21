@@ -115,6 +115,28 @@ async function renderQueue(props: Partial<ComponentProps<typeof QueuedRunsContro
   return renderUi(<QueuedRunsControl {...baseProps} {...props} />);
 }
 
+it("lists pending and delivering messages before messages queued for a later turn", async () => {
+  setup();
+  state.workflow = {
+    activeRun: null,
+    queuedRuns: [
+      { text: "Later", delivery: "queued", deliveryLabel: "Queued" },
+      { text: "Correction", delivery: "pending", deliveryLabel: "Pending" },
+      { text: "One more thing", delivery: "delivering", deliveryLabel: "Delivering" },
+    ].map((entry, index) => ({
+      ...entry,
+      run: { id: `run:${index}`, userMessageId: `message:${index}` },
+      attachments: [],
+    })),
+  };
+
+  await using screen = await renderQueue();
+  const rows = screen.getByRole("listitem");
+  await expect.element(rows.nth(0).getByText("Correction", { exact: true })).toBeVisible();
+  await expect.element(rows.nth(1).getByText("One more thing", { exact: true })).toBeVisible();
+  await expect.element(rows.nth(2).getByText("Later", { exact: true })).toBeVisible();
+});
+
 it.each([false, true])(
   "opens queued images in the existing gallery, pending=%s",
   async (pending) => {

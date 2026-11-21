@@ -38,6 +38,15 @@ export interface QueuedThreadRun {
   readonly message?: Message;
 }
 
+export function orderThreadQueueForDisplay<T extends Pick<QueuedThreadRun, "delivery">>(
+  entries: ReadonlyArray<T>,
+): T[] {
+  return [
+    ...entries.filter((entry) => entry.delivery !== "queued"),
+    ...entries.filter((entry) => entry.delivery === "queued"),
+  ];
+}
+
 export interface ThreadQueueWorkflowState {
   readonly activeRun: Run | null;
   readonly queuedRuns: ReadonlyArray<QueuedThreadRun>;

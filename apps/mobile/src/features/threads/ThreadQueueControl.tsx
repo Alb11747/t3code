@@ -10,6 +10,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { orderThreadQueueForDisplay } from "@t3tools/client-runtime/state/thread-workflows";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import type { ChatAttachment, EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
@@ -155,7 +156,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   const [busyRunId, setBusyRunId] = useState<RunId | null>(null);
   const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
   const busyRef = useRef(false);
-  const queuedRuns = workflow?.queuedRuns ?? [];
+  const queuedRuns = orderThreadQueueForDisplay(workflow?.queuedRuns ?? []);
   const hasPending = queuedRuns.some((entry) => entry.delivery !== "queued");
   const hasQueued = queuedRuns.some((entry) => entry.delivery === "queued");
   const heading = hasPending

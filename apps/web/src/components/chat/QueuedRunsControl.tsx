@@ -3,7 +3,10 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
+import {
+  deriveThreadQueueWorkflowState,
+  orderThreadQueueForDisplay,
+} from "@t3tools/client-runtime/state/thread-workflows";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import {
   isAttachmentOnlyBootstrapPrompt,
@@ -135,7 +138,7 @@ export function QueuedRunsControl({
   const optimisticQueued = props.optimisticMessages.filter(
     (message) => message.inputIntent === "queued_turn" && !acknowledgedMessageIds.has(message.id),
   );
-  const items = [
+  const items = orderThreadQueueForDisplay([
     ...queued.map((entry, serverIndex) => ({
       key: entry.run.id,
       message: entry.message,
@@ -178,7 +181,7 @@ export function QueuedRunsControl({
       thumbnails: (message.attachments ?? []).filter(isImageAttachment),
       pending: true,
     })),
-  ];
+  ]);
 
   const sendQueuedMessage = async (queuedRunId: RunId) => {
     const entry = queued.find(({ run }) => run.id === queuedRunId);
