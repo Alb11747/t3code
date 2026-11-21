@@ -9634,7 +9634,7 @@
   "7124a3ec98ac9fee": "Reset state",
   "00af33a0a074afb5": "Script",
   "ddfad02e64f72cf9": "Check script",
-  "2cbda2595c593bc3": [
+  "bae4ec3db23b1773": [
     "JavaScript that runs on the server before each run, including webhook runs. Return",
     " ",
     {
@@ -9665,7 +9665,7 @@
       "k": "_gt_value_4",
       "v": "v"
     },
-    ".",
+    ", and",
     " ",
     {
       "i": 5,
@@ -9673,11 +9673,27 @@
       "v": "v"
     },
     " ",
-    "also holds usage for every account, the bound thread (including its Claude cache expiry), the webhook request, and",
+    "or",
     " ",
     {
       "i": 6,
       "k": "_gt_value_6",
+      "v": "v"
+    },
+    " ",
+    "compacts or resets the bound thread's conversation first.",
+    " ",
+    {
+      "i": 7,
+      "k": "_gt_value_7",
+      "v": "v"
+    },
+    " ",
+    "also holds usage for every account, the bound thread (including its Claude cache expiry), the webhook request, and",
+    " ",
+    {
+      "i": 8,
+      "k": "_gt_value_8",
       "v": "v"
     },
     ", which is saved after each check. If it throws, the run fails."
@@ -9694,6 +9710,9 @@
     },
     "."
   ],
+  "9e0e7ae49c87af4b": "In its thread, starts a fresh session.",
+  "3d5b3225e871a11a": "In its thread, continues the conversation.",
+  "5de0fb8ab1506384": "In its thread, compacts a Claude or Codex conversation first, unless the run starts a fresh session.",
   "c7d8a60a2e01e3fa": [
     "Next run moves to",
     " ",

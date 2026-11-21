@@ -204,6 +204,15 @@ names a provider the project has turned off, a model the provider doesn't list
 offer, the run fails instead of starting. A skipped run ignores `model`. The
 task's last check shows the model a script picked.
 
+For a task that posts into one thread, `compact: true` queues a compaction of
+that thread's Claude or Codex conversation just before the run's message, and
+`freshSession: true`
+starts the run in a fresh session, as **One thread, fresh session each run**
+does; `freshSession: false` continues the conversation for a task set to fresh
+sessions. Both apply to that run only. A fresh session has nothing to compact,
+so `compact` is ignored then, and on other providers. The message still runs
+when there was nothing to compact. Runs that start a new thread ignore both.
+
 The script receives `ctx` with the current time, the task, its prompt, `model`
 (what this run uses unless the script picks one), `providers` (each enabled
 provider with its models, their family, whether each is the newest of it and,

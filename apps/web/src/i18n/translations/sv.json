@@ -9631,7 +9631,7 @@
   "7124a3ec98ac9fee": "Återställ tillstånd",
   "00af33a0a074afb5": "Skript",
   "ddfad02e64f72cf9": "Kontrollskript",
-  "2cbda2595c593bc3": [
+  "bae4ec3db23b1773": [
     "JavaScript som körs på servern före varje körning, även webhookkörningar. Returnera ",
     {
       "i": 1,
@@ -9662,10 +9662,22 @@
       "k": "_gt_value_5",
       "v": "v"
     },
-    " innehåller även användningen för varje konto, den länkade tråden (inklusive när Claude-cachen löper ut), webhookförfrågan och ",
+    " eller ",
     {
       "i": 6,
       "k": "_gt_value_6",
+      "v": "v"
+    },
+    " komprimerar eller återställer först konversationen i den länkade tråden. ",
+    {
+      "i": 7,
+      "k": "_gt_value_7",
+      "v": "v"
+    },
+    " innehåller även användningen för varje konto, den länkade tråden (inklusive när Claude-cachen löper ut), webhookförfrågan och ",
+    {
+      "i": 8,
+      "k": "_gt_value_8",
       "v": "v"
     },
     ", som sparas efter varje kontroll. Körningen misslyckas om skriptet kastar ett fel."
@@ -9682,6 +9694,9 @@
     },
     "."
   ],
+  "9e0e7ae49c87af4b": "I sin tråd startar en ny session.",
+  "3d5b3225e871a11a": "I sin tråd fortsätter konversationen.",
+  "5de0fb8ab1506384": "I sin tråd komprimeras en Claude- eller Codex-konversation först, om inte körningen startar en ny session.",
   "c7d8a60a2e01e3fa": [
     "Nästa körning flyttas till ",
     {

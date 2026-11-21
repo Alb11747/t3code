@@ -62,6 +62,8 @@ const evaluation = (
           reason: decision.reason ?? null,
           stateJson: decision.stateJson ?? null,
           modelSelection: decision.modelSelection ?? null,
+          compact: decision.compact ?? false,
+          freshSession: decision.freshSession ?? null,
         },
         error: null,
         logs: "checked\n",
@@ -72,6 +74,7 @@ const evaluation = (
 const harness = Effect.gen(function* () {
   const launches = yield* Ref.make<ReadonlyArray<string>>([]);
   const models = yield* Ref.make<ReadonlyArray<ModelSelection | undefined>>([]);
+  const sends = yield* Ref.make<ReadonlyArray<string>>([]);
   const next = yield* Ref.make<TaskScripts.ScriptEvaluation>(evaluation({}));
   const seen = yield* Ref.make<ReadonlyArray<TaskScripts.ScriptEvaluateInput>>([]);
   const sql = yield* SqlClient.SqlClient;
@@ -103,12 +106,21 @@ const harness = Effect.gen(function* () {
               modelSelection: input.modelSelection,
             } as never),
           sendToThread: (send) =>
-            Ref.update(models, (all) => [...all, send.modelSelection]).pipe(Effect.as({} as never)),
+            Ref.update(models, (all) => [...all, send.modelSelection]).pipe(
+              Effect.andThen(
+                Ref.update(sends, (all) => [
+                  ...all,
+                  `${send.freshContext === true ? "fresh" : "continue"} ${send.text}`,
+                ]),
+              ),
+              Effect.as({} as never),
+            ),
         }),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.succeed([
             {
               instanceId: "claudeAgent",
+              driver: "claudeAgent",
               models: [
                 { slug: "claude-haiku-5-5", capabilities: null },
                 { slug: "claude-haiku-5-6", capabilities: null },
@@ -130,7 +142,7 @@ const harness = Effect.gen(function* () {
       ),
     ),
   );
-  return { launches, models, next, seen, during, layer };
+  return { launches, models, sends, next, seen, during, layer };
 });
 
 const run = <A, E>(
@@ -213,6 +225,29 @@ it.effect("a script's model runs this run only and leaves the stored model", () 
       yield* Ref.set(next, evaluation({}));
       yield* service.runNow({ id: bound.task.id });
       expect(yield* Ref.get(models)).toEqual([codex, codex, undefined]);
+    }),
+  ),
+);
+
+it.effect("a script can compact or reset a bound thread's session for one run", () =>
+  run((service, { next, sends }) =>
+    Effect.gen(function* () {
+      const fresh = yield* service.upsert(
+        yield* decodeInput({ ...input, threadId: "thread-bound", threadMode: "fresh_session" }),
+      );
+      yield* service.runNow({ id: fresh.task.id });
+      yield* Ref.set(next, evaluation({ freshSession: false, compact: true }));
+      yield* service.runNow({ id: fresh.task.id });
+      // A fresh session has nothing to compact.
+      yield* Ref.set(next, evaluation({ freshSession: true, compact: true }));
+      yield* service.runNow({ id: fresh.task.id });
+      // Compaction is its own turn before the prompt, so one that does nothing can't hold it.
+      expect(yield* Ref.get(sends)).toEqual([
+        "fresh Reply ok.",
+        "continue /compact",
+        "continue Reply ok.",
+        "fresh Reply ok.",
+      ]);
     }),
   ),
 );

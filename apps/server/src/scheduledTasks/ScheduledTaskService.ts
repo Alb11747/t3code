@@ -1244,6 +1244,31 @@ export const layer = Layer.effect(
         const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
         const prompt = evaluation?.decision?.prompt ?? webhook?.prompt ?? active.prompt;
         const threadMode = scheduledTaskThreadMode(active);
+        // Fork: a script can start or continue the session, or compact first, for this run only.
+        const freshSession = evaluation?.decision?.freshSession ?? threadMode === "fresh_session";
+        const compactFirst = evaluation?.decision?.compact === true && !freshSession;
+        // The stored selection only seeds fresh threads. A bound run follows the thread's
+        // current provider, so it passes none unless following a newer model or the script
+        // chose one, which moves the thread as a composer switch would.
+        const boundSelection =
+          scriptModel ??
+          (boundFollowed === undefined || boundFollowed === boundThreadSelection
+            ? undefined
+            : boundFollowed);
+        // Only Claude and Codex compact; other providers would get "/compact" as a prompt.
+        const canCompact = (threadId: ThreadId) =>
+          threadManagement.getThreadShell(threadId).pipe(
+            Effect.flatMap((shell) => {
+              const instanceId = (boundSelection ?? shell?.modelSelection)?.instanceId;
+              return providerRegistry.getProviders.pipe(
+                Effect.map((providers) => {
+                  const driver = providers.find((p) => p.instanceId === instanceId)?.driver;
+                  return driver === "claudeAgent" || driver === "codex";
+                }),
+              );
+            }),
+            Effect.orElseSucceed(() => false),
+          );
 
         // A bound thread can move to another project (No project to a project) while
         // this fires. Follow it; one move needs at most two retries. Same ids replay safely.
@@ -1251,41 +1276,46 @@ export const layer = Layer.effect(
           threadId: ThreadId,
           projectId: ProjectId,
           retries: number,
-        ): ReturnType<typeof threadManagement.sendToThread> =>
-          threadManagement
-            .sendToThread({
+        ): ReturnType<typeof threadManagement.sendToThread> => {
+          const send = (text: string, suffix: string) =>
+            threadManagement.sendToThread({
               projectId,
-              commandId,
+              commandId: CommandId.make(`${commandId}${suffix}`),
               threadId,
-              messageId,
+              messageId: MessageId.make(`${messageId}${suffix}`),
               scheduledTaskId: active.id,
-              text: prompt,
+              text,
               attachments: [],
               mode: "queue",
-              ...(threadMode === "fresh_session" ? { freshContext: true } : {}),
-              ...(scriptModel !== null
-                ? { modelSelection: scriptModel }
-                : boundFollowed === undefined || boundFollowed === boundThreadSelection
-                  ? {}
-                  : { modelSelection: boundFollowed }),
+              ...(freshSession ? { freshContext: true } : {}),
+              ...(boundSelection === undefined ? {} : { modelSelection: boundSelection }),
               createdBy: active.createdBy,
               creationSource: active.creationSource,
-            })
-            .pipe(
-              Effect.catchTags({
-                ThreadManagementThreadNotFoundError: (error) =>
-                  retries === 0
-                    ? Effect.fail(error)
-                    : threadManagement.getThreadShell(threadId).pipe(
-                        Effect.orElseSucceed(() => null),
-                        Effect.flatMap((shell) =>
-                          shell === null || shell.projectId === projectId
-                            ? Effect.fail(error)
-                            : sendBound(threadId, shell.projectId, retries - 1),
-                        ),
+            });
+          // Its own queued turn rather than a prerequisite: a compaction that does nothing
+          // ("Not enough messages") must not hold the prompt and every later occurrence.
+          const compact = compactFirst
+            ? canCompact(threadId).pipe(
+                Effect.flatMap((ok) => (ok ? send("/compact", ":compact") : Effect.void)),
+              )
+            : Effect.void;
+          return compact.pipe(
+            Effect.andThen(send(prompt, "")),
+            Effect.catchTags({
+              ThreadManagementThreadNotFoundError: (error) =>
+                retries === 0
+                  ? Effect.fail(error)
+                  : threadManagement.getThreadShell(threadId).pipe(
+                      Effect.orElseSucceed(() => null),
+                      Effect.flatMap((shell) =>
+                        shell === null || shell.projectId === projectId
+                          ? Effect.fail(error)
+                          : sendBound(threadId, shell.projectId, retries - 1),
                       ),
-              }),
-            );
+                    ),
+            }),
+          );
+        };
 
         // Capture defects and interrupts too so dispatch failures still reach markCompleted.
         const result =
@@ -1319,9 +1349,6 @@ export const layer = Layer.effect(
                     ),
                 )
               : yield* Effect.exit(
-                  // The stored selection only seeds fresh threads. A bound run follows the
-                  // thread's current provider, so it passes none unless following a newer model
-                  // or the script chose one, which moves the thread as a composer switch would.
                   sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
                     Effect.as(ThreadId.make(active.threadId)),
                   ),

@@ -376,7 +376,11 @@ const sendFromWeb = (
   threadId: ThreadId,
   messageId: MessageId,
   text: string,
-  options: { readonly compactFirst?: true; readonly afterCompactionMessageId?: MessageId } = {},
+  options: {
+    readonly compactFirst?: true;
+    readonly afterCompactionMessageId?: MessageId;
+    readonly scheduledTaskId?: ScheduledTaskId;
+  } = {},
 ) =>
   Effect.flatMap(Orchestrator.OrchestratorV2, (orchestrator) =>
     orchestrator.dispatch({
@@ -575,16 +579,27 @@ it.effect("a client send that resumes a held queue stays behind a compaction's m
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("a user's /compact that joins a held compaction resumes the queue", () =>
+it.effect.each([
+  { sender: "user", scheduled: false },
+  // A scheduled task's /compact is its own turn, so a stopped queue stays stopped.
+  { sender: "scheduled task", scheduled: true },
+])("a $sender's /compact behind a held compaction", ({ scheduled }) =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const threadId = ThreadId.make("thread:join-held");
     const { compactMessageId } = yield* compactionPair(threadId);
     yield* holdRuns(threadId, (yield* orchestrator.getThreadRecords(threadId, ["runs"])).runs);
-    yield* sendFromWeb(threadId, MessageId.make("message:user-compact"), "/compact");
+    yield* sendFromWeb(
+      threadId,
+      MessageId.make("message:user-compact"),
+      "/compact",
+      scheduled ? { scheduledTaskId: ScheduledTaskId.make("task:scheduled") } : {},
+    );
     const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
-    expect(runs).toHaveLength(2);
-    expect(runs.find((run) => run.userMessageId === compactMessageId)?.status).not.toBe("queued");
+    expect(runs).toHaveLength(scheduled ? 3 : 2);
+    const held = runs.find((run) => run.userMessageId === compactMessageId);
+    if (scheduled) expect(held).toMatchObject({ status: "queued", queueHeld: true });
+    else expect(held?.status).not.toBe("queued");
   }).pipe(Effect.provide(layerTest)),
 );
 

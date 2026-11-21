@@ -147,6 +147,13 @@ describe("decideScriptResult", () => {
       { outcome: "error", error: expect.stringContaining("claude, codex") },
     ],
     [{ model: 5 }, { outcome: "error" }],
+    [{}, { decision: { compact: false, freshSession: null } }],
+    [
+      { compact: true, freshSession: false },
+      { outcome: "run", decision: { compact: true, freshSession: false } },
+    ],
+    [{ compact: "yes" }, { outcome: "error", error: "`compact` must be true or false." }],
+    [{ freshSession: 1 }, { outcome: "error", error: "`freshSession` must be true or false." }],
     [{ model: { model: "claude-haiku-5-5", options: { effort: {} } } }, { outcome: "error" }],
   ] as const)("decides %j", (result, expected) => {
     expect(decideScriptResult(ok(result), NOW, MODELS)).toMatchObject(expected);

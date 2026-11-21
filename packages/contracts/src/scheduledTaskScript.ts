@@ -50,6 +50,10 @@ export const ScheduledTaskScriptDecision = Schema.Struct({
   state: Schema.NullOr(Schema.String),
   /** The model the script chose for this run, checked against the server's providers. */
   modelSelection: Schema.optionalKey(ModelSelection),
+  /** Compact a bound thread's conversation before the run's message. */
+  compact: Schema.optionalKey(Schema.Boolean),
+  /** Start (true) or continue (false) a bound thread's session for this run. */
+  freshSession: Schema.optionalKey(Schema.Boolean),
 });
 export type ScheduledTaskScriptDecision = typeof ScheduledTaskScriptDecision.Type;
 

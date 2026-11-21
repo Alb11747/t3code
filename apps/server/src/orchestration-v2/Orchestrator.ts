@@ -7699,9 +7699,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return;
     }
     // A user's `/compact` joins a compaction already pending with a message, and takes over the
-    // messages of one that ended without compacting.
+    // messages of one that ended without compacting. Fork: a scheduled task's is just a turn.
     if (
       command.createdBy === "user" &&
+      command.scheduledTaskId === undefined &&
       command.afterCompactionMessageId === undefined &&
       isCompactionCommandMessage({ ...command, role: "user" })
     ) {

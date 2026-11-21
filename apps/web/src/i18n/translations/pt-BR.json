@@ -9622,7 +9622,7 @@
   "7124a3ec98ac9fee": "Redefinir estado",
   "00af33a0a074afb5": "Script",
   "ddfad02e64f72cf9": "Script de verificação",
-  "2cbda2595c593bc3": [
+  "bae4ec3db23b1773": [
     "JavaScript executado no servidor antes de cada execução, inclusive por webhook. Retorne ",
     {
       "i": 1,
@@ -9653,10 +9653,22 @@
       "k": "_gt_value_5",
       "v": "v"
     },
-    " também contém o uso de cada conta, a conversa vinculada (incluindo a expiração do cache do Claude), a solicitação do webhook e ",
+    " ou ",
     {
       "i": 6,
       "k": "_gt_value_6",
+      "v": "v"
+    },
+    " compacta ou reinicia antes a conversa vinculada. ",
+    {
+      "i": 7,
+      "k": "_gt_value_7",
+      "v": "v"
+    },
+    " também contém o uso de cada conta, a conversa vinculada (incluindo a expiração do cache do Claude), a solicitação do webhook e ",
+    {
+      "i": 8,
+      "k": "_gt_value_8",
       "v": "v"
     },
     ", salvo após cada verificação. Se o script lançar um erro, a execução falha."
@@ -9673,6 +9685,9 @@
     },
     "."
   ],
+  "9e0e7ae49c87af4b": "Na conversa, inicia uma nova sessão.",
+  "3d5b3225e871a11a": "Na conversa, continua a conversa atual.",
+  "5de0fb8ab1506384": "Na conversa, compacta antes uma conversa do Claude ou do Codex, a menos que a execução inicie uma nova sessão.",
   "c7d8a60a2e01e3fa": [
     "A próxima execução passa para ",
     {

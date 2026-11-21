@@ -9623,7 +9623,7 @@
   "7124a3ec98ac9fee": "Réinitialiser l’état",
   "00af33a0a074afb5": "Script",
   "ddfad02e64f72cf9": "Script de vérification",
-  "2cbda2595c593bc3": [
+  "bae4ec3db23b1773": [
     "JavaScript exécuté sur le serveur avant chaque lancement, y compris par webhook. Renvoyez ",
     {
       "i": 1,
@@ -9654,10 +9654,22 @@
       "k": "_gt_value_5",
       "v": "v"
     },
-    " contient aussi l’utilisation de chaque compte, le fil lié (dont l’expiration du cache Claude), la requête webhook et ",
+    " ou ",
     {
       "i": 6,
       "k": "_gt_value_6",
+      "v": "v"
+    },
+    " compacte ou réinitialise d’abord la conversation du fil lié. ",
+    {
+      "i": 7,
+      "k": "_gt_value_7",
+      "v": "v"
+    },
+    " contient aussi l’utilisation de chaque compte, le fil lié (dont l’expiration du cache Claude), la requête webhook et ",
+    {
+      "i": 8,
+      "k": "_gt_value_8",
       "v": "v"
     },
     ", enregistré après chaque vérification. Si le script lève une erreur, le lancement échoue."
@@ -9674,6 +9686,9 @@
     },
     "."
   ],
+  "9e0e7ae49c87af4b": "Dans son fil, démarre une nouvelle session.",
+  "3d5b3225e871a11a": "Dans son fil, poursuit la conversation.",
+  "5de0fb8ab1506384": "Dans son fil, compacte d’abord une conversation Claude ou Codex, sauf si le lancement démarre une nouvelle session.",
   "c7d8a60a2e01e3fa": [
     "La prochaine exécution est déplacée à ",
     {

@@ -58,6 +58,10 @@ export interface ScriptEvaluation {
     readonly stateJson: string | null;
     /** The script's model for this run only, checked against `ScriptModels`. */
     readonly modelSelection: ModelSelection | null;
+    /** Compact the bound thread's conversation before this run's message. */
+    readonly compact: boolean;
+    /** Overrides the destination's fresh-session choice for this bound run; null keeps it. */
+    readonly freshSession: boolean | null;
   } | null;
   readonly error: string | null;
   /** The state to save when a script that finished returned something invalid. */
@@ -117,6 +121,8 @@ export function scriptDecisionForClient(
     reason: decision.reason,
     state: decision.stateJson,
     ...(decision.modelSelection === null ? {} : { modelSelection: decision.modelSelection }),
+    ...(decision.compact ? { compact: true } : {}),
+    ...(decision.freshSession === null ? {} : { freshSession: decision.freshSession }),
   };
 }
 
@@ -255,6 +261,8 @@ export function decideScriptResult(
     readonly nextRunAtMs?: number | null;
     readonly reason?: string | null;
     readonly modelSelection?: ModelSelection | null;
+    readonly compact?: boolean;
+    readonly freshSession?: boolean | null;
   }): Decided => ({
     outcome: input.run ? "run" : "skip",
     decision: {
@@ -264,6 +272,8 @@ export function decideScriptResult(
       reason: input.reason ?? null,
       stateJson,
       modelSelection: input.modelSelection ?? null,
+      compact: input.compact ?? false,
+      freshSession: input.freshSession ?? null,
     },
     error: null,
   });
@@ -279,6 +289,10 @@ export function decideScriptResult(
     return refuse("`prompt` must be non-empty text.");
   if (fields.reason != null && typeof fields.reason !== "string")
     return refuse("`reason` must be text.");
+  if (fields.compact != null && typeof fields.compact !== "boolean")
+    return refuse("`compact` must be true or false.");
+  if (fields.freshSession != null && typeof fields.freshSession !== "boolean")
+    return refuse("`freshSession` must be true or false.");
   let nextRunAtMs: number | null = null;
   if (fields.nextRunAt != null) {
     const parsed = parseNextRunAt(fields.nextRunAt, nowMs);
@@ -302,6 +316,8 @@ export function decideScriptResult(
     nextRunAtMs,
     reason,
     modelSelection,
+    compact: fields.compact === true,
+    freshSession: typeof fields.freshSession === "boolean" ? fields.freshSession : null,
   });
 }
 

@@ -9621,7 +9621,7 @@
   "7124a3ec98ac9fee": "Restablecer estado",
   "00af33a0a074afb5": "Script",
   "ddfad02e64f72cf9": "Script de comprobación",
-  "2cbda2595c593bc3": [
+  "bae4ec3db23b1773": [
     "JavaScript que se ejecuta en el servidor antes de cada ejecución, incluidas las de webhook. Devuelve ",
     {
       "i": 1,
@@ -9652,10 +9652,22 @@
       "k": "_gt_value_5",
       "v": "v"
     },
-    " también contiene el uso de todas las cuentas, el hilo vinculado (incluida la caducidad de la caché de Claude), la solicitud del webhook y ",
+    " o ",
     {
       "i": 6,
       "k": "_gt_value_6",
+      "v": "v"
+    },
+    " compacta o reinicia primero la conversación del hilo vinculado. ",
+    {
+      "i": 7,
+      "k": "_gt_value_7",
+      "v": "v"
+    },
+    " también contiene el uso de todas las cuentas, el hilo vinculado (incluida la caducidad de la caché de Claude), la solicitud del webhook y ",
+    {
+      "i": 8,
+      "k": "_gt_value_8",
       "v": "v"
     },
     ", que se guarda tras cada comprobación. Si el script lanza un error, la ejecución falla."
@@ -9672,6 +9684,9 @@
     },
     "."
   ],
+  "9e0e7ae49c87af4b": "En su hilo, inicia una sesión nueva.",
+  "3d5b3225e871a11a": "En su hilo, continúa la conversación.",
+  "5de0fb8ab1506384": "En su hilo, compacta primero una conversación de Claude o Codex, salvo que la ejecución inicie una sesión nueva.",
   "c7d8a60a2e01e3fa": [
     "La próxima ejecución se mueve a ",
     {

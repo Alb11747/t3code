@@ -165,7 +165,9 @@ export function ScheduledTaskScriptSection({
                     </Var>{" "}
                     to skip, or{" "}
                     <Var>
-                      <code>{"{ run, prompt, model, nextRunAt, reason }"}</code>
+                      <code>
+                        {"{ run, prompt, model, nextRunAt, reason, compact, freshSession }"}
+                      </code>
                     </Var>
                     .{" "}
                     <Var>
@@ -175,7 +177,15 @@ export function ScheduledTaskScriptSection({
                     <Var>
                       <code>ctx.providers</code>
                     </Var>
-                    .{" "}
+                    , and{" "}
+                    <Var>
+                      <code>compact</code>
+                    </Var>{" "}
+                    or{" "}
+                    <Var>
+                      <code>freshSession</code>
+                    </Var>{" "}
+                    compacts or resets the bound thread&apos;s conversation first.{" "}
                     <Var>
                       <code>ctx</code>
                     </Var>{" "}
@@ -262,6 +272,25 @@ export function ScheduledTaskScriptSection({
                   <p className="text-xs">
                     <T>
                       Runs on <Var>{describeModel(result.decision.modelSelection)}</Var>.
+                    </T>
+                  </p>
+                ) : null}
+                {result.decision?.run && result.decision.freshSession !== undefined ? (
+                  <p className="text-xs">
+                    {result.decision.freshSession ? (
+                      <T>In its thread, starts a fresh session.</T>
+                    ) : (
+                      <T>In its thread, continues the conversation.</T>
+                    )}
+                  </p>
+                ) : null}
+                {result.decision?.run &&
+                result.decision.compact &&
+                result.decision.freshSession !== true ? (
+                  <p className="text-xs">
+                    <T>
+                      In its thread, compacts a Claude or Codex conversation first, unless the run
+                      starts a fresh session.
                     </T>
                   </p>
                 ) : null}

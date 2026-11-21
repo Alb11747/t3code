@@ -9625,7 +9625,7 @@
   "7124a3ec98ac9fee": "Zustand zurücksetzen",
   "00af33a0a074afb5": "Skript",
   "ddfad02e64f72cf9": "Prüfskript",
-  "2cbda2595c593bc3": [
+  "bae4ec3db23b1773": [
     "JavaScript, das auf dem Server vor jedem Durchlauf ausgeführt wird, auch bei Webhooks. Gib ",
     {
       "i": 1,
@@ -9656,10 +9656,22 @@
       "k": "_gt_value_5",
       "v": "v"
     },
-    " enthält auch Nutzungsdaten aller Konten, den gebundenen Thread einschließlich des Claude-Cache-Ablaufs, die Webhook-Anfrage und ",
+    " oder ",
     {
       "i": 6,
       "k": "_gt_value_6",
+      "v": "v"
+    },
+    " komprimiert die Unterhaltung des gebundenen Threads vorher oder setzt sie zurück. ",
+    {
+      "i": 7,
+      "k": "_gt_value_7",
+      "v": "v"
+    },
+    " enthält auch Nutzungsdaten aller Konten, den gebundenen Thread einschließlich des Claude-Cache-Ablaufs, die Webhook-Anfrage und ",
+    {
+      "i": 8,
+      "k": "_gt_value_8",
       "v": "v"
     },
     ", das nach jeder Prüfung gespeichert wird. Wenn das Skript einen Fehler auslöst, schlägt der Durchlauf fehl."
@@ -9676,6 +9688,9 @@
     },
     " ausgeführt."
   ],
+  "9e0e7ae49c87af4b": "In seinem Thread wird eine neue Sitzung gestartet.",
+  "3d5b3225e871a11a": "In seinem Thread wird die Unterhaltung fortgesetzt.",
+  "5de0fb8ab1506384": "In seinem Thread wird eine Claude- oder Codex-Unterhaltung zuerst komprimiert, sofern der Durchlauf keine neue Sitzung startet.",
   "c7d8a60a2e01e3fa": [
     "Nächster Durchlauf verschoben auf ",
     {
