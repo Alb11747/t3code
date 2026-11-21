@@ -258,6 +258,10 @@ export class ThreadLaunchService extends Context.Service<
     >;
     /** True only when the project's folder is known not to be a Git repository. */
     readonly isNonGitProject: (projectId: ProjectId) => Effect.Effect<boolean>;
+    /** A planned task folder without a root checkout starts each tracked repository independently. */
+    readonly worktreeUsesRepositoryDefaults: (
+      projectId: ProjectId,
+    ) => Effect.Effect<boolean, TaskFolderError>;
     readonly retryPreparation: (
       input: ThreadLaunchPreparationInput,
     ) => Effect.Effect<
@@ -485,6 +489,12 @@ const make = Effect.gen(function* () {
         conflictingBranch,
       });
   });
+
+  const worktreeUsesRepositoryDefaults: ThreadLaunchService["Service"]["worktreeUsesRepositoryDefaults"] =
+    Effect.fn("ThreadLaunchService.worktreeUsesRepositoryDefaults")(function* (projectId) {
+      const plan = yield* taskFolders.plan({ projectId });
+      return plan !== null && !plan.projectIsRepository;
+    });
 
   const isNonGitProject: ThreadLaunchService["Service"]["isNonGitProject"] = Effect.fn(
     "ThreadLaunchService.isNonGitProject",
@@ -1771,6 +1781,7 @@ const make = Effect.gen(function* () {
     launch,
     checkWorktreeBase,
     isNonGitProject,
+    worktreeUsesRepositoryDefaults,
     retryPreparation,
     prepareRun,
   });

@@ -3136,6 +3136,7 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
           ),
         checkWorktreeBase: launches.checkWorktreeBase,
         isNonGitProject: launches.isNonGitProject,
+        worktreeUsesRepositoryDefaults: launches.worktreeUsesRepositoryDefaults,
         retryPreparation: launches.retryPreparation,
         prepareRun: launches.prepareRun,
       }),
@@ -3395,12 +3396,13 @@ it.live("launches into a task folder and leaves nothing behind when its setup is
       const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const threads = yield* ThreadManagement.ThreadManagementService;
       const taskFolders = yield* TaskFolders.TaskFolders;
+      assert.isTrue(yield* launches.worktreeUsesRepositoryDefaults(projectId));
       const launched = yield* launches.launch(
         launchInput({
           command: "launch:task-folder",
           thread: "thread:task-folder",
           message: "Start",
-          workspace: { type: "worktree", baseRef: "main", branch: "feature/launch" },
+          workspace: { type: "worktree", baseRef: "HEAD", branch: "feature/launch" },
         }),
       );
       yield* Deferred.await(entered);

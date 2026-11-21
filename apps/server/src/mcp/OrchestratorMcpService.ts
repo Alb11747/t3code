@@ -3070,8 +3070,17 @@ const make = Effect.gen(function* () {
       const accountChoice = isRetryOfAcceptedDelegation
         ? undefined
         : yield* launchAccountChoice(target.modelSelection.instanceId, input.target);
+      const needsWorktree = input.isolation === "worktree" && !isRetryOfAcceptedDelegation;
+      const useRepositoryDefaults =
+        needsWorktree &&
+        crossProject &&
+        (yield* threadLaunch
+          .worktreeUsesRepositoryDefaults(projectId)
+          .pipe(Effect.mapError((error) => failure("invalid_request", error.message))));
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
-      if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
+      if (useRepositoryDefaults) {
+        workspaceStrategy = { type: "worktree", baseRef: "HEAD", startFromOrigin: false };
+      } else if (needsWorktree) {
         const project = destination ?? (yield* requireProject(projectId));
         let revision = "HEAD";
         if (crossProject) {

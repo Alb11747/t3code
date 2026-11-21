@@ -3152,9 +3152,14 @@ describe("OrchestratorMcpService provider resolution", () => {
       ),
   );
 
-  it.effect.each([undefined, "shared", "worktree"] as const)(
-    "driver-only delegation uses the destination project's providers and isolation %s",
-    (isolation) =>
+  it.effect.each([
+    { isolation: undefined, plainFolder: false },
+    { isolation: "shared", plainFolder: false },
+    { isolation: "worktree", plainFolder: false },
+    { isolation: "worktree", plainFolder: true },
+  ] as const)(
+    "driver-only delegation uses the destination project's providers and isolation $isolation (plain folder: $plainFolder)",
+    ({ isolation, plainFolder }) =>
       Effect.gen(function* () {
         const destinationId =
           isolation === undefined ? projectId : ProjectId.make("project:destination");
@@ -3247,9 +3252,14 @@ describe("OrchestratorMcpService provider resolution", () => {
               } as never);
             },
           }),
-          Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+          Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+            worktreeUsesRepositoryDefaults: () => Effect.succeed(plainFolder),
+          }),
           Layer.mock(GitVcsDriver.GitVcsDriver)({
-            resolvePrimaryRemoteName: () => Effect.succeed("upstream"),
+            resolvePrimaryRemoteName: () => {
+              assert.isFalse(plainFolder, "The plain project folder has no Git remote");
+              return Effect.succeed("upstream");
+            },
             resolveDefaultBranchName: (cwd, remote) => {
               assert.equal(cwd, "/destination");
               assert.equal(remote, "upstream");
@@ -3295,7 +3305,11 @@ describe("OrchestratorMcpService provider resolution", () => {
               request.workspaceStrategy,
               isolation === "shared"
                 ? undefined
-                : { type: "worktree", baseRef: "target-sha", startFromOrigin: false },
+                : {
+                    type: "worktree",
+                    baseRef: plainFolder ? "HEAD" : "target-sha",
+                    startFromOrigin: false,
+                  },
             );
           }
         }).pipe(
