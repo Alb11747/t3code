@@ -1114,8 +1114,9 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       probe: {
         installed: true,
         version: null,
-        status: "error",
+        status: "warning",
         auth: { status: "unknown" },
+        usageLimits: makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" }),
         message: "Timed out while checking Codex app-server provider status.",
       },
     });

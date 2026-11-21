@@ -108,3 +108,5 @@ revert a patch. See `fork/README.md` for how to add or drop an entry.
 
 - `fix(server): close Codex approvals when the provider withdraws them` closes the exact request and its card even after the native turn ends. T3 records whichever commits first, the withdrawal or the user's response. Runtime recovery also closes cards and nodes for orphaned requests at startup or shutdown. Issue: https://github.com/pingdotgg/t3code/issues/21935. PR: none yet
 - `fix(codex): keep full-access command approvals unattended` answers Codex's ordinary command check under the default Full Access policy while keeping browser and app consent available. Explicit approval or sandbox policies, terminal input, managed-network requests, and policy amendments keep their existing handling. Issue: https://github.com/pingdotgg/t3code/issues/39460. PR: https://github.com/pingdotgg/t3code/pull/39187
+
+- `fix(codex): keep status timeouts from blocking delegation` reports a warning when the status check runs out of time. The existing model and usage caches keep their last successful results, and a known delegation target can start without another probe. Issue: none linked. PR: none yet

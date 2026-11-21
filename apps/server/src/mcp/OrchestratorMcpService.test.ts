@@ -10,6 +10,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
+  CodexSettings,
   CommandId,
   ContextTransferId,
   EnvironmentId,
@@ -72,6 +73,7 @@ import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { checkCodexProviderStatus } from "../provider/CodexProvider.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
@@ -86,6 +88,7 @@ import type { ProjectionRecordFilter } from "../orchestration-v2/ProjectionStore
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const decodeTarget = Schema.decodeUnknownEffect(OrchestratorMcpTarget);
+const defaultCodexSettings = Schema.decodeSync(CodexSettings)({});
 
 const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
@@ -2627,18 +2630,47 @@ describe("OrchestratorMcpService provider resolution", () => {
     );
   });
 
-  it.effect.each(["already advertised", "newly advertised", "still unavailable"] as const)(
-    "rechecks a delegated model that is %s",
+  const delegatedModelStatuses = [
+    "already advertised",
+    "cached after a Codex status timeout",
+    "newly advertised",
+    "still unavailable",
+  ] as const;
+  it.effect.each(delegatedModelStatuses)(
+    "resolves a delegated model that is %s, refreshing only if needed",
     (availability) =>
       Effect.gen(function* () {
-        const museInstanceId = ProviderInstanceId.make("muse");
-        const model = "muse-wonder-1.0";
+        const timedOut = availability === "cached after a Codex status timeout";
+        const instanceId = timedOut ? codexInstanceId : ProviderInstanceId.make("muse");
+        const driver = ProviderDriverKind.make(timedOut ? "codex" : "muse");
+        const model = timedOut ? "gpt-5.4" : "muse-wonder-1.0";
         const provider = (advertisedModel: string) =>
           providerSnapshot({
-            instanceId: museInstanceId,
-            driver: ProviderDriverKind.make("muse"),
+            instanceId,
+            driver,
             model: advertisedModel,
           });
+        const initiallyAdvertised = timedOut || availability === "already advertised";
+        let initialProvider = provider(initiallyAdvertised ? model : "muse-spark-1.3");
+        if (timedOut) {
+          const started = yield* Deferred.make<void>();
+          const check = yield* checkCodexProviderStatus(
+            defaultCodexSettings,
+            () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+            {},
+          ).pipe(Effect.provide(NodeServices.layer), Effect.forkChild);
+          yield* Deferred.await(started);
+          yield* TestClock.adjust("20 seconds");
+          initialProvider = ProviderRegistry.mergeProviderSnapshot(initialProvider, {
+            ...(yield* Fiber.join(check)),
+            instanceId,
+            driver,
+          });
+          assert.deepEqual(
+            initialProvider.models.map(({ slug }) => slug),
+            [model],
+          );
+        }
         const commands: Array<unknown> = [];
         const refreshedInstances: Array<ProviderInstanceId> = [];
         const task = {
@@ -2646,7 +2678,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           threadId: parentThreadId,
           origin: "app_owned",
           childThreadId,
-          providerInstanceId: museInstanceId,
+          providerInstanceId: instanceId,
           model,
           status: "running",
           result: null,
@@ -2673,16 +2705,14 @@ describe("OrchestratorMcpService provider resolution", () => {
           }),
           ServerSettings.layerTest(),
           Layer.mock(ProviderRegistry.ProviderRegistry)({
-            getProviders: Effect.succeed([
-              provider(availability === "already advertised" ? model : "muse-spark-1.3"),
-            ]),
+            getProviders: Effect.succeed([initialProvider]),
             refreshInstance: (instanceId) =>
               Effect.sync(() => {
                 refreshedInstances.push(instanceId);
                 return [provider(availability === "still unavailable" ? "muse-spark-1.3" : model)];
               }),
           }),
-          adapterRegistryLayer([museInstanceId]),
+          adapterRegistryLayer([instanceId]),
           Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
@@ -2692,7 +2722,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
           const delegation = service.delegateTask(scope, {
             task: "Review the change.",
-            target: { providerInstanceId: museInstanceId, model },
+            target: { providerInstanceId: instanceId, model },
             mode: "async",
             clientRequestId: availability,
           });
@@ -2705,14 +2735,11 @@ describe("OrchestratorMcpService provider resolution", () => {
             assert.equal(result.model, model);
             assert.equal(commands.length, 1);
             assert.deepEqual((commands[0] as { modelSelection: unknown }).modelSelection, {
-              instanceId: museInstanceId,
+              instanceId,
               model,
             });
           }
-          assert.deepEqual(
-            refreshedInstances,
-            availability === "already advertised" ? [] : [museInstanceId],
-          );
+          assert.deepEqual(refreshedInstances, initiallyAdvertised ? [] : [instanceId]);
         }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
       }),
   );

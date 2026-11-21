@@ -636,17 +636,35 @@ it.layer(
       }),
     );
 
-    it.effect("allows a slow successful Codex probe with a configured budget", () =>
+    it.effect.each([
+      { budget: "default", environment: {}, status: "warning", auth: "unknown" },
+      {
+        budget: "extended",
+        environment: { T3CODE_CODEX_PROBE_TIMEOUT_MS: "60000" },
+        status: "ready",
+        auth: "authenticated",
+      },
+    ] as const)("reports a slow Codex probe with the $budget budget", (expected) =>
       Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
         const fiber = yield* checkCodexProviderStatus(
           defaultCodexSettings,
-          () => Effect.sleep("22 seconds").pipe(Effect.as(makeCodexProbeSnapshot())),
-          { T3CODE_CODEX_PROBE_TIMEOUT_MS: "60000" },
+          () =>
+            Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Effect.sleep("22 seconds")),
+              Effect.as(makeCodexProbeSnapshot()),
+            ),
+          expected.environment,
         ).pipe(Effect.forkChild);
+        yield* Deferred.await(started);
         yield* TestClock.adjust("22 seconds");
         const status = yield* Fiber.join(fiber);
-        assert.strictEqual(status.status, "ready");
-        assert.strictEqual(status.auth.status, "authenticated");
+        assert.strictEqual(status.status, expected.status);
+        assert.strictEqual(status.auth.status, expected.auth);
+        if (expected.status === "warning") {
+          assert.isTrue(status.installed);
+          assert.strictEqual(status.usageLimits?.unavailable?.reason, "probeFailed");
+        }
       }),
     );
 
