@@ -708,6 +708,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [
       msg("claude context compaction idle cache tokens usage summary resume"),
       msg("smart waiting threads cache expires watch subagent scheduled wake"),
+      msg("minimum threshold"),
     ],
   },
   {

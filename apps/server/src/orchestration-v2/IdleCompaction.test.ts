@@ -408,6 +408,16 @@ describe("IdleCompactionService", () => {
     { mode: "beforeCacheExpires", unconfigured: true, reads: 1 },
     { mode: "beforeCacheExpires", smart: true, reads: 1, dispatches: 0 },
     { mode: "beforeCacheExpires", smart: true, projectedWait: true, reads: 1 },
+    { mode: "beforeCacheExpires", usedTokens: 126_067, reads: 1, dispatches: 0 },
+    {
+      mode: "beforeCacheExpires",
+      smart: true,
+      projectedWait: true,
+      usedTokens: 126_067,
+      minTokens: 126_067,
+      reads: 1,
+    },
+    { mode: "beforeCacheExpires", minTokens: 300_000, reads: 1, dispatches: 0 },
     { mode: "beforeCacheExpires", smart: true, threadOverride: true, reads: 1 },
     { mode: "onReturn", threadOverride: true, reads: 1 },
     { mode: "beforeCacheExpires", threadOverride: false, reads: 0 },
@@ -418,7 +428,7 @@ describe("IdleCompactionService", () => {
     { mode: "beforeCacheExpires", threadOverride: false, compactOnce: "set", reads: 0 },
     { mode: "off", compactOnce: "set", reads: 0 },
   ] as const)(
-    "loads history only for eligible idle compaction: $mode/$override/$enabled/$projectDisabled/$instance/$unconfigured/$threadOverride/$compactOnce",
+    "loads history only for eligible idle compaction: $mode/$override/$enabled/$projectDisabled/$instance/$unconfigured/$threadOverride/$compactOnce/$usedTokens/$minTokens",
     (scenario) => {
       const test = {
         override: "default",
@@ -435,7 +445,10 @@ describe("IdleCompactionService", () => {
             "instance" in test ? test.instance : "claudeAgent",
           );
           const driver = ProviderDriverKind.make("driver" in test ? test.driver : "claudeAgent");
-          const base = records({ cacheExpiresInMs: 2 * MINUTE_MS });
+          const base = records({
+            cacheExpiresInMs: 2 * MINUTE_MS,
+            ...("usedTokens" in test ? { usedTokens: test.usedTokens } : {}),
+          });
           const data: OrchestrationV2ThreadProjection = {
             ...base,
             thread: {
@@ -519,6 +532,7 @@ describe("IdleCompactionService", () => {
                 ...DEFAULT_SERVER_SETTINGS,
                 idleCompaction: test.mode,
                 smartIdleCompaction: test.smart,
+                ...("minTokens" in test ? { idleCompactionMinTokens: test.minTokens } : {}),
                 providerInstances:
                   "unconfigured" in test
                     ? {}

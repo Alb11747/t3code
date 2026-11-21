@@ -68,8 +68,10 @@ from it summarizes first. The cache lasts about an hour on a Claude
 subscription and 5 minutes with an API key, Bedrock, or Vertex. See [commands and skills](./composer.md#commands-and-skills) for using
 composer commands.
 
-**Compact idle threads** in **Settings > Providers > Advanced** controls this for threads
-over 200,000 tokens. Each Claude provider's settings can override it:
+**Compact idle threads** in **Settings > Providers > Advanced** chooses when
+to compact. Each Claude provider's settings can override the timing. Use
+**Minimum tokens for idle compaction** to change the context size required for
+compaction before the cache expires. It defaults to 200,000 tokens.
 
 - **Never** skips idle compaction and Claude's resume prompt. **Auto-compact after**
   still applies, and you can still compact by hand.

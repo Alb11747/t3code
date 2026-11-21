@@ -18,6 +18,7 @@ import {
   ForwardCompatibleNullable,
   ForwardCompatibleOptional,
   OmittedWhenNull,
+  PositiveInt,
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -793,6 +794,8 @@ const INSTANCE_IDLE_COMPACTION_MODES = [
   { value: "default", label: "Use default" },
   ...IDLE_COMPACTION_MODES,
 ] as const;
+export const DEFAULT_IDLE_COMPACTION_MIN_TOKENS = 200_000;
+
 const InstanceIdleCompaction = Schema.Literals(
   INSTANCE_IDLE_COMPACTION_MODES.map((mode) => mode.value),
 );
@@ -863,7 +866,7 @@ export const ClaudeSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Compact idle threads",
         description:
-          "When to compact an idle thread over 200,000 tokens: after you return, just before its prompt cache expires, or never. Overrides the default in Providers > Advanced; before the cache expires follows its waiting or all threads choice.",
+          "Overrides idle compaction timing for this Claude provider. The minimum token count and waiting or all threads choice come from Providers > Advanced.",
         providerSettingsForm: {
           control: "select",
           options: INSTANCE_IDLE_COMPACTION_MODES,
@@ -1498,6 +1501,7 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
   idleCompaction: Schema.optionalKey(IdleCompactionMode),
+  idleCompactionMinTokens: Schema.optionalKey(PositiveInt),
   /**
    * Before the cache expires, compact only threads that will resume. Absent on servers without
    * it, so clients can hide its choice; read through `smartIdleCompactionOf`.
@@ -1658,7 +1662,9 @@ export const ServerSettings = Schema.Struct({
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
-export const DEFAULT_SERVER_SETTINGS: ServerSettings = Schema.decodeSync(ServerSettings)({});
+export const DEFAULT_SERVER_SETTINGS: ServerSettings = Schema.decodeSync(ServerSettings)({
+  idleCompactionMinTokens: DEFAULT_IDLE_COMPACTION_MIN_TOKENS,
+});
 
 export const providerInstanceConfigEnabledFlag = (config: unknown): boolean | undefined => {
   if (config === null || typeof config !== "object" || Array.isArray(config)) {
@@ -1752,9 +1758,10 @@ export const smartIdleCompactionOf = (settings: Pick<ServerSettings, "smartIdleC
 export const compactSnoozedThreadsOf = (settings: Pick<ServerSettings, "compactSnoozedThreads">) =>
   settings.compactSnoozedThreads ?? true;
 
-/** Fills the Smart idle compaction switches in, which tells clients this server has them. */
+/** Advertise the idle compaction options supported by this server, even at their defaults. */
 export const withSmartIdleCompaction = <S extends ServerSettings>(settings: S): S => ({
   ...settings,
+  idleCompactionMinTokens: settings.idleCompactionMinTokens ?? DEFAULT_IDLE_COMPACTION_MIN_TOKENS,
   smartIdleCompaction: smartIdleCompactionOf(settings),
   compactSnoozedThreads: compactSnoozedThreadsOf(settings),
 });
@@ -1984,6 +1991,7 @@ export const ServerSettingsPatch = Schema.Struct({
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   compactIdleThreads: Schema.optionalKey(LegacyCompactIdleThreads),
   idleCompaction: Schema.optionalKey(IdleCompactionMode),
+  idleCompactionMinTokens: Schema.optionalKey(PositiveInt),
   smartIdleCompaction: Schema.optionalKey(Schema.Boolean),
   compactSnoozedThreads: Schema.optionalKey(Schema.Boolean),
   sidebarAutoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),

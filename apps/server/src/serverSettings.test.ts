@@ -302,6 +302,26 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       const settings = yield* service.getSettings;
       assert.equal(settings.idleCompaction, "onReturn");
       assert.strictEqual(settings.compactIdleThreads, false);
+      assert.equal(settings.idleCompactionMinTokens, 200_000);
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect("saves the minimum context for idle compaction", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+
+      yield* service.updateSettings({ idleCompactionMinTokens: 100_000 });
+
+      const settings = yield* service.getSettings;
+      assert.equal(settings.idleCompactionMinTokens, 100_000);
+      const persisted = JSON.parse(yield* fs.readFileString(config.settingsPath));
+      assert.equal(persisted.idleCompactionMinTokens, 100_000);
+
+      yield* service.updateSettings({ idleCompactionMinTokens: 200_000 });
+      const reset = JSON.parse(yield* fs.readFileString(config.settingsPath));
+      assert.isFalse(Object.hasOwn(reset, "idleCompactionMinTokens"));
     }).pipe(Effect.provide(layerServerSettings())),
   );
 

@@ -143,6 +143,7 @@ export const make = Effect.gen(function* () {
             task.threadId === threadId && task.enabled && task.blockedByPolicy === undefined,
         );
         const window = idleCompactionWindow(records, nowMs, {
+          minTokens: current.idleCompactionMinTokens,
           compactSnoozed: compactSnoozedThreadsOf(current),
           scheduledWakesMs: wakes.flatMap((task) =>
             task.nextRunAt === null ? [] : [Date.parse(task.nextRunAt)],

@@ -14,6 +14,7 @@ import {
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
 import {
+  DEFAULT_IDLE_COMPACTION_MIN_TOKENS,
   DEFAULT_UNIFIED_SETTINGS,
   type DiffLayout,
   MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
@@ -1824,6 +1825,10 @@ function ScopedCompactIdleThreadsRow() {
   return (
     <>
       <IdleCompactionModeRow idleCompaction={idleCompaction} />
+      {targets.length > 0 &&
+      targets.every((target) => target.settings.idleCompactionMinTokens !== undefined) ? (
+        <IdleCompactionMinTokensRow />
+      ) : null}
       {/* A Claude provider override can compact before the cache expires while the global
           choice does not, so the dropdown cannot carry Smart for it. */}
       {idleCompaction.smartSwitch ? (
@@ -1872,6 +1877,58 @@ function ScopedCompactIdleThreadsRow() {
   );
 }
 
+function IdleCompactionMinTokensRow() {
+  const gt = useGT();
+  const { scope } = useSettingsScope();
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const mixed = useScopedSettingsMixed(["idleCompactionMinTokens"]);
+  const value = settings.idleCompactionMinTokens ?? DEFAULT_IDLE_COMPACTION_MIN_TOKENS;
+  const label = gt("Minimum tokens for idle compaction");
+  const canReset = scope.kind === "environment" || scope.kind === "all";
+
+  return (
+    <SettingsRow
+      serverScoped
+      title={label}
+      description={gt(
+        "Minimum Claude context size for compaction before the prompt cache expires.",
+      )}
+      settingKeys={["idleCompactionMinTokens"]}
+      resetAction={
+        canReset && (mixed || value !== DEFAULT_IDLE_COMPACTION_MIN_TOKENS) ? (
+          <SettingResetButton
+            ariaLabel={gt("Reset minimum tokens for idle compaction to default")}
+            onClick={() =>
+              updateSettings({ idleCompactionMinTokens: DEFAULT_IDLE_COMPACTION_MIN_TOKENS })
+            }
+          />
+        ) : null
+      }
+      control={
+        <div className="w-full sm:w-32">
+          <DraftInput
+            size="sm"
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={Number.MAX_SAFE_INTEGER}
+            aria-label={label}
+            value={mixed ? "" : String(value)}
+            placeholder={mixed ? gt("Mixed") : undefined}
+            onCommit={(next) => {
+              const tokens = Number(next);
+              if (Number.isSafeInteger(tokens) && tokens > 0) {
+                updateSettings({ idleCompactionMinTokens: tokens });
+              }
+            }}
+          />
+        </div>
+      }
+    />
+  );
+}
+
 function IdleCompactionModeRow({
   idleCompaction,
 }: {
@@ -1901,7 +1958,7 @@ function IdleCompactionModeRow({
       description={
         smartAvailable
           ? gt(
-              "When to compact an idle Claude thread over 200K tokens. {waitingThreadsHelp} Threads and providers can override this.",
+              "When to compact an idle Claude thread. {waitingThreadsHelp} Threads and providers can override this.",
               { waitingThreadsHelp: messages(WAITING_THREADS_HELP) },
             )
           : gt(
