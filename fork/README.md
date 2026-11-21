@@ -771,7 +771,7 @@ the Actions tab, which syncs immediately.
    (`sync/candidate` into `upstream-main`) instead. Ship one by running
    **Fork sync** with `mode=promote` and `candidate_sha=<full reviewed SHA>`;
    promotion fails if `sync/candidate` changed since review. Merging the PR does nothing.
-   A candidate is reviewed locally by a Codex subagent: the resolver's own review in `T3-RESOLVER.md` step 7, or `delegate_task` to Sol at `xhigh` when you take a sync over. Codex's GitHub code review also reviews these PRs when automatic review is on for this repository in ChatGPT's Codex settings. That draws on the plan's Code Review usage, which is separate from its other Codex usage and can run out; Codex ignores `@codex` comments from the workflow's bot.
+   A candidate is reviewed locally by a Codex subagent: the resolver's own review in `T3-RESOLVER.md` step 7, or `delegate_task` to Sol at `xhigh` when you take a sync over. Codex's GitHub code review also reviews these PRs when automatic review is on for this repository in ChatGPT's Codex settings. That draws on the plan's Code Review usage, which is separate from its other Codex usage and can run out. It is a second look: when that usage is used up, skip it and go on with the local review alone, without waiting or asking; Codex ignores `@codex` comments from the workflow's bot.
 
 Workflow modes are `sync` (default, including the watchdog's), `resume` (the resolver
 dispatches with a full `candidate_sha` and numeric `request_run_id`), and
@@ -806,7 +806,7 @@ A fix to the fork's workflows has to land on `main`, because a sync's checks run
 
 1. Commit only under `.github/workflows/**`, `.github/actions/**` and `fork/**`, which starts no desktop release, and leave out `fork-android.yml` and `fork/mobile/**`, which start an Android build. Validate it as tooling (_Adding a change_, step 5) and push to `main`; `check-sync-request.sh` exiting 3 is expected.
 2. Merge the new `origin/main` into the candidate with a plain merge commit. Don't rebase it or start a fresh sync, which can pick a newer nightly and bring every conflict back. Confirm the merge adds only your commit's changes and still contains the request's upstream commit, then fast-forward `sync/candidate`.
-3. Check that SHA with `gh workflow run fork-pr-checks.yml -R Alb11747/t3code -f ref=<sha>`. If you changed more than workflow files, get a local Codex review of your commits (`delegate_task` to Sol at `xhigh`); you may also comment `@codex review` on the review PR as the owner, but don't wait on it when Code Review usage is used up.
+3. Check that SHA with `gh workflow run fork-pr-checks.yml -R Alb11747/t3code -f ref=<sha>`. If you changed more than workflow files, get a local Codex review of your commits (`delegate_task` to Sol at `xhigh`); you may also comment `@codex review` on the review PR as the owner, but skip it when Code Review usage is used up.
 4. Promotion verifies only the ref and ancestry, so confirm yourself that every job in that run passed and any review finding is resolved. Then run `gh workflow run fork-sync.yml -R Alb11747/t3code -f mode=promote -f candidate_sha=<sha>`. Promote through the workflow rather than pushing the candidate to `main`.
 5. Comment on the issue with what you changed and why.
 

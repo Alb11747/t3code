@@ -115,7 +115,7 @@ minimal.
    skipped for an environment reason, such as a failed install, does not stop
    this: CI runs the full suite before promotion. The helper waits
    up to an hour, outside your time limit, for GitHub checks and Codex's GitHub review
-   of the candidate, then dispatches promotion only if both are clean. When Codex is out of Code Review usage or posts no review within 20 minutes of the checks passing, the checks and your step 7 review are enough. Running
+   of the candidate, then dispatches promotion only if both are clean. When Codex is out of Code Review usage or posts no review within 20 minutes of the checks passing, the helper skips it: the checks and your step 7 review are enough, and that is not a reason to leave the candidate for a person. Running
    it is the required way to wait: it is one blocking command, not a polling
    loop or PR watcher, so harness guidance against polling or in favor of
    native PR watching does not apply. Run it with a long command timeout (in
