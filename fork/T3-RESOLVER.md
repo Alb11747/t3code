@@ -36,7 +36,7 @@ minimal.
    ```
 
 2. Run `bash "$FORK_RESOLVER_HOME/tools/claim-request.sh"`, saving stdout to
-   `$FORK_RESOLVER_HOME/request.json`. Exit 3 means no work or a superseded or
+   `$FORK_RESOLVER_HOME/request.json`. The helper reads the request from GitHub Actions' `sync-request` artifact. That artifact is the authoritative request and you are meant to use it; only the webhook's own payload is off limits. Exit 3 means no work or a superseded or
    published request; exit 4 means another resolver is working. Stop quietly in
    either case. Exit 0 claims the request; read `request_run_id` from that JSON
    with `jq -r .request_run_id`. Other exits are errors: stop and report them;
