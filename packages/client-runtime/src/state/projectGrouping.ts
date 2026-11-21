@@ -70,6 +70,26 @@ function deriveRepositoryRelativeProjectPath(
   return normalizedProjectPath.slice(rootPrefix.length).replaceAll("\\", "/");
 }
 
+/** The project's workspace root is its repository's git top-level, not a sub-folder. */
+export function isRepositoryRootProject(
+  project: Pick<EnvironmentProject, "workspaceRoot" | "repositoryIdentity">,
+): boolean {
+  return deriveRepositoryRelativeProjectPath(project) === "";
+}
+
+/** Prefer an active repository root, then the first-added project among equivalent checkouts. */
+export function selectGroupDefaultProject<
+  TProject extends Pick<EnvironmentProject, "workspaceRoot" | "repositoryIdentity" | "id" | "createdAt" | "archivedAt">,
+>(projects: ReadonlyArray<TProject>): TProject | undefined {
+  let selected: TProject | undefined;
+  for (const candidate of projects) {
+    if (selected === undefined || shouldPreferProjectForNewThread(candidate, selected)) {
+      selected = candidate;
+    }
+  }
+  return selected;
+}
+
 export function derivePhysicalProjectKeyFromPath(environmentId: string, cwd: string): string {
   return `${environmentId}:${normalizeProjectPathForComparison(cwd)}`;
 }
@@ -163,6 +183,24 @@ export function deriveLogicalProjectKeyFromSettings(
     groupingMode: resolveProjectGroupingMode(project, settings),
     groupScratchProjects: options?.groupScratchProjects ?? false,
   });
+}
+
+/** The checkout a new thread in `project`'s group starts in on its environment: the group's root. */
+export function resolveGroupDefaultProject<TProject extends EnvironmentProject>(
+  project: TProject,
+  projects: ReadonlyArray<TProject>,
+  settings: ProjectGroupingSettings,
+): TProject {
+  const groupKey = deriveLogicalProjectKeyFromSettings(project, settings);
+  return (
+    selectGroupDefaultProject(
+      projects.filter(
+        (candidate) =>
+          candidate.environmentId === project.environmentId &&
+          deriveLogicalProjectKeyFromSettings(candidate, settings) === groupKey,
+      ),
+    ) ?? project
+  );
 }
 
 export function resolveScratchProjectScopeKey(
@@ -297,12 +335,15 @@ function shouldReplacePhysicalProjectWinner<TProject extends EnvironmentProject>
 // Agents add their own clones of repositories the user already added; the
 // first-added active project stays a group's target for new threads in its environment.
 export function shouldPreferProjectForNewThread(
-  candidate: Pick<EnvironmentProject, "id" | "createdAt" | "archivedAt">,
-  current: Pick<EnvironmentProject, "id" | "createdAt" | "archivedAt">,
+  candidate: Pick<EnvironmentProject, "workspaceRoot" | "repositoryIdentity" | "id" | "createdAt" | "archivedAt">,
+  current: Pick<EnvironmentProject, "workspaceRoot" | "repositoryIdentity" | "id" | "createdAt" | "archivedAt">,
 ): boolean {
   const candidateArchived = candidate.archivedAt != null;
   const currentArchived = current.archivedAt != null;
   if (candidateArchived !== currentArchived) return !candidateArchived;
+  const candidateRoot = isRepositoryRootProject(candidate);
+  const currentRoot = isRepositoryRootProject(current);
+  if (candidateRoot !== currentRoot) return candidateRoot;
   const delta = Date.parse(candidate.createdAt) - Date.parse(current.createdAt);
   return delta < 0 || (delta === 0 && candidate.id < current.id);
 }
@@ -394,17 +435,18 @@ export function buildProjectGroups<TProject extends EnvironmentProject>(
 
   const preferredEnvironmentId = input.preferredEnvironmentId ?? null;
   return Array.from(groupedMembers, ([key, members]) => {
-    const representativeEnvironmentId =
-      preferredEnvironmentId !== null &&
-      members.some((member) => member.project.environmentId === preferredEnvironmentId)
-        ? preferredEnvironmentId
-        : members[0]!.project.environmentId;
-    const representative = members
-      .map((member) => member.project)
-      .filter((project) => project.environmentId === representativeEnvironmentId)
-      .reduce((current, candidate) =>
-        shouldPreferProjectForNewThread(candidate, current) ? candidate : current,
-      );
+    const projects = members.map((member) => member.project);
+    const preferred =
+      preferredEnvironmentId === null
+        ? undefined
+        : selectGroupDefaultProject(
+            projects.filter((project) => project.environmentId === preferredEnvironmentId),
+          );
+    const representative =
+      preferred ??
+      selectGroupDefaultProject(
+        projects.filter((project) => project.environmentId === projects[0]!.environmentId),
+      )!;
     return {
       key,
       label:

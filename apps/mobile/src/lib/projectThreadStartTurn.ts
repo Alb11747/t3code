@@ -37,6 +37,8 @@ export interface ProjectThreadStartTurnSpec {
   readonly branch: string | null;
   readonly worktreePath: string | null;
   readonly startFromOrigin: boolean;
+  /** Tracked repositories a new worktree takes, by path; absent leaves the choice to the server. */
+  readonly worktreeRepositories?: ReadonlyArray<string>;
   readonly worktreeBranchName: string;
   readonly accountChoice?: ThreadAccountChoice;
 }
@@ -78,9 +80,13 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
         ? {
             prepareWorktree: {
               projectCwd: spec.projectCwd,
-              baseBranch: spec.branch!,
+              // The launch needs a base ref; the server ignores it for a plain project folder.
+              baseBranch: spec.branch ?? "HEAD",
               branch: spec.worktreeBranchName,
               ...(spec.startFromOrigin ? { startFromOrigin: true } : {}),
+              ...(spec.worktreeRepositories === undefined
+                ? {}
+                : { repositories: spec.worktreeRepositories.map((path) => ({ path })) }),
             },
             runSetupScript: true,
           }

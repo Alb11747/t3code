@@ -671,6 +671,8 @@ export const make = Effect.gen(function* () {
     options?: {
       readonly refreshUpstream?: boolean;
       readonly policyCwds?: ReadonlyArray<string>;
+      /** Refs seen by this caller's last local read; skips the re-read while they hold. */
+      readonly refsAtLocalRead?: Ref.Ref<string | null>;
     },
   ) {
     return yield* withRemoteWriteLock(
@@ -681,18 +683,27 @@ export const make = Effect.gen(function* () {
           options?.refreshUpstream !== false &&
           (yield* isAutoPullEnabled(options?.policyCwds ?? [cwd]));
         // Base refs and merge bases can move without changing divergence counts.
-        const local = yield* refreshLocalStatusCore(cwd).pipe(
-          Effect.catch((error) =>
-            canAutoPull(remoteRead?.value ?? null, autoPullEnabled)
-              ? Effect.logWarning("Automatic project pull guard scan failed", {
-                  cwdLength: cwd.length,
-                  errorTag: error._tag,
-                }).pipe(Effect.as(null))
-              : Effect.fail(error),
-          ),
-        );
-        const pulled = yield* maybeAutoPull(cwd, remoteRead, autoPullEnabled, local);
-        if (pulled !== null) return pulled.remote;
+        const needsPullGuard = canAutoPull(remoteRead?.value ?? null, autoPullEnabled);
+        const refsAtLocalRead = options?.refsAtLocalRead;
+        const refs = refsAtLocalRead === undefined ? null : yield* workflow.readRefSnapshot(cwd);
+        if (needsPullGuard || refsAtLocalRead === undefined || refs === null || refs !== (yield* Ref.get(refsAtLocalRead))) {
+          if (refsAtLocalRead !== undefined) yield* Ref.set(refsAtLocalRead, null);
+          const local = yield* refreshLocalStatusCore(cwd).pipe(
+            Effect.catch((error) =>
+              needsPullGuard
+                ? Effect.logWarning("Automatic project pull guard scan failed", {
+                    cwdLength: cwd.length,
+                    errorTag: error._tag,
+                  }).pipe(Effect.as(null))
+                : Effect.fail(error),
+            ),
+          );
+          if (local !== null && refsAtLocalRead !== undefined) {
+            yield* Ref.set(refsAtLocalRead, refs);
+          }
+          const pulled = yield* maybeAutoPull(cwd, remoteRead, autoPullEnabled, local);
+          if (pulled !== null) return pulled.remote;
+        }
         return yield* updateCachedRemoteStatus(cwd, remoteRead, { publish: true });
       }),
     );
@@ -785,6 +796,7 @@ export const make = Effect.gen(function* () {
   ) {
     const consecutiveFailuresRef = yield* Ref.make(0);
     const needsInitialRefreshRef = yield* Ref.make(refreshImmediately);
+    const refsAtLocalReadRef = yield* Ref.make<string | null>(null);
     const refreshRemoteStatusIfEnabled = Effect.gen(function* () {
       const configuredInterval = yield* automaticFetchInterval;
       const activeInterval = Duration.isZero(configuredInterval)
@@ -814,6 +826,7 @@ export const make = Effect.gen(function* () {
       const exit = yield* refreshRemoteStatus(cwd, {
         refreshUpstream: !Duration.isZero(configuredInterval),
         policyCwds: [...demandCwds.keys()],
+        refsAtLocalRead: refsAtLocalReadRef,
       }).pipe(Effect.exit);
       if (Exit.isSuccess(exit)) {
         yield* Ref.set(needsInitialRefreshRef, false);
