@@ -184,6 +184,13 @@ export const ProviderAdapterV2Event = Schema.Union([
     driver: ProviderDriverKind,
     threadId: Schema.optional(ThreadId),
     runtimeRequest: OrchestrationV2RuntimeRequest,
+    /** Live callbacks can arrive or close independently of their native turn subscription. */
+    artifacts: Schema.optional(
+      Schema.Struct({
+        node: OrchestrationV2ExecutionNode,
+        turnItem: OrchestrationV2TurnItem,
+      }),
+    ),
   }),
   Schema.Struct({
     type: Schema.Literal("plan.updated"),

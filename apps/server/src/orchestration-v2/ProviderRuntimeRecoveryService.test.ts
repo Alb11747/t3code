@@ -26,8 +26,11 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
-it.effect("expires orphaned runtime requests before command readiness", () => {
+it.effect("expires orphaned approvals from ended runs before command readiness", () => {
   const threadId = ThreadId.make("thread_recovery_requests");
+  const requestId = RuntimeRequestId.make("request_orphaned");
+  const nodeId = NodeId.make("node_orphaned");
+  const runId = RunId.make("run_ended");
   let committedInput: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | null =
     null;
   const committed = vi.fn(
@@ -40,16 +43,18 @@ it.effect("expires orphaned runtime requests before command readiness", () => {
     thread: { id: threadId },
     runtimeRequests: [
       {
-        id: RuntimeRequestId.make("request_orphaned"),
-        nodeId: NodeId.make("node_orphaned"),
+        id: requestId,
+        nodeId,
+        kind: "command",
         status: "pending",
-        responseCapability: { type: "not_resumable", reason: "old process" },
+        responseCapability: { type: "live" },
       },
     ],
     providerSessions: [],
     providerThreads: [],
     runs: [],
-    nodes: [],
+    nodes: [{ id: nodeId, runId, status: "waiting" }],
+    turnItems: [{ type: "approval_request", requestId, nodeId, runId, status: "waiting" }],
   } as unknown as OrchestrationV2ThreadProjection;
   const layer = ProviderRuntimeRecovery.layer.pipe(
     Layer.provide(ServerSettings.layerTest()),
@@ -80,6 +85,16 @@ it.effect("expires orphaned runtime requests before command readiness", () => {
       assert.equal(command.events[0].payload.status, "expired");
       assert.equal(command.events[0].payload.responseCapability.type, "not_resumable");
     }
+    assert.isTrue(
+      command.events.some(
+        (event) => event.type === "node.updated" && event.payload.status === "cancelled",
+      ),
+    );
+    assert.isTrue(
+      command.events.some(
+        (event) => event.type === "turn-item.updated" && event.payload.status === "cancelled",
+      ),
+    );
   }).pipe(Effect.provide(layer));
 });
 

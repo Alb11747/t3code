@@ -586,15 +586,35 @@ export const layer: Layer.Layer<
                   nodeId: input.event.turnItem.nodeId,
                 }),
               ];
-            case "runtime_request.updated":
+            case "runtime_request.updated": {
+              const { artifacts, runtimeRequest } = input.event;
+              const threadId = artifacts?.node.threadId ?? input.event.threadId ?? input.threadId;
+              const request = yield* makeDomainEvent(input, {
+                type: "runtime-request.updated",
+                threadId,
+                payload: runtimeRequest,
+                nodeId: runtimeRequest.nodeId,
+                ...(artifacts === undefined ? {} : { runId: artifacts.node.runId }),
+              });
+              if (artifacts === undefined) return [request];
               return [
                 yield* makeDomainEvent(input, {
-                  type: "runtime-request.updated",
-                  ...(input.event.threadId === undefined ? {} : { threadId: input.event.threadId }),
-                  payload: input.event.runtimeRequest,
-                  nodeId: input.event.runtimeRequest.nodeId,
+                  type: "node.updated",
+                  threadId,
+                  payload: artifacts.node,
+                  runId: artifacts.node.runId,
+                  nodeId: artifacts.node.id,
                 }),
+                yield* makeDomainEvent(input, {
+                  type: "turn-item.updated",
+                  threadId,
+                  payload: artifacts.turnItem,
+                  runId: artifacts.turnItem.runId,
+                  nodeId: artifacts.turnItem.nodeId,
+                }),
+                request,
               ];
+            }
             case "plan.updated": {
               const occurredAt = yield* DateTime.now;
               const plan = input.event.plan;
@@ -748,6 +768,10 @@ export const layer: Layer.Layer<
             if (events.length === 0) {
               return [];
             }
+            const runtimeRequestWrite =
+              input.event.type === "runtime_request.updated" && input.event.artifacts !== undefined
+                ? "callback"
+                : "cancellation";
             const mapWriteError = (cause: unknown) =>
               new ProviderEventPublishError({
                 providerSessionId: input.providerSessionId,
@@ -757,7 +781,7 @@ export const layer: Layer.Layer<
             if (input.writeIfProviderThreadOwner !== undefined) {
               const ownerResult = yield* eventSink
                 .writeIfProviderThreadOwner({
-                  guardPendingUserInputCancellations: true,
+                  runtimeRequestWrite,
                   ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
                   ...input.writeIfProviderThreadOwner,
                   events,
@@ -768,7 +792,7 @@ export const layer: Layer.Layer<
             if (input.writeIfRunCurrent === undefined) {
               return yield* eventSink
                 .write({
-                  guardPendingUserInputCancellations: true,
+                  runtimeRequestWrite,
                   ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
                   events,
                 })
@@ -776,7 +800,7 @@ export const layer: Layer.Layer<
             }
             const result = yield* eventSink
               .writeIfRunCurrent({
-                guardPendingUserInputCancellations: true,
+                runtimeRequestWrite,
                 ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
                 threadId: input.threadId,
                 ...input.writeIfRunCurrent,

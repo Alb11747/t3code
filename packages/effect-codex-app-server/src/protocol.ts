@@ -1,4 +1,5 @@
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -21,6 +22,11 @@ const MAX_BUFFERED_RAW_MESSAGES = 32;
 // Bound JSONL lines before joining and parsing; the LF delimiter is excluded.
 const MAX_INCOMING_MESSAGE_BYTES = 128 * 1024 * 1024;
 const EXIT_STATUS_GRACE = "250 millis";
+
+export const WasServerRequestWithdrawn = Context.Reference<Effect.Effect<boolean>>(
+  "effect-codex-app-server/protocol/WasServerRequestWithdrawn",
+  { defaultValue: () => Effect.succeed(false) },
+);
 
 export interface CodexAppServerProtocolLogEvent {
   readonly direction: "incoming" | "outgoing";
@@ -178,6 +184,7 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
     const terminationFailure = yield* Ref.make(Option.none<CodexError.CodexAppServerError>());
     const terminationSignal = yield* Deferred.make<void>();
     const activeRequestHandlers = yield* Ref.make(0);
+    let withdrawingRequestId: string | number | undefined;
     const requestHandlers = yield* FiberMap.make<string | number>().pipe(
       Scope.provide(requestHandlerScope),
     );
@@ -348,6 +355,10 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
               }
 
               return Effect.suspend(() => handler(request)).pipe(
+                Effect.provideService(
+                  WasServerRequestWithdrawn,
+                  Effect.sync(() => withdrawingRequestId === request.id),
+                ),
                 // Adapter handlers end in Effect.orDie; Codex waits for an answer regardless.
                 Effect.catchDefect(() =>
                   Effect.logError("Codex request handler failed").pipe(
@@ -392,12 +403,26 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
       );
 
     // Codex settles requests itself when their turn ends; a handler still waiting would hold its slot.
-    const releaseResolvedRequest = (notification: CodexAppServerIncomingNotification) =>
-      notification.method === "serverRequest/resolved" &&
-      isObject(notification.params) &&
-      isJsonRpcId(notification.params.requestId)
-        ? FiberMap.remove(requestHandlers, notification.params.requestId)
-        : Effect.void;
+    const releaseResolvedRequest = (notification: CodexAppServerIncomingNotification) => {
+      if (
+        notification.method !== "serverRequest/resolved" ||
+        !isObject(notification.params) ||
+        !isJsonRpcId(notification.params.requestId)
+      )
+        return Effect.void;
+
+      const { requestId } = notification.params;
+      return Effect.sync(() => {
+        withdrawingRequestId = requestId;
+      }).pipe(
+        Effect.andThen(FiberMap.remove(requestHandlers, requestId)),
+        Effect.ensuring(
+          Effect.sync(() => {
+            withdrawingRequestId = undefined;
+          }),
+        ),
+      );
+    };
 
     const handleNotification = (notification: CodexAppServerIncomingNotification) =>
       releaseResolvedRequest(notification).pipe(

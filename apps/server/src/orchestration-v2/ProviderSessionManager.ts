@@ -374,7 +374,11 @@ function sessionScopedArtifactThreadId(
         ? (event.providerThread.appThreadId ?? undefined)
         : undefined;
     case "runtime_request.updated":
-      return event.runtimeRequest.providerTurnId === null ? event.threadId : undefined;
+      return event.artifacts !== undefined && event.runtimeRequest.status === "cancelled"
+        ? event.artifacts.node.threadId
+        : event.runtimeRequest.providerTurnId === null
+          ? event.threadId
+          : undefined;
     case "node.updated":
       return event.node.runId === null && event.node.runtimeRequestId !== null
         ? event.node.threadId

@@ -105,3 +105,5 @@ revert a patch. See `fork/README.md` for how to add or drop an entry.
 - `feat(server): delegate tasks to another local project` lets an agent delegate into a registered project on the same server and receive the child’s completion wake. Shared children use the target root and worktrees start at its cached primary-remote default. Issue: https://github.com/pingdotgg/t3code/issues/30329. PR: https://github.com/pingdotgg/t3code/pull/28859
 
 - `fix(server): protect running delegates during project removal` names the active cross-project child to stop and prevents queued or nested work from starting across owner removal. Issue: https://github.com/pingdotgg/t3code/issues/30329. Related PR: https://github.com/pingdotgg/t3code/pull/28859
+
+- `fix(server): close Codex approvals when the provider withdraws them` closes the exact request and its card even after the native turn ends. T3 records whichever commits first, the withdrawal or the user's response. Runtime recovery also closes cards and nodes for orphaned requests at startup or shutdown. Issue: https://github.com/pingdotgg/t3code/issues/21935. PR: none yet

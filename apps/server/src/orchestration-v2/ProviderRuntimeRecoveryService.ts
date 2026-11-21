@@ -863,12 +863,16 @@ export const make = Effect.gen(function* () {
         });
       }
       const recoveredNonterminalRunIds = new Set(runs.map((run) => run.id));
+      const closedRequestIds = new Set(requests.map((request) => request.id));
       const cancelledStaleNodeIds = new Set<string>();
       for (const item of projection.turnItems ?? []) {
         if (item.runId !== null && recoveredNonterminalRunIds.has(item.runId)) {
           continue;
         }
-        if (!isBackgroundCapableTurnItemType(item.type)) {
+        const hasClosedRequest =
+          (item.type === "approval_request" || item.type === "user_input_request") &&
+          closedRequestIds.has(item.requestId);
+        if (!hasClosedRequest && !isBackgroundCapableTurnItemType(item.type)) {
           continue;
         }
         if (!isNonterminalTurnItemStatus(item.status) || isAppOwnedDelegationItem(item)) {

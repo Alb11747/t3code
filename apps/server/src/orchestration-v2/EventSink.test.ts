@@ -2,9 +2,12 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   EventId,
+  NodeId,
   ProjectId,
   ProviderInstanceId,
+  ProviderSessionId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   type OrchestrationV2AppThread,
 } from "@t3tools/contracts";
@@ -20,6 +23,106 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 const layer = EventSink.layer.pipe(
   Layer.provideMerge(Layer.merge(EventStore.layer, ProjectionStore.layer)),
   Layer.provide(Sqlite.layerMemory),
+);
+
+it.effect("rejects a planned approval response after the request closes", () =>
+  Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("approval-thread");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const nodeId = NodeId.make("approval-node");
+    const requestId = RuntimeRequestId.make("approval-request");
+    const request = {
+      id: requestId,
+      nodeId,
+      providerTurnId: null,
+      nativeRequestRef: null,
+      kind: "command",
+      status: "pending",
+      responseCapability: {
+        type: "live",
+        providerSessionId: ProviderSessionId.make("approval-session"),
+      },
+      createdAt: now,
+      resolvedAt: null,
+    } as const;
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("approval-thread-created"),
+          type: "thread.created",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: threadId,
+            projectId: ProjectId.make("project"),
+            title: "Approval",
+            createdBy: "user",
+            creationSource: "web",
+            providerInstanceId,
+            modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
+            runtimeMode: "auto-accept-edits",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            activeProviderThreadId: null,
+            lineage: { rootThreadId: threadId, parentThreadId: null, relationshipToParent: null },
+            forkedFrom: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            deletedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            snoozedUntil: null,
+            snoozedAt: null,
+            lastVisitedAt: null,
+          },
+        },
+        {
+          id: EventId.make("approval-pending"),
+          type: "runtime-request.updated",
+          threadId,
+          occurredAt: now,
+          payload: request,
+        },
+      ],
+    });
+    const response = {
+      commandId: CommandId.make("approve"),
+      commandType: "runtime-request.respond",
+      threadId,
+      acceptedAt: now,
+      effects: [],
+      events: [
+        {
+          id: EventId.make("approval-response"),
+          type: "runtime-request.updated",
+          threadId,
+          occurredAt: now,
+          payload: { ...request, status: "resolved", resolvedAt: now, decision: "accept" },
+        },
+      ],
+    } as const;
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("approval-withdrawn"),
+          type: "runtime-request.updated",
+          threadId,
+          occurredAt: now,
+          payload: { ...request, status: "cancelled", resolvedAt: now },
+        },
+      ],
+    });
+    const rejected = yield* sink.commitCommand(response);
+    assert.equal(rejected.receipt.status, "rejected");
+    assert.deepEqual(rejected.storedEvents, []);
+    assert.equal((yield* projections.getRuntimeRequest(threadId, requestId))?.status, "cancelled");
+    assert.deepEqual((yield* sink.commitCommand(response)).receipt, rejected.receipt);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("rejects a planned fork whose source was deleted before it committed", () =>

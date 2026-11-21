@@ -19,6 +19,8 @@ import {
 } from "./_internal/shared.ts";
 import { makeChildStdio, makeStderrTail, makeTerminationError } from "./_internal/stdio.ts";
 
+export { WasServerRequestWithdrawn } from "./protocol.ts";
+
 export interface CodexAppServerClientOptions {
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;

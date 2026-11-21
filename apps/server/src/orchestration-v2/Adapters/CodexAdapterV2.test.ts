@@ -1803,13 +1803,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           harness.firstTerminal.pipe(Effect.andThen(Effect.die("MCP approval was not presented"))),
         );
         assert.equal(request.kind, "mcp-elicitation");
-        const approvals = harness.events.flatMap((event) =>
-          event.type === "turn_item.updated" &&
-          event.turnItem.type === "approval_request" &&
-          event.turnItem.requestId === request.id
-            ? [event.turnItem]
-            : [],
-        );
+        const approvals = harness.events.flatMap((event) => {
+          const item =
+            event.type === "runtime_request.updated" ? event.artifacts?.turnItem : undefined;
+          return item?.type === "approval_request" && item.requestId === request.id ? [item] : [];
+        });
         assert.deepEqual(
           approvals.map((approval) => [approval.threadId, approval.appName, approval.prompt]),
           [[harness.threadId, "Google Chrome", "Allow ChatGPT to use Google Chrome?"]],
@@ -1834,6 +1832,97 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ),
         ),
       ),
+  );
+
+  it.effect("closes an approval when Codex withdraws only its callback", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "withdrawn-approval-thread";
+      const nativeTurnId = "withdrawn-approval-turn";
+      const pending = yield* Queue.unbounded<OrchestrationV2RuntimeRequest>();
+      const ready = yield* Deferred.make<void>();
+      const approval = (id: number) => ({
+        type: "emit_inbound" as const,
+        frame: {
+          id,
+          method: "item/commandExecution/requestApproval",
+          params: {
+            threadId: nativeThreadId,
+            turnId: nativeTurnId,
+            itemId: String(id),
+            kind: "command",
+            startedAtMs: 2,
+          },
+        },
+      });
+      const policy = { approvalPolicy: "on-request" } as const;
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({
+          scenario: "withdrawn-command-approval",
+          entries: [
+            ...codexReplayPreamble({
+              nativeThreadId,
+              nativeTurnId,
+              prompt: "work",
+              turnPolicy: policy,
+            }),
+            approval(1),
+            {
+              type: "emit_inbound",
+              label: "withdraw",
+              frame: {
+                method: "serverRequest/resolved",
+                params: { threadId: nativeThreadId, requestId: 1 },
+              },
+            },
+            approval(2),
+            { type: "expect_outbound", frame: { id: 2, result: { decision: "accept" } } },
+          ],
+        }),
+        (event) =>
+          event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending"
+            ? Queue.offer(pending, event.runtimeRequest).pipe(
+                Effect.andThen(Deferred.succeed(ready, undefined)),
+              )
+            : Effect.void,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        (entry) => (entry.label === "withdraw" ? Deferred.await(ready) : Effect.void),
+      );
+      const input = makeCodexTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make("withdrawn-approval-attempt"),
+        text: "work",
+      });
+      yield* harness.runtime.startTurn({
+        ...input,
+        runtimePolicy: { ...input.runtimePolicy, ...policy },
+      });
+      const withdrawn = yield* Queue.take(pending);
+      const live = yield* Queue.take(pending);
+      assert.isTrue(
+        harness.events.some(
+          (event) =>
+            event.type === "runtime_request.updated" &&
+            event.runtimeRequest.id === withdrawn.id &&
+            event.runtimeRequest.status === "cancelled",
+        ),
+      );
+      yield* harness.runtime.respondToRuntimeRequest({ requestId: live.id, decision: "accept" });
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
   );
 
   it.effect.each(["native", "ordinary"] as const)(
@@ -13216,13 +13305,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>,
       request: OrchestrationV2RuntimeRequest,
     ) =>
-      events.flatMap((event) =>
-        event.type === "turn_item.updated" &&
-        event.turnItem.type === "approval_request" &&
-        event.turnItem.requestId === request.id
-          ? [event.turnItem]
-          : [],
-      )[0];
+      events.flatMap((event) => {
+        const item =
+          event.type === "runtime_request.updated" ? event.artifacts?.turnItem : undefined;
+        return item?.type === "approval_request" && item.requestId === request.id ? [item] : [];
+      })[0];
 
     it.effect("answers without waiting for late paths or borrowing another item's paths", () =>
       Effect.gen(function* () {
@@ -13238,19 +13325,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const request = yield* answerNext;
         yield* harness.firstTerminal;
 
-        const items = harness.events.flatMap((event) =>
-          event.type === "turn_item.updated" &&
-          event.turnItem.type === "approval_request" &&
-          event.turnItem.requestId === request.id
-            ? [event.turnItem]
-            : [],
-        );
+        const item = approvalItem(harness.events, request);
         assert.equal(request.nativeRequestRef?.nativeId, "patch-a");
-        assert.isNotEmpty(items);
-        for (const item of items) {
-          assert.equal(item.requestKind, "file-change");
-          assert.isUndefined(item.prompt);
-        }
+        assert.isDefined(item);
+        assert.equal(item.requestKind, "file-change");
+        assert.isUndefined(item.prompt);
         assert.deepEqual(
           harness.terminalEvents().map((event) => event.status),
           ["completed"],

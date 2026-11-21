@@ -604,14 +604,18 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
   it.effect("keeps numeric and string request ids apart when Codex resolves one", () =>
     Effect.gen(function* () {
       const { stdio, input, output } = yield* makeInMemoryStdio();
-      const interrupted: Array<string | number> = [];
+      const interrupted: Array<{ id: string | number; withdrawn: boolean }> = [];
       yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
         stdio,
         onRequest: (request) =>
           request.id === 2
             ? Effect.sync(() => ({ interrupted }))
             : Effect.never.pipe(
-                Effect.onInterrupt(() => Effect.sync(() => interrupted.push(request.id))),
+                Effect.onInterrupt(() =>
+                  Effect.flatten(CodexProtocol.WasServerRequestWithdrawn).pipe(
+                    Effect.map((withdrawn) => interrupted.push({ id: request.id, withdrawn })),
+                  ),
+                ),
               ),
       });
 
@@ -625,7 +629,7 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
 
       assert.deepEqual(yield* decodeJson(yield* Queue.take(output)), {
         id: 2,
-        result: { interrupted: ["1"] },
+        result: { interrupted: [{ id: "1", withdrawn: true }] },
       });
     }),
   );
@@ -634,7 +638,7 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
     Effect.gen(function* () {
       const { stdio, input } = yield* makeInMemoryStdio();
       const approvalStarted = yield* Deferred.make<void>();
-      const approvalInterrupted = yield* Deferred.make<void>();
+      const approvalInterrupted = yield* Deferred.make<boolean>();
       const terminated = yield* Deferred.make<void>();
       yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
         stdio,
@@ -642,7 +646,9 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
           Deferred.succeed(approvalStarted, undefined).pipe(
             Effect.andThen(Effect.never),
             Effect.onInterrupt(() =>
-              Deferred.succeed(approvalInterrupted, undefined).pipe(Effect.asVoid),
+              Effect.flatten(CodexProtocol.WasServerRequestWithdrawn).pipe(
+                Effect.flatMap((withdrawn) => Deferred.succeed(approvalInterrupted, withdrawn)),
+              ),
             ),
           ),
         onTermination: () => Deferred.succeed(terminated, undefined).pipe(Effect.asVoid),
@@ -655,7 +661,7 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
       yield* Deferred.await(approvalStarted);
       yield* Queue.end(input);
 
-      yield* Deferred.await(approvalInterrupted);
+      assert.isFalse(yield* Deferred.await(approvalInterrupted));
       yield* Deferred.await(terminated);
     }),
   );

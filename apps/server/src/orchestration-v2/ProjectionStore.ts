@@ -5765,7 +5765,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   (node.run_id IS NULL AND node.kind = 'root_turn')
                   OR node.node_id IN (
                     SELECT node_id FROM orchestration_v2_projection_runtime_requests
-                    WHERE thread_id = ${threadId} AND status = 'pending' AND kind = 'user_input'
+                    WHERE thread_id = ${threadId} AND status = 'pending'
                   )
                   OR node.run_id IN (
                     SELECT run_id FROM orchestration_v2_projection_runs
@@ -5952,10 +5952,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   )
                   OR item.type IN ('command_execution', 'dynamic_tool', 'subagent')
                   OR (
-                    item.type = 'user_input_request'
+                    item.type IN ('approval_request', 'user_input_request')
                     AND json_extract(item.payload_json, '$.requestId') IN (
                       SELECT runtime_request_id FROM orchestration_v2_projection_runtime_requests
-                      WHERE thread_id = ${threadId} AND status = 'pending' AND kind = 'user_input'
+                      WHERE thread_id = ${threadId} AND status = 'pending'
                     )
                   )
                   OR (

@@ -1309,6 +1309,7 @@ layer("ProviderEventIngestorV2", (it) => {
         });
         const seedEvents: Array<OrchestrationV2DomainEvent> = [threadEvent];
         for (const fixture of fixtures) {
+          if (fixture.key === "approval" && terminal === "control") continue;
           for (const payload of [
             { type: "runtime-request.updated" as const, payload: fixture.request },
             { type: "node.updated" as const, payload: fixture.node },
@@ -1361,6 +1362,12 @@ layer("ProviderEventIngestorV2", (it) => {
         const stored = yield* ingestor.ingestNormalized(input);
         const projection = yield* projectionStore.getThreadProjection(threadId);
         for (const fixture of fixtures) {
+          if (fixture.key === "approval" && terminal === "control") {
+            assert.isFalse(
+              projection.runtimeRequests.some((item) => item.id === fixture.request.id),
+            );
+            continue;
+          }
           const closed = fixture.key === "native" || fixture.key === "unavailable";
           const request = projection.runtimeRequests.find(
             (item) => item.id === fixture.request.id,
@@ -1402,6 +1409,51 @@ layer("ProviderEventIngestorV2", (it) => {
         );
         const repeated = yield* ingestor.ingestNormalized(input);
         assert.isFalse(repeated.some((entry) => entry.event.type === "runtime-request.updated"));
+        const approval = fixtures.find((fixture) => fixture.key === "approval")!;
+        const withdrawal = yield* ingestor.ingestNormalized({
+          providerSessionId,
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+          event: {
+            type: "runtime_request.updated",
+            driver: CODEX_DRIVER,
+            runtimeRequest: { ...approval.request, status: "cancelled", resolvedAt: now },
+            artifacts: {
+              node: { ...approval.node, status: "cancelled", completedAt: now },
+              turnItem: { ...approval.item, status: "cancelled", completedAt: now },
+            },
+          },
+        });
+        assert.deepEqual(
+          withdrawal.map((stored) => stored.event.type),
+          terminal === "control"
+            ? ["runtime-request.updated"]
+            : ["node.updated", "turn-item.updated", "runtime-request.updated"],
+        );
+        const closedApproval = yield* projectionStore.getRuntimeResponseContext(
+          threadId,
+          approval.request.id,
+        );
+        assert.equal(closedApproval.request?.status, "cancelled");
+        if (terminal === "control") {
+          assert.isUndefined(closedApproval.node);
+          assert.isUndefined(closedApproval.item);
+        } else {
+          assert.equal(closedApproval.node?.status, "cancelled");
+          assert.equal(closedApproval.item?.status, "cancelled");
+        }
+        const latePending = yield* ingestor.ingestNormalized({
+          providerSessionId,
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+          event: {
+            type: "runtime_request.updated",
+            driver: CODEX_DRIVER,
+            runtimeRequest: approval.request,
+            artifacts: { node: approval.node, turnItem: approval.item },
+          },
+        });
+        assert.deepEqual(latePending, []);
       }),
   );
 
