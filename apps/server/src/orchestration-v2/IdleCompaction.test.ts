@@ -182,9 +182,15 @@ function records(
 }
 
 describe("idleCompactionWindow", () => {
-  it("skips small contexts, unknown expiry, other providers, switched threads, compactions, and side chats", () => {
+  it("skips unknown expiry, other providers, switched threads, compactions, and side chats", () => {
     const cache = { cacheExpiresInMs: 60 * MINUTE_MS };
-    expect(idleCompactionWindow(records({ ...cache, usedTokens: 199_999 }), NOW_MS)).toBeNull();
+    expect(idleCompactionWindow(records({ ...cache, usedTokens: 1_000 }), NOW_MS)).toMatchObject({
+      usedTokens: 1_000,
+      settled: false,
+    });
+    const settled = records(cache);
+    settled.thread = { ...settled.thread, settledOverride: "settled", settledAt: at() };
+    expect(idleCompactionWindow(settled, NOW_MS)?.settled).toBe(true);
     expect(idleCompactionWindow(records(), NOW_MS)).toBeNull();
     const codex = records(cache);
     codex.providerThreads = [
@@ -225,17 +231,17 @@ describe("idleCompactionWindow", () => {
     expect(idleCompactionWindow(sideChat, NOW_MS)).toBeNull();
   });
 
-  it("resolves the scope from the mode, Smart, and the thread's own setting", () => {
-    expect(idleCompactionScope("beforeCacheExpires", true, null)).toBe("waiting");
-    expect(idleCompactionScope("beforeCacheExpires", false, undefined)).toBe("all");
-    expect(idleCompactionScope("onReturn", true, null)).toBeNull();
-    expect(idleCompactionScope("onReturn", true, true)).toBe("all");
-    expect(idleCompactionScope("beforeCacheExpires", true, false)).toBeNull();
-    expect(idleCompactionScope("off", true, true)).toBeNull();
-    expect(idleCompactionScope("beforeCacheExpires", true, null, true)).toBe("all");
-    expect(idleCompactionScope("onReturn", true, null, true)).toBe("all");
-    expect(idleCompactionScope("beforeCacheExpires", false, false, true)).toBeNull();
-    expect(idleCompactionScope("off", false, null, true)).toBeNull();
+  it("resolves the scope from the mode and the thread's own setting", () => {
+    expect(idleCompactionScope("beforeCacheExpires", null)).toBe("tiers");
+    expect(idleCompactionScope("beforeCacheExpires", undefined)).toBe("tiers");
+    expect(idleCompactionScope("onReturn", null)).toBeNull();
+    expect(idleCompactionScope("onReturn", true)).toBe("forced");
+    expect(idleCompactionScope("beforeCacheExpires", false)).toBeNull();
+    expect(idleCompactionScope("off", true)).toBeNull();
+    expect(idleCompactionScope("beforeCacheExpires", null, true)).toBe("forced");
+    expect(idleCompactionScope("onReturn", null, true)).toBe("forced");
+    expect(idleCompactionScope("beforeCacheExpires", false, true)).toBeNull();
+    expect(idleCompactionScope("off", null, true)).toBeNull();
   });
 
   it("keeps a one-shot mark until a run starts after it", () => {
@@ -275,7 +281,7 @@ describe("idleCompactionWindow", () => {
       waits: { snoozeInMs: 30, compactSnoozed: true },
       compacts: false,
     },
-  ] as const)("Smart compacts a thread with $name: $compacts", ({ waits, compacts }) => {
+  ] as const)("a thread with $name is waiting: $compacts", ({ waits, compacts }) => {
     const data = records({ cacheExpiresInMs: 60 * MINUTE_MS });
     if ("pullRequestWatch" in waits) {
       data.thread = {
@@ -438,36 +444,75 @@ describe("IdleCompactionService", () => {
     { mode: "beforeCacheExpires", driver: "codex", instance: "custom-codex", reads: 0 },
     { mode: "beforeCacheExpires", driver: "claudeAgent", instance: "custom-claude", reads: 1 },
     { mode: "beforeCacheExpires", unconfigured: true, reads: 1 },
-    { mode: "beforeCacheExpires", smart: true, reads: 1, dispatches: 0 },
-    { mode: "beforeCacheExpires", smart: true, projectedWait: true, reads: 1 },
-    { mode: "beforeCacheExpires", usedTokens: 126_067, reads: 1, dispatches: 0 },
+    // Reuse tiers: open threads compact from 150K, waiting from 60K, settled from 300K (as set here).
+    { mode: "beforeCacheExpires", open: false, reads: 1, dispatches: 0 },
+    { mode: "beforeCacheExpires", open: false, projectedWait: true, reads: 1, waitReads: 1 },
+    { mode: "beforeCacheExpires", usedTokens: 126_067, reads: 1, dispatches: 0, waitReads: 1 },
+    { mode: "beforeCacheExpires", usedTokens: 50_000, reads: 1, dispatches: 0, waitReads: 0 },
     {
       mode: "beforeCacheExpires",
-      smart: true,
       projectedWait: true,
       usedTokens: 126_067,
-      minTokens: 126_067,
+      reads: 1,
+      waitReads: 1,
+    },
+    {
+      mode: "beforeCacheExpires",
+      projectedWait: true,
+      waiting: false,
+      reads: 1,
+      dispatches: 0,
+      waitReads: 1,
+    },
+    { mode: "beforeCacheExpires", openMinTokens: 300_000, reads: 1, dispatches: 0 },
+    { mode: "beforeCacheExpires", settled: true, reads: 1, dispatches: 0 },
+    { mode: "beforeCacheExpires", settled: true, usedTokens: 300_000, reads: 1, waitReads: 0 },
+    { mode: "beforeCacheExpires", settled: true, projectedWait: true, reads: 1, waitReads: 1 },
+    {
+      mode: "beforeCacheExpires",
+      settled: true,
+      settledTier: false,
+      usedTokens: 300_000,
+      reads: 1,
+      dispatches: 0,
+    },
+    { mode: "beforeCacheExpires", waiting: false, open: false, settledTier: false, reads: 0 },
+    {
+      mode: "beforeCacheExpires",
+      waiting: false,
+      open: false,
+      settledTier: false,
+      threadOverride: true,
       reads: 1,
     },
-    { mode: "beforeCacheExpires", minTokens: 300_000, reads: 1, dispatches: 0 },
-    { mode: "beforeCacheExpires", smart: true, threadOverride: true, reads: 1 },
+    {
+      mode: "beforeCacheExpires",
+      threadOverride: true,
+      usedTokens: 50_000,
+      reads: 1,
+      dispatches: 0,
+    },
+    { mode: "beforeCacheExpires", open: false, threadOverride: true, reads: 1, waitReads: 0 },
     { mode: "onReturn", threadOverride: true, reads: 1 },
     { mode: "beforeCacheExpires", threadOverride: false, reads: 0 },
     { mode: "off", threadOverride: true, reads: 0 },
-    { mode: "beforeCacheExpires", smart: true, compactOnce: "set", reads: 1 },
+    { mode: "beforeCacheExpires", open: false, compactOnce: "set", reads: 1 },
     { mode: "onReturn", compactOnce: "set", reads: 1 },
-    { mode: "beforeCacheExpires", smart: true, compactOnce: "stale", reads: 1, dispatches: 0 },
+    { mode: "beforeCacheExpires", open: false, compactOnce: "stale", reads: 1, dispatches: 0 },
     { mode: "beforeCacheExpires", threadOverride: false, compactOnce: "set", reads: 0 },
     { mode: "off", compactOnce: "set", reads: 0 },
   ] as const)(
-    "loads history only for eligible idle compaction: $mode/$override/$enabled/$projectDisabled/$instance/$unconfigured/$threadOverride/$compactOnce/$usedTokens/$minTokens",
+    "loads history only for eligible idle compaction: $mode/$override/$enabled/$projectDisabled/$instance/$unconfigured/$threadOverride/$compactOnce/$usedTokens/$settled/$waiting/$open/$settledTier/$openMinTokens",
     (scenario) => {
       const test = {
         override: "default",
         enabled: true,
         projectDisabled: false,
-        smart: false,
         threadOverride: null,
+        settled: false,
+        waiting: true,
+        open: true,
+        settledTier: true,
         ...scenario,
       } as const;
       return Effect.scoped(
@@ -488,6 +533,7 @@ describe("IdleCompactionService", () => {
               providerInstanceId: selectedInstance,
               modelSelection: { ...base.thread.modelSelection, instanceId: selectedInstance },
               compactBeforeCacheExpires: test.threadOverride,
+              ...(test.settled ? { settledOverride: "settled" as const, settledAt: at() } : {}),
               // The run started a minute ago; a stale mark predates it.
               ...("compactOnce" in test
                 ? {
@@ -519,6 +565,7 @@ describe("IdleCompactionService", () => {
             updatedAt: at(),
           };
           let historyReads = 0;
+          let waitReads = 0;
           let dispatches = 0;
           const done = yield* Deferred.make<void>();
           const tracer = Tracer.make({
@@ -552,7 +599,11 @@ describe("IdleCompactionService", () => {
             }),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
               getThread: () => Effect.succeed(data.thread),
-              hasIdleCompactionWait: () => Effect.succeed("projectedWait" in test),
+              hasIdleCompactionWait: () =>
+                Effect.sync(() => {
+                  waitReads++;
+                  return "projectedWait" in test;
+                }),
               getThreadRecords: () =>
                 Effect.sync(() => {
                   historyReads++;
@@ -563,8 +614,12 @@ describe("IdleCompactionService", () => {
               getSettings: Effect.succeed({
                 ...DEFAULT_SERVER_SETTINGS,
                 idleCompaction: test.mode,
-                smartIdleCompaction: test.smart,
-                ...("minTokens" in test ? { idleCompactionMinTokens: test.minTokens } : {}),
+                idleCompactionWaiting: { enabled: test.waiting, minTokens: 60_000 },
+                idleCompactionOpen: {
+                  enabled: test.open,
+                  minTokens: "openMinTokens" in test ? test.openMinTokens : 150_000,
+                },
+                idleCompactionSettled: { enabled: test.settledTier, minTokens: 300_000 },
                 providerInstances:
                   "unconfigured" in test
                     ? {}
@@ -592,6 +647,7 @@ describe("IdleCompactionService", () => {
           }).pipe(Effect.provide(dependencies), Effect.withTracer(tracer));
           expect(historyReads).toBe(test.reads);
           expect(dispatches).toBe("dispatches" in test ? test.dispatches : test.reads);
+          if ("waitReads" in test) expect(waitReads).toBe(test.waitReads);
         }),
       );
     },
@@ -651,9 +707,12 @@ describe("IdleCompactionService", () => {
             ),
         }),
         Layer.mock(ServerSettings.ServerSettingsService)({
+          // Only waiting threads compact, so each dispatch needs the wake under test.
           getSettings: Effect.succeed({
             ...DEFAULT_SERVER_SETTINGS,
             idleCompaction: "beforeCacheExpires",
+            idleCompactionOpen: { enabled: false, minTokens: 150_000 },
+            idleCompactionSettled: { enabled: false, minTokens: 300_000 },
           }),
         }),
       );
@@ -665,25 +724,27 @@ describe("IdleCompactionService", () => {
       return dispatched;
     });
 
-  it.effect("arms Smart compaction when a thread is snoozed after its run completed", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const base = records();
-        const dispatched = yield* serviceDispatches(
-          Stream.make({
-            id: EventId.make("snoozed"),
-            type: "thread.snoozed" as const,
-            threadId,
-            occurredAt: at(),
-            payload: { ...base.thread, snoozedUntil: at(90 * MINUTE_MS) },
-          }),
-        );
-        expect(dispatched).toEqual(["server:idle-compact:idle-thread:run-1"]);
-      }),
-    ),
+  it.effect.each(["thread.snoozed", "thread.unsettled"] as const)(
+    "arms waiting compaction on %s after its run completed",
+    (type) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = records();
+          const dispatched = yield* serviceDispatches(
+            Stream.make({
+              id: EventId.make(type),
+              type,
+              threadId,
+              occurredAt: at(),
+              payload: { ...base.thread, snoozedUntil: at(90 * MINUTE_MS) },
+            }),
+          );
+          expect(dispatched).toEqual(["server:idle-compact:idle-thread:run-1"]);
+        }),
+      ),
   );
 
-  it.effect("arms Smart compaction when a guest submits after the run completed", () =>
+  it.effect("arms waiting compaction when a guest submits after the run completed", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const thread = { ...records().thread, guestShare };
@@ -915,7 +976,6 @@ describe("IdleCompactionService", () => {
             getSettings: Effect.succeed({
               ...DEFAULT_SERVER_SETTINGS,
               idleCompaction: "beforeCacheExpires",
-              smartIdleCompaction: false,
             }),
           }),
         );

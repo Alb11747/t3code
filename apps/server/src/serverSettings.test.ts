@@ -2,8 +2,10 @@ import { deriveProviderInstanceConfigMap } from "./provider/ProviderInstanceRegi
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  DEFAULT_IDLE_COMPACTION_TIERS,
   DEFAULT_SERVER_SETTINGS,
   globalIdleCompaction,
+  idleCompactionTiersOf,
   type ManagedPolicyDocument,
   ModelSelection,
   ProjectId,
@@ -300,28 +302,47 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
     Effect.gen(function* () {
       const service = yield* ServerSettingsModule.ServerSettingsService;
       const settings = yield* service.getSettings;
-      assert.equal(settings.idleCompaction, "onReturn");
-      assert.strictEqual(settings.compactIdleThreads, false);
-      assert.equal(settings.idleCompactionMinTokens, 200_000);
+      // Fork: compacting before the cache expires is the default.
+      assert.equal(settings.idleCompaction, "beforeCacheExpires");
+      assert.strictEqual(settings.compactIdleThreads, true);
+      assert.deepEqual(idleCompactionTiersOf(settings), DEFAULT_IDLE_COMPACTION_TIERS);
+      assert.deepEqual(settings.idleCompactionSettled, DEFAULT_IDLE_COMPACTION_TIERS.settled);
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
-  it.effect("saves the minimum context for idle compaction", () =>
+  it.effect("saves idle compaction choices and reuse tiers apart from their defaults", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
       const fs = yield* FileSystem.FileSystem;
       const service = yield* ServerSettingsModule.ServerSettingsService;
+      const persisted = () =>
+        fs.readFileString(config.settingsPath).pipe(Effect.map((text) => JSON.parse(text)));
 
-      yield* service.updateSettings({ idleCompactionMinTokens: 100_000 });
+      yield* service.updateSettings({ idleCompaction: "onReturn" });
+      assert.equal((yield* persisted()).idleCompaction, "onReturn");
+      assert.equal((yield* service.getSettings).idleCompaction, "onReturn");
 
-      const settings = yield* service.getSettings;
-      assert.equal(settings.idleCompactionMinTokens, 100_000);
-      const persisted = JSON.parse(yield* fs.readFileString(config.settingsPath));
-      assert.equal(persisted.idleCompactionMinTokens, 100_000);
+      yield* service.updateSettings({ idleCompactionSettled: { enabled: true } });
+      // A patch changes only its own fields, and the file keeps only what differs.
+      yield* service.updateSettings({ idleCompactionSettled: { minTokens: 700_000 } });
+      assert.deepEqual((yield* service.getSettings).idleCompactionSettled, {
+        enabled: true,
+        minTokens: 700_000,
+      });
+      assert.deepEqual((yield* persisted()).idleCompactionSettled, {
+        enabled: true,
+        minTokens: 700_000,
+      });
+      yield* service.updateSettings({ idleCompactionSettled: { minTokens: 500_000 } });
+      assert.deepEqual((yield* persisted()).idleCompactionSettled, { enabled: true });
 
-      yield* service.updateSettings({ idleCompactionMinTokens: 200_000 });
-      const reset = JSON.parse(yield* fs.readFileString(config.settingsPath));
-      assert.isFalse(Object.hasOwn(reset, "idleCompactionMinTokens"));
+      yield* service.updateSettings({
+        idleCompaction: "beforeCacheExpires",
+        idleCompactionSettled: DEFAULT_IDLE_COMPACTION_TIERS.settled,
+      });
+      const reset = yield* persisted();
+      assert.isFalse(Object.hasOwn(reset, "idleCompactionSettled"));
+      assert.equal(globalIdleCompaction(reset), "beforeCacheExpires");
     }).pipe(Effect.provide(layerServerSettings())),
   );
 

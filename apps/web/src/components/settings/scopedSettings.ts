@@ -2,8 +2,12 @@ import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import {
   ClientSettingsSchema,
   type ClientSettingsPatch,
+  DEFAULT_IDLE_COMPACTION_TIERS,
   type EnvironmentId,
   globalIdleCompaction,
+  type IdleCompactionTier,
+  type IdleCompactionTierName,
+  idleCompactionTiersOf,
   type ProviderInstanceId,
   idleCompactionPatch,
   isNullableProjectSettingsOverride,
@@ -16,7 +20,6 @@ import {
   ServerSettings,
   type T3ProjectFile,
   type ServerSettingsPatch,
-  smartIdleCompactionOf,
 } from "@t3tools/contracts";
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import {
@@ -210,46 +213,20 @@ export function scopedSettingsAreMixed(
   );
 }
 
+/** The mode dropdown's choices, least compaction first. */
+export const IDLE_COMPACTION_CHOICES = [
+  { value: "off", label: msg("Never", { $context: "idle thread compaction mode" }) },
+  { value: "onReturn", label: msg("When you return") },
+  { value: "beforeCacheExpires", label: msg("Before the cache expires (beta)") },
+] as const;
+
 /**
  * Servers store the idle compaction mode differently by version, so selected
  * environments are compared by the mode each resolves to, and "Never" is offered
  * only when every one of them can store it.
  */
-/**
- * The mode dropdown's choices, least compaction first. Smart is stored as its own boolean
- * (shipped clients reject unknown modes), so "waiting" and "all" each write mode and boolean.
- */
-export const IDLE_COMPACTION_CHOICES = [
-  { value: "off", label: msg("Never", { $context: "idle thread compaction mode" }) },
-  { value: "onReturn", label: msg("When you return") },
-  // Servers without Smart compact every idle thread.
-  { value: "beforeCacheExpires", label: msg("Before the cache expires (beta)") },
-  { value: "waiting", label: msg("Before the cache expires: waiting threads") },
-  { value: "all", label: msg("Before the cache expires: all threads") },
-] as const;
-export type IdleCompactionChoice = (typeof IDLE_COMPACTION_CHOICES)[number]["value"];
-
-export function idleCompactionChoice(
-  settings: ServerSettings,
-  smartAvailable: boolean,
-): IdleCompactionChoice {
-  const mode = globalIdleCompaction(settings);
-  if (mode !== "beforeCacheExpires" || !smartAvailable) return mode;
-  return smartIdleCompactionOf(settings) ? "waiting" : "all";
-}
-
-export const idleCompactionChoicePatch = (choice: IdleCompactionChoice) =>
-  choice === "waiting" || choice === "all"
-    ? { idleCompaction: "beforeCacheExpires" as const, smartIdleCompaction: choice === "waiting" }
-    : { idleCompaction: choice };
-
 export function scopedIdleCompaction(targets: readonly Pick<ScopedSettingsTarget, "settings">[]) {
-  const smartAvailable =
-    targets.length > 0 &&
-    targets.every((candidate) => candidate.settings.smartIdleCompaction !== undefined);
-  const choices = targets.map((candidate) =>
-    idleCompactionChoice(candidate.settings, smartAvailable),
-  );
+  const choices = targets.map((candidate) => globalIdleCompaction(candidate.settings));
   const mixed = choices.some((choice) => choice !== choices[0]);
   const beforeCacheExpires = targets.some(({ settings }) =>
     [
@@ -260,22 +237,44 @@ export function scopedIdleCompaction(targets: readonly Pick<ScopedSettingsTarget
     ].includes("beforeCacheExpires"),
   );
   return {
-    /** Null when targets differ in mode or in Smart. */
+    /** Null when targets differ in mode. */
     choice: mixed ? null : (choices[0] ?? null),
     neverAvailable: targets.every((candidate) => readsIdleCompactionModes(candidate.settings)),
-    smartAvailable,
+    /** Servers from before reuse tiers omit them. */
+    tiersAvailable:
+      targets.length > 0 &&
+      targets.every((candidate) => candidate.settings.idleCompactionWaiting !== undefined),
     /**
      * Whether any target, or any of its Claude providers' overrides, compacts before the cache
-     * expires: then which threads (Smart) and snoozed threads matter.
+     * expires: then the reuse tiers and snoozed threads matter.
      */
     beforeCacheExpires,
-    /** Smart applies through a provider override the dropdown's global choice cannot show. */
-    smartSwitch:
-      smartAvailable &&
-      beforeCacheExpires &&
-      choices.every((choice) => choice !== "waiting" && choice !== "all"),
   };
 }
+
+/** A reuse tier's switch and minimum across targets, each null where targets differ. */
+export function scopedIdleCompactionTier(
+  targets: readonly Pick<ScopedSettingsTarget, "settings">[],
+  tier: IdleCompactionTierName,
+) {
+  const values = targets.map(({ settings }) => idleCompactionTiersOf(settings)[tier]);
+  const shared = <Key extends keyof IdleCompactionTier>(key: Key) => {
+    const first = values[0]?.[key] ?? DEFAULT_IDLE_COMPACTION_TIERS[tier][key];
+    return values.every((value) => value[key] === first) ? first : null;
+  };
+  return { enabled: shared("enabled"), minTokens: shared("minTokens") };
+}
+
+/** Patches only the given fields; the server merges them into the stored tier. */
+export const idleCompactionTierPatch = (
+  tier: IdleCompactionTierName,
+  value: Partial<IdleCompactionTier>,
+): ServerSettingsPatch =>
+  ({
+    waiting: { idleCompactionWaiting: value },
+    open: { idleCompactionOpen: value },
+    settled: { idleCompactionSettled: value },
+  })[tier];
 
 export type ScopedSettingSource = ProjectSettingSource | "mixed";
 

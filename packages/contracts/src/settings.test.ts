@@ -12,9 +12,11 @@ import {
   ClientSettingsPatch,
   ClientServerSettingsPatch,
   ClaudeSettings,
+  DEFAULT_IDLE_COMPACTION_TIERS,
   DEFAULT_SERVER_SETTINGS,
   globalIdleCompaction,
   idleCompactionPatch,
+  idleCompactionTiersOf,
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   requiredScopesForProjectMutation,
   resolveIdleCompaction,
@@ -299,7 +301,26 @@ describe("resolveIdleCompaction", () => {
       "beforeCacheExpires",
     );
     expect(globalIdleCompaction(decodeServerSettings({ compactIdleThreads: "off" }))).toBe("off");
-    expect(globalIdleCompaction(decodeServerSettings({}))).toBe("onReturn");
+    // Fork: compacting before the cache expires is the default.
+    expect(globalIdleCompaction(decodeServerSettings({}))).toBe("beforeCacheExpires");
+    expect(globalIdleCompaction(decodeServerSettings({ compactIdleThreads: false }))).toBe(
+      "onReturn",
+    );
+  });
+
+  it("fills the reuse tier fields persisted settings dropped at their defaults", () => {
+    const settings = decodeServerSettings({
+      idleCompactionOpen: { enabled: false },
+      idleCompactionSettled: { minTokens: 700_000 },
+    });
+    expect(idleCompactionTiersOf(settings)).toEqual({
+      waiting: DEFAULT_IDLE_COMPACTION_TIERS.waiting,
+      open: { enabled: false, minTokens: 150_000 },
+      settled: { enabled: false, minTokens: 700_000 },
+    });
+    expect(DEFAULT_SERVER_SETTINGS.idleCompactionWaiting).toEqual(
+      DEFAULT_IDLE_COMPACTION_TIERS.waiting,
+    );
   });
 
   it("keeps the legacy switch a boolean, as shipped clients decode it", () => {

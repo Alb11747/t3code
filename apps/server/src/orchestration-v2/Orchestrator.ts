@@ -7941,7 +7941,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : run.id === command.restartContinuationOfRunId,
     )?.delegatedTaskId;
 
-    if (projection.thread.settledOverride !== null) {
+    // Fork: idle compaction of a settled thread keeps it settled.
+    const serverIdleCompaction =
+      command.creationSource === "server" && command.idleCompaction === "beforeCacheExpires";
+    if (projection.thread.settledOverride !== null && !serverIdleCompaction) {
       const now = yield* DateTime.now;
       const thread: OrchestrationV2AppThread = {
         ...projection.thread,
@@ -7970,7 +7973,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const automaticWake =
       command.notification !== undefined ||
       command.delegatedCompletion !== undefined ||
-      (command.creationSource === "server" && command.idleCompaction === "beforeCacheExpires");
+      serverIdleCompaction;
     if (projection.thread.snoozedUntil != null && !automaticWake) {
       const now = yield* DateTime.now;
       const thread: OrchestrationV2AppThread = {

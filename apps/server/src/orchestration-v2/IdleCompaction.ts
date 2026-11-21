@@ -1,8 +1,9 @@
 import {
-  DEFAULT_IDLE_COMPACTION_MIN_TOKENS,
   isListedThreadLineage,
   pendingGuestMessageCount,
   type IdleCompactionMode,
+  type IdleCompactionTier,
+  type IdleCompactionTierName,
   type OrchestrationV2RuntimeRequest,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
@@ -12,6 +13,7 @@ import {
   isPullRequestWatchTask,
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
 import { isActiveRun } from "./CommandPolicy.ts";
 
 // Start this long before the cache expires: enough for the session to resume
@@ -46,24 +48,49 @@ export function compactOnceApplies(
 }
 
 /**
- * Which idle threads compact before their cache expires. "waiting" (Smart) takes only
- * threads something will wake after the cache expires; a thread's own setting wins, and an
- * applicable one-shot mark counts as "always" in any mode but off.
+ * How an idle thread qualifies to compact before its cache expires: "tiers" by its reuse tier, or
+ * "forced" by its own setting. An applicable one-shot mark counts as "always" in any mode but off.
  */
 export function idleCompactionScope(
   mode: IdleCompactionMode,
-  smart: boolean,
   threadOverride: boolean | null | undefined,
   compactOnce = false,
-): "all" | "waiting" | null {
+): "forced" | "tiers" | null {
   if (mode === "off" || threadOverride === false) return null;
-  if (threadOverride === true || compactOnce) return "all";
-  if (mode !== "beforeCacheExpires") return null;
-  return smart ? "waiting" : "all";
+  if (threadOverride === true || compactOnce) return "forced";
+  return mode === "beforeCacheExpires" ? "tiers" : null;
+}
+
+const idleCompactionTierCompacts = (tier: IdleCompactionTier, usedTokens: number) =>
+  tier.enabled && usedTokens >= tier.minTokens;
+
+/**
+ * Whether the window's thread compacts. A forced thread uses the waiting minimum, since its own
+ * setting says it will be back. `isWaiting` runs only when sync signals leave the tier open and it
+ * changes the outcome, because it reads more history.
+ */
+export function idleCompactionCompacts<E, R>(
+  scope: "forced" | "tiers",
+  tiers: Record<IdleCompactionTierName, IdleCompactionTier>,
+  window: {
+    readonly usedTokens: number;
+    readonly settled: boolean;
+    readonly hasWakeSignal: boolean;
+  },
+  isWaiting: Effect.Effect<boolean, E, R>,
+): Effect.Effect<boolean, E, R> {
+  const waiting = idleCompactionTierCompacts(tiers.waiting, window.usedTokens);
+  if (scope === "forced") return Effect.succeed(window.usedTokens >= tiers.waiting.minTokens);
+  if (window.hasWakeSignal) return Effect.succeed(waiting);
+  const rest = idleCompactionTierCompacts(
+    window.settled ? tiers.settled : tiers.open,
+    window.usedTokens,
+  );
+  if (waiting === rest) return Effect.succeed(rest);
+  return Effect.map(isWaiting, (isWaitingThread) => (isWaitingThread ? waiting : rest));
 }
 
 export interface IdleCompactionPolicy {
-  readonly minTokens?: number | undefined;
   readonly compactSnoozed: boolean;
   /** When scheduled tasks will next send to this thread. */
   readonly scheduledWakesMs: ReadonlyArray<number>;
@@ -121,7 +148,6 @@ export function idleCompactionWindow(
   const { thread, runs, messages, providerThreads, providerTurns, runtimeRequests, turnItems } =
     records;
   if (thread.deletedAt !== null || thread.archivedAt !== null) return null;
-  if (thread.settledAt !== null || thread.settledOverride === "settled") return null;
   const snoozeEndMs =
     thread.snoozedUntil == null ? null : DateTime.toEpochMillis(thread.snoozedUntil);
   const snoozed = snoozeEndMs !== null && snoozeEndMs > nowMs;
@@ -154,8 +180,7 @@ export function idleCompactionWindow(
     .filter((turn) => turn.providerThreadId === providerThread.id && turn.tokenUsage !== undefined)
     .map((turn) => turn.tokenUsage!)
     .toSorted((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
-  const minTokens = policy.minTokens ?? DEFAULT_IDLE_COMPACTION_MIN_TOKENS;
-  if ((usages[0]?.usedTokens ?? 0) < minTokens) return null;
+  const usedTokens = usages[0]?.usedTokens ?? 0;
   // A request served fully from cache creates no cache entry and reports no
   // TTL, but it still refreshes the cache. Treat it as unknown and skip.
   const expiresAt = usages[0]?.promptCacheExpiresAt;
@@ -177,6 +202,8 @@ export function idleCompactionWindow(
     runId: latestRun.id,
     startMs: endMs - LEAD_MS,
     endMs,
+    usedTokens,
+    settled: thread.settledAt !== null || thread.settledOverride === "settled",
     hasWakeSignal:
       wakesMs.length > 0 ||
       pendingGuestMessageCount(thread.guestShare) > 0 ||

@@ -707,16 +707,31 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
     searchTerms: [
       msg("claude context compaction idle cache tokens usage summary resume"),
-      msg("smart waiting threads cache expires watch subagent scheduled wake"),
-      msg("minimum threshold"),
+      msg("smart waiting open settled minimum tokens threshold"),
     ],
   },
   {
-    id: "smart-idle-compaction",
-    title: msg("Only compact waiting threads"),
+    id: "idle-compaction-waiting",
+    title: msg("Compact waiting threads"),
     to: "/settings/providers",
     scope: "environment-defaults",
-    searchTerms: [msg("smart claude compaction provider override cache expires waiting")],
+    searchTerms: [
+      msg("claude compaction cache expires watch subagent scheduled wake minimum tokens"),
+    ],
+  },
+  {
+    id: "idle-compaction-open",
+    title: msg("Compact open threads"),
+    to: "/settings/providers",
+    scope: "environment-defaults",
+    searchTerms: [msg("claude compaction cache expires unsettled minimum tokens")],
+  },
+  {
+    id: "idle-compaction-settled",
+    title: msg("Compact settled threads"),
+    to: "/settings/providers",
+    scope: "environment-defaults",
+    searchTerms: [msg("claude compaction cache expires settled done minimum tokens")],
   },
   {
     id: "compact-snoozed-threads",

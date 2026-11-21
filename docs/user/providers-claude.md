@@ -69,21 +69,27 @@ subscription and 5 minutes with an API key, Bedrock, or Vertex. See [commands an
 composer commands.
 
 **Compact idle threads** in **Settings > Providers > Advanced** chooses when
-to compact. Each Claude provider's settings can override the timing. Use
-**Minimum tokens for idle compaction** to change the context size required for
-compaction before the cache expires. It defaults to 200,000 tokens.
+to compact. Each Claude provider's settings can override the timing.
 
 - **Never** skips idle compaction and Claude's resume prompt. **Auto-compact after**
   still applies, and you can still compact by hand.
-- **When you return** shows the **Compact** chip described above. This is the default.
-- **Before the cache expires: waiting threads** compacts an idle thread shortly
-  before its prompt cache expires, while the history is still cached. It includes
-  threads with a watched pull request or issue, awaited subagents or background
-  work, or a scheduled task targeting the thread, including enabled webhooks.
-  It also includes threads waiting on a machine link, a question you can answer
-  in a new message, a guest message, or approval to implement a proposed plan.
-  To include a thread waiting for a plain-text reply, choose **This time only**.
-- **Before the cache expires: all threads** does the same for every idle thread.
+- **When you return** shows the **Compact** chip described above.
+- **Before the cache expires** compacts an idle thread shortly before its prompt
+  cache expires, while the history is still cached. This is the default.
+
+Before the cache expires, how large a thread must be depends on how likely you are
+to come back to it. Each group has its own switch and minimum context size:
+
+- **Compact waiting threads** (60,000 tokens) covers threads something will wake:
+  a watched pull request or issue, awaited subagents or background work, or a
+  scheduled task targeting the thread, including enabled webhooks. It also covers
+  threads waiting on a machine link, a question you can answer in a new message, a
+  guest message, or approval to implement a proposed plan. This holds even when
+  the thread is settled.
+- **Compact open threads** (150,000 tokens) covers other unsettled threads.
+- **Compact settled threads** (500,000 tokens) covers settled threads. It is off
+  by default; turn it on if you often reopen settled threads. Compacting one keeps
+  it settled.
 
 Before the cache expires, the compaction appears in the thread as a `/compact`
 turn sent by T3 Code. If the window is missed, such as when you choose this after
@@ -92,13 +98,14 @@ to **When you return**. Switch the chip to **Keep** to keep the full history for
 that message. A scheduled task or snooze that wakes the thread before the cache
 expires takes priority because the cache is still warm. A turn waiting for a live
 answer, approval, or secret must finish before the thread can compact. **Compact
-snoozed threads**, shown with these two choices, includes snoozed threads and
+snoozed threads**, shown with these switches, includes snoozed threads and
 counts a snooze as a wake. A Claude provider set to **Before the cache expires**
-follows the waiting or all threads choice.
+uses the same switches.
 
 To choose for one thread, use **Compact before cache expires** in the thread's
-menu: **Always** compacts it before the cache expires while idle, even when the
-setting is **When you return**, and **Never** skips it. **This time only**
+menu: **Always** compacts it before the cache expires while idle, from the waiting
+threads minimum and even when the setting is **When you return** or its group is
+off, and **Never** skips it. **This time only**
 compacts it once, if nobody replies before the cache expires, then goes back to
 the thread's choice; any new turn cancels it. Agents can set the same options, so
 you can ask them in your project instructions to mark their thread this way when

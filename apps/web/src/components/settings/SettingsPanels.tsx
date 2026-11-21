@@ -14,9 +14,13 @@ import {
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
 import {
-  DEFAULT_IDLE_COMPACTION_MIN_TOKENS,
+  DEFAULT_IDLE_COMPACTION_TIERS,
   DEFAULT_UNIFIED_SETTINGS,
   type DiffLayout,
+  globalIdleCompaction,
+  IDLE_COMPACTION_TIER_SETTING_KEYS,
+  IDLE_COMPACTION_TIERS,
+  type IdleCompactionTierName,
   MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   type ResponseStreamingMode,
@@ -65,9 +69,9 @@ import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
 import { useOptionalSettingsScope, useSettingsScope } from "./SettingsScopeContext";
 import {
   IDLE_COMPACTION_CHOICES,
-  idleCompactionChoice,
-  idleCompactionChoicePatch,
+  idleCompactionTierPatch,
   scopedIdleCompaction,
+  scopedIdleCompactionTier,
 } from "./scopedSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { ThreadTitleInstructionsSettings } from "./ThreadTitleInstructionsSettings";
@@ -1874,10 +1878,30 @@ const WAITING_THREADS_HELP = msg(
   "Waiting threads have a watched PR or issue, awaited work, a scheduled task or webhook, or a pending question, machine link, guest message, or proposed plan.",
 );
 
+const IDLE_COMPACTION_TIER_ROWS = {
+  waiting: {
+    searchId: "idle-compaction-waiting",
+    description: WAITING_THREADS_HELP,
+    resetLabel: msg("Reset waiting thread compaction to default"),
+    minTokensLabel: msg("Minimum tokens for waiting threads"),
+  },
+  open: {
+    searchId: "idle-compaction-open",
+    description: msg("Unsettled threads with nothing set to wake them."),
+    resetLabel: msg("Reset open thread compaction to default"),
+    minTokensLabel: msg("Minimum tokens for open threads"),
+  },
+  settled: {
+    searchId: "idle-compaction-settled",
+    description: msg("Threads you settled. Turn this off to leave them alone."),
+    resetLabel: msg("Reset settled thread compaction to default"),
+    minTokensLabel: msg("Minimum tokens for settled threads"),
+  },
+} as const satisfies Record<IdleCompactionTierName, unknown>;
+
 function ScopedCompactIdleThreadsRow() {
   const setting = useSearchableSetting();
   const gt = useGT();
-  const messages = useMessages();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const { targets } = useSettingsScope();
@@ -1886,33 +1910,9 @@ function ScopedCompactIdleThreadsRow() {
   return (
     <>
       <IdleCompactionModeRow idleCompaction={idleCompaction} />
-      {targets.length > 0 &&
-      targets.every((target) => target.settings.idleCompactionMinTokens !== undefined) ? (
-        <IdleCompactionMinTokensRow />
-      ) : null}
-      {/* A Claude provider override can compact before the cache expires while the global
-          choice does not, so the dropdown cannot carry Smart for it. */}
-      {idleCompaction.smartSwitch ? (
-        <SettingsRow
-          serverScoped
-          {...setting("smart-idle-compaction")}
-          description={gt(
-            "Applies to providers that compact before the cache expires. {waitingThreadsHelp}",
-            { waitingThreadsHelp: messages(WAITING_THREADS_HELP) },
-          )}
-          settingKeys={["smartIdleCompaction"]}
-          control={
-            <ScopedSwitch
-              settingKeys={["smartIdleCompaction"]}
-              checked={settings.smartIdleCompaction ?? false}
-              onCheckedChange={(checked) =>
-                updateSettings({ smartIdleCompaction: Boolean(checked) })
-              }
-              aria-label={gt("Only compact waiting threads")}
-            />
-          }
-        />
-      ) : null}
+      {idleCompaction.tiersAvailable && idleCompaction.beforeCacheExpires
+        ? IDLE_COMPACTION_TIERS.map((tier) => <IdleCompactionTierRow key={tier} tier={tier} />)
+        : null}
       {/* Older servers omit this and compact every idle thread; a default here would lie. */}
       {settings.compactSnoozedThreads === undefined || !idleCompaction.beforeCacheExpires ? null : (
         <SettingsRow
@@ -1938,51 +1938,63 @@ function ScopedCompactIdleThreadsRow() {
   );
 }
 
-function IdleCompactionMinTokensRow() {
+function IdleCompactionTierRow({ tier }: { readonly tier: IdleCompactionTierName }) {
+  const setting = useSearchableSetting();
   const gt = useGT();
-  const { scope } = useSettingsScope();
-  const settings = useScopedSettings();
+  const messages = useMessages();
+  const { scope, targets } = useSettingsScope();
   const updateSettings = useUpdateScopedSettings();
-  const mixed = useScopedSettingsMixed(["idleCompactionMinTokens"]);
-  const value = settings.idleCompactionMinTokens ?? DEFAULT_IDLE_COMPACTION_MIN_TOKENS;
-  const label = gt("Minimum tokens for idle compaction");
+  const row = IDLE_COMPACTION_TIER_ROWS[tier];
+  const key = IDLE_COMPACTION_TIER_SETTING_KEYS[tier];
+  const fallback = DEFAULT_IDLE_COMPACTION_TIERS[tier];
+  const { enabled, minTokens } = scopedIdleCompactionTier(targets, tier);
+  const searchable = setting(row.searchId);
   const canReset = scope.kind === "environment" || scope.kind === "all";
+  const minTokensLabel = messages(row.minTokensLabel);
 
   return (
     <SettingsRow
       serverScoped
-      title={label}
-      description={gt(
-        "Minimum Claude context size for compaction before the prompt cache expires.",
-      )}
-      settingKeys={["idleCompactionMinTokens"]}
+      {...searchable}
+      description={messages(row.description)}
+      settingKeys={[key]}
       resetAction={
-        canReset && (mixed || value !== DEFAULT_IDLE_COMPACTION_MIN_TOKENS) ? (
+        canReset && (enabled !== fallback.enabled || minTokens !== fallback.minTokens) ? (
           <SettingResetButton
-            ariaLabel={gt("Reset minimum tokens for idle compaction to default")}
-            onClick={() =>
-              updateSettings({ idleCompactionMinTokens: DEFAULT_IDLE_COMPACTION_MIN_TOKENS })
-            }
+            ariaLabel={messages(row.resetLabel)}
+            onClick={() => updateSettings(idleCompactionTierPatch(tier, fallback))}
           />
         ) : null
       }
       control={
-        <div className="w-full sm:w-32">
-          <DraftInput
-            size="sm"
-            type="number"
-            inputMode="numeric"
-            min={1}
-            max={Number.MAX_SAFE_INTEGER}
-            aria-label={label}
-            value={mixed ? "" : String(value)}
-            placeholder={mixed ? gt("Mixed") : undefined}
-            onCommit={(next) => {
-              const tokens = Number(next);
-              if (Number.isSafeInteger(tokens) && tokens > 0) {
-                updateSettings({ idleCompactionMinTokens: tokens });
-              }
-            }}
+        <div className="flex w-full items-center gap-3 sm:w-auto">
+          <div className="w-full sm:w-32">
+            <DraftInput
+              size="sm"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={Number.MAX_SAFE_INTEGER}
+              aria-label={minTokensLabel}
+              // Always and This time only still use the waiting minimum with its tier off.
+              disabled={enabled === false && tier !== "waiting"}
+              value={minTokens === null ? "" : String(minTokens)}
+              placeholder={minTokens === null ? gt("Mixed") : undefined}
+              onCommit={(next) => {
+                const tokens = Number(next);
+                if (Number.isSafeInteger(tokens) && tokens > 0) {
+                  updateSettings(idleCompactionTierPatch(tier, { minTokens: tokens }));
+                }
+              }}
+            />
+          </div>
+          <Switch
+            mixed={enabled === null}
+            checked={enabled === true}
+            onCheckedChange={(checked) =>
+              updateSettings(idleCompactionTierPatch(tier, { enabled: Boolean(checked) }))
+            }
+            aria-label={searchable.title}
           />
         </div>
       }
@@ -2000,37 +2012,28 @@ function IdleCompactionModeRow({
   const messages = useMessages();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
-  const { smartAvailable } = idleCompaction;
-  const defaultChoice = idleCompactionChoice(DEFAULT_UNIFIED_SETTINGS, smartAvailable);
-  const choices = IDLE_COMPACTION_CHOICES.filter((choice) =>
-    choice.value === "beforeCacheExpires"
-      ? !smartAvailable
-      : choice.value === "waiting" || choice.value === "all"
-        ? smartAvailable
-        : true,
-  );
+  const defaultChoice = globalIdleCompaction(DEFAULT_UNIFIED_SETTINGS);
 
   return (
     <SettingsRow
       serverScoped
-      settingKeys={["idleCompaction", "compactIdleThreads", "smartIdleCompaction"]}
+      settingKeys={["idleCompaction", "compactIdleThreads"]}
       mixed={idleCompaction.choice === null}
       {...setting("compact-idle-threads")}
       description={
-        smartAvailable
+        idleCompaction.tiersAvailable
           ? gt(
-              "When to compact an idle Claude thread. {waitingThreadsHelp} Threads and providers can override this.",
-              { waitingThreadsHelp: messages(WAITING_THREADS_HELP) },
+              "When to compact an idle Claude thread. Before the cache expires, the minimum context size depends on whether the thread is waiting, open, or settled. Threads and providers can override this.",
             )
           : gt(
               "When to compact an idle Claude thread over 200,000 tokens: after you return, just before its prompt cache expires, or never. Each Claude provider can override this.",
             )
       }
       resetAction={
-        idleCompactionChoice(settings, smartAvailable) !== defaultChoice ? (
+        globalIdleCompaction(settings) !== defaultChoice ? (
           <SettingResetButton
             ariaLabel={gt("Reset compact idle threads to default")}
-            onClick={() => updateSettings(idleCompactionChoicePatch(defaultChoice))}
+            onClick={() => updateSettings({ idleCompaction: defaultChoice })}
           />
         ) : null
       }
@@ -2038,8 +2041,8 @@ function IdleCompactionModeRow({
         <Select
           value={idleCompaction.choice}
           onValueChange={(value) => {
-            const choice = choices.find((candidate) => candidate.value === value);
-            if (choice) updateSettings(idleCompactionChoicePatch(choice.value));
+            const choice = IDLE_COMPACTION_CHOICES.find((candidate) => candidate.value === value);
+            if (choice) updateSettings({ idleCompaction: choice.value });
           }}
         >
           <SelectTrigger
@@ -2050,13 +2053,15 @@ function IdleCompactionModeRow({
             <SelectValue>
               {(value: string | null) => {
                 if (value === null) return gt("Mixed");
-                const choice = choices.find((candidate) => candidate.value === value);
+                const choice = IDLE_COMPACTION_CHOICES.find(
+                  (candidate) => candidate.value === value,
+                );
                 return choice ? messages(choice.label) : undefined;
               }}
             </SelectValue>
           </SelectTrigger>
           <SelectPopup align="end" alignItemWithTrigger={false}>
-            {choices.map((choice) => (
+            {IDLE_COMPACTION_CHOICES.map((choice) => (
               <SelectItem
                 hideIndicator
                 key={choice.value}

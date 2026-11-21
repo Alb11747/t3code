@@ -1,8 +1,8 @@
 import {
   CommandId,
   compactSnoozedThreadsOf,
-  smartIdleCompactionOf,
   IDLE_COMPACTION_TEXT,
+  idleCompactionTiersOf,
   MessageId,
   pendingGuestMessageCount,
   resolveIdleCompaction,
@@ -22,6 +22,7 @@ import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts"
 import * as ServerSettings from "../serverSettings.ts";
 import {
   compactOnceApplies,
+  idleCompactionCompacts,
   idleCompactionScope,
   idleCompactionWindow,
   isPendingMessageUserInput,
@@ -68,14 +69,16 @@ export const make = Effect.gen(function* () {
         const scopeOf = (selected: typeof thread, compactOnce: boolean) =>
           idleCompactionScope(
             resolveIdleCompaction(current, selected.providerInstanceId),
-            smartIdleCompactionOf(current),
             selected.compactBeforeCacheExpires,
             compactOnce,
           );
+        // Staleness needs the runs, so any mark passes this pre-filter.
+        const likelyScope = scopeOf(thread, thread.compactOnceRequestedAt != null);
         if (
           !claudeInstance ||
-          // Staleness needs the runs, so any mark passes this pre-filter.
-          scopeOf(thread, thread.compactOnceRequestedAt != null) === null ||
+          likelyScope === null ||
+          (likelyScope === "tiers" &&
+            !Object.values(idleCompactionTiersOf(current)).some((tier) => tier.enabled)) ||
           !resolveProjectProviderInstanceEnabled(
             current,
             thread.projectId,
@@ -143,20 +146,23 @@ export const make = Effect.gen(function* () {
             task.threadId === threadId && task.enabled && task.blockedByPolicy === undefined,
         );
         const window = idleCompactionWindow(records, nowMs, {
-          minTokens: current.idleCompactionMinTokens,
           compactSnoozed: compactSnoozedThreadsOf(current),
           scheduledWakesMs: wakes.flatMap((task) =>
             task.nextRunAt === null ? [] : [Date.parse(task.nextRunAt)],
           ),
         });
         if (window === null || window.runId !== runId) return;
-        if (
-          scope === "waiting" &&
-          !window.hasWakeSignal &&
-          !wakes.some((task) => task.schedule.type === "webhook") &&
-          !(yield* projections.hasIdleCompactionWait(threadId))
-        )
-          return;
+        const compacts = yield* idleCompactionCompacts(
+          scope,
+          idleCompactionTiersOf(current),
+          {
+            ...window,
+            hasWakeSignal:
+              window.hasWakeSignal || wakes.some((task) => task.schedule.type === "webhook"),
+          },
+          projections.hasIdleCompactionWait(threadId),
+        );
+        if (!compacts) return;
         if (nowMs < window.startMs) {
           yield* Effect.sleep(Duration.millis(window.startMs - nowMs));
           continue;
@@ -201,6 +207,8 @@ export const make = Effect.gen(function* () {
         if (
           event.type === "thread.metadata-updated" ||
           event.type === "thread.snoozed" ||
+          event.type === "thread.settled" ||
+          event.type === "thread.unsettled" ||
           event.type === "thread.pull-request-link-updated" ||
           (event.type === "thread.pull-request-synced" &&
             event.payload.pullRequests?.some((pr) => pr.watch !== undefined) === true) ||

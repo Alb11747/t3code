@@ -804,7 +804,45 @@ const INSTANCE_IDLE_COMPACTION_MODES = [
   { value: "default", label: "Use default" },
   ...IDLE_COMPACTION_MODES,
 ] as const;
-export const DEFAULT_IDLE_COMPACTION_MIN_TOKENS = 200_000;
+/**
+ * Fork: before the cache expires, an idle thread compacts by how likely it is to be reused.
+ * Waiting threads have something that will wake them, open threads are unsettled, and settled
+ * threads are done. Each tier has its own switch and minimum context size.
+ */
+export const IDLE_COMPACTION_TIERS = ["waiting", "open", "settled"] as const;
+export type IdleCompactionTierName = (typeof IDLE_COMPACTION_TIERS)[number];
+export const IDLE_COMPACTION_TIER_SETTING_KEYS = {
+  waiting: "idleCompactionWaiting",
+  open: "idleCompactionOpen",
+  settled: "idleCompactionSettled",
+} as const satisfies Record<IdleCompactionTierName, string>;
+export const DEFAULT_IDLE_COMPACTION_TIERS = {
+  waiting: { enabled: true, minTokens: 60_000 },
+  open: { enabled: true, minTokens: 150_000 },
+  // Off by default: settled threads are rarely reopened, so compacting them seldom pays. Even
+  // when on, a return probability near 10% breaks even only from about 500K.
+  settled: { enabled: false, minTokens: 500_000 },
+} as const satisfies Record<IdleCompactionTierName, IdleCompactionTier>;
+
+// Persisted settings drop fields equal to their default, so each field decodes its own.
+const makeIdleCompactionTier = (tier: IdleCompactionTierName) =>
+  Schema.Struct({
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(DEFAULT_IDLE_COMPACTION_TIERS[tier].enabled)),
+    ),
+    minTokens: PositiveInt.pipe(
+      Schema.withDecodingDefault(Effect.succeed(DEFAULT_IDLE_COMPACTION_TIERS[tier].minTokens)),
+    ),
+  });
+export interface IdleCompactionTier {
+  readonly enabled: boolean;
+  readonly minTokens: number;
+}
+// Patches merge into the stored tier, so changing one field keeps the other.
+const IdleCompactionTierPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  minTokens: Schema.optionalKey(PositiveInt),
+});
 
 const InstanceIdleCompaction = Schema.Literals(
   INSTANCE_IDLE_COMPACTION_MODES.map((mode) => mode.value),
@@ -876,7 +914,7 @@ export const ClaudeSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Compact idle threads",
         description:
-          "Overrides idle compaction timing for this Claude provider. The minimum token count and waiting or all threads choice come from Providers > Advanced.",
+          "Overrides idle compaction timing for this Claude provider. Which threads compact, and from what size, come from Providers > Advanced.",
         providerSettingsForm: {
           control: "select",
           options: INSTANCE_IDLE_COMPACTION_MODES,
@@ -1507,16 +1545,18 @@ export const ServerSettings = Schema.Struct({
   sidebarAutoSettleAfterDays: Schema.NullOr(SidebarAutoSettleAfterDays).pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
   ),
+  // Fork: compacting before the cache expires is the default.
   compactIdleThreads: LegacyCompactIdleThreads.pipe(
-    Schema.withDecodingDefault(Effect.succeed(false)),
+    Schema.withDecodingDefault(Effect.succeed(true)),
   ),
   idleCompaction: Schema.optionalKey(IdleCompactionMode),
-  idleCompactionMinTokens: Schema.optionalKey(PositiveInt),
   /**
-   * Before the cache expires, compact only threads that will resume. Absent on servers without
-   * it, so clients can hide its choice; read through `smartIdleCompactionOf`.
+   * Reuse tiers for compacting before the cache expires. Absent on servers without them, so
+   * clients can hide their rows; read through `idleCompactionTiersOf`.
    */
-  smartIdleCompaction: Schema.optionalKey(Schema.Boolean),
+  idleCompactionWaiting: Schema.optionalKey(makeIdleCompactionTier("waiting")),
+  idleCompactionOpen: Schema.optionalKey(makeIdleCompactionTier("open")),
+  idleCompactionSettled: Schema.optionalKey(makeIdleCompactionTier("settled")),
   /** Lets idle compaction include snoozed threads; read through `compactSnoozedThreadsOf`. */
   compactSnoozedThreads: Schema.optionalKey(Schema.Boolean),
   snoozeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -1673,7 +1713,9 @@ export const ServerSettings = Schema.Struct({
 export type ServerSettings = typeof ServerSettings.Type;
 
 export const DEFAULT_SERVER_SETTINGS: ServerSettings = Schema.decodeSync(ServerSettings)({
-  idleCompactionMinTokens: DEFAULT_IDLE_COMPACTION_MIN_TOKENS,
+  idleCompactionWaiting: DEFAULT_IDLE_COMPACTION_TIERS.waiting,
+  idleCompactionOpen: DEFAULT_IDLE_COMPACTION_TIERS.open,
+  idleCompactionSettled: DEFAULT_IDLE_COMPACTION_TIERS.settled,
 });
 
 export const providerInstanceConfigEnabledFlag = (config: unknown): boolean | undefined => {
@@ -1763,18 +1805,32 @@ export const globalIdleCompaction = (settings: IdleCompactionSettings): IdleComp
       ? "beforeCacheExpires"
       : "onReturn");
 
-export const smartIdleCompactionOf = (settings: Pick<ServerSettings, "smartIdleCompaction">) =>
-  settings.smartIdleCompaction ?? true;
+type IdleCompactionTierSettings = Pick<
+  ServerSettings,
+  (typeof IDLE_COMPACTION_TIER_SETTING_KEYS)[IdleCompactionTierName]
+>;
+
+export const idleCompactionTiersOf = (
+  settings: IdleCompactionTierSettings,
+): Record<IdleCompactionTierName, IdleCompactionTier> => ({
+  waiting: settings.idleCompactionWaiting ?? DEFAULT_IDLE_COMPACTION_TIERS.waiting,
+  open: settings.idleCompactionOpen ?? DEFAULT_IDLE_COMPACTION_TIERS.open,
+  settled: settings.idleCompactionSettled ?? DEFAULT_IDLE_COMPACTION_TIERS.settled,
+});
 export const compactSnoozedThreadsOf = (settings: Pick<ServerSettings, "compactSnoozedThreads">) =>
   settings.compactSnoozedThreads ?? true;
 
 /** Advertise the idle compaction options supported by this server, even at their defaults. */
-export const withSmartIdleCompaction = <S extends ServerSettings>(settings: S): S => ({
-  ...settings,
-  idleCompactionMinTokens: settings.idleCompactionMinTokens ?? DEFAULT_IDLE_COMPACTION_MIN_TOKENS,
-  smartIdleCompaction: smartIdleCompactionOf(settings),
-  compactSnoozedThreads: compactSnoozedThreadsOf(settings),
-});
+export const withSmartIdleCompaction = <S extends ServerSettings>(settings: S): S => {
+  const tiers = idleCompactionTiersOf(settings);
+  return {
+    ...settings,
+    idleCompactionWaiting: tiers.waiting,
+    idleCompactionOpen: tiers.open,
+    idleCompactionSettled: tiers.settled,
+    compactSnoozedThreads: compactSnoozedThreadsOf(settings),
+  };
+};
 
 /** Fork: off unless the user turns it on. */
 export const agentsCanRedeemResetCreditsOf = (
@@ -2001,8 +2057,9 @@ export const ServerSettingsPatch = Schema.Struct({
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   compactIdleThreads: Schema.optionalKey(LegacyCompactIdleThreads),
   idleCompaction: Schema.optionalKey(IdleCompactionMode),
-  idleCompactionMinTokens: Schema.optionalKey(PositiveInt),
-  smartIdleCompaction: Schema.optionalKey(Schema.Boolean),
+  idleCompactionWaiting: Schema.optionalKey(IdleCompactionTierPatch),
+  idleCompactionOpen: Schema.optionalKey(IdleCompactionTierPatch),
+  idleCompactionSettled: Schema.optionalKey(IdleCompactionTierPatch),
   compactSnoozedThreads: Schema.optionalKey(Schema.Boolean),
   sidebarAutoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),

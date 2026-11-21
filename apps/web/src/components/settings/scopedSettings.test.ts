@@ -20,8 +20,8 @@ import {
   planProjectOverridesClear,
   planScopedSettingsClear,
   planScopedSettingsPatch,
-  idleCompactionChoicePatch,
   scopedIdleCompaction,
+  scopedIdleCompactionTier,
   resolveScopedSettingsTargets,
   scopedSettingsAreMixed,
   scopedSettingsSource,
@@ -237,29 +237,36 @@ describe("scoped settings writes", () => {
     ).toBeNull();
   });
 
-  it("splits before-the-cache-expires by Smart only where every server reports it", () => {
-    const target = (smartIdleCompaction?: boolean) => ({
+  it("shows reuse tiers only where every server reports them, and each field's Mixed", () => {
+    const target = (settled?: { readonly enabled: boolean; readonly minTokens: number }) => ({
       settings: {
         ...DEFAULT_SERVER_SETTINGS,
         idleCompaction: "beforeCacheExpires" as const,
-        ...(smartIdleCompaction === undefined ? {} : { smartIdleCompaction }),
+        ...(settled === undefined ? {} : { idleCompactionSettled: settled }),
       },
     });
-    expect(scopedIdleCompaction([target(true), target(true)])).toMatchObject({
-      choice: "waiting",
-      smartAvailable: true,
-    });
-    expect(scopedIdleCompaction([target(true), target(false)]).choice).toBeNull();
-    expect(scopedIdleCompaction([target(false), target()])).toMatchObject({
+    const { idleCompactionWaiting: _waiting, ...older } = DEFAULT_SERVER_SETTINGS;
+    expect(scopedIdleCompaction([target(), { settings: older }]).tiersAvailable).toBe(false);
+    expect(scopedIdleCompaction([target()])).toMatchObject({
       choice: "beforeCacheExpires",
-      smartAvailable: false,
+      tiersAvailable: true,
+      beforeCacheExpires: true,
     });
-    // A Claude provider override keeps Smart and snoozed threads relevant under "When you return".
+    const on = target({ enabled: true, minTokens: 500_000 });
+    const larger = target({ enabled: false, minTokens: 700_000 });
+    expect(scopedIdleCompactionTier([target(), on], "settled")).toEqual({
+      enabled: null,
+      minTokens: 500_000,
+    });
+    expect(scopedIdleCompactionTier([target(), larger], "settled")).toEqual({
+      enabled: false,
+      minTokens: null,
+    });
+    // A Claude provider override keeps the tiers and snoozed threads relevant under "When you return".
     const overridden = {
       settings: {
         ...DEFAULT_SERVER_SETTINGS,
         idleCompaction: "onReturn" as const,
-        smartIdleCompaction: true,
         providerInstances: {
           claude: { driver: "claudeAgent", config: { idleCompaction: "beforeCacheExpires" } },
         },
@@ -268,12 +275,6 @@ describe("scoped settings writes", () => {
     expect(scopedIdleCompaction([overridden])).toMatchObject({
       choice: "onReturn",
       beforeCacheExpires: true,
-      smartSwitch: true,
-    });
-    expect(scopedIdleCompaction([target(true)])).toMatchObject({ smartSwitch: false });
-    expect(idleCompactionChoicePatch("all")).toEqual({
-      idleCompaction: "beforeCacheExpires",
-      smartIdleCompaction: false,
     });
   });
 
