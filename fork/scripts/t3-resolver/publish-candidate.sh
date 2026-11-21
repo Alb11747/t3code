@@ -13,6 +13,15 @@ sync_in_progress && die "Commit the merge or revert, and rerun the sync script, 
 git merge-base --is-ancestor "$upstream_sha" HEAD || die "Candidate does not contain the requested upstream SHA."
 # Promotion fast-forwards main, so the candidate must build on it.
 git merge-base --is-ancestor "$main_sha" HEAD || die "Candidate does not contain the request's fork main."
+stopped_sha=$(jq -r .stopped_commit "$ledger")
+if [[ $stopped_sha != "$upstream_sha" ]]; then
+  retirement=$(git log -1 --format=%H --grep="^This reverts commit $stopped_sha[.]" "$main_sha..HEAD" --not "$upstream_sha")
+  if [[ -z $retirement ]]; then
+    echo "Compare carry $stopped_sha with the pinned upstream version, reconcile any remaining carry changes and its fork/CHANGES.md entry, and stage the result." >&2
+    echo "Record the retirement: git commit -m 'revert(fork): retire upstream carry' -m 'This reverts commit $stopped_sha.'" >&2
+    die "Add --allow-empty only if that comparison shows no changes are needed."
+  fi
+fi
 [[ $(remote_main) == "$main_sha" ]] || die "Fork main changed; request is stale."
 candidate_sha=$(git rev-parse HEAD)
 current=$(git ls-remote "$fork_url" refs/heads/sync/candidate | cut -f1)

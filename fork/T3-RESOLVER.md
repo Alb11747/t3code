@@ -76,11 +76,13 @@ minimal.
 
    - **Revert (`REVERT_HEAD` exists):** upstream merged that patch's PR, and
      later fork commits touched the same lines. Remove the reverted patch's
-     changes while keeping the later commits' intent.
+     changes while keeping the later commits' intent. Keep the full
+     `This reverts commit <sha>.` line.
 
    Edit only conflicted files and files that the same fork change needs moved
    or adapted. Remove all conflict markers. Stage the resolved files with
-   `git add -- <files>`, run `git commit --no-edit`, then run
+   `git add -- <files>` and run `git commit --no-edit`, adding `--allow-empty`
+   if a resolved revert leaves no diff. Then run
    `bash "$FORK_RESOLVER_HOME/tools/prepare-sync.sh" "$run_id" --continue`.
    Repeat until it exits 0.
 

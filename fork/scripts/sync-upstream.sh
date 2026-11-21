@@ -88,7 +88,8 @@ while read -r sha; do
   if [[ -z ${merged[$pr]+set} ]]; then
     # A PR merged after the pinned nightly is not in the new base yet, so the
     # patch is retired only once its merge commit is part of $upstream.
-    merge=$(gh pr view "$pr" --repo "$upstream_repo" --json state,mergeCommit --jq 'select(.state == "MERGED") | .mergeCommit.oid')
+    # The resolver runs gh through SSH, which would consume the commit list.
+    merge=$(gh pr view "$pr" --repo "$upstream_repo" --json state,mergeCommit --jq 'select(.state == "MERGED") | .mergeCommit.oid' </dev/null)
     if [[ -n "$merge" && ! "$merge" =~ ^[0-9a-f]{40}$ ]]; then
       echo "Upstream PR #$pr is merged but has no merge commit SHA: $merge" >&2
       exit 1

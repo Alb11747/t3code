@@ -77,7 +77,9 @@ function fixture(t) {
   // without a saved result fails like an API error.
   writeFileSync(
     path.join(bin, "gh"),
+    // The resolver's SSH wrapper reads its stdin, unlike a local gh command.
     `#!/usr/bin/env bash
+cat >/dev/null
 cat "\${0%/*}/pr-$3" 2>/dev/null || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
 `,
     { mode: 0o755 },

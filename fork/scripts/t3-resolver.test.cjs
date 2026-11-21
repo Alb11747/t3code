@@ -123,6 +123,16 @@ function fixture(t, result, staleResult) {
     JSON.stringify({ sha, run: "200", result, staleResult, advanced: false, dispatches: [] }),
   );
   return {
+    commitRetirement: (sha) =>
+      git(
+        repo,
+        "commit",
+        "--allow-empty",
+        "-m",
+        "revert(fork): retire upstream carry",
+        "-m",
+        `This reverts commit ${sha}.`,
+      ),
     run: (name, ...args) =>
       spawnSync(bash, [path.join(scripts, name).replaceAll("\\", "/"), "1", ...args], {
         cwd: repo,
@@ -164,6 +174,22 @@ test("publication pins the dispatched check run even when the candidate SHA is u
   assert.equal(result.status, 0, result.stderr);
   assert.equal(f.ledger().checks_run_id, "200");
   assert.equal(f.ledger().status, "published");
+  assert.deepEqual(f.state().dispatches, ["mode=resume"]);
+});
+
+test("publication requires a retirement record for a request stopped on a revert", (t) => {
+  const f = fixture(t, "success", "failure");
+  const stoppedCommit = "a".repeat(40);
+  f.setLedger({ ...f.ledger(), status: "claimed", stopped_commit: stoppedCommit });
+
+  const result = f.run("publish-candidate.sh", f.summary);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, new RegExp(`This reverts commit ${stoppedCommit}\\.`));
+  assert.deepEqual(f.state().dispatches, []);
+
+  f.commitRetirement(stoppedCommit);
+  const resumed = f.run("publish-candidate.sh", f.summary);
+  assert.equal(resumed.status, 0, resumed.stderr);
   assert.deepEqual(f.state().dispatches, ["mode=resume"]);
 });
 

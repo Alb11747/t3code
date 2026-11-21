@@ -35,7 +35,7 @@ if [[ $# == 1 ]]; then
 else
   cd "$resolver_home/repo"
   [[ $(git branch --show-current) == "resolve/$1" ]] || die "The checkout is not on resolve/$1."
-  sync_in_progress && die "Resolve and commit the stopped merge or revert first (git commit --no-edit)."
+  sync_in_progress && die "Resolve and commit the stopped merge or revert first (git commit --no-edit; add --allow-empty for a resolved revert with no diff)."
 fi
 # sync-upstream calls gh for merged PRs. Keep the wrapper outside the checkout.
 mkdir -p "$resolver_home/bin"
@@ -52,7 +52,7 @@ bash "$script" --onto "$upstream_sha" >>"$resolver_home/logs/$1-prepare.log" 2>&
 tail -n 40 "$resolver_home/logs/$1-prepare.log"
 [[ $code == 0 || $code == 2 ]] || exit "$code"
 if [[ $code == 2 ]]; then
-  echo "Sync stopped on a conflict. Resolve the files, git add them, git commit --no-edit, then run:"
+  echo "Sync stopped on a conflict. Resolve the files, git add them, and git commit --no-edit. Add --allow-empty for a resolved revert with no diff. Then run:"
   echo "bash $0 $1 --continue"
 else
   echo "Upstream is merged. Validate and publish with publish-candidate.sh $1 <summary-file>."
