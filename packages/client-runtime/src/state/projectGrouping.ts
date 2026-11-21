@@ -79,7 +79,10 @@ export function isRepositoryRootProject(
 
 /** Prefer an active repository root, then the first-added project among equivalent checkouts. */
 export function selectGroupDefaultProject<
-  TProject extends Pick<EnvironmentProject, "workspaceRoot" | "repositoryIdentity" | "id" | "createdAt" | "archivedAt">,
+  TProject extends Pick<
+    EnvironmentProject,
+    "workspaceRoot" | "repositoryIdentity" | "id" | "createdAt" | "archivedAt"
+  >,
 >(projects: ReadonlyArray<TProject>): TProject | undefined {
   let selected: TProject | undefined;
   for (const candidate of projects) {
@@ -335,8 +338,14 @@ function shouldReplacePhysicalProjectWinner<TProject extends EnvironmentProject>
 // Agents add their own clones of repositories the user already added; the
 // first-added active project stays a group's target for new threads in its environment.
 export function shouldPreferProjectForNewThread(
-  candidate: Pick<EnvironmentProject, "workspaceRoot" | "repositoryIdentity" | "id" | "createdAt" | "archivedAt">,
-  current: Pick<EnvironmentProject, "workspaceRoot" | "repositoryIdentity" | "id" | "createdAt" | "archivedAt">,
+  candidate: Pick<
+    EnvironmentProject,
+    "workspaceRoot" | "repositoryIdentity" | "id" | "createdAt" | "archivedAt"
+  >,
+  current: Pick<
+    EnvironmentProject,
+    "workspaceRoot" | "repositoryIdentity" | "id" | "createdAt" | "archivedAt"
+  >,
 ): boolean {
   const candidateArchived = candidate.archivedAt != null;
   const currentArchived = current.archivedAt != null;

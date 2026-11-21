@@ -686,7 +686,12 @@ export const make = Effect.gen(function* () {
         const needsPullGuard = canAutoPull(remoteRead?.value ?? null, autoPullEnabled);
         const refsAtLocalRead = options?.refsAtLocalRead;
         const refs = refsAtLocalRead === undefined ? null : yield* workflow.readRefSnapshot(cwd);
-        if (needsPullGuard || refsAtLocalRead === undefined || refs === null || refs !== (yield* Ref.get(refsAtLocalRead))) {
+        if (
+          needsPullGuard ||
+          refsAtLocalRead === undefined ||
+          refs === null ||
+          refs !== (yield* Ref.get(refsAtLocalRead))
+        ) {
           if (refsAtLocalRead !== undefined) yield* Ref.set(refsAtLocalRead, null);
           const local = yield* refreshLocalStatusCore(cwd).pipe(
             Effect.catch((error) =>

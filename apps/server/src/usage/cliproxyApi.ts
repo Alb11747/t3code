@@ -769,9 +769,13 @@ export const makeCliproxyApi = Effect.gen(function* () {
     // short deadline; a slow lookup must not push a refresh past its budget.
     const [readings, models] = yield* Effect.all(
       [
-        Effect.forEach(readable, ({ account, provider }) => readAccount(hub, account, provider, names), {
-          concurrency: 4,
-        }),
+        Effect.forEach(
+          readable,
+          ({ account, provider }) => readAccount(hub, account, provider, names),
+          {
+            concurrency: 4,
+          },
+        ),
         Effect.forEach(
           readable,
           ({ account }) =>

@@ -12984,7 +12984,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ([type, time]) => !(type === "unknown" && time === null && resultResetAt != null),
               )
               .map(([, time]) =>
-                time !== null && Date.parse(time) > DateTime.toEpochMillis(completedAt) ? time : null,
+                time !== null && Date.parse(time) > DateTime.toEpochMillis(completedAt)
+                  ? time
+                  : null,
               );
             if (resultResetAt != null) {
               resetTimes.push(resultResetAt);
@@ -14044,7 +14046,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               : { allowedTools: queryPolicy.allowedTools }),
           });
           const queryPolicyKey =
-            claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides, turnInput.runtimePolicy.workspace) +
+            claudeEffectiveQueryPolicyKey(
+              queryPolicy,
+              mcpOverrides,
+              turnInput.runtimePolicy.workspace,
+            ) +
             (promptCaching === "disabled" ? ":prompt-caching-disabled" : "") +
             (turnInput.recovery === "drop_thinking"
               ? `:drop-thinking:${turnInput.attemptId}`
