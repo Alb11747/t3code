@@ -246,12 +246,24 @@ export const layerExecutor: Layer.Layer<
                 ),
               );
           case "provider-turn.background-subagents": {
-            const { providerSessionId, providerTurnId } = effect.request;
+            const { providerSessionId, providerTurnId, messageId, createdBy, senderThreadId } =
+              effect.request;
             // Only a hint: when it cannot run, the input waits for the next boundary as before.
             return providerSessions.get(providerSessionId).pipe(
               Effect.flatMap((session) =>
                 Option.isSome(session) && session.value.backgroundSubagents !== undefined
-                  ? session.value.backgroundSubagents({ providerTurnId })
+                  ? session.value.backgroundSubagents({
+                      providerTurnId,
+                      ...(createdBy === undefined || messageId === undefined
+                        ? {}
+                        : {
+                            message: {
+                              messageId,
+                              createdBy,
+                              ...(senderThreadId === undefined ? {} : { senderThreadId }),
+                            },
+                          }),
+                    })
                   : Effect.void,
               ),
               Effect.catch((cause) =>

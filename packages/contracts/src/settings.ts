@@ -909,6 +909,16 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         providerSettingsForm: { control: "switch", clearWhenEmpty: "omit" },
       }),
     ),
+    // Fork: how long a question holds the turn open before Claude continues without an answer.
+    // The maximum is further capped one minute before the prompt cache expires.
+    questionMinWaitMinutes: PositiveInt.pipe(
+      Schema.withDecodingDefault(Effect.succeed(5)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    questionMaxWaitMinutes: PositiveInt.pipe(
+      Schema.withDecodingDefault(Effect.succeed(60)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
     idleCompaction: InstanceIdleCompaction.pipe(
       Schema.withDecodingDefault(Effect.succeed("default" as const)),
       Schema.annotateKey({

@@ -574,7 +574,11 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
   const steered: string[] = [];
   const steeredSelections: Array<ModelSelection | undefined> = [];
   const interrupted: ProviderTurnId[] = [];
-  const backgrounded: ProviderTurnId[] = [];
+  const backgrounded: Array<
+    Parameters<
+      NonNullable<ProviderAdapter.ProviderAdapterV2SessionRuntime["backgroundSubagents"]>
+    >[0]
+  > = [];
   const capabilities = {
     ...CodexProviderCapabilitiesV2,
     turns: {
@@ -665,9 +669,9 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
               steered.push(turn.message.text);
               steeredSelections.push(turn.modelSelection);
             }).pipe(Effect.andThen(onSteer(turn))),
-          backgroundSubagents: ({ providerTurnId }) =>
+          backgroundSubagents: (input) =>
             Effect.sync(() => {
-              backgrounded.push(providerTurnId);
+              backgrounded.push(input);
             }),
           interruptTurn: ({ providerTurnId }) =>
             beforeInterrupt.pipe(
@@ -3407,6 +3411,7 @@ const sendUpdate = Effect.fn("sendUpdate")(function* (
   mode: "auto" | "steer",
   attachments: ReadonlyArray<ChatAttachment> = [],
   text = "progress update",
+  senderThreadId?: ThreadId,
 ) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -3420,6 +3425,7 @@ const sendUpdate = Effect.fn("sendUpdate")(function* (
     mode,
     createdBy,
     creationSource: createdBy === "agent" ? "mcp" : "web",
+    ...(senderThreadId === undefined ? {} : { senderThreadId }),
   });
   yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
   return result;
@@ -3990,15 +3996,17 @@ it.effect.each([
     ),
 );
 
-it.effect.each([false, true])(
-  "a boundary update asks Claude to background the root's foreground subagents, once (subagent running: %s)",
-  (subagentRunning) =>
+it.effect.each(["no blocker", "foreground subagent", "live question"] as const)(
+  "a boundary update signals Claude once per turn with %s",
+  (blocker) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { started, steered, backgrounded, layer, startFirstTurn } =
-          yield* nextTurnSelectionHarness(`background-subagents-${subagentRunning}`, {
+        const claudeDriver = ProviderDriverKind.make("claudeAgent");
+        const { events, started, steered, backgrounded, layer, startFirstTurn } =
+          yield* nextTurnSelectionHarness(`background-subagents-${blocker}`, {
             activeSteeringInterruptsTools: true,
-            providerDriver: ProviderDriverKind.make("claudeAgent"),
+            providerDriver: claudeDriver,
+            runContinuationWorker: false,
           });
         yield* Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -4006,7 +4014,8 @@ it.effect.each([false, true])(
           const sink = yield* EventSink.EventSinkV2;
           const threadId = yield* startFirstTurn;
           const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
-          if (subagentRunning) {
+          const providerTurnId = ProviderTurnId.make(`provider-turn:${started[0]!.attemptId}`);
+          if (blocker === "foreground subagent") {
             const now = yield* DateTime.now;
             const taskId = NodeId.make("node:native-subagent");
             yield* sink.write({
@@ -4025,7 +4034,7 @@ it.effect.each([false, true])(
                     parentNodeId: run.rootNodeId!,
                     origin: "provider_native",
                     createdBy: "agent",
-                    driver: ProviderDriverKind.make("claudeAgent"),
+                    driver: claudeDriver,
                     providerInstanceId: run.providerInstanceId,
                     providerThreadId: run.providerThreadId,
                     childThreadId: null,
@@ -4043,22 +4052,138 @@ it.effect.each([false, true])(
               ],
             });
           }
-          const sent = yield* sendUpdate(threadId, "agent", "auto");
-          assert.equal(sent.delivery, "queued");
-          yield* orchestrator.dispatch({
-            type: "queued-message.promote-to-steer",
-            commandId: CommandId.make("promote-again"),
+          if (blocker === "live question") {
+            const now = yield* DateTime.now;
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make("event:live-question"),
+                  type: "runtime-request.updated",
+                  threadId,
+                  runId: run.id,
+                  occurredAt: now,
+                  payload: {
+                    id: RuntimeRequestId.make("live-question"),
+                    nodeId: NodeId.make("live-question-node"),
+                    providerTurnId,
+                    nativeRequestRef: null,
+                    kind: "user_input",
+                    status: "pending",
+                    responseCapability: {
+                      type: "live",
+                      providerSessionId: (yield* orchestrator.getThreadProjection(threadId))
+                        .providerThreads[0]!.providerSessionId!,
+                    },
+                    createdAt: now,
+                    resolvedAt: null,
+                  },
+                },
+              ],
+            });
+          }
+          const secondMessageId = MessageId.make("message:second");
+          if (blocker === "no blocker") {
+            // Auto messages keep their order if both miss the boundary.
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make("second"),
+              threadId,
+              messageId: secondMessageId,
+              text: "Try again.",
+              attachments: [],
+              dispatchMode: { type: "queue_after_active" },
+              deliveryIntent: "auto",
+              createdBy: "user",
+              creationSource: "web",
+            });
+          }
+          const senderThreadId = ThreadId.make("thread:boundary-sender");
+          const sent = yield* sendUpdate(
             threadId,
-            queuedRunId: sent.run.id,
-            targetRunId: run.id,
-          });
-          yield* worker.drain();
-          // It only asks: the update itself still waits for Claude's next boundary.
-          assert.deepEqual(steered, []);
-          assert.deepEqual(
-            backgrounded,
-            subagentRunning ? [ProviderTurnId.make(`provider-turn:${started[0]!.attemptId}`)] : [],
+            "agent",
+            "auto",
+            [],
+            "progress update",
+            senderThreadId,
           );
+          assert.equal(sent.delivery, "queued");
+          const promote = (command: string, targetRunId: RunId) =>
+            orchestrator.dispatch({
+              type: "queued-message.promote-to-steer",
+              commandId: CommandId.make(command),
+              threadId,
+              queuedRunId: sent.run.id,
+              targetRunId,
+            });
+          yield* promote("promote-again", run.id);
+          yield* worker.drain();
+          // The signal leaves the update queued for Claude's next boundary.
+          const message = {
+            messageId: sent.run.userMessageId,
+            createdBy: "agent",
+            senderThreadId,
+          } as const;
+          assert.deepEqual(steered, []);
+          const firstTurnSignals: typeof backgrounded =
+            blocker === "no blocker"
+              ? [{ providerTurnId, message: { messageId: secondMessageId, createdBy: "user" } }]
+              : [];
+          firstTurnSignals.push({ providerTurnId, message });
+          assert.deepEqual(backgrounded, firstTurnSignals);
+          if (blocker !== "no blocker") return;
+
+          const running = yield* orchestrator.streamDomainEvents.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "provider-turn.updated" &&
+                event.payload.id !== providerTurnId &&
+                event.payload.status === "running",
+            ),
+            Stream.take(1),
+            Stream.runDrain,
+            Effect.forkScoped,
+          );
+          const completed = yield* orchestrator.streamDomainEvents.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "run.updated" &&
+                event.payload.id === run.id &&
+                event.payload.status === "waiting",
+            ),
+            Stream.take(1),
+            Stream.runDrain,
+            Effect.forkScoped,
+          );
+          const turn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
+          yield* Queue.offer(events, {
+            type: "provider_turn.updated",
+            driver: claudeDriver,
+            providerTurn: { ...turn, status: "completed", completedAt: yield* DateTime.now },
+          });
+          yield* Queue.offer(events, {
+            type: "turn.terminal",
+            driver: claudeDriver,
+            providerThreadId: turn.providerThreadId,
+            providerTurnId,
+            runOrdinal: started[0]!.runOrdinal,
+            status: "completed",
+            failure: null,
+            threadDisposition: "reusable",
+          });
+          yield* Fiber.join(completed);
+          yield* orchestrator.resumeQueuedRuns;
+          yield* worker.drain();
+          yield* Fiber.join(running);
+          const second = started[1]!;
+          assert.equal(second.message.messageId, secondMessageId);
+          yield* promote("promote-in-second-turn", second.runId);
+          yield* promote("repromote-in-second-turn", second.runId);
+          yield* worker.drain();
+          assert.deepEqual(steered, []);
+          assert.deepEqual(backgrounded, [
+            ...firstTurnSignals,
+            { providerTurnId: ProviderTurnId.make(`provider-turn:${second.attemptId}`), message },
+          ]);
         }).pipe(Effect.provide(layer));
       }),
     ),

@@ -7596,8 +7596,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   });
 
   /**
-   * Fork: input waiting for a tool boundary on a Claude turn whose root is blocked in foreground
-   * subagents asks Claude to background them, once per message. Delivery stays with the claim.
+   * Fork: input waiting for a tool boundary on a running Claude turn tells Claude once per message,
+   * so it backgrounds foreground subagents and ends a question's wait by the sender's rules, even
+   * one still opening. Delivery stays with the claim.
    */
   const requestSubagentsBackground = Effect.fn("Orchestrator.requestSubagentsBackground")(
     function* (
@@ -7605,12 +7606,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
       threadId: ThreadId,
       run: OrchestrationV2Run,
-      messageId: MessageId,
+      message: Pick<OrchestrationV2ConversationMessage, "id" | "createdBy" | "senderThreadId">,
     ) {
       const records = yield* projectionStore
-        .getThreadRecords(threadId, ["subagents", "providerTurns", "providerThreads"], {
-          subagentRunIds: [run.id],
-        })
+        .getThreadRecords(threadId, ["providerTurns", "providerThreads"])
         .pipe(mapDispatchError(command));
       const providerThread = records.providerThreads.find(
         (candidate) => candidate.id === run.providerThreadId,
@@ -7623,25 +7622,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         providerThread?.driver !== "claudeAgent" ||
         providerSessionId === null ||
-        turn?.status !== "running" ||
-        !records.subagents.some(
-          (task) =>
-            task.origin === "provider_native" &&
-            task.status === "running" &&
-            task.parentNodeId === run.rootNodeId,
-        )
+        turn?.status !== "running"
       )
         return;
       yield* Ref.update(effects, (existing) => [
         ...existing,
         {
-          id: `effect:background-subagents:${messageId}`,
+          // A message promoted again to a later turn signals that turn too.
+          id: `effect:background-subagents:${message.id}:${turn.id}`,
           commandId: command.commandId,
           threadId,
           request: {
             type: "provider-turn.background-subagents",
             providerSessionId,
             providerTurnId: turn.id,
+            messageId: message.id,
+            createdBy: message.createdBy,
+            ...(message.senderThreadId === undefined
+              ? {}
+              : { senderThreadId: message.senderThreadId }),
           },
         } satisfies PendingOrchestrationEffectV2,
       ]);
@@ -9068,13 +9067,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
       if (deliverAtToolBoundary && activeRun !== undefined && run.queueHeld !== true) {
-        yield* requestSubagentsBackground(
-          command,
-          effects,
-          command.threadId,
-          activeRun,
-          command.messageId,
-        );
+        yield* requestSubagentsBackground(command, effects, command.threadId, activeRun, message);
       }
       if (queuedRunStop !== undefined) {
         return yield* stopRunForQueuedCommand({
@@ -13149,7 +13142,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           effects,
           command.threadId,
           targetRun,
-          queuedMessage.id,
+          queuedMessage,
         );
         return;
       }

@@ -377,8 +377,18 @@ const layerBase: Layer.Layer<
         for (const event of events) {
           if (event.type !== "runtime-request.updated") continue;
           const { status } = event.payload;
+          const converting =
+            event.payload.kind === "user_input" &&
+            status === "pending" &&
+            event.payload.responseCapability.type === "message" &&
+            mode === "cancellation";
           if (mode === "cancellation" && event.payload.kind !== "user_input") continue;
-          if (status !== "cancelled" && !(mode === "callback" && status === "pending")) continue;
+          if (
+            !converting &&
+            status !== "cancelled" &&
+            !(mode === "callback" && status === "pending")
+          )
+            continue;
           const current = yield* projectionStore.getRuntimeRequest(
             event.threadId,
             event.payload.id,
@@ -395,7 +405,9 @@ const layerBase: Layer.Layer<
             current?.status === "pending" &&
             current.kind === event.payload.kind &&
             current.providerTurnId === event.payload.providerTurnId &&
-            current.responseCapability.type !== "message"
+            (converting
+              ? current.responseCapability.type === "live"
+              : current.responseCapability.type !== "message")
           )
             continue;
           staleRequests.add(event.payload.id);

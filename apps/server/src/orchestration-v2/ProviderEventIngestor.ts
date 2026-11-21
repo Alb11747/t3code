@@ -906,10 +906,20 @@ export const layer: Layer.Layer<
                   });
                 }),
               ),
-              (effect) =>
-                input.event.type === "app_thread.created"
-                  ? threadCommands.withLock(input.event.appThread.id, effect)
-                  : effect,
+              (effect) => {
+                const event = input.event;
+                if (event.type === "app_thread.created")
+                  return threadCommands.withLock(event.appThread.id, effect);
+                // A response command plans delivery using the capability it reads under this lock.
+                if (
+                  event.type === "runtime_request.updated" &&
+                  event.runtimeRequest.status === "pending" &&
+                  event.runtimeRequest.responseCapability.type === "message" &&
+                  event.artifacts === undefined
+                )
+                  return threadCommands.withLock(event.threadId ?? input.threadId, effect);
+                return effect;
+              },
             ),
         ),
     });

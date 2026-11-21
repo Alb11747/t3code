@@ -21,6 +21,15 @@ import {
 import { claudeThinkingRecoveryEnvironment } from "./ClaudeThinkingRecovery.ts";
 import { claudeGatewayQuotaFailure } from "./claudeGatewayQuota.ts";
 import {
+  awaitClaudeQuestionWait,
+  claudeQuestionWaitWindow,
+  formatClaudeQuestionNoAnswer,
+  interruptClaudeQuestionWait,
+  makeClaudeQuestionWait,
+  type ClaudeQuestionInterrupter,
+  type ClaudeQuestionWait,
+} from "./ClaudeQuestionWait.ts";
+import {
   dynamicToolTitle,
   formatReadToolLabel,
   formatSearchToolLabel,
@@ -5363,6 +5372,8 @@ interface ActiveClaudeTurnContext {
   readonly providerTurnOrdinal: number;
   readonly startedAt: DateTime.Utc;
   readonly itemOrdinals: Map<string, number>;
+  // A null sender records a message already taken at a boundary, even if its signal arrives later.
+  readonly boundaryMessageSenders: Map<MessageId, ClaudeQuestionInterrupter | null>;
   readonly assistant: {
     fallbackText: string;
     // Result-only replies of steered segments that ended before the current one.
@@ -5720,6 +5731,7 @@ type PendingClaudeRuntimeRequest =
   | {
       readonly type: "user_input";
       readonly answers: Deferred.Deferred<ProviderUserInputAnswers, never>;
+      readonly wait?: ClaudeQuestionWait;
     };
 
 export function claudeUserInputQuestions(
@@ -6401,6 +6413,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const pendingRuntimeRequests = yield* Ref.make(
           new Map<string, PendingClaudeRuntimeRequest>(),
         );
+        // Fork: a fully cached request reports no TTL but keeps the one the session last reported.
+        let lastPromptCacheTtlMs: number | undefined;
+        const interruptPendingQuestions = Effect.fnUntraced(function* (
+          interrupter: ClaudeQuestionInterrupter,
+        ) {
+          for (const pending of (yield* Ref.get(pendingRuntimeRequests)).values()) {
+            if (pending.type === "user_input" && pending.wait !== undefined)
+              yield* interruptClaudeQuestionWait(pending.wait, interrupter);
+          }
+        });
         const mcpElicitationSessionGrants = yield* Ref.make(new Set<string>());
         // Background local_bash tasks can trigger wake turns on the query stream with no active provider turn.
         const lastTurnRouteByNativeThread = yield* Ref.make(
@@ -6829,6 +6851,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           if (typeof usage !== "number") {
             if (claudeMessageInputTokens(usage) <= 0) return;
             context.compactionTokens = undefined;
+            if ("promptCacheTtlMs" in tokenUsage && tokenUsage.promptCacheTtlMs !== undefined)
+              lastPromptCacheTtlMs = tokenUsage.promptCacheTtlMs;
           }
           yield* emitProviderEvent({
             type: "provider_turn.updated",
@@ -13472,7 +13496,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           toolName: Parameters<CanUseTool>[0],
           toolInput: Parameters<CanUseTool>[1],
           callbackOptions: Parameters<CanUseTool>[2],
-          options?: { readonly startToolCall?: boolean },
+          options?: { readonly startToolCall?: boolean; readonly untimed?: boolean },
         ) {
           const context = yield* Ref.get(activeTurn);
           if (context === null) {
@@ -13538,14 +13562,36 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               questions,
             });
             const answers = yield* Deferred.make<ProviderUserInputAnswers, never>();
+            const askedAtMs = yield* Clock.currentTimeMillis;
+            const requestedAt = context.streamUsage?.requestedAt;
+            const wait =
+              options?.untimed === true
+                ? undefined
+                : yield* makeClaudeQuestionWait({
+                    askedAtMs,
+                    ...claudeQuestionWaitWindow({
+                      askedAtMs,
+                      requestedAtMs:
+                        requestedAt === undefined ? undefined : DateTime.toEpochMillis(requestedAt),
+                      promptCacheTtlMs: lastPromptCacheTtlMs,
+                      minWaitMinutes: adapterOptions.settings.questionMinWaitMinutes,
+                      maxWaitMinutes: adapterOptions.settings.questionMaxWaitMinutes,
+                    }),
+                  });
             yield* Ref.update(pendingRuntimeRequests, (current) => {
               const updated = new Map(current);
               updated.set(String(artifacts.request.id), {
                 type: "user_input",
                 answers,
+                ...(wait === undefined ? {} : { wait }),
               });
               return updated;
             });
+            if (wait !== undefined) {
+              for (const sender of context.boundaryMessageSenders.values()) {
+                if (sender !== null) yield* interruptClaudeQuestionWait(wait, sender);
+              }
+            }
             yield* Effect.all(
               [
                 emitProviderEvent({
@@ -13566,9 +13612,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ],
               { concurrency: 1 },
             );
-            const resolvedAnswers = yield* awaitClaudeUserInputAnswers(
-              answers,
-              callbackOptions.signal,
+            const answered = awaitClaudeUserInputAnswers(answers, callbackOptions.signal);
+            const outcome = yield* (
+              wait === undefined
+                ? answered.pipe(Effect.map((value) => ({ type: "settled" as const, value })))
+                : awaitClaudeQuestionWait(wait, answered)
             ).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
@@ -13578,6 +13626,31 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }),
               ),
             );
+            const resolvedAnswers = outcome.type === "settled" ? outcome.value : {};
+            // A message that ends the wait can cancel the callback before the wait sees it;
+            // an agent's message before the minimum has not ended it, so that abort is a Stop.
+            if (
+              wait !== undefined &&
+              !(yield* Deferred.isDone(answers)) &&
+              (outcome.type === "unanswered" ||
+                (wait.interrupter !== undefined &&
+                  wait.deadlineMs <= (yield* Clock.currentTimeMillis)))
+            ) {
+              // The card stays answerable; a later answer arrives as a user message.
+              yield* emitProviderEvent({
+                type: "runtime_request.updated",
+                driver: CLAUDE_PROVIDER,
+                runtimeRequest: { ...artifacts.request, responseCapability: { type: "message" } },
+              });
+              return {
+                behavior: "deny",
+                message: formatClaudeQuestionNoAnswer({
+                  waitedMs: (yield* Clock.currentTimeMillis) - wait.askedAtMs,
+                  interrupter: wait.interrupter,
+                }),
+                toolUseID: callbackOptions.toolUseID,
+              } satisfies PermissionResult;
+            }
             if (!(yield* Deferred.isDone(answers))) yield* cancelWithdrawnRequest(artifacts);
             return callbackOptions.signal.aborted
               ? ({
@@ -13935,7 +14008,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 },
                 // The dialog is a control request, not a tool call, so no
                 // tool_result would ever settle a tool row started for it.
-                { startToolCall: false },
+                // It answers before the session resumes, so no cache waits on it.
+                { startToolCall: false, untimed: true },
               );
               if (result.behavior !== "allow") return { behavior: "cancelled" as const };
               const answers =
@@ -14240,6 +14314,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       (yield* Ref.get(interruptedTurns)).has(context.providerTurnId)
                     )
                       return {};
+                    // Only a live root boundary can expire signals for input it does not take.
+                    for (const [messageId, sender] of context.boundaryMessageSenders) {
+                      if (sender !== null) context.boundaryMessageSenders.delete(messageId);
+                    }
                     const offers = yield* claim({
                       threadId: context.input.threadId,
                       runId: context.input.runId,
@@ -14344,6 +14422,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                           onPulled: () => preparedOffer.reservation.commit(),
                           onConsumed: () => {
                             batch.consumed.add(preparedOffer.offer.id);
+                            context.boundaryMessageSenders.set(preparedOffer.offer.messageId, null);
                             void runPromise(Deferred.succeed(preparedOffer.consumed, undefined));
                           },
                           onDiscarded: () => {
@@ -15114,6 +15193,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               providerTurnOrdinal,
               startedAt,
               itemOrdinals: new Map(),
+              boundaryMessageSenders: new Map(),
               assistant: {
                 fallbackText: "",
                 earlierFallbackText: "",
@@ -15657,11 +15737,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         ) {
           const deadline = (yield* Clock.currentTimeMillis) + BACKGROUND_MOVE_TIMEOUT_MS;
           const live = yield* Ref.get(queryContext);
-          if (
-            (yield* Ref.get(activeTurn))?.providerTurnId !== input.providerTurnId ||
-            live === null
-          )
-            return;
+          const context = yield* Ref.get(activeTurn);
+          if (context?.providerTurnId !== input.providerTurnId) return;
+          if (input.message !== undefined) {
+            if (context.boundaryMessageSenders.has(input.message.messageId)) return;
+            context.boundaryMessageSenders.set(input.message.messageId, input.message);
+            yield* interruptPendingQuestions(input.message);
+          }
+          if (live === null) return;
           yield* backgroundForegroundSubagents(live, deadline);
         });
 
@@ -15702,6 +15785,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 detail: `Claude provider thread ${turnInput.providerThread.id} has no live query.`,
               });
             }
+            // A steer read now would cancel a waiting question; end its wait so the card stays open.
+            yield* interruptPendingQuestions(turnInput.message);
             const steerUuid = yield* random.uuidV4().pipe(
               Effect.filterOrFail(isClaudePromptUuid),
               Effect.mapError(

@@ -1457,9 +1457,9 @@ layer("ProviderEventIngestorV2", (it) => {
       }),
   );
 
-  it.effect(
-    "preserves an answer committed after terminal normalization reads a pending question",
-    () =>
+  it.effect.each(["turn completion", "question conversion"] as const)(
+    "preserves an answer committed during %s",
+    (update) =>
       Effect.gen(function* () {
         const eventSink = yield* EventSink.EventSinkV2;
         const eventStore = yield* EventStore.EventStoreV2;
@@ -1542,12 +1542,12 @@ layer("ProviderEventIngestorV2", (it) => {
           });
         yield* eventSink.write({ events: seedEvents });
         const normalized = yield* Deferred.make<void>();
-        const releaseTerminalWrite = yield* Deferred.make<void>();
+        const releaseWrite = yield* Deferred.make<void>();
         const gatedSink = EventSink.EventSinkV2.of({
           ...eventSink,
           write: (input) =>
             Deferred.succeed(normalized, undefined).pipe(
-              Effect.andThen(Deferred.await(releaseTerminalWrite)),
+              Effect.andThen(Deferred.await(releaseWrite)),
               Effect.andThen(eventSink.write(input)),
             ),
         });
@@ -1555,26 +1555,33 @@ layer("ProviderEventIngestorV2", (it) => {
           Effect.provide(Layer.fresh(ProviderEventIngestor.layer)),
           Effect.provideService(EventSink.EventSinkV2, gatedSink),
         );
-        const terminal = yield* ingestor
+        const pendingWrite = yield* ingestor
           .ingestNormalized({
             providerSessionId,
             providerInstanceId: modelSelection.instanceId,
             threadId,
-            event: {
-              type: "provider_turn.updated",
-              driver: CODEX_DRIVER,
-              providerTurn: {
-                id: providerTurnId,
-                providerThreadId,
-                nodeId,
-                runAttemptId: null,
-                nativeTurnRef: null,
-                ordinal: 1,
-                status: "completed",
-                startedAt: now,
-                completedAt: now,
-              },
-            },
+            event:
+              update === "turn completion"
+                ? {
+                    type: "provider_turn.updated",
+                    driver: CODEX_DRIVER,
+                    providerTurn: {
+                      id: providerTurnId,
+                      providerThreadId,
+                      nodeId,
+                      runAttemptId: null,
+                      nativeTurnRef: null,
+                      ordinal: 1,
+                      status: "completed",
+                      startedAt: now,
+                      completedAt: now,
+                    },
+                  }
+                : {
+                    type: "runtime_request.updated",
+                    driver: CODEX_DRIVER,
+                    runtimeRequest: { ...request, responseCapability: { type: "message" } },
+                  },
           })
           .pipe(Effect.forkScoped);
         yield* Deferred.await(normalized);
@@ -1601,11 +1608,11 @@ layer("ProviderEventIngestorV2", (it) => {
             ...payload,
           });
         yield* eventSink.write({ events: responseEvents });
-        yield* Deferred.succeed(releaseTerminalWrite, undefined);
-        const committedTerminal = yield* Fiber.join(terminal);
+        yield* Deferred.succeed(releaseWrite, undefined);
+        const committed = yield* Fiber.join(pendingWrite);
         assert.deepEqual(
-          committedTerminal.map((stored) => stored.event.type),
-          ["provider-turn.updated"],
+          committed.map((stored) => stored.event.type),
+          update === "turn completion" ? ["provider-turn.updated"] : [],
         );
         const projection = yield* projections.getThreadProjection(threadId);
         const answered = projection.runtimeRequests.find((entry) => entry.id === request.id)!;

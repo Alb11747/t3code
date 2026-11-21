@@ -6,6 +6,7 @@ import {
   ModelSelection,
   NodeId,
   NonNegativeInt,
+  OrchestrationV2Actor,
   ProviderSessionId,
   RunAttemptId,
   ProviderApprovalDecision,
@@ -60,6 +61,10 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("provider-turn.background-subagents"),
     providerSessionId: ProviderSessionId,
     providerTurnId: ProviderTurnId,
+    // Optional for effects persisted before boundary signals carried message identity.
+    messageId: Schema.optional(MessageId),
+    createdBy: Schema.optional(OrchestrationV2Actor),
+    senderThreadId: Schema.optional(ThreadId),
   }),
   Schema.Struct({
     type: Schema.Literal("provider-turn.start"),

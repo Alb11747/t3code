@@ -2388,6 +2388,8 @@ describe("ClaudeAdapterV2 resume compaction", () => {
         ageMinutes: 90,
         estimatedTokens: 120000,
       });
+      yield* TestClock.adjust("2 hours");
+      assert.isUndefined(dialog.pollUnsafe());
       yield* runtime.respondToRuntimeRequest({
         requestId: event.value.runtimeRequest.id,
         answers: { [question]: "Compact and continue" },
@@ -16971,27 +16973,33 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  const deployQuestion = {
+    questions: [
+      {
+        header: "Target",
+        question: "Where should this deploy?",
+        options: [
+          { label: "Production", description: "Deploy to production." },
+          { label: "Staging", description: "Deploy to staging." },
+        ],
+        multiSelect: false,
+      },
+    ],
+  };
+
   it.effect.each([
     { card: "an approval", toolName: "Bash", toolInput: { command: "echo probe" } },
+    { card: "a question", toolName: "AskUserQuestion", toolInput: deployQuestion },
     {
-      card: "a question",
+      card: "a question with an agent message before the minimum",
       toolName: "AskUserQuestion",
-      toolInput: {
-        questions: [
-          {
-            header: "Target",
-            question: "Where should this deploy?",
-            options: [
-              { label: "Production", description: "Deploy to production." },
-              { label: "Staging", description: "Deploy to staging." },
-            ],
-            multiSelect: false,
-          },
-        ],
-      },
+      toolInput: deployQuestion,
+      signalAgentMessage: true,
     },
-  ])("closes $card card when Claude withdraws its request", ({ toolName, toolInput }) =>
+  ] as const)("closes $card card when Claude withdraws its request", (row) =>
     Effect.gen(function* () {
+      const { toolName, toolInput } = row;
+      const signalAgentMessage = "signalAgentMessage" in row;
       const harness = yield* makeWakeHarness;
       yield* harness.runtime.startTurn(
         makeClaudeTestTurnInput({
@@ -17021,6 +17029,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const pending = (yield* Queue.take(harness.runtimeRequestReceipts)).runtimeRequest;
       assert.equal(pending.status, "pending");
 
+      if (signalAgentMessage) {
+        if (pending.providerTurnId === null) throw new Error("Live question has no provider turn");
+        yield* TestClock.adjust("2 minutes");
+        yield* harness.runtime.backgroundSubagents!({
+          providerTurnId: pending.providerTurnId,
+          message: { messageId: MessageId.make("message-before-abort"), createdBy: "agent" },
+        });
+      }
       // The turn can end right after the withdrawal, before the callback returns.
       withdrawal.abort();
       yield* Queue.offer(
@@ -17031,7 +17047,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         }),
       );
       yield* harness.awaitTerminal(1);
-      assert.equal((yield* Fiber.join(permission))?.behavior, "deny");
+      const result = yield* Fiber.join(permission);
+      assert.equal(result?.behavior, "deny");
+      if (signalAgentMessage) {
+        assert.deepEqual(result, { behavior: "deny", message: "User cancelled tool execution." });
+      }
       // The cancellation has to land before the turn's end finalizes the run.
       const beforeTerminal = harness.events.slice(
         0,
@@ -17052,6 +17072,198 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.equal(statusOf("runtime_request.updated"), "cancelled");
       assert.equal(statusOf("node.updated"), "cancelled");
       assert.equal(statusOf("turn_item.updated"), "cancelled");
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
+  it.effect.each([
+    { scenario: "no activity", sentAt: null, createdBy: null, waitsFor: 59 },
+    { scenario: "an early agent message", sentAt: 2, createdBy: "agent", waitsFor: 5 },
+    { scenario: "a late agent message", sentAt: 7, createdBy: "agent", waitsFor: 7 },
+    { scenario: "a user message", sentAt: 2, createdBy: "user", waitsFor: 2 },
+    {
+      scenario: "an agent message before the question",
+      sentAt: 0,
+      createdBy: "agent",
+      waitsFor: 5,
+    },
+    { scenario: "a user message before the question", sentAt: 0, createdBy: "user", waitsFor: 0 },
+    {
+      scenario: "a root tool boundary taking a prior message",
+      sentAt: 0,
+      createdBy: "user",
+      waitsFor: 59,
+      rootBoundary: "after signal",
+    },
+    {
+      scenario: "a delayed signal for a message taken at the root tool boundary",
+      sentAt: 0,
+      createdBy: "user",
+      waitsFor: 59,
+      rootBoundary: "before signal",
+    },
+    {
+      scenario: "an empty root tool boundary after a cancelled message was signaled",
+      sentAt: 0,
+      createdBy: "user",
+      waitsFor: 59,
+      rootBoundary: "empty",
+    },
+    {
+      scenario: "an aborted root tool boundary with a pending user message",
+      sentAt: 0,
+      createdBy: "user",
+      waitsFor: 0,
+      rootBoundary: "aborted",
+    },
+  ] as const)("keeps a question answerable after $scenario", (row) =>
+    Effect.gen(function* () {
+      const { sentAt, createdBy, waitsFor } = row;
+      const rootBoundary = "rootBoundary" in row ? row.rootBoundary : undefined;
+      const messageCanInterrupt = rootBoundary === undefined || rootBoundary === "aborted";
+      const messageId = MessageId.make("message-before-question");
+      const boundaryOffers = [
+        {
+          id: "00000000-0000-4000-8000-000000000791",
+          queuedRunId: RunId.make("queued-before-question"),
+          messageId,
+          text: "A user update.",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+        },
+      ] as const;
+      const harness = yield* makeWakeHarnessWithOptions(
+        rootBoundary
+          ? {
+              claimAgentMessages: () =>
+                Effect.succeed(rootBoundary === "empty" ? [] : boundaryOffers),
+            }
+          : undefined,
+      );
+      const attemptId = RunAttemptId.make("attempt-claude-question-wait");
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId,
+          text: "Ask what to deploy.",
+          attachments: [],
+        }),
+      );
+      const providerTurnId = (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+        driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+        nativeTurnId: `turn:${attemptId}`,
+      });
+      const senderThreadId = ThreadId.make("thread-sending-update");
+      const signalMessage = (actor: "agent" | "user") =>
+        harness.runtime.backgroundSubagents!({
+          providerTurnId,
+          message: {
+            messageId,
+            createdBy: actor,
+            ...(actor === "agent" ? { senderThreadId } : {}),
+          },
+        });
+      if (rootBoundary) {
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "init",
+            capabilities: ["interrupt_cancel_queued_v1"],
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "status",
+            status: null,
+            user_message_uuid: harness.promptUuid(0),
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+      }
+      if (sentAt === 0 && createdBy !== null && rootBoundary !== "before signal") {
+        yield* signalMessage(createdBy);
+      }
+      if (rootBoundary) {
+        const hook = harness.getOpenedOptions()!.hooks!.PostToolBatch![0]!.hooks[0]!;
+        const signal = rootBoundary === "aborted" ? AbortSignal.abort() : yield* Effect.abortSignal;
+        yield* Effect.promise(() =>
+          hook(
+            {
+              hook_event_name: "PostToolBatch",
+              session_id: WAKE_NATIVE_SESSION,
+              transcript_path: "/repo/session.jsonl",
+              cwd: "/repo",
+              tool_calls: [],
+            },
+            undefined,
+            { signal },
+          ),
+        );
+        assert.equal(
+          harness.offeredMessages[1]?.message.content,
+          rootBoundary === "before signal" || rootBoundary === "after signal"
+            ? "A user update."
+            : undefined,
+        );
+      }
+      if (rootBoundary === "before signal") yield* signalMessage("user");
+      const toolUseID = "tool-deploy-question";
+      const decision = yield* Effect.promise(() =>
+        harness.getOpenedOptions()!.canUseTool!("AskUserQuestion", deployQuestion, {
+          signal: new AbortController().signal,
+          toolUseID,
+          requestId: "request-deploy",
+        }),
+      ).pipe(Effect.forkScoped);
+      const { runtimeRequest: opened } = yield* Queue.take(harness.runtimeRequestReceipts);
+      assert.equal(opened.status, "pending");
+      assert.equal(opened.responseCapability.type, "live");
+
+      if (sentAt !== null && sentAt > 0 && createdBy !== null) {
+        yield* TestClock.adjust(`${sentAt} minutes`);
+        yield* signalMessage(createdBy);
+      }
+      const remaining = waitsFor - (sentAt ?? 0);
+      if (remaining > 0) {
+        yield* TestClock.adjust(remaining * 60_000 - 1_000);
+        assert.isUndefined(decision.pollUnsafe());
+        yield* TestClock.adjust("1 second");
+      }
+
+      // Let the original maximum elapse too, so a missed signal fails on the reported wait.
+      if (sentAt === 0 && messageCanInterrupt) {
+        yield* TestClock.adjust(`${59 - waitsFor} minutes`);
+      }
+
+      const result = yield* Fiber.join(decision);
+      assert.equal(result?.behavior, "deny");
+      if (result?.behavior !== "deny") return;
+      assert.equal(result.toolUseID, toolUseID);
+      assert.include(result.message, `No answer after ${waitsFor === 0 ? "0s" : `${waitsFor}m`}:`);
+      assert.include(
+        result.message,
+        !messageCanInterrupt || createdBy === null
+          ? "no reply arrived within the wait limit"
+          : createdBy === "agent"
+            ? senderThreadId
+            : "the user sent a message",
+      );
+      assert.notInclude(result.message, "That message is delivered next");
+      const { runtimeRequest: converted } = yield* Queue.take(harness.runtimeRequestReceipts);
+      assert.deepEqual(converted, { ...opened, responseCapability: { type: "message" } });
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
