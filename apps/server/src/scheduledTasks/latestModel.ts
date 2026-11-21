@@ -1,8 +1,21 @@
 // Fork: scheduled tasks that follow the newest model of their family.
-import type { ModelSelection, ServerProvider } from "@t3tools/contracts";
-import { modelFamilyName, resolveLatestFamilyModel } from "@t3tools/shared/latestModel";
+import {
+  type ModelSelection,
+  type ScheduledTaskId,
+  ScheduledTaskError,
+  type ServerProvider,
+  type ThreadId,
+} from "@t3tools/contracts";
+import {
+  isModelFamilyAlias,
+  modelFamilyName,
+  resolveFamilyAlias,
+  resolveLatestFamilyModel,
+} from "@t3tools/shared/latestModel";
+import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import type * as SqlClient from "effect/sql/SqlClient";
 
 // The flag rides in model_selection_json, which ModelSelection decoding ignores, so no column is needed.
 // Risk: an upstream migration that rebuilds this column from ModelSelection's fields (as 016 did
@@ -99,3 +112,64 @@ export function invalidOptionChoices(
     .join("; ");
   return `${model} does not offer ${refused.map((selection) => `${selection.id}: ${String(selection.value)}`).join(", ")}. It offers ${offered || "no options"}.`;
 }
+
+export const modelSelectionForSave = Effect.fn("ScheduledTaskService.modelSelectionForSave")(
+  function* (input: {
+    readonly selection: ModelSelection;
+    readonly stored: ModelSelection | undefined;
+    readonly taskId: ScheduledTaskId;
+    readonly threadId: ThreadId | null;
+    readonly requireUnbound: boolean;
+    readonly providers: Effect.Effect<ReadonlyArray<ServerProvider>>;
+  }) {
+    const { selection, stored, taskId, threadId, providers } = input;
+    const familyAlias =
+      isModelFamilyAlias(selection.model) &&
+      (selection.instanceId !== stored?.instanceId || selection.model !== stored?.model);
+    const requireUnbound = familyAlias || input.requireUnbound;
+    if (requireUnbound && threadId !== null) {
+      return yield* new ScheduledTaskError({
+        message: "A bound task uses its thread's model. Unbind it to choose a model family.",
+        taskId,
+      });
+    }
+    if (!familyAlias) return { modelSelection: selection, familyAlias, requireUnbound };
+
+    const { instanceId, model } = selection;
+    const provider = (yield* providers).find((entry) => entry.instanceId === instanceId);
+    if (provider === undefined) {
+      return yield* new ScheduledTaskError({
+        message: `Provider instance ${instanceId} is not registered.`,
+        taskId,
+      });
+    }
+    const resolved = resolveFamilyAlias(model, provider.models);
+    if (resolved === null) {
+      return yield* new ScheduledTaskError({
+        message: `Model ${model} is not advertised by provider ${instanceId}.`,
+        taskId,
+      });
+    }
+    return { modelSelection: { ...selection, model: resolved }, familyAlias, requireUnbound };
+  },
+);
+
+// The first run can bind a thread while an edit is in flight, so check inside the save transaction.
+export const checkBindingForModelSave = Effect.fn("ScheduledTaskService.checkModelSaveBinding")(
+  function* (
+    sql: SqlClient.SqlClient,
+    taskId: ScheduledTaskId,
+    existingThreadId: ThreadId | null | undefined,
+  ) {
+    const [current] = yield* sql<{ thread_id: string | null }>`
+      SELECT thread_id FROM scheduled_tasks WHERE task_id = ${taskId}
+    `;
+    if (current?.thread_id != null && current.thread_id !== existingThreadId) {
+      return yield* new ScheduledTaskError({
+        message:
+          "This task bound to a thread while it was being edited. Unbind it to choose a model family.",
+        taskId,
+      });
+    }
+  },
+);

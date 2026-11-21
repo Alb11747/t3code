@@ -99,6 +99,7 @@ const ProjectUpdateTool = Tool.make("t3_project_update", {
     projectId: ProjectId,
     ...ProjectUpdatePayload.fields,
   }),
+  dependencies: [...shared.dependencies, ProviderRegistry.ProviderRegistry],
 }).annotate(Tool.Destructive, true);
 const ProjectDeleteTool = Tool.make("t3_project_delete", {
   ...shared,

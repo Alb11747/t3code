@@ -69,6 +69,7 @@ import {
   threadAccountChoiceFor,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
+import { isModelFamilyAlias, resolveFamilyAlias } from "@t3tools/shared/latestModel";
 import {
   awaitedBackgroundWorkHolds,
   backgroundWorkHoldsCompletion,
@@ -93,6 +94,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -151,6 +153,7 @@ import { assertTargetWithinLimits, isLiveCallerShell, threadNotFound } from "./t
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
+import * as FamilyAliases from "./modelFamilyAliases.ts";
 
 // Return recoverable handles before common MCP client timeouts expire.
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
@@ -391,6 +394,7 @@ function listCapabilityModels(input: {
 
 /** Names advertised slugs to retry with: same last `/` segment first, else a short list. */
 function advertisedModelsHint(models: ReadonlyArray<ServerProviderModel>, requested: string) {
+  if (models.length === 0) return "The provider lists no models.";
   const lastSegment = (slug: string) => slug.slice(slug.lastIndexOf("/") + 1).toLowerCase();
   const wanted = lastSegment(requested);
   const close = models.filter((model) => lastSegment(model.slug) === wanted);
@@ -428,7 +432,12 @@ const advertisedModel = (provider: ServerProvider, model: string) =>
 
 /** Antigravity 1.3 IDs append the thinking level (`gemini-3.8-flash-high`); the agent still accepts them. */
 function antigravitySuffixedModel(provider: ServerProvider, model: string) {
-  if (provider.driver !== "antigravity" || advertisedModel(provider, model)) return;
+  if (
+    provider.driver !== "antigravity" ||
+    isModelFamilyAlias(model) ||
+    advertisedModel(provider, model)
+  )
+    return;
   const separator = model.lastIndexOf("-");
   if (separator === -1) return;
   const family = model.slice(0, separator);
@@ -444,7 +453,7 @@ function antigravitySuffixedModel(provider: ServerProvider, model: string) {
 }
 
 /** A folder's own provider config can add models that only its workspace snapshot lists. */
-export const withWorkspaceModels = (
+const withWorkspaceModels = (
   providers: ReadonlyArray<ServerProvider>,
   cwd: string | undefined,
 ): ReadonlyArray<ServerProvider> =>
@@ -459,24 +468,33 @@ export const withWorkspaceModels = (
 
 const withV = (version: string) => (version.startsWith("v") ? version : `v${version}`);
 
-/** A provider that lists no models accepts any slug. */
-export const requireAdvertisedModel = (provider: ServerProvider, model: string) => {
-  if (provider.models.length === 0 || advertisedModel(provider, model) !== undefined) {
-    return Effect.void;
-  }
+/** A provider that lists no models accepts literal slugs. */
+const requireAdvertisedModel = Effect.fn("mcp.requireAdvertisedModel")(function* (
+  provider: ServerProvider,
+  model: string,
+) {
+  const resolved = isModelFamilyAlias(model)
+    ? resolveFamilyAlias(model, provider.models)
+    : provider.models.length === 0 || advertisedModel(provider, model) !== undefined
+      ? model
+      : null;
+  if (resolved !== null) return resolved;
   const updateRequired = provider.updateRequiredModels?.find(
     (candidate) => candidate.slug === model,
   );
   const detectedVersion = provider.installedVersion ?? provider.version;
-  return Effect.fail(
-    failure(
-      "model_unavailable",
-      updateRequired === undefined
-        ? `Model ${model} is not advertised by provider ${provider.instanceId}. ${advertisedModelsHint(provider.models, model)}`
-        : `Model ${model} needs provider ${provider.instanceId} at ${withV(updateRequired.minVersion)} or newer, but the detected CLI is ${detectedVersion === null ? "an unknown version" : withV(detectedVersion)}. Ask the user to update it or point the provider's binary path at a newer install.`,
-    ),
+  return yield* failure(
+    "model_unavailable",
+    updateRequired === undefined
+      ? `Model ${model} is not advertised by provider ${provider.instanceId}. ${advertisedModelsHint(provider.models, model)}`
+      : `Model ${model} needs provider ${provider.instanceId} at ${withV(updateRequired.minVersion)} or newer, but the detected CLI is ${detectedVersion === null ? "an unknown version" : withV(detectedVersion)}. Ask the user to update it or point the provider's binary path at a newer install.`,
   );
-};
+});
+
+export const resolveAdvertisedModelSelection = FamilyAliases.makeResolveAdvertisedModelSelection(
+  withWorkspaceModels,
+  requireAdvertisedModel,
+);
 
 function providerConstraints(
   provider: ServerProvider | undefined,
@@ -1701,8 +1719,17 @@ const make = Effect.gen(function* () {
       .pipe(Effect.mapError(threadManagementFailure));
 
   const resolveTargetRechecking = (
-    input: Parameters<typeof resolveTarget>[0] & { readonly cwd: string | undefined },
+    input: Parameters<typeof resolveTarget>[0] & {
+      readonly cwd: string | undefined;
+      readonly acceptedFamilySelection?: ModelSelection | undefined;
+    },
   ) => {
+    if (input.acceptedFamilySelection !== undefined) {
+      return Effect.succeed({
+        modelSelection: input.acceptedFamilySelection,
+        supportedRuntimeModes: undefined,
+      });
+    }
     const instanceId =
       input.target?.providerInstanceId ??
       (input.target?.driverKind === undefined
@@ -1824,19 +1851,22 @@ const make = Effect.gen(function* () {
     const requestedModel = input.target?.model;
     const antigravityTarget =
       requestedModel === undefined ? undefined : antigravitySuffixedModel(provider, requestedModel);
-    const model =
+    const modelInput =
       antigravityTarget?.model ??
       requestedModel ??
       (instanceId === inheritedSelection.instanceId
         ? inheritedSelection.model
         : provider.models[0]?.slug);
-    if (model === undefined) {
+    if (modelInput === undefined) {
       return yield* failure(
         "model_unavailable",
         `Provider ${instanceId} has no model available for inheritance.`,
       );
     }
-    if (requestedModel !== undefined) yield* requireAdvertisedModel(provider, model);
+    const model =
+      requestedModel === undefined
+        ? modelInput
+        : yield* requireAdvertisedModel(provider, modelInput);
     const advertised = advertisedModel(provider, model);
     const descriptors = advertised?.capabilities?.optionDescriptors;
     const requestedOptions = withLegacyUltracodeEffort(descriptors, input.target?.options);
@@ -2512,15 +2542,34 @@ const make = Effect.gen(function* () {
     return target.modelSelection;
   });
 
-  return OrchestratorMcpService.of({
+  // Concurrent retries must observe the first accepted model before resolving the alias again.
+  const keyedFamilySchedules = yield* Semaphore.make(1);
+
+  const service = OrchestratorMcpService.of({
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope, ["runs"]);
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
       yield* assertLiveCallerForOtherProject(scope, parent, projectId);
+      const familyAlias = FamilyAliases.usesScheduledFamilyAlias(input.modelSelection);
+      const commandId =
+        input.clientRequestId === undefined
+          ? undefined
+          : stableCommandId({
+              scope,
+              requestKey: input.clientRequestId,
+              operation: "schedule-task",
+            });
+      const accepted = yield* FamilyAliases.findAcceptedSchedule(
+        scheduledTasks,
+        familyAlias ? commandId : undefined,
+        projectId,
+      );
+      if (accepted !== null)
+        return yield* summarizeScheduledTask(scope, { parent, limits }, accepted);
       const project = yield* requireProject(projectId);
       const bindToCurrentThread =
         input.bindToCurrentThread ??
-        (parent !== undefined && parent.thread.projectId === projectId);
+        (!familyAlias && parent !== undefined && parent.thread.projectId === projectId);
       if (bindToCurrentThread && (parent === undefined || parent.thread.projectId !== projectId)) {
         return yield* failure(
           "invalid_request",
@@ -2529,6 +2578,8 @@ const make = Effect.gen(function* () {
             : "bindToCurrentThread binds to this thread, which belongs to a different project.",
         );
       }
+      if (bindToCurrentThread && familyAlias)
+        return yield* FamilyAliases.boundScheduledFamilyAliasFailure();
       const modelSelection = yield* scheduledTaskModel(
         projectId,
         parent?.thread.modelSelection ??
@@ -2555,24 +2606,14 @@ const make = Effect.gen(function* () {
             : "new_thread",
         workspaceStrategy: yield* scheduledTaskWorkspaceStrategy(bindToCurrentThread, projectId),
         modelSelection,
-        ...(input.followLatestModel === undefined
-          ? {}
-          : { followLatestModel: input.followLatestModel }),
+        ...FamilyAliases.scheduledTaskFollowLatestModel(input.followLatestModel, familyAlias),
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
         createdBy: "agent",
         creationSource: "mcp",
         // Scope the idempotency key by provider session so two callers
         // reusing the same clientRequestId cannot collide on one task row.
-        ...(input.clientRequestId === undefined
-          ? {}
-          : {
-              commandId: stableCommandId({
-                scope,
-                requestKey: input.clientRequestId,
-                operation: "schedule-task",
-              }),
-            }),
+        ...(commandId === undefined ? {} : { commandId }),
       };
       const { task } = yield* scheduledTasks
         .upsert(upsertInput)
@@ -2639,6 +2680,9 @@ const make = Effect.gen(function* () {
             : input.bindToCurrentThread && parent !== undefined
               ? parent.thread.id
               : null;
+        const familyAlias = FamilyAliases.usesScheduledFamilyAlias(input.modelSelection);
+        if (threadId !== null && familyAlias)
+          return yield* FamilyAliases.boundScheduledFamilyAliasFailure();
         // Reset the workspace only when the binding flips, so unbinding cannot leave runs in the shared checkout.
         const workspaceStrategy =
           (threadId === null) === (existing.threadId === null)
@@ -2670,16 +2714,14 @@ const make = Effect.gen(function* () {
             existing.modelSelection,
             input.modelSelection,
           ),
-          ...(input.followLatestModel === undefined
-            ? {}
-            : { followLatestModel: input.followLatestModel }),
+          ...FamilyAliases.scheduledTaskFollowLatestModel(input.followLatestModel, familyAlias),
           runtimeMode: existing.runtimeMode,
           interactionMode: existing.interactionMode,
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
         };
         const { task } = yield* scheduledTasks
-          .upsert(upsertInput)
+          .upsert(upsertInput, { requireUnbound: familyAlias })
           .pipe(
             Effect.mapError((error) =>
               failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
@@ -3510,6 +3552,10 @@ const make = Effect.gen(function* () {
                 providers,
                 cwd,
                 skipProjectEnablementFilter: isRetryOfAcceptedCreation,
+                acceptedFamilySelection: FamilyAliases.acceptedFamilySelection(
+                  request.target?.model,
+                  committedThread?.modelSelection,
+                ),
               });
               const runtimeMode = yield* resolveRuntimeMode(
                 parent.thread.runtimeMode,
@@ -4160,6 +4206,10 @@ const make = Effect.gen(function* () {
       } satisfies OrchestratorMcpThreadInterruptResult;
     }),
   });
+  return {
+    ...service,
+    scheduleTask: FamilyAliases.serializeScheduleTask(service.scheduleTask, keyedFamilySchedules),
+  };
 });
 
 export const layer: Layer.Layer<

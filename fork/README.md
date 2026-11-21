@@ -158,7 +158,7 @@ the diff and rerun the tests itself before committing.
 
 Before pushing task changes to the fork (`main`, fix branches, and babysitting
 follow-ups; upstream-sync automation is exempt), it's best to have Sol
-(`gpt-6.1-sol` at `xhigh`; in T3 Code, `delegate_task` with provider `codex`)
+(`gpt-sol` at `xhigh`; in T3 Code, `delegate_task` with provider `codex`)
 review the commits being pushed against their base.
 Give it the request, the diff range, and the checks you ran. Fix real
 findings, give a reason for each dismissed one, and send substantial rework
@@ -639,7 +639,7 @@ label, or request review for an upstream PR.
    Then comment the PR link on the issue, if there is one and it is still open.
 
 5. Call `link_pull_request` from the thread that opened the PR, then hand
-   watching to a Sol thread on **Lazarus**: `t3_thread_launch` with model `gpt-6.1-sol` on
+   watching to a Sol thread on **Lazarus**: `t3_thread_launch` with model `gpt-sol` on
    provider `codex`, an `existing_worktree` workspace on the PR branch, and a
    message to link the PR, call `watch_pull_request`, and handle follow-ups
    with the `babysit-pr` skill until it merges or closes, subject to the takeover
@@ -747,7 +747,7 @@ the Actions tab, which syncs immediately.
    old, onto the newest nightly at that point, so the fork runs at most about
    three days behind upstream. Fork pushes no longer sync first (_Adding a
    change_, step 6), so these are the only automatic syncs. Each sync that
-   conflicts starts a gpt-6.1-sol resolver run, its review and often
+   conflicts starts a gpt-sol resolver run, its review and often
    follow-up fixes; in November 2026, with pushes syncing first and a 24-hour
    cap, that was more than one conflict a day and about 15% of the owner's
    model tokens. Batching three days of upstream into one sync costs one

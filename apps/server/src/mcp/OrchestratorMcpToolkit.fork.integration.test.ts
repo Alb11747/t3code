@@ -322,6 +322,7 @@ describe("orchestrator MCP toolkit", () => {
             ScheduledTaskService.ScheduledTaskService,
             ScheduledTaskService.ScheduledTaskService.of({
               list: () => Ref.get(scheduledStore).pipe(Effect.map((tasks) => ({ tasks }))),
+              findByCreateCommand: () => Effect.die("unused in this test"),
               subscribeList: () => Stream.empty,
               upsert: (input) =>
                 Effect.gen(function* () {

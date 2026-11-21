@@ -886,7 +886,9 @@ const threadStartCommand = Command.make("start", {
     Flag.optional,
   ),
   model: Flag.String("model").pipe(
-    Flag.withDescription("Model slug. Defaults to the project's default model."),
+    Flag.withDescription(
+      "Model slug or family, such as gpt-sol. Defaults to the project's default model.",
+    ),
     Flag.optional,
   ),
   option: Flag.String("option").pipe(

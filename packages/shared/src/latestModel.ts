@@ -3,6 +3,8 @@
 // `[1m]` slug does not either: providers list 1M context as an option, never as a `[1m]` slug.
 const CODEX_FAMILY = /^(openai\.)?gpt-(\d+)(?:\.(\d+))?-(sol|terra|luna|astra)$/;
 const CLAUDE_FAMILY = /^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/;
+const FAMILY_ALIAS =
+  /^(?:(?:openai\.)?gpt-(?:sol|terra|luna|astra)|claude-(?:opus|sonnet|haiku|fable))$/i;
 
 interface ModelFamilyVersion {
   readonly family: string;
@@ -41,30 +43,43 @@ export function isNewerOfFamily(candidate: string, slug: string): boolean {
   return current !== null && next?.family === current.family && isNewer(next, current);
 }
 
+type FamilyModel = { readonly slug: string; readonly servedBy?: string | undefined };
+
+export const isModelFamilyAlias = (model: string): boolean => FAMILY_ALIAS.test(model);
+
+/** Resolve a family name against the chosen provider's current catalog. */
+export function resolveFamilyAlias(
+  alias: string,
+  models: ReadonlyArray<FamilyModel>,
+): string | null {
+  if (!isModelFamilyAlias(alias)) return null;
+  return newestInFamily(alias.toLowerCase(), models)?.slug ?? null;
+}
+
+function newestInFamily(family: string, models: ReadonlyArray<FamilyModel>) {
+  let best: { readonly slug: string; readonly version: ModelFamilyVersion } | null = null;
+  for (const model of models) {
+    if (model.servedBy !== undefined) continue;
+    const version = parseModelFamily(model.slug);
+    if (version?.family === family && (best === null || isNewer(version, best.version))) {
+      best = { slug: model.slug, version };
+    }
+  }
+  return best;
+}
+
 /**
  * The newest model in `models` of the slug's family when it is newer than the slug, or when the
  * slug is no longer listed (a model that was withdrawn); otherwise the slug itself. A retired ID a
  * proxy answers with another model (`servedBy`) is neither a family member nor listed.
  */
-export function resolveLatestFamilyModel(
-  slug: string,
-  models: ReadonlyArray<{ readonly slug: string; readonly servedBy?: string | undefined }>,
-): string {
+export function resolveLatestFamilyModel(slug: string, models: ReadonlyArray<FamilyModel>): string {
   const current = parseModelFamily(slug);
   if (current === null) return slug;
-  let best: { readonly slug: string; readonly version: ModelFamilyVersion } | null = null;
-  let listed = false;
-  for (const model of models) {
-    if (model.servedBy !== undefined) continue;
-    listed ||= model.slug === slug;
-    const candidate = parseModelFamily(model.slug);
-    if (
-      candidate?.family === current.family &&
-      (best === null || isNewer(candidate, best.version))
-    ) {
-      best = { slug: model.slug, version: candidate };
-    }
-  }
+  const best = newestInFamily(current.family, models);
   if (best === null) return slug;
-  return !listed || isNewer(best.version, current) ? best.slug : slug;
+  return isNewer(best.version, current) ||
+    !models.some((model) => model.slug === slug && model.servedBy === undefined)
+    ? best.slug
+    : slug;
 }

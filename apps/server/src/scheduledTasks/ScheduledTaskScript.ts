@@ -17,7 +17,12 @@ import {
   type UsageLimitSourceSnapshot,
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
-import { modelFamilyName, resolveLatestFamilyModel } from "@t3tools/shared/latestModel";
+import {
+  isModelFamilyAlias,
+  modelFamilyName,
+  resolveFamilyAlias,
+  resolveLatestFamilyModel,
+} from "@t3tools/shared/latestModel";
 import * as NodeOS from "node:os";
 import * as NodeURL from "node:url";
 import * as Context from "effect/Context";
@@ -224,9 +229,12 @@ function resolveScriptModel(value: unknown, models: ScriptModels): ModelSelectio
   const provider = enabled.find((candidate) => candidate.instanceId === instanceId);
   if (provider === undefined)
     return `No enabled provider instance "${instanceId}". Choose one of: ${enabled.map((candidate) => candidate.instanceId).join(", ") || "none"}.`;
-  const slug = fields.model.trim();
-  if (!provider.models.some((model) => model.slug === slug))
-    return `${provider.instanceId} does not list the model "${slug}". See ctx.providers.`;
+  const requested = fields.model.trim();
+  const slug = isModelFamilyAlias(requested)
+    ? resolveFamilyAlias(requested, provider.models)
+    : provider.models.find((model) => model.slug === requested)?.slug;
+  if (!slug)
+    return `${provider.instanceId} does not list the model "${requested}". See ctx.providers.`;
   const options = fields.options == null ? undefined : parseOptions(fields.options);
   if (typeof options === "string") return options;
   if (options !== undefined) {

@@ -264,9 +264,13 @@ export class ScheduledTaskService extends Context.Service<
   ScheduledTaskService,
   {
     readonly list: () => Effect.Effect<ScheduledTaskListResult, ScheduledTaskError>;
+    readonly findByCreateCommand: (
+      commandId: CommandId,
+    ) => Effect.Effect<ScheduledTask | null, ScheduledTaskError>;
     readonly subscribeList: () => Stream.Stream<ScheduledTaskListResult, ScheduledTaskError>;
     readonly upsert: (
       input: ScheduledTaskUpsertInput,
+      options?: { readonly requireUnbound?: boolean },
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
     readonly setEnabled: (
       input: ScheduledTaskSetEnabledInput,
@@ -907,12 +911,14 @@ export const layer = Layer.effect(
     // A thread deleted before the binding landed already ran its task cleanup, so apply that
     // cleanup here; a later deletion finds the binding. An unconfirmed lookup keeps the binding.
     const bindThread = Effect.fn("ScheduledTaskService.bindThread")(
-      function* (task: ScheduledTask, threadId: ThreadId) {
+      function* (task: ScheduledTask, threadId: ThreadId, selection: ModelSelection) {
         yield* sql`
           UPDATE scheduled_tasks SET thread_id = ${threadId}
           WHERE task_id = ${task.id} AND created_at = ${task.createdAt}
             AND project_id = ${task.projectId}
             AND thread_id IS NULL AND thread_mode != 'new_thread'
+            AND json_extract(model_selection_json, '$.instanceId') = ${selection.instanceId}
+            AND json_extract(model_selection_json, '$.model') = ${selection.model}
         `;
         const shell = yield* threadManagement.getThreadShell(threadId);
         if (shell === null || shell.deletedAt != null) yield* deleteForThread(threadId);
@@ -1344,7 +1350,9 @@ export const layer = Layer.effect(
                     .pipe(
                       Effect.map((launched) => launched.threadId),
                       Effect.tap((threadId) =>
-                        threadMode === "new_thread" ? Effect.void : bindThread(active, threadId),
+                        threadMode === "new_thread"
+                          ? Effect.void
+                          : bindThread(active, threadId, followed),
                       ),
                     ),
                 )
@@ -1666,7 +1674,7 @@ export const layer = Layer.effect(
 
     const upsert: ScheduledTaskService["Service"]["upsert"] = Effect.fn(
       "ScheduledTaskService.upsert",
-    )(function* (input) {
+    )(function* (input, options) {
       if (
         input.schedule.type === "fixed_time" &&
         input.schedule.timeZone != null &&
@@ -1711,6 +1719,15 @@ export const layer = Layer.effect(
         existingTask.projectId !== input.projectId &&
         keptThreadId === existingTask.threadId;
       const threadId = threadMode === "new_thread" || movedOffThread ? null : keptThreadId;
+      const { modelSelection, familyAlias, requireUnbound } =
+        yield* LatestModel.modelSelectionForSave({
+          selection: input.modelSelection,
+          stored: existingTask?.modelSelection,
+          taskId: id,
+          threadId,
+          requireUnbound: options?.requireUnbound === true,
+          providers: providerRegistry.getProviders,
+        });
       // An unchanged destination is not rechecked, so a task on an archived thread stays editable.
       if (threadId !== null && threadId !== existingTask?.threadId) {
         yield* requireDestinationThread(threadId, input.projectId, id);
@@ -1831,7 +1848,7 @@ export const layer = Layer.effect(
         threadId,
         threadMode,
         workspaceStrategy,
-        modelSelection: input.modelSelection,
+        modelSelection,
         runtimeMode: input.runtimeMode,
         interactionMode: input.interactionMode,
         createdBy: existingTask?.createdBy ?? input.createdBy ?? "user",
@@ -1845,11 +1862,15 @@ export const layer = Layer.effect(
         lastRunStatus: existingTask?.lastRunStatus ?? "never",
         lastRunError: existingTask?.lastRunError ?? null,
         runCount: existingTask?.runCount ?? 0,
-        ...((input.followLatestModel ?? existingTask?.followLatestModel) &&
-        LatestModel.canFollow(input.modelSelection)
+        ...((input.followLatestModel ?? (familyAlias || existingTask?.followLatestModel)) &&
+        LatestModel.canFollow(modelSelection)
           ? { followLatestModel: true }
           : {}),
       };
+      const bindingCheck =
+        requireUnbound && threadMode !== "new_thread"
+          ? LatestModel.checkBindingForModelSave(sql, id, existingTask?.threadId)
+          : Effect.void;
       // Fork: one transaction, so a failed script write cannot leave the task running unchecked.
       yield* sql
         .withTransaction(
@@ -1862,6 +1883,7 @@ export const layer = Layer.effect(
               : null,
             webhook,
           ).pipe(
+            (save) => Effect.andThen(bindingCheck, save),
             Effect.andThen(
               scriptStore.save({
                 taskId: id,
@@ -2970,6 +2992,9 @@ export const layer = Layer.effect(
 
     return ScheduledTaskService.of({
       list,
+      findByCreateCommand: Effect.fn("ScheduledTaskService.findByCreateCommand")(
+        (commandId: CommandId) => findTask(ScheduledTaskId.make(`scheduled-task:${commandId}`)),
+      ),
       subscribeList,
       upsert,
       setEnabled,

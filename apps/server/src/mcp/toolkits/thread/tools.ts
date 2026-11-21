@@ -31,6 +31,8 @@ import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectService from "../../../project/ProjectService.ts";
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ThreadAccountService from "../../../usage/ThreadAccountService.ts";
 
@@ -204,7 +206,12 @@ const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   }),
   success: Schema.Union([threadConfiguration, OrchestrationV2DispatchCommandResult]),
   failure: Schema.Union([OrchestratorMcpFailure, ThreadAccountError]),
-  dependencies: [...commandTool.dependencies, ThreadAccountService.ThreadAccounts],
+  dependencies: [
+    ...commandTool.dependencies,
+    ThreadAccountService.ThreadAccounts,
+    ProjectService.ProjectService,
+    ProviderRegistry.ProviderRegistry,
+  ],
 }).annotate(Tool.Destructive, true);
 
 const ThreadTransferTool = Tool.make("t3_thread_transfer", {

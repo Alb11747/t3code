@@ -4793,6 +4793,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         readonly project: ScheduledTask["modelSelection"] | null;
         readonly environment?: ScheduledTask["modelSelection"];
       } = { project: existing.modelSelection },
+      providers: ReadonlyArray<ServerProvider> = [],
     ) =>
       OrchestratorMcpService.layer.pipe(
         Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
@@ -4803,15 +4804,22 @@ describe("OrchestratorMcpService provider resolution", () => {
             NodeCrypto.layer,
             Layer.mock(ThreadManagementService.ThreadManagementService)({
               getThreadShell: () => Effect.succeed(null),
+              getThreadRecords: () => {
+                const parent = parentProjection([], {
+                  instanceId: existing.modelSelection.instanceId,
+                  model: "gpt-6-luna",
+                });
+                return Effect.succeed({ ...parent, thread: { ...parent.thread, projectId } });
+              },
             }),
             ServerSettings.layerTest(
               defaults.environment === undefined
                 ? {}
                 : { defaultModelSelection: defaults.environment },
             ),
-            Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+            providerRegistryLayer(providers),
             Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
-              list: () => Effect.succeed([]),
+              list: () => Effect.succeed(providers.map(({ instanceId }) => instanceId)),
             }),
             Layer.mock(ProjectService.ProjectService)({
               getById: () =>
@@ -4825,6 +4833,17 @@ describe("OrchestratorMcpService provider resolution", () => {
             Layer.mock(RemoteDelegation.RemoteDelegation)({}),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({
               list: () => Effect.succeed({ tasks: [task] }),
+              findByCreateCommand: (commandId) =>
+                inputs === undefined
+                  ? Effect.succeed(null)
+                  : Ref.get(inputs).pipe(
+                      Effect.map((all) => {
+                        const accepted = all.find((input) => input.commandId === commandId);
+                        return accepted === undefined
+                          ? null
+                          : { ...task, modelSelection: accepted.modelSelection };
+                      }),
+                    ),
               upsert: (input) =>
                 Ref.update(saved, (strategies) => [...strategies, input.workspaceStrategy]).pipe(
                   Effect.andThen(
@@ -4832,7 +4851,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                       ? Effect.void
                       : Ref.update(inputs, (all) => [...all, input]),
                   ),
-                  Effect.as({ task }),
+                  Effect.as({ task: { ...task, modelSelection: input.modelSelection } }),
                 ),
             }),
           ),
@@ -4845,6 +4864,65 @@ describe("OrchestratorMcpService provider resolution", () => {
       resolveCommit: () => Effect.succeed({ commitSha: "abc123" }),
     };
     const schedule = { type: "interval", everyMs: 3_600_000 } as const;
+
+    it.effect("saves a family alias as its concrete model and follows it by default", () =>
+      Effect.gen(function* () {
+        const inputs = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
+        const instanceId = existing.modelSelection.instanceId;
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(
+            service(
+              masterRepository,
+              yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]),
+              existing,
+              inputs,
+              undefined,
+              [
+                providerSnapshot({
+                  instanceId,
+                  driver: ProviderDriverKind.make("codex"),
+                  model: "gpt-6.2-sol",
+                }),
+              ],
+            ),
+          ),
+        );
+        const request = {
+          projectId,
+          prompt: "Check the build",
+          schedule,
+          modelSelection: { instanceId, model: "gpt-sol" },
+        };
+        yield* mcp.scheduleTask(scope, request);
+        const pinnedRequest = {
+          ...request,
+          clientRequestId: "pin-family-version",
+          followLatestModel: false,
+        };
+        const [created, replay] = yield* Effect.all(
+          [mcp.scheduleTask(scope, pinnedRequest), mcp.scheduleTask(scope, pinnedRequest)],
+          { concurrency: 2 },
+        );
+        assert.equal(replay.scheduledTaskId, created.scheduledTaskId);
+        assert.deepEqual(replay.modelSelection, created.modelSelection);
+        assert.deepEqual(
+          (yield* Ref.get(inputs)).map(({ modelSelection, followLatestModel, threadId }) => ({
+            modelSelection,
+            followLatestModel,
+            threadId,
+          })),
+          [true, false].map((followLatestModel) => ({
+            modelSelection: { instanceId, model: "gpt-6.2-sol" },
+            followLatestModel,
+            threadId: null,
+          })),
+        );
+        const error = yield* mcp
+          .scheduleTask(scope, { ...request, bindToCurrentThread: true })
+          .pipe(Effect.flip);
+        assert.equal(error.code, "invalid_request");
+      }),
+    );
 
     it.effect("starts from the project's default branch", () =>
       Effect.gen(function* () {
@@ -5237,6 +5315,11 @@ describe("OrchestratorMcpService provider resolution", () => {
             expected: { ...inherited, model: "GPT" },
           },
           {
+            name: "newest model by family alias",
+            target: { model: "gpt-sol" },
+            expected: { instanceId: codexInstanceId, model: "gpt-6.2-sol" },
+          },
+          {
             name: "parent named the same model by alias",
             parent: { ...inherited, model: "gpt" },
             target: { model: inherited.model },
@@ -5337,13 +5420,15 @@ describe("OrchestratorMcpService provider resolution", () => {
                   model: inherited.model,
                 }),
                 models: [
-                  ...[inherited.model, "other-model"].map((model) => ({
-                    slug: model,
-                    name: model,
-                    isCustom: false,
-                    capabilities: null,
-                    ...(model === inherited.model ? { aliases: ["gpt"] } : {}),
-                  })),
+                  ...[inherited.model, "other-model", "gpt-6.1-sol", "gpt-6.2-sol"].map(
+                    (model) => ({
+                      slug: model,
+                      name: model,
+                      isCustom: false,
+                      capabilities: null,
+                      ...(model === inherited.model ? { aliases: ["gpt"] } : {}),
+                    }),
+                  ),
                   {
                     slug: "ultracode-model",
                     name: "ultracode-model",

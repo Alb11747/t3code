@@ -1,11 +1,29 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { modelFamilyName, resolveLatestFamilyModel } from "./latestModel.ts";
+import { modelFamilyName, resolveFamilyAlias, resolveLatestFamilyModel } from "./latestModel.ts";
 
 const slugs = (...values: string[]): Array<{ slug: string; servedBy?: string }> =>
   values.map((slug) => ({ slug }));
 // A retired ID a proxy answers with another model, listed beside the real ones.
 const alias = (slug: string, servedBy: string) => ({ slug, servedBy });
+
+describe("resolveFamilyAlias", () => {
+  it.each([
+    ["GPT-SOL", slugs("gpt-6.1-sol", "gpt-6.10-sol", "gpt-6.2-sol", "gpt-7-terra"), "gpt-6.10-sol"],
+    [
+      "claude-opus",
+      [...slugs("claude-opus-5-5"), alias("claude-opus-6", "claude-opus-5-5")],
+      "claude-opus-5-5",
+    ],
+    ["openai.gpt-luna", slugs("gpt-7-luna", "openai.gpt-6.2-luna"), "openai.gpt-6.2-luna"],
+    ["gpt-sol", [alias("gpt-6.1-sol", "gpt-6.2-terra"), ...slugs("gpt-6.2-terra")], null],
+    ["gpt-unknown", slugs("gpt-6-sol", "gpt-7-unknown"), null],
+    ["gpt-6-chat-thinking", slugs("gpt-6-chat-thinking", "gpt-7-chat-thinking"), null],
+    ["gpt-6.1-sol", slugs("gpt-6.2-sol"), null],
+  ])("%s resolves only to the newest listed member of its family", (name, models, expected) => {
+    expect(resolveFamilyAlias(name, models)).toBe(expected);
+  });
+});
 
 describe("resolveLatestFamilyModel", () => {
   it.each([

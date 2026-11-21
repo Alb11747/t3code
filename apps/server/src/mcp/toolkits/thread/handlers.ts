@@ -10,10 +10,12 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
+import { isModelFamilyAlias } from "@t3tools/shared/latestModel";
 import { topOfPinnedRunOrderKey } from "@t3tools/shared/pinOrderKey";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import { resolveAdvertisedModelSelection } from "../../OrchestratorMcpService.ts";
 import {
   dispatchFailure,
   newCommandId,
@@ -279,6 +281,11 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           threads,
           projection: { thread },
         } = yield* readThread(input.threadId);
+        const requested = input.modelSelection;
+        const modelSelection =
+          requested !== undefined && isModelFamilyAlias(requested.model)
+            ? yield* resolveAdvertisedModelSelection(requested, thread.worktreePath ?? undefined)
+            : requested;
         let sequence: number | undefined;
         if (input.compactBeforeCacheExpires !== undefined || input.autoCompactLimit !== undefined) {
           const result = yield* threads
@@ -305,7 +312,6 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           });
           sequence ??= 0;
         }
-        const modelSelection = input.modelSelection;
         if (modelSelection !== undefined) {
           const type = modelSelectionCommandType(thread.providerInstanceId, modelSelection);
           const result = yield* threads

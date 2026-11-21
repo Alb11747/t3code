@@ -7,7 +7,6 @@ import {
   ProjectId,
   type TaskFolderError,
   type Project as ProjectRecord,
-  type ServerProvider,
   T3_PROJECT_FILE_NAME,
 } from "@t3tools/contracts";
 import * as Digest from "effect/crypto/Digest";
@@ -31,6 +30,7 @@ import * as ServerSettings from "../../../serverSettings.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as ThreadAccounts from "../../../usage/ThreadAccountService.ts";
 import * as DateTime from "effect/DateTime";
+import { isModelFamilyAlias } from "@t3tools/shared/latestModel";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import {
   resolveProjectFileBackedSetting,
@@ -310,40 +310,17 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               );
         if (project !== undefined && input.workspaceStrategy?.type === "existing_worktree")
           yield* assertProjectWorktree(project.workspaceRoot, input.workspaceStrategy.worktreePath);
+        let explicitModel = launchedModel;
         if (!replaying && input.modelSelection !== undefined) {
-          const { instanceId, model } = input.modelSelection;
-          const registry = yield* ProviderRegistry.ProviderRegistry;
           // The thread runs in this folder, whose own provider config can add models.
           const cwd =
             input.workspaceStrategy?.type === "existing_worktree"
               ? input.workspaceStrategy.worktreePath
               : project?.workspaceRoot;
-          const requireModel = (
-            providers: ReadonlyArray<ServerProvider>,
-          ): Effect.Effect<void, OrchestratorMcpFailure> => {
-            const provider = OrchestrationMcp.withWorkspaceModels(providers, cwd).find(
-              (candidate) => candidate.instanceId === instanceId,
-            );
-            return provider === undefined
-              ? Effect.void
-              : OrchestrationMcp.requireAdvertisedModel(provider, model);
-          };
-          const checked = requireModel(yield* registry.getProviders);
-          yield* cwd === undefined
-            ? checked
-            : checked.pipe(
-                Effect.catchIf(
-                  (error) => error.code === "model_unavailable",
-                  () =>
-                    Project.ProjectService.pipe(
-                      Effect.flatMap((projects) => projects.workspaceScanDirectory(cwd)),
-                      Effect.flatMap((scanCwd) =>
-                        registry.refreshWorkspaceSnapshot({ instanceId, cwd, scanCwd }),
-                      ),
-                      Effect.flatMap(requireModel),
-                    ),
-                ),
-              );
+          explicitModel = yield* OrchestrationMcp.resolveAdvertisedModelSelection(
+            input.modelSelection,
+            cwd,
+          );
         }
         const projectSettings =
           replaying || project === undefined
@@ -396,8 +373,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         // within the ceiling it was approved with.
         const projectDefaults = caller === undefined ? projectSettings : undefined;
         const modelSelection =
-          input.modelSelection ??
-          launchedModel ??
+          explicitModel ??
           caller?.modelSelection ??
           (projectDefaults
             ? resolveNewThreadModelSelection({
@@ -608,8 +584,17 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   t3_project_update: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
       const projects = yield* Project.ProjectService;
+      const requested = input.defaultModelSelection;
+      const defaultModelSelection =
+        requested != null && isModelFamilyAlias(requested.model)
+          ? yield* OrchestrationMcp.resolveAdvertisedModelSelection(requested)
+          : requested;
       const updated = yield* projects
-        .update({ ...input, commandId: yield* newCommandId() })
+        .update({
+          ...input,
+          ...(defaultModelSelection === undefined ? {} : { defaultModelSelection }),
+          commandId: yield* newCommandId(),
+        })
         .pipe(Effect.mapError(projectFailure));
       return (yield* withSavedProjectSettings)(updated);
     }),
