@@ -12,6 +12,7 @@ import {
   ProviderSetupError,
   RouterAccountAlias,
   RouterProvider,
+  type RunId,
   type ServerProvider,
   type ServerProviderUsageLimits,
   type ThreadAccountChoice,
@@ -47,6 +48,7 @@ import * as Stream from "effect/Stream";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import { isTerminalRunStatus } from "../orchestration-v2/ThreadManagementService.ts";
 import * as ClaudeKeepWarm from "../provider/ClaudeKeepWarm.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -464,51 +466,61 @@ export const make = Effect.gen(function* () {
     return true;
   });
 
-  // Since quota router 0.27.0 a pin change re-places the requests it holds, so a pin hold's notice
-  // ends now and the next poll reads the router afresh. A keep-warm hold forwards its request to
-  // the account it is held on, as an older router's pin hold stays on its old pin, so that turn
-  // stops (the request never reached the provider) and continues, which the new pin routes.
-  const afterPinChange = Effect.fn("ThreadAccounts.afterPinChange")(function* (
+  const restartHeldForMove = Effect.fn("ThreadAccounts.restartHeldForMove")(function* (
     threadId: ThreadId,
-    pinned: boolean,
+    runId: RunId,
   ) {
-    const held = yield* keepWarm.find(threadId);
-    if (held === null || held.turn.hold.released === true) return;
-    const { hold } = held.turn;
-    if (hold.kind === "pin" && hold.staysOnPinChange !== true) {
-      yield* held.session.show(held.turn, null);
-      yield* keepWarm.forget;
-      return;
-    }
-    // Removing a pin leaves a keep-warm hold where it is.
-    if (!pinned && hold.kind !== "pin") return;
-    const continueId = `thread-account-continue:${held.turn.runId}`;
-    yield* Effect.forEach(
-      [
-        {
-          type: "message.dispatch",
-          commandId: CommandId.make(continueId),
-          messageId: MessageId.make(continueId),
-          threadId,
-          text: "Continue where you left off.",
-          attachments: [],
-          dispatchMode: { type: "queue_after_active" },
-          createdBy: "user",
-          creationSource: "server",
-        },
-        {
-          type: "run.interrupt",
-          commandId: CommandId.make(`${continueId}:stop`),
-          threadId,
-          runId: held.turn.runId,
-          preserveDelegatedTasks: true,
-          reason: "Stopped to continue on the chosen account.",
-        },
-      ] as const,
-      (command) => orchestrator.dispatch(command),
-      { discard: true },
-    );
+    // The pending request contains thinking from the previous account.
+    const continueId = `thread-account-continue:${runId}`;
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make(continueId),
+      messageId: MessageId.make(continueId),
+      threadId,
+      text: "Continue where you left off.",
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "user",
+      creationSource: "server",
+    });
+    yield* orchestrator
+      .dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make(`${continueId}:stop`),
+        threadId,
+        runId,
+        preserveDelegatedTasks: true,
+        reason: "Stopped to continue on the chosen account.",
+      })
+      .pipe(
+        Effect.catch((error) =>
+          Effect.gen(function* () {
+            // The router may have rejected the old payload before we interrupted it.
+            const terminal = yield* orchestrator.getThreadRecords(threadId, ["runs"]).pipe(
+              Effect.map(({ runs }) =>
+                runs.some((run) => run.id === runId && isTerminalRunStatus(run.status)),
+              ),
+              Effect.orElseSucceed(() => false),
+            );
+            if (!terminal) return yield* error;
+          }),
+        ),
+      );
   });
+
+  const matchingPins = (target: Target, sessions: ReadonlyArray<string>) =>
+    api.control(target.source.id, target.hub).pipe(
+      Effect.map(({ pins }) => {
+        const prefix = `${target.routerProvider}:`;
+        const bare = (session: string) =>
+          session.startsWith(prefix) ? session.slice(prefix.length) : session;
+        return pins?.filter((pin) =>
+          sessions.some((session) => bare(session) === bare(pin.session)),
+        );
+      }),
+      Effect.timeout(PREVIEW_TIMEOUT),
+      Effect.orElseSucceed(() => undefined),
+    );
 
   const set = Effect.fn("ThreadAccounts.set")(function* (input: ThreadAccountSetInput) {
     const thread = yield* threadOf(input.threadId);
@@ -524,6 +536,12 @@ export const make = Effect.gen(function* () {
     if (input.account === null) {
       if (target === null && storedSourceId === undefined) return yield* fail(NOT_ROUTED);
       const sessions = yield* threadSessions(input.threadId, session);
+      if (
+        !storedChoice &&
+        target !== null &&
+        (sessions.length === 0 || (yield* matchingPins(target, sessions))?.length === 0)
+      )
+        return;
       if (previousSourceId !== undefined) yield* unpinSource(previousSourceId, sessions);
       if (target !== null && sessions.length > 0) yield* api.unpin(target.hub, sessions);
       yield* orchestrator.dispatch({
@@ -532,7 +550,7 @@ export const make = Effect.gen(function* () {
         threadId: input.threadId,
         accountChoice: null,
       });
-      yield* afterPinChange(input.threadId, false);
+      yield* keepWarm.forget;
       return;
     }
     if (target === null) return yield* fail(NOT_ROUTED);
@@ -550,6 +568,23 @@ export const make = Effect.gen(function* () {
     const stall =
       canWait &&
       (input.stall ?? (current && rename(current.account) === account ? current.stall : false));
+    if (
+      current?.sourceId === target.source.id &&
+      current.instanceId === target.instanceId &&
+      rename(current.account) === account &&
+      current.stall === stall
+    ) {
+      if (!session) return;
+      const pins = yield* matchingPins(target, [session]);
+      const pin = pins?.at(0);
+      if (
+        pins?.length === 1 &&
+        pin &&
+        rename(pin.account) === account &&
+        (pin.stall ?? false) === stall
+      )
+        return;
+    }
     const pick = session
       ? yield* api.nextPick(target.hub, {
           provider: target.routerProvider,
@@ -564,6 +599,8 @@ export const make = Effect.gen(function* () {
         requiresDropThinking: true,
       });
     }
+    // The move wakes the router hold. Capture its run before the pin round-trip.
+    const held = moved ? yield* keepWarm.find(input.threadId) : null;
     // Clean up while the stored choice still identifies the previous hub.
     if (previousSourceId !== undefined) {
       const cleared = yield* unpinSource(
@@ -605,7 +642,10 @@ export const make = Effect.gen(function* () {
       },
       ...(moved ? { accountMovedAt: DateTime.formatIso(now) } : {}),
     });
-    yield* afterPinChange(input.threadId, true);
+    if (held && held.turn.hold.released !== true) {
+      yield* restartHeldForMove(input.threadId, held.turn.runId);
+    }
+    yield* keepWarm.forget;
   });
 
   const launchChoice = Effect.fn("ThreadAccounts.launchChoice")(function* (input: {

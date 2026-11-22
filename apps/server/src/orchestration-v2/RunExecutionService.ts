@@ -655,6 +655,10 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly providerTurnOrdinal: number;
   readonly nativeThreadHasTurns?: boolean;
   readonly promptCacheExpiresAt?: DateTime.Utc;
+  readonly idleCompaction?: Exclude<
+    ProviderAdapter.ProviderAdapterV2TurnInput["idleCompaction"],
+    undefined
+  >;
   readonly dropMismatchedThinking?: boolean;
   readonly resume?: boolean;
   readonly loadInheritedBackgroundTurnItems?: () => Effect.Effect<
@@ -2261,6 +2265,7 @@ export const layer: Layer.Layer<
           ...(input.promptCacheExpiresAt === undefined
             ? {}
             : { promptCacheExpiresAt: input.promptCacheExpiresAt }),
+          ...(input.idleCompaction === undefined ? {} : { idleCompaction: input.idleCompaction }),
           ...(input.dropMismatchedThinking ? { dropMismatchedThinking: true } : {}),
           ...(input.run.restartContinuationOfRunId === undefined
             ? {}

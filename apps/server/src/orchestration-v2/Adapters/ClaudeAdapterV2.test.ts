@@ -102,6 +102,7 @@ import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
 import { WorktreeToolkit } from "../../mcp/toolkits/worktree/tools.ts";
 import { ThreadToolkit } from "../../mcp/toolkits/thread/tools.ts";
 import { OrchestratorToolkit } from "../../mcp/toolkits/orchestrator/tools.ts";
+import * as ClaudeKeepWarm from "../../provider/ClaudeKeepWarm.ts";
 import { ClaudeExecutableFileCheck } from "../../provider/Drivers/ClaudeExecutable.ts";
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
@@ -1012,12 +1013,12 @@ describe("ClaudeAdapterV2 device instructions", () => {
 });
 
 describe("ClaudeAdapterV2 context usage", () => {
-  it("dates cache expiry from the request start, not the response end", () => {
+  it("dates the shortest cache expiry from the request start", () => {
     const usage = ClaudeAdapterV2.claudeProviderTurnTokenUsage(
       {
         input_tokens: 1,
         output_tokens: 1,
-        cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 300 },
+        cache_creation: { ephemeral_1h_input_tokens: 200, ephemeral_5m_input_tokens: 300 },
       },
       null,
       "2026-08-29T00:03:00.000Z",
@@ -11121,6 +11122,79 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ),
         ),
       ),
+  );
+
+  it.effect.each([true, false])("uses exact router cache-hit proof when available (%s)", (proved) =>
+    Effect.gen(function* () {
+      const service = yield* ClaudeKeepWarm.ClaudeKeepWarm;
+      const baseUrl = "https://hub.example.test";
+      const messageId = "msg_cache_hit";
+      const lookups: string[][] = [];
+      const expiry = {
+        promptCacheTtlMs: 300_000,
+        promptCacheExpiresAt: DateTime.formatIso(DateTime.add(yield* DateTime.now, { minutes: 5 })),
+      };
+      const harness = yield* makeWakeHarnessWithOptions({
+        settings: {
+          ...DEFAULT_CLAUDE_SETTINGS,
+          launchArgs: `--settings '${JSON.stringify({ env: { ANTHROPIC_BASE_URL: baseUrl } })}'`,
+        },
+      }).pipe(
+        Effect.provideService(ClaudeKeepWarm.ClaudeKeepWarm, {
+          ...service,
+          readCacheExpiry: (url, session, response) =>
+            Effect.sync(() => {
+              lookups.push([url, session, response]);
+              return proved ? expiry : null;
+            }),
+        }),
+      );
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("attempt-cache-hit"),
+          text: "Continue.",
+          attachments: [],
+        }),
+      );
+      yield* Queue.offer(
+        harness.sdkMessages,
+        usageStreamFrame({
+          type: "message_start",
+          message: {
+            id: messageId,
+            usage: { ...zeroUsage, input_tokens: 10, cache_read_input_tokens: 100 },
+          },
+        }),
+      );
+      yield* Queue.offer(
+        harness.sdkMessages,
+        makeResultFrame({ uuid: "00000000-0000-4000-8000-000000000681", result: "OK" }),
+      );
+      const terminal = yield* Queue.take(harness.terminalReceipts);
+      assert.equal(terminal.status, "completed");
+      assert.equal(lookups.length, 1);
+      assert.isTrue(lookups[0]?.[0] === baseUrl);
+      assert.deepEqual(lookups[0]?.slice(1), [WAKE_NATIVE_SESSION, messageId]);
+      const cacheExpiries = harness.events.flatMap((event) =>
+        event.type === "provider_turn.updated" &&
+        event.providerTurn.tokenUsage?.promptCacheExpiresAt
+          ? [event.providerTurn.tokenUsage.promptCacheExpiresAt]
+          : [],
+      );
+      assert.deepEqual(cacheExpiries, proved ? [expiry.promptCacheExpiresAt] : []);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
   );
 
   it.effect("measures a model outside the catalog against the window Claude reports", () =>

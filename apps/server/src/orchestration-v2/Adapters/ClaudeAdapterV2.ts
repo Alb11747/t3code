@@ -294,8 +294,8 @@ function claudePromptCacheTtlMs(
   cacheCreation: ClaudeCacheCreation | null | undefined,
 ): number | undefined {
   if (!cacheCreation) return undefined;
-  if (cacheCreation.ephemeral_1h_input_tokens > 0) return 60 * 60_000;
   if (cacheCreation.ephemeral_5m_input_tokens > 0) return 5 * 60_000;
+  if (cacheCreation.ephemeral_1h_input_tokens > 0) return 60 * 60_000;
   return undefined;
 }
 
@@ -10382,6 +10382,47 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   failure: null,
                   threadDisposition,
                 };
+          const stream = input.context.streamUsage;
+          const usage = stream?.usage;
+          const readCacheExpiry = keepWarm.readCacheExpiry;
+          let tokenUsage: OrchestrationV2ProviderTurn["tokenUsage"];
+          // A hit says nothing about which account served it. The router can tie the
+          // actual credential and refreshed cache to this exact response.
+          if (
+            input.status === "completed" &&
+            currentQuery?.lastTurn === input.context &&
+            stream != null &&
+            usage != null &&
+            usage.cache_creation_input_tokens === 0 &&
+            (usage.cache_read_input_tokens ?? 0) > 0 &&
+            readCacheExpiry !== undefined
+          ) {
+            const evidence = yield* resolveClaudeEnv(
+              currentQuery.settingsCwd,
+              currentQuery.launchArgSettings,
+              "ANTHROPIC_BASE_URL",
+            ).pipe(
+              Effect.flatMap((baseUrl) =>
+                baseUrl === undefined
+                  ? Effect.succeed(null)
+                  : readCacheExpiry(baseUrl, nativeThreadId, stream.messageId),
+              ),
+              Effect.timeoutOption("500 millis"),
+              Effect.map(Option.getOrNull),
+            );
+            if (evidence != null) {
+              tokenUsage = {
+                ...claudeProviderTurnTokenUsage(
+                  usage,
+                  claudeContextWindow(input.context.input.modelSelection),
+                  DateTime.formatIso(input.completedAt),
+                  input.context.autoCompactWindow,
+                ),
+                ...evidence,
+              };
+              lastPromptCacheTtlMs = evidence.promptCacheTtlMs;
+            }
+          }
           yield* Effect.all(
             [
               emitProviderEvent({
@@ -10393,6 +10434,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     status: input.status,
                     completedAt: input.completedAt,
                   }),
+                  ...(tokenUsage === undefined ? {} : { tokenUsage }),
                   turnTokenUsage: normalizeClaudeTurnTokenUsage(
                     input.result,
                     input.context.subagentsByTaskId.size > 0 ||
@@ -14119,6 +14161,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
           });
+          const idleCompaction = turnInput.idleCompaction;
+          const idleDeadline =
+            idleCompaction !== undefined && turnInput.promptCacheExpiresAt
+              ? DateTime.formatIso(turnInput.promptCacheExpiresAt)
+              : undefined;
           const queryPolicyKey =
             claudeEffectiveQueryPolicyKey(
               queryPolicy,
@@ -14129,6 +14176,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             (turnInput.recovery === "drop_thinking"
               ? `:drop-thinking:${turnInput.attemptId}`
               : "") +
+            (idleDeadline === undefined ? "" : `:idle-compaction:${idleDeadline}`) +
             (turnInput.dropMismatchedThinking ? DROP_MISMATCHED_THINKING_KEY : "");
           const resumeSessionAt =
             turnInput.recovery === "drop_thinking"
@@ -14141,6 +14189,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             existing.nativeThreadId === nativeThreadId &&
             !existing.stopping &&
             !existing.queryPolicyKey.includes(":drop-thinking:") &&
+            !existing.queryPolicyKey.includes(":idle-compaction:") &&
             existing.queryPolicyKey.endsWith(DROP_MISMATCHED_THINKING_KEY) ===
               (turnInput.dropMismatchedThinking === true) &&
             isClaudeProviderContinuationTurn(turnInput)
@@ -14532,7 +14581,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(appendSystemPromptFileText === undefined ? {} : { appendSystemPromptFileText }),
             ...(toolSearchOverride === undefined ? {} : { toolSearchOverride }),
           });
-          if (turnInput.recovery === "drop_thinking" || turnInput.dropMismatchedThinking) {
+          const dropThinking =
+            turnInput.recovery === "drop_thinking" || turnInput.dropMismatchedThinking;
+          if (dropThinking || idleCompaction !== undefined) {
             const sourcesArg = queryOptions.extraArgs?.["setting-sources"];
             const settingSources = yield* decodeClaudeRecoverySettingSources(
               sourcesArg === undefined
@@ -14570,25 +14621,58 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               const value = settingsEnv[key];
               if (typeof value === "string") environment[key] = value;
             }
-            const recoveryEnv = claudeThinkingRecoveryEnvironment(
-              environment,
-              queryOptions.thinking?.type !== "disabled" &&
-                queryOptions.thinking?.display === "summarized",
-            );
-            // Flag settings outrank settings files; nothing is written to those files.
-            const flags = typeof queryOptions.settings === "object" ? queryOptions.settings : {};
-            queryOptions = {
-              ...queryOptions,
-              env: recoveryEnv,
-              settings: {
-                ...flags,
-                env: {
-                  ...flags.env,
-                  CLAUDE_CODE_EXTRA_BODY: recoveryEnv.CLAUDE_CODE_EXTRA_BODY,
-                  ANTHROPIC_BETAS: recoveryEnv.ANTHROPIC_BETAS,
+            const scopedEnv: Record<string, string> = {};
+            if (dropThinking) {
+              const recoveryEnv = claudeThinkingRecoveryEnvironment(
+                environment,
+                queryOptions.thinking?.type !== "disabled" &&
+                  queryOptions.thinking?.display === "summarized",
+              );
+              scopedEnv.CLAUDE_CODE_EXTRA_BODY = recoveryEnv.CLAUDE_CODE_EXTRA_BODY;
+              scopedEnv.ANTHROPIC_BETAS = recoveryEnv.ANTHROPIC_BETAS;
+            }
+            const configuredUrl = settingsEnv.ANTHROPIC_BASE_URL;
+            const baseUrl =
+              typeof configuredUrl === "string" ? configuredUrl : environment.ANTHROPIC_BASE_URL;
+            const routerIdleCompaction =
+              idleDeadline !== undefined &&
+              baseUrl !== undefined &&
+              customClaudeApiEndpointHost(baseUrl) !== undefined;
+            if (routerIdleCompaction) {
+              if (!(yield* keepWarm.supportsIdleCompaction?.(baseUrl) ?? Effect.succeed(false))) {
+                return yield* queryRunnerError(
+                  "Idle compaction skipped because this Claude endpoint has no verified warm-only router.",
+                  "open",
+                );
+              }
+              const configuredHeaders = settingsEnv.ANTHROPIC_CUSTOM_HEADERS;
+              const original =
+                typeof configuredHeaders === "string"
+                  ? configuredHeaders
+                  : (environment.ANTHROPIC_CUSTOM_HEADERS ?? "");
+              const headers = original
+                .split(/\r?\n/)
+                .filter((line) => line.trim() && !/^\s*x-t3-idle-compaction:/i.test(line));
+              scopedEnv.ANTHROPIC_CUSTOM_HEADERS = [
+                ...headers,
+                `X-T3-Idle-Compaction: ${idleDeadline}`,
+              ].join("\n");
+            }
+            if (dropThinking || routerIdleCompaction) {
+              // Flag settings outrank settings files; nothing is written to those files.
+              const flags = typeof queryOptions.settings === "object" ? queryOptions.settings : {};
+              queryOptions = {
+                ...queryOptions,
+                env: { ...environment, ...scopedEnv },
+                settings: {
+                  ...flags,
+                  env: {
+                    ...flags.env,
+                    ...scopedEnv,
+                  },
                 },
-              },
-            };
+              };
+            }
           }
           queryOptions.hooks = {
             ...queryOptions.hooks,
@@ -16163,14 +16247,29 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           resumeTurn: (input) => startTurn(ProviderAdapter.resumeTurnInput(input)),
           startTurn,
           compactThread: Effect.fn("ClaudeAdapterV2.compactThread")(function* (turnInput) {
+            const now = yield* DateTime.now;
+            if (
+              turnInput.idleCompaction !== undefined &&
+              (turnInput.promptCacheExpiresAt === undefined ||
+                DateTime.toEpochMillis(turnInput.promptCacheExpiresAt) <=
+                  DateTime.toEpochMillis(now))
+            ) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CLAUDE_PROVIDER,
+                detail: "Idle compaction skipped because the prompt cache expired.",
+              });
+            }
             const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId ?? null;
             const live = yield* Ref.get(queryContext);
-            const promptCaching = claudeCompactionPromptCaching({
-              uncachedColdCompaction: adapterOptions.settings.uncachedColdCompaction,
-              hasLiveProcess: live !== null && live.nativeThreadId === nativeThreadId,
-              promptCacheExpiresAt: turnInput.promptCacheExpiresAt,
-              now: yield* DateTime.now,
-            });
+            const promptCaching =
+              turnInput.idleCompaction !== undefined
+                ? "default"
+                : claudeCompactionPromptCaching({
+                    uncachedColdCompaction: adapterOptions.settings.uncachedColdCompaction,
+                    hasLiveProcess: live !== null && live.nativeThreadId === nativeThreadId,
+                    promptCacheExpiresAt: turnInput.promptCacheExpiresAt,
+                    now,
+                  });
             return yield* startTurn(
               { ...turnInput, message: { ...turnInput.message, text: "/compact" } },
               promptCaching,

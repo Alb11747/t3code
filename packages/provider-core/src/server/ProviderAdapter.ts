@@ -592,6 +592,7 @@ export interface ProviderAdapterV2TurnInput {
    * reported in that turn's token usage; omitted when unknown.
    */
   readonly promptCacheExpiresAt?: DateTime.Utc;
+  readonly idleCompaction?: true;
   readonly providerTurnOrdinal: number;
   readonly restartContinuationOfRunId?: RunId;
   readonly resume?: true;

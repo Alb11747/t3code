@@ -71,6 +71,17 @@ export class ClaudeKeepWarm extends Context.Reference<{
   } | null>;
   /** Makes the next poll read the router again, after a change the hold may not survive. */
   readonly forget: Effect.Effect<void>;
+  /** Whether the actual inference endpoint advertises warm-only idle compaction. */
+  readonly supportsIdleCompaction?: (baseUrl: string) => Effect.Effect<boolean>;
+  /** Reads the router's proof for the exact response, if this launch uses a configured hub. */
+  readonly readCacheExpiry?: (
+    baseUrl: string,
+    session: string,
+    messageId: string,
+  ) => Effect.Effect<{
+    readonly promptCacheTtlMs: number;
+    readonly promptCacheExpiresAt: string;
+  } | null>;
   /**
    * Stops holding the session until `until`, or with `switchAccount` moves it to another account
    * instead, failing when none can take it; a null `until` lets the proxy hold it again.
@@ -296,7 +307,43 @@ export const make = Effect.gen(function* () {
     cached = null;
   });
 
-  return { register, find, forget, release } satisfies (typeof ClaudeKeepWarm)["Service"];
+  const hubForEndpoint = Effect.fn("ClaudeKeepWarm.hubForEndpoint")(function* (baseUrl: string) {
+    const inference = URL.parse(baseUrl.trim());
+    if (inference === null || !["http:", "https:"].includes(inference.protocol)) return null;
+    const matching = (yield* sources).filter(
+      (source) => URL.parse(source.url)?.origin === inference.origin,
+    );
+    return matching.length === 1 ? (matching[0] ?? null) : null;
+  });
+
+  const supportsIdleCompaction = (baseUrl: string) =>
+    hubForEndpoint(baseUrl).pipe(
+      Effect.flatMap((config) =>
+        config === null
+          ? Effect.succeed(false)
+          : api.control(config).pipe(Effect.map((control) => control.idle_compaction === true)),
+      ),
+      Effect.timeout("3 seconds"),
+      Effect.orElseSucceed(() => false),
+    );
+
+  const readCacheExpiry = Effect.fn("ClaudeKeepWarm.readCacheExpiry")(function* (
+    baseUrl: string,
+    session: string,
+    messageId: string,
+  ) {
+    const config = yield* hubForEndpoint(baseUrl);
+    return config === null ? null : yield* api.cacheExpiry(config, session, messageId);
+  });
+
+  return {
+    register,
+    find,
+    forget,
+    release,
+    supportsIdleCompaction,
+    readCacheExpiry,
+  } satisfies (typeof ClaudeKeepWarm)["Service"];
 });
 
 export const layer = Layer.effect(ClaudeKeepWarm, make).pipe(

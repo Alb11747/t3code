@@ -151,6 +151,7 @@ const movesHeldOnPinChange = (version: string | undefined) => {
 };
 
 const Control = Schema.Struct({
+  idle_compaction: Schema.optional(Schema.Boolean),
   pin_renewal: Schema.optional(Schema.Boolean),
   pins: Schema.optional(
     Schema.NullOr(
@@ -256,6 +257,12 @@ const NextPick = Schema.Struct({
   current: Schema.optional(Schema.NullOr(Schema.String)),
   switch_below_context_tokens: Schema.optional(Schema.NullOr(Schema.Number)),
 });
+
+const decodeCacheExpiry = Schema.decodeUnknownEffect(
+  Schema.NullOr(
+    Schema.Struct({ expires_at: Schema.String, ttl_ms: Schema.Literals([300_000, 3_600_000]) }),
+  ),
+);
 
 // The proxy returns JSON null, not {}, when it has no aliases.
 const ModelAliasList = Schema.Struct({
@@ -983,6 +990,30 @@ export const makeCliproxyApi = Effect.gen(function* () {
     };
   });
 
+  const cacheExpiry = Effect.fn("CliproxyApi.cacheExpiry")(function* (
+    config: CliproxyHub,
+    session: string,
+    messageId: string,
+  ) {
+    const messageHash = yield* digest
+      .digestHex(Digest.sha256, new TextEncoder().encode(messageId))
+      .pipe(Effect.orElseSucceed(() => ""));
+    if (messageHash === "") return null;
+    const query = new URLSearchParams({ session, message_hash: messageHash });
+    const evidence = yield* management(config, `control/cache?${query}`).pipe(
+      Effect.flatMap(decodeCacheExpiry),
+      Effect.orElseSucceed(() => null),
+    );
+    if (evidence === null) return null;
+    const expiresAt = Option.getOrNull(DateTime.make(evidence.expires_at));
+    return expiresAt === null
+      ? null
+      : {
+          promptCacheTtlMs: evidence.ttl_ms,
+          promptCacheExpiresAt: DateTime.formatIso(expiresAt),
+        };
+  });
+
   const control = Effect.fn("CliproxyApi.control")(function* (config: CliproxyHub) {
     return yield* management(config, "control").pipe(
       Effect.flatMap(decodeControl),
@@ -1136,6 +1167,7 @@ export const makeCliproxyApi = Effect.gen(function* () {
     restoreKeepWarm,
     nextPickReset,
     nextPick,
+    cacheExpiry,
     control,
     pin,
     unpin,

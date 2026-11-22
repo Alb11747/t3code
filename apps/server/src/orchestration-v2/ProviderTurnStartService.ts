@@ -2230,6 +2230,7 @@ export const layer: Layer.Layer<
             sameNativeThread &&
             !acceptedAttempts.some((source) => source.nativeThreadId !== undefined)),
         ...(promptCacheExpiresAt === undefined ? {} : { promptCacheExpiresAt }),
+        ...(message.idleCompaction === "beforeCacheExpires" ? { idleCompaction: true } : {}),
         ...(dropMismatchedThinking ? { dropMismatchedThinking } : {}),
         shouldStartProviderTurn: runControls.shouldStartProviderTurn,
         shouldFinalizeRun: runControls.shouldFinalizeRun,

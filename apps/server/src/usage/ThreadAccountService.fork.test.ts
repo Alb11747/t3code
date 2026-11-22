@@ -81,6 +81,7 @@ const withCodex = snapshots.map((source) => ({
 function testLayer(input: {
   readonly owner?: string | null;
   readonly heldRunId?: string;
+  readonly heldCompletedBeforeInterrupt?: boolean;
   // A stall pin's hold, on a router that re-places held requests on a pin change or one before.
   readonly heldByPin?: "moves" | "stays";
   readonly shown?: Array<unknown>;
@@ -184,6 +185,9 @@ function testLayer(input: {
             modelSelection: runsCodex ? { instanceId: "codex", model: "gpt-5" } : modelSelection,
             accountChoice: input.choices?.[id] ?? input.accountChoice,
           },
+          runs: input.heldCompletedBeforeInterrupt
+            ? [{ id: input.heldRunId, status: "failed" }]
+            : [],
           providerThreads: [
             {
               providerInstanceId: runsCodex ? "codex" : "claude",
@@ -206,8 +210,14 @@ function testLayer(input: {
           nativeThreadRef: { nativeId: input.nativeIds?.[id] ?? "native-session" },
         } as never),
       dispatch: (command) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
           input.commands?.push(command);
+          if (input.heldCompletedBeforeInterrupt && command.type === "run.interrupt") {
+            return yield* new Orchestrator.OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+            });
+          }
           return { sequence: input.commands?.length ?? 0 } as never;
         }).pipe(
           Effect.tap(() =>
@@ -265,8 +275,10 @@ function setAccount(input: {
   readonly stall?: boolean | undefined;
   readonly dropThinking?: boolean;
   readonly heldRunId?: string;
+  readonly heldCompletedBeforeInterrupt?: boolean;
   readonly heldByPin?: "moves" | "stays";
   readonly accountChoice?: unknown;
+  readonly control?: NonNullable<Parameters<typeof testLayer>[0]["control"]>;
   readonly renamed?: Record<string, string>;
   readonly codex?: boolean;
   readonly separateCodexHub?: boolean;
@@ -320,17 +332,12 @@ describe("ThreadAccountService.set", () => {
     }),
   );
 
-  it.effect("pins an unowned conversation without a move and continues a held turn", () =>
+  it.effect("lets the router re-place holds after ordinary pin changes", () =>
     Effect.gen(function* () {
       const { pins, commands } = yield* setAccount({ owner: null, heldRunId: "run-7" });
       expect(pins).toMatchObject([{ account: OTHER, move: false }]);
       expect(commands[0]).not.toHaveProperty("accountMovedAt");
-      expect(commands.slice(1)).toMatchObject([
-        { type: "message.dispatch", text: "Continue where you left off." },
-        { type: "run.interrupt", runId: "run-7" },
-      ]);
-      // Quota router 0.27.0 re-places a request a pin holds once the pin changes, so that turn
-      // runs on and its notice ends at once; an older router needs the turn restarted.
+      expect(commands.map((command) => command.type)).toEqual(["thread.account-choice.set"]);
       for (const account of [OTHER, null]) {
         const moves = yield* setAccount({
           owner: null,
@@ -342,14 +349,48 @@ describe("ThreadAccountService.set", () => {
         expect(moves.commands.map((command) => command.type)).toEqual([
           "thread.account-choice.set",
         ]);
-        expect(moves.shown).toEqual([null]);
+        expect(moves.shown).toEqual([]);
       }
       const stays = yield* setAccount({ owner: null, heldRunId: "run-9", heldByPin: "stays" });
-      expect(stays.commands.map((command) => command.type)).toEqual([
-        "thread.account-choice.set",
-        "message.dispatch",
-        "run.interrupt",
-      ]);
+      expect(stays.commands.map((command) => command.type)).toEqual(["thread.account-choice.set"]);
+    }),
+  );
+
+  it.effect.each([false, true])(
+    "restarts a moved held request (already terminal: %s)",
+    (heldCompletedBeforeInterrupt) =>
+      Effect.gen(function* () {
+        const { commands, result } = yield* setAccount({
+          owner: OWNER,
+          dropThinking: true,
+          heldRunId: "run-7",
+          heldByPin: "moves",
+          heldCompletedBeforeInterrupt,
+        });
+        expect(Result.isSuccess(result)).toBe(true);
+        expect(commands).toMatchObject([
+          { type: "thread.account-choice.set", accountMovedAt: "2026-11-14T12:00:00.000Z" },
+          { type: "message.dispatch", text: "Continue where you left off." },
+          { type: "run.interrupt", runId: "run-7" },
+        ]);
+      }),
+  );
+
+  it.effect.each([
+    { stall: true, writes: false },
+    { stall: false, writes: true },
+  ])("only rewrites a saved choice when its live pin differs ($stall)", ({ stall, writes }) =>
+    Effect.gen(function* () {
+      const { pins, commands } = yield* setAccount({
+        owner: null,
+        heldRunId: "run-7",
+        accountChoice: { sourceId: "hub", account: OTHER, stall: true, instanceId: "claude" },
+        control: { pins: [{ account: OTHER, session: "claude:native-session", stall }] },
+      });
+      expect(pins).toHaveLength(writes ? 1 : 0);
+      expect(commands.map((command) => command.type)).toEqual(
+        writes ? ["thread.account-choice.set"] : [],
+      );
     }),
   );
 

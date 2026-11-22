@@ -6,9 +6,11 @@ import {
   type OrchestrationV2Command,
   type OrchestrationV2Run,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2ServerCommand,
   ProviderThreadId,
   ProviderDriverKind,
   ProviderSessionId,
+  ProviderTurnId,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadProjection,
   ProjectId,
@@ -23,13 +25,16 @@ import * as Option from "effect/Option";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Queue from "effect/Queue";
+import * as References from "effect/References";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { AgentScope } from "@t3tools/shared/AgentScope";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { ClaudeKeepWarm } from "../provider/ClaudeKeepWarm.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
@@ -339,6 +344,126 @@ it.effect.each([
     );
     expect(dispatched).toEqual(steers ? ["message.dispatch"] : []);
   }).pipe(Effect.provide(layerTest));
+});
+
+it.effect("queues an automatic send behind a router-held Claude turn", () => {
+  const projectId = ProjectId.make("project:thread-management:router-hold");
+  const threadId = ThreadId.make("thread:thread-management:router-hold");
+  const runId = RunId.make("run:thread-management:router-hold");
+  const queuedRunId = RunId.make("run:thread-management:followup");
+  const messageId = MessageId.make("message:thread-management:followup");
+  const commandId = CommandId.make("command:thread-management:followup");
+  const providerTurnId = ProviderTurnId.make("provider-turn:router-hold");
+  const activeAttemptId = "attempt:thread-management:router-hold";
+  const active = {
+    id: runId,
+    ordinal: 1,
+    status: "running",
+    activeAttemptId,
+  };
+  const heldTurn = {
+    threadId,
+    runId,
+    providerTurnId,
+    session: "native-claude",
+    hold: { resetAt: "2026-11-22T04:00:00Z", releaseAt: "2026-11-22T03:40:00Z" },
+  };
+  const session = {
+    turn: Effect.succeed(heldTurn),
+    show: () => Effect.void,
+    restore: () => Effect.void,
+    pause: () => Effect.void,
+  };
+  const dispatched: OrchestrationV2ServerCommand[] = [];
+  const diagnostics: Readonly<Record<string, unknown>>[] = [];
+  const layerTest = ThreadManagementService.layer.pipe(
+    Layer.provide(
+      Layer.succeed(ClaudeKeepWarm, {
+        ...ClaudeKeepWarm.defaultValue(),
+        find: () => Effect.succeed({ session, turn: heldTurn }),
+      }),
+    ),
+    Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+    Layer.provide(
+      Layer.mock(Orchestrator.OrchestratorV2)({
+        getThreadRecords: () =>
+          Effect.sync(
+            () =>
+              ({
+                thread: {
+                  id: threadId,
+                  projectId,
+                  deletedAt: null,
+                  archivedAt: null,
+                  modelSelection: {
+                    instanceId: ProviderInstanceId.make("claudeAgent"),
+                    model: "test",
+                  },
+                },
+                runs:
+                  dispatched.length === 0
+                    ? [active]
+                    : [active, { id: queuedRunId, ordinal: 2, status: "queued" }],
+                providerTurns: [
+                  { id: providerTurnId, runAttemptId: activeAttemptId, status: "running" },
+                ],
+                messages: dispatched.length === 0 ? [] : [{ id: messageId, runId: queuedRunId }],
+                turnItems: [],
+              }) as unknown as OrchestrationV2ThreadProjection,
+          ),
+        dispatch: (command) =>
+          Effect.sync(() => {
+            dispatched.push(command);
+            return { sequence: 1, storedEvents: [] } as never;
+          }),
+      }),
+    ),
+    Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(layerReceiptsTest),
+  );
+  return Effect.gen(function* () {
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const result = yield* threads.sendToThread({
+      projectId,
+      threadId,
+      commandId,
+      messageId,
+      text: "FYI, the review is complete.",
+      attachments: [],
+      mode: "auto",
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]).toMatchObject({
+      type: "message.dispatch",
+      dispatchMode: { type: "queue_after_active" },
+    });
+    expect(dispatched[0]).not.toHaveProperty("deliveryIntent");
+    expect(result.delivery).toBe("queued");
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        commandId,
+        runId: queuedRunId,
+        requestedMode: "auto",
+        effectiveMode: "queued",
+        atToolBoundary: false,
+        interruptionReason: null,
+        heldRunId: runId,
+      }),
+    );
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        layerTest,
+        Logger.layer([
+          Logger.make(({ fiber }) => {
+            diagnostics.push(fiber.getRef(References.CurrentLogAnnotations));
+          }),
+        ]),
+      ),
+    ),
+  );
 });
 
 it.effect("waitForThread follows a restart continuation instead of the cut run", () =>

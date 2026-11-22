@@ -1559,6 +1559,88 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
       ),
     );
 
+    it.effect("scopes a router idle-compaction deadline to the compaction process", () =>
+      Effect.gen(function* () {
+        const keepWarm = yield* ClaudeKeepWarm.ClaudeKeepWarm;
+        const observedEndpoints: string[] = [];
+        let supportsIdleCompaction = false;
+        const harness = yield* makeWakeHarnessWithOptions({
+          settings: {
+            ...UNCACHED_COLD_COMPACTION_SETTINGS,
+            launchArgs: `--settings '{"env":{"ANTHROPIC_BASE_URL":"https://gateway.example/api","ANTHROPIC_CUSTOM_HEADERS":"X-Team: blue"}}'`,
+          },
+          environment: { ANTHROPIC_CUSTOM_HEADERS: "X-Team: blue" },
+          freshQueueOnReopen: true,
+        }).pipe(
+          Effect.provideService(ClaudeKeepWarm.ClaudeKeepWarm, {
+            ...keepWarm,
+            supportsIdleCompaction: (baseUrl) =>
+              Effect.sync(() => {
+                observedEndpoints.push(baseUrl);
+                return supportsIdleCompaction;
+              }),
+          }),
+        );
+        const now = yield* DateTime.now;
+        const expiresAt = DateTime.addDuration(now, Duration.minutes(2));
+        const input = compactInput(harness, now, expiresAt);
+        const expired = yield* harness.runtime.compactThread!({
+          ...input,
+          promptCacheExpiresAt: now,
+          idleCompaction: true,
+        }).pipe(Effect.result);
+        assert.equal(expired._tag, "Failure");
+        assert.lengthOf(harness.offeredMessages, 0);
+
+        const unverifiedGateway = yield* harness.runtime.compactThread!({
+          ...input,
+          idleCompaction: true,
+        }).pipe(Effect.result);
+        assert.deepEqual(observedEndpoints, ["https://gateway.example/api"]);
+        assert.equal(unverifiedGateway._tag, "Failure");
+        assert.lengthOf(harness.offeredMessages, 0);
+
+        supportsIdleCompaction = true;
+        yield* harness.runtime.compactThread!({
+          ...input,
+          idleCompaction: true,
+        });
+        const options = harness.getOpenedOptions();
+        assert.isUndefined(options?.env?.DISABLE_PROMPT_CACHING);
+        assert.equal(
+          options?.env?.ANTHROPIC_CUSTOM_HEADERS,
+          `X-Team: blue\nX-T3-Idle-Compaction: ${DateTime.formatIso(expiresAt)}`,
+        );
+        yield* Queue.offer(harness.sdkMessages, turnOneResult);
+        yield* Queue.take(harness.terminalReceipts);
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-after-idle-compact"),
+            text: "Continue",
+            attachments: [],
+            providerTurnOrdinal: 3,
+            nativeThreadHasTurns: true,
+          }),
+        );
+        assert.equal(harness.getOpenedOptions()?.env?.ANTHROPIC_CUSTOM_HEADERS, "X-Team: blue");
+        assert.lengthOf(harness.processQueues, 2);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            NodeCrypto.layer,
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+          ),
+        ),
+      ),
+    );
+
     it.effect.each([
       { name: "setting off", settings: DEFAULT_CLAUDE_SETTINGS, expiresInMs: 0 },
       {

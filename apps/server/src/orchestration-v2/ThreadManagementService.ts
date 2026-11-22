@@ -72,6 +72,7 @@ import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimi
 import { projectTurnItemForDetail } from "./WireProjection.ts";
 import { cancelledBeforeStart } from "./RestartBackgroundNote.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
+import { ClaudeKeepWarm } from "../provider/ClaudeKeepWarm.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ThreadWorktreeRestore } from "../workspace/restoreMissingWorktree.ts";
 import { checkOutput, outputRequestProblem } from "./runOutput.ts";
@@ -660,6 +661,7 @@ const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
   const worktreeRestore = yield* ThreadWorktreeRestore;
+  const keepWarm = yield* ClaudeKeepWarm;
 
   const assertProviderInstanceEnabled: ThreadManagementServiceShape["assertProviderInstanceEnabled"] =
     (input) =>
@@ -965,8 +967,14 @@ const make = Effect.gen(function* () {
         });
       }
     }
-    // A fresh send, or one that asks for a result, never joins a running turn.
+    const autoTarget =
+      input.mode === "auto" ? (steerableRun ?? latestActiveRun(target)) : undefined;
+    const held = autoTarget === undefined ? null : yield* keepWarm.find(input.threadId);
+    const queuesForRouterHold =
+      held !== null && held.turn.runId === autoTarget?.id && held.turn.hold.released !== true;
+    // Automatic sends to a router-held turn must stay out of the provider's input queue.
     const mode =
+      queuesForRouterHold ||
       input.outputSchema !== undefined ||
       (input.freshContext && (input.mode === "steer" || input.mode === "restart"))
         ? "queue"
@@ -1093,14 +1101,13 @@ const make = Effect.gen(function* () {
     }
     // A provider without interrupt-and-restart stops the turn and runs the
     // restart as the next turn. Read from this command's own events, so a replay agrees.
-    const restartedAsNextTurn =
-      mode === "restart" &&
-      dispatched.storedEvents.some(
-        ({ event }) =>
-          event.type === "turn-item.updated" &&
-          event.payload.type === "run_interrupt_request" &&
-          event.payload.runId !== run.id,
-      );
+    const interrupt = dispatched.storedEvents.find(
+      ({ event }) =>
+        event.type === "turn-item.updated" &&
+        event.payload.type === "run_interrupt_request" &&
+        event.payload.runId !== run.id,
+    )?.event;
+    const restartedAsNextTurn = mode === "restart" && interrupt !== undefined;
     const delivery: ThreadManagementSendResult["delivery"] = restartedAsNextTurn
       ? "restarted"
       : turnItem === null || turnItem.inputIntent === "queued_turn"
@@ -1110,6 +1117,30 @@ const make = Effect.gen(function* () {
           : mode === "restart"
             ? "restarted"
             : "steered";
+    if (!dispatched.replayed) {
+      const restartedInPlace = dispatched.storedEvents.some(
+        ({ event }) =>
+          event.type === "run-attempt.created" && event.payload.reason === "steering_restart",
+      );
+      yield* Effect.logInfo("Thread message delivery resolved").pipe(
+        Effect.annotateLogs({
+          threadId: input.threadId,
+          runId: run.id,
+          commandId: input.commandId,
+          requestedMode: input.mode,
+          effectiveMode: restartedInPlace ? "restarted" : delivery,
+          atToolBoundary: message.atToolBoundary === true,
+          interruptionReason:
+            interrupt?.type === "turn-item.updated" &&
+            interrupt.payload.type === "run_interrupt_request"
+              ? interrupt.payload.message
+              : restartedInPlace
+                ? "steering_restart"
+                : null,
+          ...(queuesForRouterHold ? { heldRunId: held.turn.runId } : {}),
+        }),
+      );
+    }
     return { dispatch: dispatched, projection, message, run, turnItem, delivery };
   });
 
