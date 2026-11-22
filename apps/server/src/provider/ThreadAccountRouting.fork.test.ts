@@ -123,7 +123,7 @@ function prepareTurn(input: {
 describe("ThreadAccountRouting.prepareTurn", () => {
   it.effect.each([
     {
-      name: "re-pins the thread's chosen account for a week at each turn",
+      name: "renews the thread's chosen account for a week at each turn",
       input: { accountChoice: CHOICE },
       pins: [
         {
@@ -131,6 +131,7 @@ describe("ThreadAccountRouting.prepareTurn", () => {
           account: CHOICE.account,
           stall: true,
           expiresAt: "2026-11-21T11:00:00.000Z",
+          renew: true,
           move: false,
         },
       ],

@@ -55,7 +55,7 @@ interface PrepareTurnInput<E> {
   readonly loadCompactions: Effect.Effect<ReadonlyArray<OrchestrationV2TurnItem>, E>;
 }
 
-/** Fork: applies a thread's quota-router account choice at each turn start; pins expire. */
+/** Fork: renews a thread's quota-router account choice when a turn starts. */
 export class ThreadAccountRouting extends Context.Reference<{
   /** Pins the thread's chosen account; returns whether the turn must drop moved thinking. */
   readonly prepareTurn: <E>(input: PrepareTurnInput<E>) => Effect.Effect<boolean>;
@@ -109,7 +109,7 @@ export const make = Effect.gen(function* () {
         account: (yield* sources.routerAlias(choice.sourceId))(choice.account),
         stall,
         expiresAt: controlExpiry(yield* DateTime.now),
-        // Each pin replaces the last; a plain one would end the move that subagents still follow.
+        renew: true,
         move: drops,
       });
       failedWaitingPins.delete(input.appThread.id);

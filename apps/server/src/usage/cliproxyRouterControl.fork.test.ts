@@ -44,12 +44,17 @@ const pinInput = {
 };
 
 describe("quota-router account controls", () => {
-  it.effect("moves an owned conversation when the router confirms the move pin", () =>
+  it.effect.each([
+    { name: "moves an owned conversation when the router confirms the move pin", renew: false },
+    { name: "leaves an explicit override returned by a renewal intact", renew: true },
+  ])("$name", ({ renew }) =>
     Effect.gen(function* () {
-      const test = routerHub(({ body }) => ({
-        pins: [{ ...(body as object), session, move: true }],
-      }));
-      yield* (yield* test.api).pin(hub, { ...pinInput, move: true });
+      const test = routerHub(() =>
+        renew
+          ? { pin_renewal: true, pins: [{ session, account: pinInput.account, stall: true }] }
+          : { pins: [{ session, account: pinInput.account, move: true }] },
+      );
+      yield* (yield* test.api).pin(hub, { ...pinInput, move: true, renew });
       expect(test.requests).toEqual([
         {
           method: "POST",
@@ -60,6 +65,7 @@ describe("quota-router account controls", () => {
             stall: false,
             expires_at: "2026-11-20T00:00:00.000Z",
             move: true,
+            ...(renew ? { renew: true } : {}),
           },
         },
       ]);

@@ -151,6 +151,7 @@ const movesHeldOnPinChange = (version: string | undefined) => {
 };
 
 const Control = Schema.Struct({
+  pin_renewal: Schema.optional(Schema.Boolean),
   pins: Schema.optional(
     Schema.NullOr(
       Schema.Array(
@@ -995,12 +996,7 @@ export const makeCliproxyApi = Effect.gen(function* () {
     );
   });
 
-  /**
-   * Routes the sessions to `account` until `expiresAt` (at most seven days ahead). `move` (quota
-   * router 0.24) lets the pin replace an account-bound conversation's owner; older routers ignore
-   * it and would reject the conversation's requests, so their pin is withdrawn with an error. A
-   * failed move is withdrawn too: the router can save the pin before failing to save the move.
-   */
+  /** A failed explicit move can leave its pin behind. A failed renewal may leave an override. */
   const pin = Effect.fn("CliproxyApi.pin")(function* (
     config: CliproxyHub,
     input: {
@@ -1009,6 +1005,7 @@ export const makeCliproxyApi = Effect.gen(function* () {
       readonly stall: boolean;
       readonly expiresAt: string;
       readonly move?: boolean;
+      readonly renew?: boolean;
     },
   ) {
     const response = yield* management(
@@ -1020,22 +1017,28 @@ export const makeCliproxyApi = Effect.gen(function* () {
         stall: input.stall,
         expires_at: input.expiresAt,
         ...(input.move ? { move: true } : {}),
+        ...(input.renew ? { renew: true } : {}),
       },
       { conflict: "The router refused the pin: this conversation is bound to another account." },
     ).pipe(
       Effect.tapError(() =>
-        input.move ? unpin(config, input.sessions).pipe(Effect.ignore) : Effect.void,
+        input.move && !input.renew
+          ? unpin(config, input.sessions).pipe(Effect.ignore)
+          : Effect.void,
       ),
     );
     if (!input.move) return;
     const reply = yield* decodeControl(response).pipe(Effect.option);
+    if (input.renew && Option.isSome(reply) && reply.value.pin_renewal === true) return;
     const moved =
       Option.isSome(reply) &&
       input.sessions.every((session) =>
         (reply.value.pins ?? []).some((pin) => pin.session === session && pin.move === true),
       );
     if (moved) return;
-    yield* unpin(config, input.sessions).pipe(Effect.ignore);
+    if (!input.renew || Option.isSome(reply)) {
+      yield* unpin(config, input.sessions).pipe(Effect.ignore);
+    }
     return yield* new UsageLimitSourceError({
       detail:
         "This CLI Proxy quota router cannot move an account-bound conversation. Update it to 0.24.0 or later.",
