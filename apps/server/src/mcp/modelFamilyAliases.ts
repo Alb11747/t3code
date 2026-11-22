@@ -84,7 +84,7 @@ export const boundScheduledFamilyAliasFailure = () =>
       "A bound task uses its thread's model. Pass bindToCurrentThread: false to schedule a task on a model family.",
   });
 
-export const findAcceptedSchedule = Effect.fn("mcp.findAcceptedFamilySchedule")(function* (
+export const findAcceptedSchedule = Effect.fn("mcp.findAcceptedSchedule")(function* (
   scheduledTasks: ScheduledTaskService.ScheduledTaskService["Service"],
   commandId: CommandId | undefined,
   projectId: ProjectId,
@@ -109,6 +109,10 @@ export const findAcceptedSchedule = Effect.fn("mcp.findAcceptedFamilySchedule")(
 
 type ScheduleTask = OrchestratorMcpService["Service"]["scheduleTask"];
 
+export const keepsAcceptedSchedule = (input: Parameters<ScheduleTask>[1]) =>
+  input.clientRequestId !== undefined &&
+  (usesScheduledFamilyAlias(input.modelSelection) || input.script !== undefined);
+
 export const serializeScheduleTask = (
   scheduleTask: ScheduleTask,
   semaphore: Semaphore.Semaphore,
@@ -117,10 +121,7 @@ export const serializeScheduleTask = (
   Effect.fnUntraced(function* (...args: Parameters<ScheduleTask>) {
     const [, input] = args;
     const effect = scheduleTask(...args);
-    return yield* input.clientRequestId !== undefined &&
-    usesScheduledFamilyAlias(input.modelSelection)
-      ? semaphore.withPermit(effect)
-      : effect;
+    return yield* keepsAcceptedSchedule(input) ? semaphore.withPermit(effect) : effect;
   });
 
 export const acceptedFamilySelection = (

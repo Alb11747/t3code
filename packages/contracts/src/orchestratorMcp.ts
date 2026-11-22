@@ -27,6 +27,7 @@ import {
   ScheduledTaskSchedule,
   ScheduledTaskUpsertSchedule,
 } from "./scheduledTask.ts";
+import { ScheduledTaskScriptCheck, ScheduledTaskScriptSource } from "./scheduledTaskScript.ts";
 import { ProviderInteractionMode, ProviderRequestKind, RuntimeMode } from "./providerPolicy.ts";
 import { PullRequestState } from "./pullRequest.ts";
 import {
@@ -835,6 +836,14 @@ const OrchestratorMcpScheduledTaskModel = Schema.optional(
   }),
 );
 
+// Fork: the check script; full access only, like the editor's terminal scope.
+const OrchestratorMcpScheduledTaskScript = Schema.optional(
+  Schema.NullOr(ScheduledTaskScriptSource).annotate({
+    description:
+      "Check script run before each run. Omitted keeps it; null removes it. Full-access/default callers only.",
+  }),
+);
+
 export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   projectId: OrchestratorMcpProjectTarget,
@@ -863,6 +872,7 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   ),
   // Fork: the model runs start new threads on.
   modelSelection: OrchestratorMcpScheduledTaskModel,
+  script: OrchestratorMcpScheduledTaskScript,
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -898,6 +908,18 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   }),
   followLatestModel: Schema.optionalKey(Schema.Boolean),
   modelSelection: Schema.optional(ModelSelection),
+  /** Fork: present when the task has a check script, with its latest check (no logs). */
+  script: Schema.optionalKey(
+    Schema.Struct({
+      lastCheck: Schema.NullOr(
+        Schema.Struct({
+          at: IsoDateTime,
+          outcome: ScheduledTaskScriptCheck.fields.outcome,
+          message: Schema.NullOr(Schema.String),
+        }),
+      ),
+    }),
+  ),
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 
@@ -933,6 +955,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   freshSession: Schema.optional(Schema.Boolean),
   followLatestModel: Schema.optional(Schema.Boolean),
   modelSelection: OrchestratorMcpScheduledTaskModel,
+  script: OrchestratorMcpScheduledTaskScript,
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;

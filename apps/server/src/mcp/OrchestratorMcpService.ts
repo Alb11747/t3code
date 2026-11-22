@@ -329,8 +329,37 @@ function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): Orchestrato
     ...(task.blockedByPolicy === undefined ? {} : { blockedByPolicy: task.blockedByPolicy }),
     ...(task.followLatestModel ? { followLatestModel: true } : {}),
     modelSelection: task.modelSelection,
+    ...(task.script === undefined
+      ? {}
+      : {
+          script: {
+            lastCheck:
+              task.script.lastCheck === null
+                ? null
+                : {
+                    at: task.script.lastCheck.at,
+                    outcome: task.script.lastCheck.outcome,
+                    message: task.script.lastCheck.message,
+                  },
+          },
+        }),
   };
 }
+
+// Fork: a check script runs commands as the server, as the editor's terminal scope guards.
+const scriptNeedsFullAccess = (
+  script: string | null | undefined,
+  limits: { readonly runtimeMode: string; readonly interactionMode: string },
+) =>
+  script === undefined ||
+  (limits.runtimeMode === "full-access" && limits.interactionMode === "default")
+    ? Effect.void
+    : Effect.fail(
+        new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "Setting or removing a check script needs a full-access/default calling thread.",
+        }),
+      );
 
 /**
  * Large catalogs (OpenCode, Cursor, Pi) can list hundreds of models, so agents
@@ -2542,14 +2571,15 @@ const make = Effect.gen(function* () {
     return target.modelSelection;
   });
 
-  // Concurrent retries must observe the first accepted model before resolving the alias again.
-  const keyedFamilySchedules = yield* Semaphore.make(1);
+  // Concurrent retries must see the accepted task before resolving an alias or saving a script.
+  const keyedSchedules = yield* Semaphore.make(1);
 
   const service = OrchestratorMcpService.of({
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope, ["runs"]);
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
       yield* assertLiveCallerForOtherProject(scope, parent, projectId);
+      yield* scriptNeedsFullAccess(input.script, limits);
       const familyAlias = FamilyAliases.usesScheduledFamilyAlias(input.modelSelection);
       const commandId =
         input.clientRequestId === undefined
@@ -2561,7 +2591,7 @@ const make = Effect.gen(function* () {
             });
       const accepted = yield* FamilyAliases.findAcceptedSchedule(
         scheduledTasks,
-        familyAlias ? commandId : undefined,
+        FamilyAliases.keepsAcceptedSchedule(input) ? commandId : undefined,
         projectId,
       );
       if (accepted !== null)
@@ -2611,6 +2641,7 @@ const make = Effect.gen(function* () {
         interactionMode: limits.interactionMode,
         createdBy: "agent",
         creationSource: "mcp",
+        ...(input.script === undefined ? {} : { script: input.script }),
         // Scope the idempotency key by provider session so two callers
         // reusing the same clientRequestId cannot collide on one task row.
         ...(commandId === undefined ? {} : { commandId }),
@@ -2683,6 +2714,7 @@ const make = Effect.gen(function* () {
         const familyAlias = FamilyAliases.usesScheduledFamilyAlias(input.modelSelection);
         if (threadId !== null && familyAlias)
           return yield* FamilyAliases.boundScheduledFamilyAliasFailure();
+        yield* scriptNeedsFullAccess(input.script, limits);
         // Reset the workspace only when the binding flips, so unbinding cannot leave runs in the shared checkout.
         const workspaceStrategy =
           (threadId === null) === (existing.threadId === null)
@@ -2719,6 +2751,7 @@ const make = Effect.gen(function* () {
           interactionMode: existing.interactionMode,
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
+          ...(input.script === undefined ? {} : { script: input.script }),
         };
         const { task } = yield* scheduledTasks
           .upsert(upsertInput, { requireUnbound: familyAlias })
@@ -4208,7 +4241,7 @@ const make = Effect.gen(function* () {
   });
   return {
     ...service,
-    scheduleTask: FamilyAliases.serializeScheduleTask(service.scheduleTask, keyedFamilySchedules),
+    scheduleTask: FamilyAliases.serializeScheduleTask(service.scheduleTask, keyedSchedules),
   };
 });
 

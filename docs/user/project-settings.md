@@ -241,6 +241,8 @@ run or saving state. The task list marks runs a script skipped.
 
 Scripts run with the environment's full access to files, commands and the
 network, so editing or testing one requires terminal access to that environment.
+An agent in a full-access thread in the default (not plan) mode can set one with `script` on `schedule_task`
+(`null` removes it); `list_scheduled_tasks` shows each script's latest check.
 Anyone who can see scheduled tasks can read the script and its saved state;
 keep secrets out of it. Mobile keeps a task's script when you save the task
 there but can't edit it.
