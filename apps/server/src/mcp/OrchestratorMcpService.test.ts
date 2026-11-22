@@ -82,7 +82,11 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as ThreadAccountService from "../usage/ThreadAccountService.ts";
 import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
+import * as McpHttpServer from "./McpHttpServer.ts";
+import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
+import * as OrchestratorToolkitTestkit from "./OrchestratorMcpToolkit.fork.testkit.ts";
+import { McpSchema, McpServer } from "effect/ai";
 import { resolveRuntimeMode } from "./delegatedTaskModes.ts";
 import type { ProjectionRecordFilter } from "../orchestration-v2/ProjectionStore.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -3756,6 +3760,150 @@ describe("OrchestratorMcpService provider resolution", () => {
           assert.lengthOf(yield* Ref.get(dispatched), 2);
         }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
       }),
+  );
+
+  it.effect("starts a task under a named parent for outside callers within its modes", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Ref.make<ReadonlyArray<OrchestrationV2ServerCommand>>([]);
+      const settledParent = (() => {
+        const projection = parentProjection([]);
+        return {
+          ...projection,
+          runs: projection.runs.map((run) => ({ ...run, status: "completed" })),
+        } as OrchestrationV2ThreadProjection;
+      })();
+      const task = {
+        id: taskId,
+        threadId: parentThreadId,
+        origin: "app_owned",
+        childThreadId,
+        providerInstanceId: codexInstanceId,
+        model: "gpt-5.4",
+        status: "running",
+        result: null,
+      };
+      const owner = RouterAccountAlias.make("account-1111111111111111");
+      const toolkit = OrchestratorToolkitTestkit.layerOrchestratorToolkit.pipe(
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            NodeCrypto.layer,
+            Layer.mock(ThreadManagementService.ThreadManagementService)({
+              hasReceipt: () => Effect.succeed(false),
+              getThreadShell: (threadId) =>
+                Effect.succeed({
+                  ...liveThreadShell(threadId, { activeRunId: null }),
+                  latestRunId: parentRunId,
+                }),
+              getThreadRecords: (threadId) =>
+                Effect.succeed(threadId === parentThreadId ? settledParent : childProjection),
+              dispatch: (command) =>
+                Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+                  Effect.as({
+                    sequence: 1,
+                    storedEvents: [{ event: { type: "subagent.updated", payload: task } }],
+                  } as never),
+                ),
+            }),
+            providerRegistryLayer([
+              providerSnapshot({
+                instanceId: codexInstanceId,
+                driver: ProviderDriverKind.make("codex"),
+                model: "gpt-5.4",
+              }),
+            ]),
+            adapterRegistryLayer([codexInstanceId]),
+            Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
+            Layer.mock(SecretRequests.SecretRequests)({}),
+            Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+            ServerSettings.layerTest(),
+            Layer.succeed(ThreadAccountService.ThreadAccounts, {
+              ...ThreadAccountService.ThreadAccounts.defaultValue(),
+              state: () =>
+                Effect.succeed({
+                  sourceId: UsageLimitSourceId.make("hub"),
+                  instanceId: codexInstanceId,
+                  accounts: [],
+                  next: null,
+                  steer: null,
+                  owner,
+                }),
+              launchChoice: ({ instanceId, account, stall }) =>
+                Effect.succeed({
+                  sourceId: UsageLimitSourceId.make("hub"),
+                  account: RouterAccountAlias.make(account),
+                  stall,
+                  instanceId,
+                }),
+            }),
+          ),
+        ),
+      );
+      const client = (access: "read-only" | "auto" | "full-access"): McpInvocationScope => ({
+        environmentId: EnvironmentId.make("environment:mcp-providers"),
+        requestNamespace: `client:${access}`,
+        thread: undefined,
+        client: { sessionId: access, label: "Moonlight failure hook", access },
+        capabilities: new Set(["orchestration"]),
+        issuedAt: 1,
+      });
+      const call = (scope: McpInvocationScope, args: Record<string, unknown>) =>
+        McpServer.McpServer.pipe(
+          Effect.flatMap((server) =>
+            server.callTool({ name: "t3_thread_delegate", arguments: args }),
+          ),
+          Effect.map(({ content, isError }) => {
+            const text = content.map((part) => (part.type === "text" ? part.text : "")).join("");
+            return isError === true ? (JSON.parse(text) as { code: string }).code : "started";
+          }),
+          Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+          Effect.provideService(McpSchema.McpServerClient, OrchestratorToolkitTestkit.client),
+        );
+      const fork = {
+        threadId: parentThreadId,
+        task: "Fix it.",
+        context: "fork",
+        clientRequestId: "fixer-1",
+      };
+
+      yield* Effect.gen(function* () {
+        // Orchestration writes need orchestration:operate; the parent's modes must fit the ceiling.
+        assert.equal(yield* call(client("read-only"), fork), "capability_denied");
+        assert.equal(yield* call(client("auto"), fork), "runtime_mode_escalation_denied");
+        assert.equal(
+          yield* call(client("full-access"), { ...fork, target: { model: "gpt-5.4" } }),
+          "invalid_request",
+        );
+        assert.deepEqual(yield* Ref.get(dispatched), []);
+
+        assert.equal(yield* call(client("full-access"), fork), "started");
+        const [command] = yield* Ref.get(dispatched);
+        assert.deepInclude(command, {
+          type: "delegated_task.request",
+          parentThreadId,
+          parentRunId,
+          parentNodeId,
+          outsideParentTurn: true,
+          context: "fork",
+          modelSelection: { instanceId: codexInstanceId, model: "gpt-5.4", options: [] },
+          runtimeMode: "full-access",
+          completionWake: "always",
+          accountChoice: {
+            sourceId: UsageLimitSourceId.make("hub"),
+            account: owner,
+            // A Codex fork stays on its owner without waiting; only Claude turns can wait.
+            stall: false,
+            instanceId: codexInstanceId,
+          },
+        });
+        // A retry from a fresh sign-in, as the CLI and hooks make, names the same task.
+        const resigned = { ...client("full-access"), requestNamespace: "client:fresh-session" };
+        assert.equal(yield* call(resigned, fork), "started");
+        const [first, retry] = yield* Ref.get(dispatched);
+        assert.equal(retry?.commandId, first?.commandId);
+      }).pipe(Effect.provide(toolkit));
+    }),
   );
 
   it.effect("stores a created thread's account before its first message, once per batch", () =>

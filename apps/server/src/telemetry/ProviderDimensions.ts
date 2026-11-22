@@ -148,6 +148,11 @@ export function handoffSettings(tool: string, args: unknown, result: unknown): F
         mode: oneOf(stringField(input, "mode"), ["async", "wait"]) ?? "async",
         ...(output.waitTimedOut === true ? { waitTimedOut: true } : {}),
       });
+    case "t3_thread_delegate":
+      return defined({
+        targetChosen: input.target !== undefined,
+        context: oneOf(stringField(input, "context"), ["fresh", "fork"]) ?? "fresh",
+      });
     case "create_threads": {
       const threads = Array.isArray(input.threads) ? input.threads : [];
       return {

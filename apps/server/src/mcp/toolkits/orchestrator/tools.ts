@@ -26,6 +26,8 @@ import {
   OrchestratorMcpTaskStatusInput,
   OrchestratorMcpThreadInterruptInput,
   OrchestratorMcpThreadInterruptResult,
+  OrchestratorMcpThreadDelegateInput,
+  OrchestratorMcpThreadDelegateResult,
   OrchestratorMcpThreadListInput,
   OrchestratorMcpThreadListResult,
   OrchestratorMcpThreadReadInput,
@@ -99,6 +101,20 @@ const DelegateTaskTool = Tool.make("delegate_task", {
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true)
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
+
+const ThreadDelegateTool = Tool.make("t3_thread_delegate", {
+  description:
+    "Start a child task under parent `threadId`, as if that thread had called delegate_task: it owns the child and is woken by its results. For hooks, scripts and the CLI. `context:'fork'` gives the child the parent's conversation. No secrets in `task`.",
+  parameters: OrchestratorMcpThreadDelegateInput,
+  success: OrchestratorMcpThreadDelegateResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Delegate a task under a thread")
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.OpenWorld, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.onlyForOutsideClients);
 
 const TaskStatusTool = Tool.make("task_status", {
   description:
@@ -365,6 +381,7 @@ const EnvironmentUnlinkTool = Tool.make("t3_environment_unlink", {
 export const OrchestratorToolkit = Toolkit.make(
   OrchestratorCapabilitiesTool,
   DelegateTaskTool,
+  ThreadDelegateTool,
   TaskStatusTool,
   TaskCancelTool,
   WorkflowStopTool,

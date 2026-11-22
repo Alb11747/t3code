@@ -22,6 +22,9 @@ import {
   type OrchestratorMcpCreatedThread,
   type OrchestratorMcpDelegateTaskInput,
   type OrchestratorMcpDelegateTaskResult,
+  type OrchestratorMcpThreadDelegateInput,
+  type OrchestratorMcpThreadDelegateResult,
+  type ThreadAccountChoice,
   type OrchestratorMcpDeleteScheduledTaskInput,
   type OrchestratorMcpRequestSecretInput,
   type OrchestratorMcpRequestSecretResult,
@@ -196,6 +199,11 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpDelegateTaskInput,
   ) => Effect.Effect<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure>;
+  /** Fork: starts a task under a named parent thread for a caller outside any thread. */
+  readonly delegateForThread: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpThreadDelegateInput,
+  ) => Effect.Effect<OrchestratorMcpThreadDelegateResult, OrchestratorMcpFailure>;
   readonly taskStatus: (
     scope: McpInvocationScope,
     taskId: NodeId,
@@ -2574,6 +2582,285 @@ const make = Effect.gen(function* () {
   // Concurrent retries must see the accepted task before resolving an alias or saving a script.
   const keyedSchedules = yield* Semaphore.make(1);
 
+  /**
+   * Starts a delegated task under `parent`'s run: from its own turn (delegate_task) or, with
+   * `outsideParentTurn`, from a caller outside it, joining its latest run even after it settled.
+   */
+  const startDelegatedTask = Effect.fn("OrchestratorMcpService.startDelegatedTask")(function* <A>(
+    {
+      scope,
+      parent,
+      parentRun,
+      input,
+      operation,
+      outsideParentTurn = false,
+      fork,
+    }: {
+      readonly scope: McpInvocationScope;
+      readonly parent: Effect.Success<ReturnType<typeof loadCallerRecords<"runs">>>;
+      /** Its `rootNodeId` is checked as set. */
+      readonly parentRun: OrchestrationV2Run;
+      readonly input: Omit<OrchestratorMcpDelegateTaskInput, "mode" | "timeoutMs"> & {
+        readonly mode?: OrchestratorMcpDelegateTaskInput["mode"];
+      };
+      readonly operation: string;
+      readonly outsideParentTurn?: boolean;
+      /** Starts the child from a native fork of the parent's conversation, on this account. */
+      readonly fork?: { readonly accountChoice: ThreadAccountChoice | undefined };
+    },
+    finish: (
+      started: {
+        readonly key: string;
+        readonly taskId: NodeId;
+        readonly childThreadId: ThreadId;
+        readonly childRunId: RunId | null;
+      },
+      restore: <X, E, R>(effect: Effect.Effect<X, E, R>) => Effect.Effect<X, E, R>,
+    ) => Effect.Effect<A, OrchestratorMcpFailure>,
+  ) {
+    const projectId = input.target?.projectId ?? parent.thread.projectId;
+    const crossProject = projectId !== parent.thread.projectId;
+    if (crossProject)
+      yield* assertNotLinked({ scope, caller: parent.thread }, "delegate to another project");
+    if (crossProject && (parent.thread.archivedAt !== null || parent.thread.deletedAt !== null)) {
+      return yield* failure(
+        "parent_not_active",
+        "Delegated tasks require an active run owned by this MCP provider session.",
+      );
+    }
+    const key = yield* requestKey(input.clientRequestId);
+    const commandId = stableCommandId({
+      scope,
+      requestKey: key,
+      operation,
+    });
+    const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId, "accepted");
+    const destination =
+      crossProject && !isRetryOfAcceptedDelegation ? yield* requireProject(projectId) : undefined;
+    let target: ResolvedTarget;
+    if (isRetryOfAcceptedDelegation) {
+      const taskId = IdAllocator.derive.delegatedTaskNode({ commandId });
+      const [committed] = yield* loadTasks(parent.thread.id, [taskId]);
+      if (!committed?.childThreadId)
+        return yield* failure("orchestration_error", "The accepted delegated task was not found.");
+      // Older task records omit modelSelection. Canonical thread records survive soft deletion.
+      const modelSelection =
+        committed.modelSelection ??
+        (yield* threadManagement
+          .getThreadRecords(committed.childThreadId, [])
+          .pipe(Effect.mapError(threadManagementFailure))).thread.modelSelection;
+      target = { modelSelection, supportedRuntimeModes: undefined };
+    } else {
+      target = yield* resolveTargetRechecking({
+        parent,
+        projectId,
+        target: input.target,
+        providers: yield* loadProviders,
+        cwd: destination?.workspaceRoot ?? (yield* parentWorkspaceCwd(parent)),
+      });
+    }
+    const runtimeMode = yield* resolveRuntimeMode(
+      parent.thread.runtimeMode,
+      input.runtimeMode,
+      target,
+    );
+    const interactionMode = yield* resolveInteractionMode(
+      parent.thread.interactionMode,
+      input.interactionMode,
+    );
+    // An explicit account gives the child its own pin; omitted, the child has no stored choice.
+    const accountChoice = isRetryOfAcceptedDelegation
+      ? undefined
+      : fork !== undefined
+        ? fork.accountChoice
+        : yield* launchAccountChoice(target.modelSelection.instanceId, input.target);
+    const needsWorktree = input.isolation === "worktree" && !isRetryOfAcceptedDelegation;
+    const useRepositoryDefaults =
+      needsWorktree &&
+      crossProject &&
+      (yield* threadLaunch
+        .worktreeUsesRepositoryDefaults(projectId)
+        .pipe(Effect.mapError((error) => failure("invalid_request", error.message))));
+    let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
+    if (useRepositoryDefaults) {
+      workspaceStrategy = { type: "worktree", baseRef: "HEAD", startFromOrigin: false };
+    } else if (needsWorktree) {
+      const project = destination ?? (yield* requireProject(projectId));
+      let revision = "HEAD";
+      if (crossProject) {
+        const defaultRef = yield* gitDriver.resolvePrimaryRemoteName(project.workspaceRoot).pipe(
+          Effect.flatMap((remote) =>
+            gitDriver
+              .resolveDefaultBranchName(project.workspaceRoot, remote)
+              .pipe(
+                Effect.map((branch) =>
+                  branch === null ? null : `refs/remotes/${remote}/${branch}`,
+                ),
+              ),
+          ),
+          Effect.mapError(() =>
+            failure("invalid_request", "Unable to resolve the target project's default branch."),
+          ),
+        );
+        if (defaultRef === null)
+          return yield* failure(
+            "invalid_request",
+            "The target project's default branch was not found.",
+          );
+        revision = defaultRef;
+      }
+      const base = yield* gitDriver
+        .resolveCommit({
+          cwd: crossProject
+            ? project.workspaceRoot
+            : (parent.thread.worktreePath ?? project.workspaceRoot),
+          revision,
+        })
+        .pipe(
+          Effect.mapError(() =>
+            failure(
+              "invalid_request",
+              crossProject
+                ? "Unable to resolve the target default branch commit."
+                : "Unable to resolve the parent checkout commit.",
+            ),
+          ),
+        );
+      // Launch preparation creates the worktree from the project root, so a
+      // parent checkout in another repository (such as a Git folder inside
+      // Scratch) would hand it a commit it cannot find.
+      if (!crossProject && parent.thread.worktreePath !== null) {
+        yield* gitDriver
+          .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
+          .pipe(
+            Effect.mapError(() =>
+              failure(
+                "invalid_request",
+                `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit. Use isolation "shared" to work in the parent's checkout.`,
+              ),
+            ),
+          );
+      }
+      workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
+    }
+    const parentNodeId = parentRun.rootNodeId;
+    if (parentNodeId === null) return yield* Effect.die("A parent run has no root node.");
+    // The command commits the child's preparing run, which only this call
+    // prepares, so a caller that goes away must not stop it in between.
+    return yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        // ThreadManagementService.dispatch is the chokepoint for this command
+        // type's own enablement check, using the same command id and its
+        // receipt-replay exemption, so no separate assert runs here.
+        const result = yield* threadManagement
+          .dispatch({
+            type: "delegated_task.request",
+            createdBy: "agent",
+            creationSource: "mcp",
+            commandId,
+            ...(crossProject ? { projectId } : {}),
+            parentThreadId: parent.thread.id,
+            parentRunId: parentRun.id,
+            parentNodeId,
+            task: taskPrompt(input),
+            ...(input.title === undefined ? {} : { title: input.title }),
+            modelSelection: target.modelSelection,
+            runtimeMode,
+            interactionMode,
+            ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+            ...(accountChoice === undefined ? {} : { accountChoice }),
+            ...(input.target?.autoCompactLimit === undefined
+              ? {}
+              : { autoCompactLimit: input.target.autoCompactLimit }),
+            ...(input.notifyParent === undefined ? {} : { notifyParent: input.notifyParent }),
+            // Async delegations wake the parent on every child terminal; wait
+            // delegations deliver through the blocking tool call until `awaitTask`
+            // gives up the wait (timeout, cancelled call) and upgrades the wake.
+            completionWake: input.mode === "wait" ? "settled_only" : "always",
+            ...(outsideParentTurn ? { outsideParentTurn } : {}),
+            ...(fork === undefined ? {} : { context: "fork" as const }),
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "ThreadManagementProviderInstanceDisabledError"
+                ? threadManagementFailure(error)
+                : failure(
+                    "orchestration_error",
+                    `Unable to create delegated task: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
+                  ),
+            ),
+          );
+        const taskEvent = result.storedEvents.find(
+          (stored) =>
+            stored.event.type === "subagent.updated" && stored.event.payload.origin === "app_owned",
+        );
+        if (taskEvent?.event.type !== "subagent.updated") {
+          return yield* failure(
+            "orchestration_error",
+            "Delegated task command did not produce a task projection.",
+          );
+        }
+        const taskId = taskEvent.event.payload.id;
+        const childThreadId = taskEvent.event.payload.childThreadId;
+        const childRunEvent = result.storedEvents.find(
+          (stored) =>
+            stored.event.type === "run.created" && stored.event.threadId === childThreadId,
+        );
+        if (
+          childThreadId !== null &&
+          childRunEvent?.event.type === "run.created" &&
+          childRunEvent.event.payload.workspacePreparation !== undefined
+        ) {
+          yield* threadLaunch.prepareRun({
+            commandId,
+            ...(crossProject ? { projectId } : {}),
+            threadId: childThreadId,
+            runId: childRunEvent.event.payload.id,
+          });
+        }
+        if (childThreadId === null) {
+          return yield* failure("orchestration_error", "Delegated task has no child thread.");
+        }
+        return yield* finish(
+          {
+            key,
+            taskId,
+            childThreadId,
+            childRunId:
+              childRunEvent?.event.type === "run.created" ? childRunEvent.event.payload.id : null,
+          },
+          restore,
+        );
+      }),
+    );
+  });
+
+  // Fork: a forked conversation stays on the account that owns it; its thinking is bound there.
+  const forkAccountChoice = Effect.fn("OrchestratorMcpService.forkAccountChoice")(function* (
+    thread: OrchestrationV2ThreadProjection["thread"],
+  ) {
+    const instanceId = thread.modelSelection.instanceId;
+    const unavailable = (error: { readonly detail: string }) =>
+      failure("orchestration_error", `${error.detail} Nothing was created.`);
+    const state = yield* threadAccounts
+      .state({ threadId: thread.id, modelSelection: thread.modelSelection })
+      .pipe(Effect.mapError(unavailable));
+    // Only an account known to own the conversation: pinning a guess would make the router
+    // treat it as the owner. Without one the fork stays unpinned and the router refuses it.
+    const account =
+      state?.owner ?? threadAccountChoiceFor(thread.accountChoice, instanceId)?.account;
+    if (!account) return undefined;
+    // Only Claude turns can wait for their account; Codex has no thinking bound to one.
+    const adapter = yield* providerAdapters
+      .get(instanceId)
+      .pipe(
+        Effect.mapError(() => failure("provider_unavailable", `${instanceId} is not available.`)),
+      );
+    return yield* threadAccounts
+      .launchChoice({ instanceId, account, stall: adapter.driver === "claudeAgent" })
+      .pipe(Effect.mapError(unavailable));
+  });
+
   const service = OrchestratorMcpService.of({
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope, ["runs"]);
@@ -3080,219 +3367,120 @@ const make = Effect.gen(function* () {
           : readTask(scope, taskId, false, true);
       }
       const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
-      const projectId = input.target?.projectId ?? parent.thread.projectId;
-      const crossProject = projectId !== parent.thread.projectId;
-      if (crossProject)
-        yield* assertNotLinked({ scope, caller: parent.thread }, "delegate to another project");
       const parentRun =
         ThreadManagementService.latestActiveRun(parent) ??
         (yield* backgroundSubagentRun(scope, parent.thread.id));
       if (
         parentRun === undefined ||
         parentRun.rootNodeId === null ||
-        parentRun.providerInstanceId !== scope.thread.providerInstanceId ||
-        (crossProject && (parent.thread.archivedAt !== null || parent.thread.deletedAt !== null))
+        parentRun.providerInstanceId !== scope.thread.providerInstanceId
       ) {
         return yield* failure(
           "parent_not_active",
           "Delegated tasks require an active run owned by this MCP provider session.",
         );
       }
-      const key = yield* requestKey(input.clientRequestId);
-      const commandId = stableCommandId({
-        scope,
-        requestKey: key,
-        operation: "delegate-task",
-      });
-      const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId, "accepted");
-      const destination =
-        crossProject && !isRetryOfAcceptedDelegation ? yield* requireProject(projectId) : undefined;
-      let target: ResolvedTarget;
-      if (isRetryOfAcceptedDelegation) {
-        const taskId = IdAllocator.derive.delegatedTaskNode({ commandId });
-        const [committed] = yield* loadTasks(parent.thread.id, [taskId]);
-        if (!committed?.childThreadId)
-          return yield* failure(
-            "orchestration_error",
-            "The accepted delegated task was not found.",
-          );
-        // Older task records omit modelSelection. Canonical thread records survive soft deletion.
-        const modelSelection =
-          committed.modelSelection ??
-          (yield* threadManagement
-            .getThreadRecords(committed.childThreadId, [])
-            .pipe(Effect.mapError(threadManagementFailure))).thread.modelSelection;
-        target = { modelSelection, supportedRuntimeModes: undefined };
-      } else {
-        target = yield* resolveTargetRechecking({
-          parent,
-          projectId,
-          target: input.target,
-          providers: yield* loadProviders,
-          cwd: destination?.workspaceRoot ?? (yield* parentWorkspaceCwd(parent)),
-        });
-      }
-      const runtimeMode = yield* resolveRuntimeMode(
-        parent.thread.runtimeMode,
-        input.runtimeMode,
-        target,
-      );
-      const interactionMode = yield* resolveInteractionMode(
-        parent.thread.interactionMode,
-        input.interactionMode,
-      );
-      // An explicit account gives the child its own pin; omitted, the child has no stored choice.
-      const accountChoice = isRetryOfAcceptedDelegation
-        ? undefined
-        : yield* launchAccountChoice(target.modelSelection.instanceId, input.target);
-      const needsWorktree = input.isolation === "worktree" && !isRetryOfAcceptedDelegation;
-      const useRepositoryDefaults =
-        needsWorktree &&
-        crossProject &&
-        (yield* threadLaunch
-          .worktreeUsesRepositoryDefaults(projectId)
-          .pipe(Effect.mapError((error) => failure("invalid_request", error.message))));
-      let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
-      if (useRepositoryDefaults) {
-        workspaceStrategy = { type: "worktree", baseRef: "HEAD", startFromOrigin: false };
-      } else if (needsWorktree) {
-        const project = destination ?? (yield* requireProject(projectId));
-        let revision = "HEAD";
-        if (crossProject) {
-          const defaultRef = yield* gitDriver.resolvePrimaryRemoteName(project.workspaceRoot).pipe(
-            Effect.flatMap((remote) =>
-              gitDriver
-                .resolveDefaultBranchName(project.workspaceRoot, remote)
-                .pipe(
-                  Effect.map((branch) =>
-                    branch === null ? null : `refs/remotes/${remote}/${branch}`,
-                  ),
-                ),
-            ),
-            Effect.mapError(() =>
-              failure("invalid_request", "Unable to resolve the target project's default branch."),
-            ),
-          );
-          if (defaultRef === null)
-            return yield* failure(
-              "invalid_request",
-              "The target project's default branch was not found.",
-            );
-          revision = defaultRef;
-        }
-        const base = yield* gitDriver
-          .resolveCommit({
-            cwd: crossProject
-              ? project.workspaceRoot
-              : (parent.thread.worktreePath ?? project.workspaceRoot),
-            revision,
-          })
-          .pipe(
-            Effect.mapError(() =>
-              failure(
-                "invalid_request",
-                crossProject
-                  ? "Unable to resolve the target default branch commit."
-                  : "Unable to resolve the parent checkout commit.",
-              ),
-            ),
-          );
-        // Launch preparation creates the worktree from the project root, so a
-        // parent checkout in another repository (such as a Git folder inside
-        // Scratch) would hand it a commit it cannot find.
-        if (!crossProject && parent.thread.worktreePath !== null) {
-          yield* gitDriver
-            .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
-            .pipe(
-              Effect.mapError(() =>
-                failure(
-                  "invalid_request",
-                  `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit. Use isolation "shared" to work in the parent's checkout.`,
-                ),
-              ),
-            );
-        }
-        workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
-      }
-      const parentNodeId = parentRun.rootNodeId;
-      // The command commits the child's preparing run, which only this call
-      // prepares, so a caller that goes away must not stop it in between.
-      return yield* Effect.uninterruptibleMask((restore) =>
-        Effect.gen(function* () {
-          // ThreadManagementService.dispatch is the chokepoint for this command
-          // type's own enablement check, using the same command id and its
-          // receipt-replay exemption, so no separate assert runs here.
-          const result = yield* threadManagement
-            .dispatch({
-              type: "delegated_task.request",
-              createdBy: "agent",
-              creationSource: "mcp",
-              commandId,
-              ...(crossProject ? { projectId } : {}),
-              parentThreadId: scope.thread.threadId,
-              parentRunId: parentRun.id,
-              parentNodeId,
-              task: taskPrompt(input),
-              ...(input.title === undefined ? {} : { title: input.title }),
-              modelSelection: target.modelSelection,
-              runtimeMode,
-              interactionMode,
-              ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
-              ...(accountChoice === undefined ? {} : { accountChoice }),
-              ...(input.target?.autoCompactLimit === undefined
-                ? {}
-                : { autoCompactLimit: input.target.autoCompactLimit }),
-              ...(input.notifyParent === undefined ? {} : { notifyParent: input.notifyParent }),
-              // Async delegations wake the parent on every child terminal; wait
-              // delegations deliver through the blocking tool call until `awaitTask`
-              // gives up the wait (timeout, cancelled call) and upgrades the wake.
-              completionWake: input.mode === "wait" ? "settled_only" : "always",
-            })
-            .pipe(
-              Effect.mapError((error) =>
-                error._tag === "ThreadManagementProviderInstanceDisabledError"
-                  ? threadManagementFailure(error)
-                  : failure(
-                      "orchestration_error",
-                      `Unable to create delegated task: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
-                    ),
-              ),
-            );
-          const taskEvent = result.storedEvents.find(
-            (stored) =>
-              stored.event.type === "subagent.updated" &&
-              stored.event.payload.origin === "app_owned",
-          );
-          if (taskEvent?.event.type !== "subagent.updated") {
-            return yield* failure(
-              "orchestration_error",
-              "Delegated task command did not produce a task projection.",
-            );
-          }
-          const taskId = taskEvent.event.payload.id;
-          const childThreadId = taskEvent.event.payload.childThreadId;
-          const childRunEvent = result.storedEvents.find(
-            (stored) =>
-              stored.event.type === "run.created" && stored.event.threadId === childThreadId,
-          );
-          if (
-            childThreadId !== null &&
-            childRunEvent?.event.type === "run.created" &&
-            childRunEvent.event.payload.workspacePreparation !== undefined
-          ) {
-            yield* threadLaunch.prepareRun({
-              commandId,
-              ...(crossProject ? { projectId } : {}),
-              threadId: childThreadId,
-              runId: childRunEvent.event.payload.id,
-            });
-          }
-          return yield* input.mode === "wait"
-            ? awaitTask(scope, taskId, key, input.timeoutMs, restore)
-            : restore(readTask(scope, taskId, false, true));
-        }),
+      return yield* startDelegatedTask(
+        { scope, parent, parentRun, input, operation: "delegate-task" },
+        (started, restore) =>
+          input.mode === "wait"
+            ? awaitTask(scope, started.taskId, started.key, input.timeoutMs, restore)
+            : restore(readTask(scope, started.taskId, false, true)),
       );
     }),
+    delegateForThread: Effect.fn("OrchestratorMcpService.delegateForThread")(
+      function* (scope, input) {
+        yield* requireCapability(scope);
+        if (scope.thread !== undefined) {
+          return yield* failure(
+            "invalid_request",
+            "A thread starts its own tasks with delegate_task; t3_thread_delegate is for callers outside a thread.",
+          );
+        }
+        // A linked environment's work carries its link, which a task under a local thread would drop.
+        if (scope.client?.linked === true) {
+          return yield* failure(
+            "capability_denied",
+            "A linked environment cannot start tasks under this environment's threads.",
+          );
+        }
+        const context = input.context ?? "fresh";
+        if (input.target?.environmentId !== undefined) {
+          return yield* failure(
+            "invalid_request",
+            "t3_thread_delegate starts tasks in this environment. Omit target.environmentId.",
+          );
+        }
+        if (context === "fork" && input.isolation === "worktree") {
+          return yield* failure(
+            "invalid_request",
+            "A fork continues in the parent's checkout. Omit isolation or use shared.",
+          );
+        }
+        if (context === "fork" && input.target !== undefined) {
+          return yield* failure(
+            "invalid_request",
+            "A fork runs on the parent's model, account and project. Omit target.",
+          );
+        }
+        const shell = yield* threadManagement
+          .getThreadShell(input.threadId)
+          .pipe(Effect.mapError(threadManagementFailure));
+        if (shell === null || shell.deletedAt !== null || shell.archivedAt !== null) {
+          return yield* failure(
+            "thread_not_found",
+            `Thread ${input.threadId} was not found or is archived.`,
+          );
+        }
+        const parent = yield* loadCallerRecords(input.threadId, ["runs"]);
+        // The task joins the parent's latest run, so the parent runs no turn for it.
+        const parentRun =
+          ThreadManagementService.latestActiveRun(parent) ??
+          (shell.latestRunId === null
+            ? undefined
+            : (yield* loadThreadRecords(input.threadId, ["runs"], { runIds: [shell.latestRunId] }))
+                .runs[0]);
+        if (parentRun === undefined || parentRun.rootNodeId === null) {
+          return yield* failure(
+            "parent_not_active",
+            `Thread ${input.threadId} has not run a turn yet, and a task joins its latest run.`,
+          );
+        }
+        const fork = context === "fork";
+        return yield* startDelegatedTask(
+          {
+            // Keyed to the parent, not the client session: the CLI and hooks sign in afresh,
+            // so a retry with the same clientRequestId must find the task it started.
+            scope: { ...scope, requestNamespace: `thread-delegate:${input.threadId}` },
+            parent,
+            parentRun,
+            input: fork
+              ? {
+                  ...input,
+                  target: {
+                    providerInstanceId: parent.thread.modelSelection.instanceId,
+                    model: parent.thread.modelSelection.model,
+                    options: parent.thread.modelSelection.options ?? [],
+                  },
+                }
+              : input,
+            operation: "thread-delegate",
+            outsideParentTurn: true,
+            ...(fork ? { fork: { accountChoice: yield* forkAccountChoice(parent.thread) } } : {}),
+          },
+          (started, restore) =>
+            restore(
+              Effect.succeed({
+                taskId: started.taskId,
+                childThreadId: started.childThreadId,
+                childRunId: started.childRunId,
+                link: threadLinkFor(scope, started.childThreadId),
+                context,
+              } satisfies OrchestratorMcpThreadDelegateResult),
+            ),
+        );
+      },
+    ),
     taskStatus: Effect.fn("OrchestratorMcpService.taskStatus")(function* (callerScope, taskId) {
       const scope = yield* requireThreadScope(callerScope, "task_status");
       return yield* readTask(scope, taskId, false, true);

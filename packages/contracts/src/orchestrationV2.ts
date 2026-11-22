@@ -3850,6 +3850,13 @@ export const OrchestrationV2Command = Schema.Union([
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
     // Absent inherits the parent thread's own delegation policy.
     notifyParent: Schema.optional(OrchestrationV2DelegatedTaskNotifyParent),
+    /**
+     * Fork: started from outside the parent's turns (a hook, script or CLI), so the task joins
+     * the parent's latest run even after it settled. The parent runs no turn for it.
+     */
+    outsideParentTurn: Schema.optional(Schema.Boolean),
+    /** Fork: `fork` starts the child from a native fork of the parent's latest completed turn. */
+    context: Schema.optional(Schema.Literals(["fresh", "fork"])),
     createdAt: Schema.optional(Schema.DateTimeUtc),
   }),
   Schema.Struct({

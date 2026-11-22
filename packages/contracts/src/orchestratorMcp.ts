@@ -323,6 +323,39 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
 });
 export type OrchestratorMcpDelegateTaskResult = typeof OrchestratorMcpDelegateTaskResult.Type;
 
+/** Fork: `delegate_task` for a caller outside any thread, such as a hook, script or the CLI. */
+export const OrchestratorMcpThreadDelegateInput = Schema.Struct({
+  threadId: ThreadId.annotate({
+    description:
+      "Parent thread. It owns the child and is woken by its results; it runs no turn for this call.",
+  }),
+  context: Schema.optional(
+    Schema.Literals(["fresh", "fork"]).annotate({
+      description:
+        "fresh (default): the child gets only `task`. fork: the child continues a native fork of the parent's conversation at its latest completed turn, on the parent's model and account, then gets `task`; omit `target`.",
+    }),
+  ),
+  task: OrchestratorMcpDelegateTaskInput.fields.task,
+  target: OrchestratorMcpDelegateTaskInput.fields.target,
+  title: OrchestratorMcpDelegateTaskInput.fields.title,
+  role: OrchestratorMcpDelegateTaskInput.fields.role,
+  isolation: OrchestratorMcpDelegateTaskInput.fields.isolation,
+  notifyParent: OrchestratorMcpDelegateTaskInput.fields.notifyParent,
+  clientRequestId: OrchestratorMcpDelegateTaskInput.fields.clientRequestId,
+  runtimeMode: OrchestratorMcpDelegateTaskInput.fields.runtimeMode,
+  interactionMode: OrchestratorMcpDelegateTaskInput.fields.interactionMode,
+});
+export type OrchestratorMcpThreadDelegateInput = typeof OrchestratorMcpThreadDelegateInput.Type;
+
+export const OrchestratorMcpThreadDelegateResult = Schema.Struct({
+  taskId: NodeId,
+  childThreadId: ThreadId,
+  childRunId: Schema.NullOr(RunId),
+  link: Schema.String,
+  context: Schema.Literals(["fresh", "fork"]),
+});
+export type OrchestratorMcpThreadDelegateResult = typeof OrchestratorMcpThreadDelegateResult.Type;
+
 export const OrchestratorMcpTaskStatusInput = Schema.Struct({
   taskId: NodeId,
 });

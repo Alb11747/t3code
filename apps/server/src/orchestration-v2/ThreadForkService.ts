@@ -48,6 +48,48 @@ export function forkableSourceRunStatusError(
   return `Fork source run ${run.id} is ${run.status}; in-progress and rolled-back runs cannot be forked.`;
 }
 
+/** The pending transfer a fork's first run resolves, natively when the source allows it. */
+export function forkContextTransfer(input: {
+  readonly sourceThread: Pick<OrchestrationV2AppThread, "id" | "providerInstanceId">;
+  readonly sourceRun: OrchestrationV2Run | null;
+  readonly sourceProviderThread: OrchestrationV2ProviderThread | undefined;
+  readonly sourceTokenUsage?: OrchestrationV2ProviderTurnTokenUsage | undefined;
+  readonly sourcePoint: OrchestrationV2ContextSourcePoint;
+  readonly transferId: ContextTransferId;
+  readonly targetThreadId: ThreadId;
+  readonly createdBy: OrchestrationV2Actor;
+  readonly createdAt: DateTime.Utc;
+}): OrchestrationV2ContextTransfer {
+  const strongSource = input.sourceProviderThread?.nativeThreadRef?.strength === "strong";
+  return {
+    id: input.transferId,
+    type: "fork",
+    sourceThreadId: input.sourceThread.id,
+    targetThreadId: input.targetThreadId,
+    sourcePoint: input.sourcePoint,
+    basePoint: null,
+    sourceProviderInstanceId:
+      input.sourceRun?.providerInstanceId ?? input.sourceThread.providerInstanceId,
+    // Only native forks retain this context; portable handoffs rebuild it.
+    sourceTokenUsage:
+      (input.sourceRun?.status === "completed" || input.sourceRun?.status === "waiting") &&
+      strongSource
+        ? input.sourceTokenUsage
+        : undefined,
+    targetProviderInstanceId: null,
+    targetRunId: null,
+    status: "pending",
+    resolution: null,
+    createdBy: input.createdBy,
+    error: strongSource
+      ? null
+      : "Source provider thread does not expose a strong native thread ref.",
+    createdAt: input.createdAt,
+    updatedAt: input.createdAt,
+    consumedAt: null,
+  };
+}
+
 export interface ThreadForkServiceV2Shape {
   readonly plan: (input: {
     readonly sourceProjection: Pick<OrchestrationV2ThreadProjection, "thread">;
@@ -149,34 +191,17 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
         opens: null,
         deletedAt: null,
       };
-      const transfer: OrchestrationV2ContextTransfer = {
-        id: input.transferId,
-        type: "fork",
-        sourceThreadId: input.sourceProjection.thread.id,
-        targetThreadId: input.targetThreadId,
+      const transfer = forkContextTransfer({
+        sourceThread: input.sourceProjection.thread,
+        sourceRun,
+        sourceProviderThread: input.sourceProviderThread,
+        sourceTokenUsage: input.sourceTokenUsage,
         sourcePoint: input.canonicalSourcePoint,
-        basePoint: null,
-        sourceProviderInstanceId:
-          sourceRun?.providerInstanceId ?? input.sourceProjection.thread.providerInstanceId,
-        // Only native forks retain this context; portable handoffs rebuild it.
-        sourceTokenUsage:
-          (sourceRun?.status === "completed" || sourceRun?.status === "waiting") &&
-          input.sourceProviderThread?.nativeThreadRef?.strength === "strong"
-            ? input.sourceTokenUsage
-            : undefined,
-        targetProviderInstanceId: null,
-        targetRunId: null,
-        status: "pending",
-        resolution: null,
+        transferId: input.transferId,
+        targetThreadId: input.targetThreadId,
         createdBy: input.createdBy,
-        error:
-          input.sourceProviderThread?.nativeThreadRef?.strength === "strong"
-            ? null
-            : "Source provider thread does not expose a strong native thread ref.",
         createdAt: input.createdAt,
-        updatedAt: input.createdAt,
-        consumedAt: null,
-      };
+      });
       return { targetThread, transfer };
     }),
   }),

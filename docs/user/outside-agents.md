@@ -155,6 +155,16 @@ pass `--worktree <base-branch>`. Its title is the message's first line, or
 started in the app are. `send` never interrupts: a busy thread gets the message
 as its next turn. Pass `-` as the message to read it from stdin.
 
+`t3 thread delegate <thread> "<task>"` starts a child agent under an existing
+thread, as if that thread had delegated the task: the thread owns the child and
+is woken by its results, but runs no turn now. The child gets only the task, on
+the parent's model unless you pass `--provider` and `--model`. With `--fork`, it
+instead continues a copy of the parent's conversation from its latest completed
+turn, on the parent's model and account and in its checkout; if the provider cannot fork that
+conversation, the child fails rather than starting without it. Pass
+`--request-id` to make a retry return the task it already started. Signed-in
+outside clients can do the same with the `t3_thread_delegate` tool.
+
 When a Claude conversation has at least 200,000 tokens and its prompt cache is
 cold, sending requires a choice. Pass `--context-policy compact` to compact an
 idle conversation before the message, or `--context-policy keep` to retain the

@@ -7,6 +7,7 @@ import {
   EventId,
   MessageId,
   NodeId,
+  type OrchestrationV2ThreadProjection,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -1729,12 +1730,17 @@ it.effect("merge-back rejects a second fork's context until the first is consume
   }).pipe(Effect.provide(forkCases[0]!.layer)),
 );
 
-const runForkWithFailingNativeSource = (forkFailures: number) => {
+/**
+ * Forks a settled source whose native fork fails `forkFailures` times: as a thread fork, or as
+ * a task a caller outside the source's turns starts under it (`subagent`).
+ */
+const runForkWithFailingNativeSource = (forkFailures: number, subagent = false) => {
   const driver = ProviderDriverKind.make("claudeAgent");
   const instanceId = ProviderInstanceId.make("claudeAgent");
   const modelSelection = { instanceId, model: "test-model" };
   const started = Deferred.makeUnsafe<ProviderAdapter.ProviderAdapterV2TurnInput>();
   let forkCalls = 0;
+  let startCalls = 0;
   const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
     instanceId,
     driver,
@@ -1769,7 +1775,11 @@ const runForkWithFailingNativeSource = (forkFailures: number) => {
               updatedAt: now,
             }),
           resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
-          startTurn: (turn) => Deferred.succeed(started, turn).pipe(Effect.asVoid),
+          startTurn: (turn) =>
+            Effect.sync(() => startCalls++).pipe(
+              Effect.andThen(Deferred.succeed(started, turn)),
+              Effect.asVoid,
+            ),
           steerTurn: () => Effect.void,
           interruptTurn: () => Effect.void,
           respondToRuntimeRequest: () => Effect.void,
@@ -1803,6 +1813,7 @@ const runForkWithFailingNativeSource = (forkFailures: number) => {
     const targetThreadId = ThreadId.make("fork-missing-target");
     const providerThreadId = ProviderThreadId.make("fork-missing-native-thread");
     const sourceRunId = RunId.make("fork-missing-source-run");
+    const rootNodeId = NodeId.make("fork-missing-source-root");
     const userMessageId = MessageId.make("fork-missing-source-message");
 
     yield* orchestrator.dispatch({
@@ -1858,7 +1869,7 @@ const runForkWithFailingNativeSource = (forkFailures: number) => {
             modelSelection,
             providerThreadId,
             userMessageId,
-            rootNodeId: null,
+            rootNodeId,
             activeAttemptId: null,
             status: "completed",
             queuePosition: null,
@@ -1867,6 +1878,31 @@ const runForkWithFailingNativeSource = (forkFailures: number) => {
             completedAt: now,
             checkpointId: null,
             contextHandoffId: null,
+          },
+        },
+        {
+          id: EventId.make("fork-missing-source-root"),
+          type: "node.updated",
+          threadId: sourceThreadId,
+          runId: sourceRunId,
+          nodeId: rootNodeId,
+          occurredAt: now,
+          payload: {
+            id: rootNodeId,
+            threadId: sourceThreadId,
+            runId: sourceRunId,
+            parentNodeId: null,
+            rootNodeId,
+            kind: "root_turn",
+            status: "completed",
+            countsForRun: true,
+            providerThreadId,
+            providerTurnId: null,
+            nativeItemRef: null,
+            runtimeRequestId: null,
+            checkpointScopeId: null,
+            startedAt: now,
+            completedAt: now,
           },
         },
         {
@@ -1901,40 +1937,80 @@ const runForkWithFailingNativeSource = (forkFailures: number) => {
         },
       ],
     });
-    yield* orchestrator.dispatch({
-      type: "thread.fork",
-      commandId: CommandId.make("fork-missing-fork"),
-      sourceThreadId,
-      targetThreadId,
-      sourcePoint: { type: "run", runId: sourceRunId },
-      createdBy: "user",
-      creationSource: "web",
-    });
-    yield* orchestrator.dispatch({
-      type: "message.dispatch",
-      commandId: CommandId.make("fork-missing-continue"),
-      threadId: targetThreadId,
-      messageId: MessageId.make("fork-missing-continue"),
-      text: "Continue the fork",
-      attachments: [],
-      modelSelection,
-      dispatchMode: { type: "start_immediately" },
-      createdBy: "user",
-      creationSource: "web",
-    });
+    let childThreadId = targetThreadId;
+    if (subagent) {
+      const delegate = (commandId: string, outsideParentTurn: boolean) =>
+        orchestrator.dispatch({
+          type: "delegated_task.request",
+          commandId: CommandId.make(commandId),
+          parentThreadId: sourceThreadId,
+          parentRunId: sourceRunId,
+          parentNodeId: rootNodeId,
+          task: "Continue the fork",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          completionWake: "always",
+          context: "fork",
+          ...(outsideParentTurn ? { outsideParentTurn } : {}),
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+      const setParentMode = (runtimeMode: "auto" | "full-access") =>
+        orchestrator.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make(`fork-missing-mode-${runtimeMode}`),
+          threadId: sourceThreadId,
+          runtimeMode,
+        });
+      // A parent narrowed after the caller read it never gets a child above its modes.
+      yield* setParentMode("auto");
+      const narrowed = yield* delegate("fork-missing-narrowed", true).pipe(Effect.flip);
+      assert.include(String((narrowed as { readonly cause?: unknown }).cause), "now runs in auto");
+      yield* setParentMode("full-access");
+      // Only a start from outside the parent's turns may join its settled run.
+      const refused = yield* delegate("fork-missing-inside", false).pipe(Effect.flip);
+      assert.include(String((refused as { readonly cause?: unknown }).cause), "is not active");
+      yield* delegate("fork-missing-delegate", true);
+      const source = yield* orchestrator.getThreadProjection(sourceThreadId);
+      assert.deepEqual(
+        source.runs.map((run) => run.id),
+        [sourceRunId],
+      );
+      childThreadId = source.subagents[0]!.childThreadId!;
+    } else {
+      yield* orchestrator.dispatch({
+        type: "thread.fork",
+        commandId: CommandId.make("fork-missing-fork"),
+        sourceThreadId,
+        targetThreadId,
+        sourcePoint: { type: "run", runId: sourceRunId },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("fork-missing-continue"),
+        threadId: targetThreadId,
+        messageId: MessageId.make("fork-missing-continue"),
+        text: "Continue the fork",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
     // Run every start attempt so the last one runs with willRetry false.
     for (let attempt = 0; attempt < 5; attempt++) {
       yield* worker.drain();
       yield* TestClock.adjust("1 second");
     }
 
-    const projection = yield* orchestrator.getThreadProjection(targetThreadId);
-    assert.deepEqual(
-      projection.turnItems.flatMap((item) => (item.type === "error" ? [item.title] : [])),
-      [],
-    );
-    assert.equal(projection.runs[0]?.status, "running");
-    return { projection, turn: yield* Deferred.await(started), forkCalls };
+    const projection = yield* orchestrator.getThreadProjection(childThreadId);
+    // A start that fails never reaches the provider, so there is no turn to wait for.
+    const turn = subagent && forkFailures > 0 ? undefined : yield* Deferred.await(started);
+    return { projection, turn, forkCalls, startCalls };
   }).pipe(
     Effect.provide(
       ProviderReplayHarness.layerWithRegistry(
@@ -1945,9 +2021,18 @@ const runForkWithFailingNativeSource = (forkFailures: number) => {
   );
 };
 
+const expectRunning = (projection: OrchestrationV2ThreadProjection) => {
+  assert.deepEqual(
+    projection.turnItems.flatMap((item) => (item.type === "error" ? [item.title] : [])),
+    [],
+  );
+  assert.equal(projection.runs[0]?.status, "running");
+};
+
 it.effect("a native fork whose source session is gone starts fresh with the source history", () =>
   Effect.gen(function* () {
     const { projection, turn } = yield* runForkWithFailingNativeSource(Number.POSITIVE_INFINITY);
+    expectRunning(projection);
     // Resolving the fork transfer stops later sends from retrying the native fork.
     assert.equal(projection.contextTransfers[0]?.status, "resolved_portable");
     assert.isNull(projection.providerThreads[0]?.forkedFrom);
@@ -1964,8 +2049,41 @@ it.effect("a native fork whose source session is gone starts fresh with the sour
 it.effect("a native fork that fails before its last attempt still forks natively", () =>
   Effect.gen(function* () {
     const { projection, forkCalls } = yield* runForkWithFailingNativeSource(1);
+    expectRunning(projection);
     assert.equal(forkCalls, 2);
     assert.equal(projection.contextTransfers[0]?.status, "consumed");
     assert.equal(projection.contextTransfers[0]?.resolution?.strategy, "native_fork");
+  }),
+);
+
+it.effect(
+  "a task started outside its parent's turns forks the parent's conversation natively",
+  () =>
+    Effect.gen(function* () {
+      const { projection, turn, forkCalls } = yield* runForkWithFailingNativeSource(0, true);
+      expectRunning(projection);
+      assert.equal(projection.thread.lineage.relationshipToParent, "subagent");
+      assert.equal(forkCalls, 1);
+      const fork = projection.contextTransfers.find((transfer) => transfer.type === "fork");
+      assert.equal(fork?.status, "consumed");
+      assert.equal(fork?.resolution?.strategy, "native_fork");
+      assert.equal(fork?.sourcePoint.runId, RunId.make("fork-missing-source-run"));
+      assert.include(JSON.stringify(turn), "Continue the fork");
+    }),
+);
+
+it.effect("a forked task whose native fork fails fails instead of starting from a summary", () =>
+  Effect.gen(function* () {
+    const { projection, startCalls } = yield* runForkWithFailingNativeSource(
+      Number.POSITIVE_INFINITY,
+      true,
+    );
+    assert.equal(projection.runs[0]?.status, "failed");
+    assert.equal(startCalls, 0);
+    assert.deepEqual(projection.contextHandoffs, []);
+    assert.notEqual(
+      projection.contextTransfers.find((transfer) => transfer.type === "fork")?.status,
+      "resolved_portable",
+    );
   }),
 );

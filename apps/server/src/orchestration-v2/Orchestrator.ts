@@ -224,6 +224,7 @@ import {
 } from "@t3tools/provider-core/server/subagentProjection";
 import {
   forkableSourceRunStatusError,
+  forkContextTransfer,
   isForkableSourceRunStatus,
   ThreadForkServiceV2,
 } from "./ThreadForkService.ts";
@@ -10630,6 +10631,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (cause) => new OrchestratorProjectionError({ threadId: run.threadId, cause }),
       ),
     );
+  // A task started from outside the parent's turns joins its latest run, as async tasks
+  // outlive the run that started them.
+  const isLatestSettledRun = (run: OrchestrationV2Run) =>
+    projectionStore.getThreadShell(run.threadId).pipe(
+      Effect.map(
+        (shell) =>
+          shell !== null &&
+          shell.archivedAt === null &&
+          shell.deletedAt === null &&
+          shell.latestRunId === run.id &&
+          run.status !== "rolled_back",
+      ),
+      Effect.mapError(
+        (cause) => new OrchestratorProjectionError({ threadId: run.threadId, cause }),
+      ),
+    );
   // A child's own delegations default to the policy its parent chose for it.
   const inheritedNotifyParent = Effect.fnUntraced(function* (thread: OrchestrationV2AppThread) {
     const parentThreadId = thread.lineage.parentThreadId;
@@ -10648,6 +10665,97 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
     return subagents.find((task) => task.id === taskId)?.notifyParent;
+  });
+
+  /** Adds the pending fork transfer the child's first run resolves into a native fork. */
+  const forkParentConversation = Effect.fnUntraced(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>,
+    childThreadId: ThreadId,
+    now: DateTime.Utc,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    // A fork continues the parent's session in its checkout; a new worktree would defer it.
+    if (command.workspaceStrategy !== undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "A forked task runs in its parent's checkout, not a new worktree.",
+      });
+    }
+    const source = yield* projectionStore
+      .getThreadRecords(command.parentThreadId, [
+        "runs",
+        "providerThreads",
+        "providerTurns",
+        "attempts",
+      ])
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: command.parentThreadId, cause }),
+        ),
+      );
+    // The latest turn its provider finished in the thread's own conversation: a turn still
+    // running is never forked, and a fresh scheduled run is a side conversation.
+    const finished = source.runs
+      .filter((run) => run.status === "completed" || run.status === "waiting")
+      .toSorted((left, right) => right.ordinal - left.ordinal);
+    const freshRunIds = finished.filter((run) => run.freshContext === true).map((run) => run.id);
+    const freshPrompts =
+      freshRunIds.length === 0
+        ? []
+        : (yield* projectionStore
+            .getThreadRecords(command.parentThreadId, ["turnItems"], {
+              turnItemTypes: ["user_message"],
+              turnItemRunIds: freshRunIds,
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestratorProjectionError({ threadId: command.parentThreadId, cause }),
+              ),
+            )).turnItems;
+    const sourceRun = finished.find((run) => !isScheduledFreshRun(run, freshPrompts));
+    if (
+      sourceRun === undefined ||
+      sourceRun.providerInstanceId !== command.modelSelection.instanceId
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause:
+          sourceRun === undefined
+            ? `Thread ${command.parentThreadId} has no completed turn to fork.`
+            : `A fork runs on the provider of the parent's latest completed turn, ${sourceRun.providerInstanceId}.`,
+      });
+    }
+    const transferId = yield* mapDispatchError(command)(
+      idAllocator.allocate.contextTransfer({
+        sourceThreadId: command.parentThreadId,
+        targetThreadId: childThreadId,
+        type: "fork",
+      }),
+    );
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "context-transfer.created",
+      threadId: childThreadId,
+      providerInstanceId: sourceRun.providerInstanceId,
+      occurredAt: now,
+      payload: forkContextTransfer({
+        sourceThread: source.thread,
+        sourceRun,
+        sourceProviderThread: providerThreadForRun(source, sourceRun),
+        sourceTokenUsage: providerTurnForRun(source, sourceRun)?.tokenUsage,
+        sourcePoint: contextSourcePointForRun(source, sourceRun),
+        transferId,
+        targetThreadId: childThreadId,
+        createdBy: command.createdBy,
+        createdAt: now,
+      }),
+    });
+    return transferId;
   });
 
   const dispatchDelegatedTaskRequest = Effect.fn("orchestrationV2.dispatch.delegatedTaskRequest")(
@@ -10689,7 +10797,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       if (
         parentRun === undefined ||
-        !(isActiveRun(parentRun) || (yield* backgroundSubagentOutlivesRun(parentRun)))
+        !(
+          isActiveRun(parentRun) ||
+          (yield* backgroundSubagentOutlivesRun(parentRun)) ||
+          (command.outsideParentTurn === true && (yield* isLatestSettledRun(parentRun)))
+        )
       ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -10702,6 +10814,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandId: command.commandId,
           commandType: command.type,
           cause: `Parent run ${command.parentRunId} is stopping.`,
+        });
+      }
+      // The caller resolved the child's modes from an earlier read; its user may have narrowed
+      // the parent since, and a child never runs above its parent.
+      if (
+        isRuntimeModeAbove(command.runtimeMode, parentProjection.thread.runtimeMode) ||
+        (command.interactionMode === "default" &&
+          parentProjection.thread.interactionMode === "plan")
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Thread ${command.parentThreadId} now runs in ${parentProjection.thread.runtimeMode}/${parentProjection.thread.interactionMode} mode, below the task's ${command.runtimeMode}/${command.interactionMode}.`,
         });
       }
       const parentNode = parentProjection.nodes.find(
@@ -10881,6 +11006,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         payload: taskTurnItem,
       });
 
+      const forkTransferId =
+        command.context === "fork"
+          ? yield* forkParentConversation(command, childThreadId, now, events)
+          : undefined;
+
       const childMessageCommand = {
         type: "message.dispatch",
         createdBy: command.createdBy,
@@ -10906,6 +11036,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandId: command.commandId,
           commandType: command.type,
           cause: `Delegated child thread ${childThreadId} did not create a run.`,
+        });
+      }
+      const forkTransfer = childProjection.contextTransfers.find(
+        (transfer) => transfer.id === forkTransferId,
+      );
+      if (
+        forkTransferId !== undefined &&
+        (forkTransfer?.targetRunId !== childRun.id || forkTransfer.status !== "pending")
+      ) {
+        // A portable fork would hand the child a summary, not the parent's conversation.
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Thread ${command.parentThreadId}'s provider cannot fork its conversation natively now. Start the task fresh instead.`,
         });
       }
       const spawnTransferId = yield* mapDispatchError(command)(

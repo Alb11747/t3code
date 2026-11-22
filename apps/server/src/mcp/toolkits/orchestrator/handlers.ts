@@ -27,6 +27,16 @@ const handlers = {
       return yield* service.delegateTask(scope, input);
     }),
   ),
+  // The parent's modes must fit the caller's ceiling; the child's then fit the parent's.
+  t3_thread_delegate: McpToolAccess.writesThreads(
+    (input) => [input.threadId],
+    (input) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        return yield* service.delegateForThread(scope, input);
+      }),
+  ),
   task_status: McpToolAccess.actsAsCaller(({ taskId }) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;

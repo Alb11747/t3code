@@ -1372,14 +1372,23 @@ export const layer: Layer.Layer<
             (candidate) => candidate.ordinal > sourceRun.ordinal && isActiveRun(candidate),
           );
           let nativeForkFailure: string | undefined;
-          if (
+          // A subagent started as a fork asked for the parent's real conversation; a portable
+          // summary in its place would be silent, so its start fails instead.
+          const nativeOnly = projection.thread.lineage.relationshipToParent === "subagent";
+          const canForkNatively =
             (sourceRun.status === "completed" || sourceRun.status === "waiting") &&
             (!sourceBusy ||
               canForkBusySourceNatively(
                 session.providerSession.capabilities,
                 sourceProviderTurn?.nativeTurnRef != null,
-              ))
-          ) {
+              ));
+          if (!canForkNatively && nativeOnly) {
+            return yield* new ProviderTurnStartError({
+              runId,
+              cause: `The parent thread's conversation could not be forked natively (its turn is ${sourceRun.status}${sourceBusy ? " and it is busy" : ""}). Start the task fresh instead.`,
+            });
+          }
+          if (canForkNatively) {
             // Rolled-back turns are no longer in the source conversation, so they cannot bound a fork.
             const rolledBackAttemptIds = new Set(
               sourceProjection.attempts
@@ -1407,7 +1416,7 @@ export const layer: Layer.Layer<
               }),
             );
             if (forked._tag === "Success") return forked.success;
-            if (input.willRetry === true) return yield* forked.failure;
+            if (input.willRetry === true || nativeOnly) return yield* forked.failure;
             if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
             // Retries are spent (e.g. the source's native session is gone): start fresh with portable history.
             yield* Effect.logWarning("Starting a native fork in a fresh native session", {

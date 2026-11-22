@@ -1,5 +1,6 @@
 import {
   OrchestratorMcpFailure,
+  OrchestratorMcpThreadDelegateResult,
   OrchestratorMcpThreadListResult,
   OrchestratorMcpThreadReadResult,
   OrchestratorMcpThreadSendResult,
@@ -1012,6 +1013,100 @@ const threadSendCommand = Command.make("send", {
   ),
 );
 
+const threadDelegateCommand = Command.make("delegate", {
+  ...projectLocationFlags,
+  thread: Argument.String("thread").pipe(
+    Argument.withDescription("Parent thread id. It owns the task and is woken by its results."),
+  ),
+  task: Argument.String("task").pipe(
+    Argument.withDescription("The task for the child agent, or - to read it from stdin."),
+  ),
+  fork: Flag.Boolean("fork").pipe(
+    Flag.withDescription(
+      "Start the child from a native fork of the parent's conversation, on its model and account.",
+    ),
+    Flag.withDefault(false),
+  ),
+  title: Flag.String("title").pipe(Flag.withDescription("Task title."), Flag.optional),
+  provider: Flag.String("provider").pipe(
+    Flag.withDescription("Provider instance id. Pass with --model. Not with --fork."),
+    Flag.optional,
+  ),
+  model: Flag.String("model").pipe(
+    Flag.withDescription("Model slug or family, such as gpt-sol. Defaults to the parent's model."),
+    Flag.optional,
+  ),
+  option: Flag.String("option").pipe(
+    Flag.withDescription("Model option as id=value, such as effort=high. Repeat for more."),
+    Flag.atLeast(0),
+  ),
+  worktree: Flag.Boolean("worktree").pipe(
+    Flag.withDescription("Run in a new worktree at the parent's commit instead of its checkout."),
+    Flag.withDefault(false),
+  ),
+  requestId: Flag.String("request-id").pipe(
+    Flag.withDescription("Retry key: the same id returns the task it already started."),
+    Flag.optional,
+  ),
+  json: jsonFlag,
+}).pipe(
+  Command.withDescription(
+    "Start a child task under a thread, as if it had delegated it. The parent runs no turn now.",
+  ),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const threadId = yield* decodeThreadId(flags.thread);
+      const task = yield* readMessageArgument(flags.task);
+      const modelSelection = yield* launchModelSelection(flags);
+      if (flags.fork && (modelSelection !== undefined || flags.worktree)) {
+        return yield* new ThreadUsageError({
+          detail:
+            "A fork runs on the parent's model in its checkout; omit --provider, --model and --worktree.",
+        });
+      }
+      const title = yield* Option.match(flags.title, {
+        onNone: () => Effect.undefined,
+        onSome: (value) =>
+          decodeTitle(value).pipe(
+            Effect.mapError(() => new ThreadUsageError({ detail: "The title is empty." })),
+          ),
+      });
+      yield* withThreadTools(
+        flags,
+        Effect.fn("cli.thread.delegate")(function* (tools) {
+          const started = yield* tools.call(
+            "t3_thread_delegate",
+            {
+              threadId,
+              task,
+              context: flags.fork ? "fork" : "fresh",
+              ...(title === undefined ? {} : { title }),
+              ...(modelSelection === undefined
+                ? {}
+                : {
+                    target: {
+                      providerInstanceId: modelSelection.instanceId,
+                      model: modelSelection.model,
+                      ...(modelSelection.options === undefined
+                        ? {}
+                        : { options: modelSelection.options }),
+                    },
+                  }),
+              ...(flags.worktree ? { isolation: "worktree" } : {}),
+              ...Option.match(flags.requestId, {
+                onNone: () => ({}),
+                onSome: (clientRequestId) => ({ clientRequestId }),
+              }),
+            },
+            OrchestratorMcpThreadDelegateResult,
+          );
+          yield* flags.json ? printJson(started) : Console.log(started.childThreadId);
+        }),
+      );
+    }).pipe(reportThreadErrors),
+  ),
+);
+
 const threadShowCommand = Command.make("show", {
   ...projectLocationFlags,
   thread: threadArgument,
@@ -1071,11 +1166,14 @@ const threadShowCommand = Command.make("show", {
 );
 
 export const threadCommand = Command.make("thread").pipe(
-  Command.withDescription("Start, message, and read threads on the running server."),
+  Command.withDescription(
+    "Start, message, delegate under, and read threads on the running server.",
+  ),
   Command.withSubcommands([
     threadListCommand,
     threadStartCommand,
     threadSendCommand,
+    threadDelegateCommand,
     threadShowCommand,
   ]),
 );
