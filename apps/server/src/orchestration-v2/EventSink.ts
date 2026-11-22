@@ -393,7 +393,8 @@ const layerBase: Layer.Layer<
             event.threadId,
             event.payload.id,
           );
-          if (current === undefined && mode === "callback") {
+          // With no row yet, a pending message question is new, not a conversion.
+          if (current === undefined && (mode === "callback" || converting)) {
             // Keep the closure, but don't insert a card that never reached the transcript.
             if (status === "cancelled") {
               unshownRequests.add(event.payload.id);
