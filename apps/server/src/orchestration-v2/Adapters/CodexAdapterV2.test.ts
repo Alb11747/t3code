@@ -13364,102 +13364,127 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
     );
 
-    it.effect("does not schedule a capacity retry while Stop resolves its target", () =>
-      Effect.gen(function* () {
-        const nativeTurnId = "capacity-completes-during-stop";
-        const prompt = "Keep going";
-        const outcome = yield* Deferred.make<string>();
-        const starts: string[] = [];
-        const harness = yield* makeCodexReplayHarness(
-          makeCodexReplayTranscript({
-            scenario: nativeTurnId,
-            entries: [
-              ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
-              notification("goal active", "thread/goal/updated", {
-                threadId: nativeThreadId,
-                turnId: nativeTurnId,
-                goal: codexGoal("active", 10),
-              }),
-              {
-                type: "expect_outbound",
-                frame: {
-                  id: 4,
-                  method: "thread/goal/set",
-                  params: { threadId: nativeThreadId, status: "paused" },
+    // A session restart stops without requestRuntimeRestart and still completes.
+    it.effect.each([true, false])(
+      "does not schedule a capacity retry while Stop resolves its target (runtime restart %s)",
+      (requestRuntimeRestart) =>
+        Effect.gen(function* () {
+          const nativeTurnId = `capacity-completes-during-stop-${requestRuntimeRestart}`;
+          const prompt = "Keep going";
+          const outcome = yield* Deferred.make<string>();
+          const starts: string[] = [];
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({
+              scenario: nativeTurnId,
+              entries: [
+                ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
+                notification("goal active", "thread/goal/updated", {
+                  threadId: nativeThreadId,
+                  turnId: nativeTurnId,
+                  goal: codexGoal("active", 10),
+                }),
+                // Codex 0.171's native capacity notice on the first turn, before it gives up.
+                notification("native capacity notice", "error", {
+                  threadId: nativeThreadId,
+                  turnId: nativeTurnId,
+                  willRetry: true,
+                  error: {
+                    message: "Reconnecting... 1/5",
+                    codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
+                    additionalDetails:
+                      "Selected model is at capacity. Please try a different model.",
+                  },
+                }),
+                {
+                  type: "expect_outbound",
+                  frame: {
+                    id: 4,
+                    method: "thread/goal/set",
+                    params: { threadId: nativeThreadId, status: "paused" },
+                  },
                 },
-              },
-              notification("capacity failure", "turn/completed", {
-                threadId: nativeThreadId,
-                turn: {
-                  ...makeCodexReplayTurn({ id: nativeTurnId, status: "failed" }),
-                  error: { message: "At capacity", codexErrorInfo: "serverOverloaded" },
+                notification("capacity failure", "turn/completed", {
+                  threadId: nativeThreadId,
+                  turn: {
+                    ...makeCodexReplayTurn({ id: nativeTurnId, status: "failed" }),
+                    error: { message: "At capacity", codexErrorInfo: "serverOverloaded" },
+                  },
+                }),
+                {
+                  type: "emit_inbound",
+                  afterMs: 1_000,
+                  frame: { id: 4, result: { goal: codexGoal("paused", 10) } },
                 },
+              ],
+            }),
+            (event) => {
+              if (event.type === "turn.terminal") {
+                return Deferred.succeed(outcome, event.status);
+              }
+              return event.type === "turn_item.updated" &&
+                event.turnItem.type === "error" &&
+                event.turnItem.status === "running" &&
+                event.turnItem.retry?.retryDelayMs != null
+                ? Deferred.succeed(outcome, "retry")
+                : Effect.void;
+            },
+            (method) =>
+              Effect.sync(() => {
+                if (method === "turn/start") starts.push(method);
               }),
-              {
-                type: "emit_inbound",
-                afterMs: 1_000,
-                frame: { id: 4, result: { goal: codexGoal("paused", 10) } },
-              },
-            ],
-          }),
-          (event) => {
-            if (event.type === "turn.terminal") {
-              return Deferred.succeed(outcome, event.status);
-            }
-            return event.type === "turn_item.updated" &&
-              event.turnItem.type === "error" &&
-              event.turnItem.status === "running" &&
-              event.turnItem.retry?.retryDelayMs != null
-              ? Deferred.succeed(outcome, "retry")
-              : Effect.void;
-          },
-          (method) =>
-            Effect.sync(() => {
-              if (method === "turn/start") starts.push(method);
+          );
+          yield* harness.runtime.startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make(nativeTurnId),
+              text: prompt,
             }),
-        );
-        yield* harness.runtime.startTurn(
-          makeCodexTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now: yield* DateTime.now,
-            attemptId: RunAttemptId.make(nativeTurnId),
-            text: prompt,
-          }),
-        );
-        yield* harness.until(() =>
-          harness.events.some(
-            (event) =>
-              event.type === "provider_thread.updated" &&
-              event.providerThread.goal?.status === "active",
-          ),
-        );
-        const stopping = yield* harness.runtime
-          .interruptTurn({
-            providerThread: harness.providerThread,
-            providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
-              driver: CodexAdapterV2.CODEX_DRIVER_KIND,
-              nativeTurnId,
-            }),
-            requestRuntimeRestart: true,
-          })
-          .pipe(Effect.forkScoped);
-        assert.equal(yield* Deferred.await(outcome), "interrupted");
-        yield* TestClock.adjust("1 second");
-        yield* Fiber.join(stopping);
-        yield* TestClock.adjust("1 minute");
-        assert.lengthOf(starts, 1);
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
+          );
+          yield* harness.until(() =>
+            harness.events.some(
+              (event) =>
+                event.type === "provider_thread.updated" &&
+                event.providerThread.goal?.status === "active",
+            ),
+          );
+          const stopping = yield* harness.runtime
+            .interruptTurn({
+              providerThread: harness.providerThread,
+              providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+                driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+                nativeTurnId,
+              }),
+              ...(requestRuntimeRestart ? { requestRuntimeRestart } : {}),
+            })
+            .pipe(Effect.forkScoped);
+          assert.equal(yield* Deferred.await(outcome), "interrupted");
+          yield* TestClock.adjust("1 second");
+          yield* Fiber.join(stopping);
+          yield* TestClock.adjust("1 minute");
+          assert.lengthOf(starts, 1);
+          const retryRows = harness.events.flatMap((event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "error" &&
+            event.turnItem.retry !== undefined
+              ? [event.turnItem]
+              : [],
+          );
+          assert.isNotEmpty(retryRows);
+          // The first turn's "Retrying provider" row must not stay running after Stop.
+          assert.notEqual(retryRows.at(-1)?.status, "running");
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
           ),
         ),
-      ),
     );
 
     it.effect("pauses an active goal before Stop interrupts its turn", () =>

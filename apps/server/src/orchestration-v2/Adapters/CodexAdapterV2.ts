@@ -6921,7 +6921,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               threadId: context.projectionThreadId,
               providerTurn: input.failedTurn,
             });
-            if (input.providerRetry?.itemProviderTurnId !== undefined) {
+            // The first turn's native retry row has no carried identity; it is keyed to this turn.
+            if (input.providerRetry !== undefined) {
               yield* emitOverloadRetryRow(context, input.providerRetry, "interrupted");
             }
             yield* emitRootTerminal(context, { ...event, status: "interrupted", failure: null });
@@ -7314,7 +7315,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   threadId: ready.context.projectionThreadId,
                   providerTurn: overloadRetry.failedTurn,
                 });
-                if (overloadRetry.providerRetry?.itemProviderTurnId !== undefined) {
+                if (overloadRetry.providerRetry !== undefined) {
                   yield* emitOverloadRetryRow(ready.context, overloadRetry.providerRetry, "failed");
                 }
               }
@@ -8871,6 +8872,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ];
               if (interruptTargetContexts.length === 0) {
                 if (turnInput.requestRuntimeRestart === true) return;
+                // The exact turn was running when Stop began and settled while it paused the
+                // goal, as a capacity failure under Stop does; there is nothing left to stop.
+                if (
+                  goalTurns.some((context) => context.providerTurnId === turnInput.providerTurnId)
+                )
+                  return;
                 return yield* toProtocolError(
                   `Provider turn ${turnInput.providerTurnId} is not active and cannot be interrupted.`,
                 );
