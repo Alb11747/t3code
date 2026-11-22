@@ -908,6 +908,11 @@ export class ProviderAdapterV2 extends Context.Service<
       OrchestrationV2ProviderCapabilities,
       ProviderAdapterV2Error
     >;
+    /** Check whether maintenance can start before dispatch creates a visible run. */
+    readonly canStartIdleCompaction?: (input: {
+      readonly cwd: string | null;
+      readonly messageId: MessageId;
+    }) => Effect.Effect<boolean, ProviderAdapterV2Error>;
     readonly planSelectionTransition: (
       input: ProviderSelectionTransitionInput,
     ) => Effect.Effect<ProviderSelectionTransitionPlan, ProviderAdapterV2Error>;

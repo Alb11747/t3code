@@ -77,17 +77,19 @@ const adapter = {
   openSession: () => Effect.die("No provider process needed for metadata controls"),
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 const layerDatabase = SqlitePersistence.layerMemory;
-const layerTest = Layer.mergeAll(
-  layerDatabase,
-  ProjectStore.layer.pipe(Layer.provide(layerDatabase)),
-  ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
-  EffectOutbox.layer.pipe(Layer.provide(layerDatabase)),
-  ProviderReplayHarness.layerWithRegistry(
-    { name: "control-reads" },
-    ProviderAdapterRegistry.layerFromAdapters([adapter]),
-    { databaseLayer: layerDatabase, runEffectWorker: false },
-  ),
-);
+const testLayer = (testAdapter: ProviderAdapter.ProviderAdapterV2["Service"]) =>
+  Layer.mergeAll(
+    layerDatabase,
+    ProjectStore.layer.pipe(Layer.provide(layerDatabase)),
+    ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
+    EffectOutbox.layer.pipe(Layer.provide(layerDatabase)),
+    ProviderReplayHarness.layerWithRegistry(
+      { name: "control-reads" },
+      ProviderAdapterRegistry.layerFromAdapters([testAdapter]),
+      { databaseLayer: layerDatabase, runEffectWorker: false },
+    ),
+  );
+const layerTest = testLayer(adapter);
 
 it.effect.each(
   (["provider.switch", "thread.model-selection.set"] as const).flatMap((type) =>
@@ -829,6 +831,33 @@ it.effect.each(["snooze", "settle"] as const)(
       });
       assert.isNull(yield* state);
     }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("an unverified endpoint skips idle compaction before creating a message or run", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const { threadId } = yield* completeAndSnoozeThread("unverified-idle-router", 120);
+    const read = projections.getThreadRecords(threadId, ["messages", "runs"]);
+    const before = yield* read;
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("unverified-idle-router-compact"),
+      messageId: MessageId.make("unverified-idle-router-compact"),
+      threadId,
+      text: "/compact",
+      attachments: [],
+      creationSource: "server",
+      createdBy: "agent",
+      dispatchMode: { type: "start_immediately" },
+      idleCompaction: "beforeCacheExpires",
+    });
+    const after = yield* read;
+    assert.deepEqual(after.messages, before.messages);
+    assert.deepEqual(after.runs, before.runs);
+  }).pipe(
+    Effect.provide(testLayer({ ...adapter, canStartIdleCompaction: () => Effect.succeed(false) })),
+  ),
 );
 
 it.effect("stores an agent's auto-compact limit on the thread", () =>

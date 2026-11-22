@@ -6120,6 +6120,45 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
       };
     },
   );
+  const recoverySettingsEnvironment = Effect.fn("ClaudeAdapterV2.recoverySettingsEnvironment")(
+    function* (
+      cwd: string | null,
+      sourcesArg: string | null | undefined,
+      launchArgSettings: ClaudeSdkSettings | undefined,
+    ) {
+      const settingSources = yield* decodeClaudeRecoverySettingSources(
+        sourcesArg === undefined
+          ? ["user", "project", "local"]
+          : (sourcesArg ?? "").split(",").filter(Boolean),
+      );
+      const homeSettings =
+        customHome && settingSources.includes("user")
+          ? yield* fileSystem.readFileString(path.join(homePath, "settings.json")).pipe(
+              Effect.flatMap(decodeClaudeEnvSettings),
+              Effect.catchReason("PlatformError", "NotFound", () =>
+                Effect.succeed({ env: undefined }),
+              ),
+            )
+          : undefined;
+      const resolved = yield* Effect.tryPromise({
+        try: () =>
+          resolveClaudeSettings({
+            ...(cwd === null ? {} : { cwd }),
+            settingSources: customHome
+              ? settingSources.filter((source) => source !== "user")
+              : [...settingSources],
+          }),
+        catch: (cause) => queryRunnerError(cause, "resolveSettings"),
+      });
+      return { ...homeSettings?.env, ...resolved.effective.env, ...launchArgSettings?.env };
+    },
+  );
+  // The dispatch probe belongs to one maintenance message, on one endpoint.
+  // Its scheduler begins this close to the deadline, so discard unused proof after this window.
+  const idleCompactionProofs = new Map<MessageId, { origin: string; untilMs: number }>();
+  const supportsIdleCompaction = (baseUrl: string) =>
+    keepWarm.supportsIdleCompaction?.(baseUrl) ?? Effect.succeed(false);
+
   const routeModelCatalog = adapterOptions.routeModelCatalog ?? Effect.succeed;
 
   // Claude Code's own subagent TTL setting, in its precedence order. Unset or unreadable means
@@ -6294,6 +6333,48 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CLAUDE_PROVIDER,
+    canStartIdleCompaction: Effect.fn("ClaudeAdapterV2.canStartIdleCompaction")(
+      function* ({ cwd, messageId }) {
+        const { flags } = parseCliArgs(
+          adapterOptions.settings.launchArgs,
+          claudeLaunchArgParseOptions,
+        );
+        const launchArgSettings = yield* readClaudeLaunchArgSettings({
+          settings: adapterOptions.settings,
+          cwd,
+          fileSystem,
+          path,
+        });
+        const settingsEnv = yield* recoverySettingsEnvironment(
+          cwd,
+          flags["setting-sources"],
+          launchArgSettings,
+        );
+        const configuredUrl = settingsEnv.ANTHROPIC_BASE_URL;
+        const baseUrl =
+          typeof configuredUrl === "string"
+            ? configuredUrl
+            : adapterOptions.environment.ANTHROPIC_BASE_URL;
+        if (baseUrl === undefined || customClaudeApiEndpointHost(baseUrl) === undefined)
+          return true;
+        if (!(yield* supportsIdleCompaction(baseUrl))) return false;
+        const origin = URL.parse(baseUrl.trim())?.origin;
+        if (origin === undefined) return false;
+        const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+        for (const [id, proof] of idleCompactionProofs) {
+          if (proof.untilMs <= nowMs) idleCompactionProofs.delete(id);
+        }
+        idleCompactionProofs.set(messageId, { origin, untilMs: nowMs + 2 * 60_000 });
+        return true;
+      },
+      Effect.mapError(
+        (cause) =>
+          new ProviderAdapter.ProviderAdapterProtocolError({
+            driver: CLAUDE_PROVIDER,
+            detail: `Could not resolve the Claude endpoint for idle compaction (${cause._tag}).`,
+          }),
+      ),
+    ),
     getCapabilities: Effect.fn("ClaudeAdapterV2.getCapabilities")(function () {
       return Effect.succeed(ClaudeProviderCapabilitiesV2);
     }),
@@ -14637,38 +14718,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const dropThinking =
             turnInput.recovery === "drop_thinking" || turnInput.dropMismatchedThinking;
           if (dropThinking || idleCompaction !== undefined) {
-            const sourcesArg = queryOptions.extraArgs?.["setting-sources"];
-            const settingSources = yield* decodeClaudeRecoverySettingSources(
-              sourcesArg === undefined
-                ? (queryOptions.settingSources ?? ["user", "project", "local"])
-                : (sourcesArg ?? "").split(",").filter(Boolean),
+            const settingsEnv = yield* recoverySettingsEnvironment(
+              turnInput.runtimePolicy.cwd,
+              queryOptions.extraArgs?.["setting-sources"],
+              launchArgSettings,
             );
-            const homeSettings =
-              customHome && settingSources.includes("user")
-                ? yield* fileSystem.readFileString(path.join(homePath, "settings.json")).pipe(
-                    Effect.flatMap(decodeClaudeEnvSettings),
-                    Effect.catchReason("PlatformError", "NotFound", () =>
-                      Effect.succeed({ env: undefined }),
-                    ),
-                  )
-                : undefined;
-            const resolved = yield* Effect.tryPromise({
-              try: () =>
-                resolveClaudeSettings({
-                  ...(turnInput.runtimePolicy.cwd === null
-                    ? {}
-                    : { cwd: turnInput.runtimePolicy.cwd }),
-                  settingSources: customHome
-                    ? settingSources.filter((source) => source !== "user")
-                    : [...settingSources],
-                }),
-              catch: (cause) => queryRunnerError(cause, "resolveSettings"),
-            });
-            const settingsEnv = {
-              ...homeSettings?.env,
-              ...resolved.effective.env,
-              ...launchArgSettings?.env,
-            };
             const environment: NodeJS.ProcessEnv = { ...queryOptions.env };
             for (const key of ["CLAUDE_CODE_EXTRA_BODY", "ANTHROPIC_BETAS"] as const) {
               const value = settingsEnv[key];
@@ -14692,7 +14746,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               baseUrl !== undefined &&
               customClaudeApiEndpointHost(baseUrl) !== undefined;
             if (routerIdleCompaction) {
-              if (!(yield* keepWarm.supportsIdleCompaction?.(baseUrl) ?? Effect.succeed(false))) {
+              const proof = idleCompactionProofs.get(turnInput.message.messageId);
+              idleCompactionProofs.delete(turnInput.message.messageId);
+              const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+              const verified =
+                proof !== undefined &&
+                proof.origin === URL.parse(baseUrl.trim())?.origin &&
+                proof.untilMs > nowMs;
+              if (!verified && !(yield* supportsIdleCompaction(baseUrl))) {
                 return yield* queryRunnerError(
                   "Idle compaction skipped because this Claude endpoint has no verified warm-only router.",
                   "open",

@@ -7886,30 +7886,42 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
 
-    // The service checked idleness before this command. Recheck under the dispatch lock so
-    // newly pending work or a delegated result can keep the next turn.
-    if (
-      command.idleCompaction === "beforeCacheExpires" &&
-      (hasBlockingIdleCompactionWork(projection) ||
-        projection.runs.some(
-          (run) =>
-            run.delegatedCompletion?.disposition === "open" &&
-            run.delegatedCompletion.delivery !== null &&
-            !projection.messages.some(
-              (message) => message.id === run.delegatedCompletion?.delivery?.messageId,
-            ),
-        ))
-    ) {
-      yield* emit(
-        events,
-        command,
-      )({
-        type: "thread.metadata-updated",
-        threadId: command.threadId,
-        occurredAt: yield* DateTime.now,
-        payload: projection.thread,
-      });
-      return;
+    // Recheck eligibility under the dispatch lock, before creating a visible message or run.
+    if (command.idleCompaction === "beforeCacheExpires") {
+      const eligible = yield* Effect.gen(function* () {
+        if (
+          hasBlockingIdleCompactionWork(projection) ||
+          projection.runs.some(
+            (run) =>
+              run.delegatedCompletion?.disposition === "open" &&
+              run.delegatedCompletion.delivery !== null &&
+              !projection.messages.some(
+                (message) => message.id === run.delegatedCompletion?.delivery?.messageId,
+              ),
+          )
+        )
+          return false;
+        const modelSelection = command.modelSelection ?? projection.thread.modelSelection;
+        const adapter = yield* providerAdapters.get(modelSelection.instanceId);
+        if (adapter.canStartIdleCompaction === undefined) return true;
+        const policy = yield* runtimePolicy.resolve({ thread: projection.thread, modelSelection });
+        return yield* adapter.canStartIdleCompaction({
+          cwd: policy.cwd,
+          messageId: command.messageId,
+        });
+      }).pipe(mapDispatchError(command));
+      if (!eligible) {
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: command.threadId,
+          occurredAt: yield* DateTime.now,
+          payload: projection.thread,
+        });
+        return;
+      }
     }
 
     if (projection.thread.lastVisitedAt === null && !isNativeMaintenanceCommand(command)) {
