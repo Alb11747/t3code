@@ -4937,6 +4937,43 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
     );
 
+    it.effect("sets a check script only for a full-access caller", () =>
+      Effect.gen(function* () {
+        const inputs = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(
+            service(
+              masterRepository,
+              yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]),
+              existing,
+              inputs,
+            ),
+          ),
+        );
+        const script = "return { run: false };";
+        const refused = yield* mcp
+          .scheduleTask(client, { projectId, prompt: "Check the build", schedule, script })
+          .pipe(Effect.flip);
+        assert.equal(refused.code, "capability_denied");
+        const fullAccess: McpInvocationScope = {
+          ...client,
+          client: { ...client.client!, access: "full-access" },
+        };
+        yield* mcp.scheduleTask(fullAccess, { projectId, prompt: "Check the build", schedule });
+        yield* mcp.scheduleTask(fullAccess, {
+          projectId,
+          prompt: "Check the build",
+          schedule,
+          script,
+        });
+        yield* mcp.updateScheduledTask(fullAccess, { scheduledTaskId: existing.id, script: null });
+        assert.deepEqual(
+          (yield* Ref.get(inputs)).map((input) => input.script),
+          [undefined, script, null],
+        );
+      }),
+    );
+
     it.effect("uses the environment's default model when the project inherits it", () =>
       Effect.gen(function* () {
         const environmentDefault = {
