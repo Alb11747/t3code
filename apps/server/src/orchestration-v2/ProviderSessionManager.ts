@@ -51,6 +51,11 @@ import {
   providerTurnsTotal,
   withMetrics,
 } from "../observability/Metrics.ts";
+import {
+  ClaudeKeepWarm,
+  QUOTA_PIN_HOLD_GRACE_MS,
+  quotaPinHoldDeadline,
+} from "../provider/ClaudeKeepWarm.ts";
 import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
 import * as ProviderInstallationGate from "../provider/ProviderInstallationGate.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -482,6 +487,7 @@ export const layerWithOptions = (
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const agentScope = yield* AgentScope;
       const installationGate = yield* ProviderInstallationGate.ProviderInstallationGate;
+      const claudeKeepWarm = yield* ClaudeKeepWarm;
       // Labs flag, read live: Codex per turn (its shared session outlives a toggle), Claude per query.
       // Unreadable settings keep it off.
       const promptSuggestionsEnabled = Option.isNone(serverSettings)
@@ -2959,10 +2965,38 @@ export const layerWithOptions = (
             );
             const timer = yield* Effect.gen(function* () {
               // Only a thread that stayed silent for a whole window has stalled.
-              do {
+              let delay = window;
+              let waitedForQuota = false;
+              while (true) {
                 activeSinceCheck.delete(item.providerTurnId);
-                yield* Effect.sleep(window);
-              } while (activeSinceCheck.has(item.providerTurnId));
+                yield* Effect.sleep(delay);
+                const held =
+                  entry.runtime.driver === "claude" && !activeSinceCheck.has(item.providerTurnId)
+                    ? yield* claudeKeepWarm.find(item.threadId)
+                    : null;
+                if (activeSinceCheck.has(item.providerTurnId)) {
+                  waitedForQuota = false;
+                  delay = window;
+                  continue;
+                }
+                const deadline =
+                  held?.turn.providerTurnId === item.providerTurnId
+                    ? quotaPinHoldDeadline(held.turn.hold, held.turn.startedAt)
+                    : null;
+                const remaining =
+                  deadline === null
+                    ? 0
+                    : deadline + QUOTA_PIN_HOLD_GRACE_MS - (yield* Clock.currentTimeMillis);
+                if (remaining > 0) {
+                  waitedForQuota = true;
+                  delay = Duration.min(window, Duration.millis(remaining));
+                  continue;
+                }
+                if (!waitedForQuota) break;
+                // After release, give the provider a full window to respond.
+                waitedForQuota = false;
+                delay = window;
+              }
               yield* stopStalledRetry(item);
             }).pipe(Effect.forkChild({ startImmediately: true }));
             stallTimers.set(item.providerTurnId, timer);

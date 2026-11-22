@@ -139,6 +139,7 @@ interface RouterHold {
   readonly account: string | undefined;
   readonly releaseAt: string;
   readonly resetAt: string;
+  readonly quotaWaitSince?: string;
   readonly resetUnknown?: boolean;
   readonly staysOnPinChange?: boolean;
   readonly window?: "7d";
@@ -184,6 +185,7 @@ const Control = Schema.Struct({
           session: Schema.String,
           account: Schema.optional(Schema.String),
           since: Schema.optional(Schema.String),
+          root_request: Schema.optional(Schema.Boolean),
           release_at: Schema.String,
           reset_at: Schema.optional(Schema.NullOr(Schema.String)),
           window: Schema.optional(Schema.String),
@@ -885,6 +887,12 @@ export const makeCliproxyApi = Effect.gen(function* () {
       if (held.control === "steer" || (held.kind !== undefined && held.kind !== "pin")) return [];
       // Routers before 0.27.0 do not mark stall-steer holds, so only a listed stall pin counts.
       if (!movesHeld && !stallPinned.has(bare(held.session))) return [];
+      const quotaWaitSince =
+        held.root_request === true &&
+        resetAt !== null &&
+        (held.window === "5h" || held.window === "7d")
+          ? iso(held.since)
+          : null;
       return [
         {
           kind: "pin" as const,
@@ -892,6 +900,7 @@ export const makeCliproxyApi = Effect.gen(function* () {
           account: held.account,
           releaseAt,
           resetAt: resetAt ?? releaseAt,
+          ...(quotaWaitSince === null ? {} : { quotaWaitSince }),
           ...(resetAt === null ? { resetUnknown: true } : {}),
           ...(movesHeld ? {} : { staysOnPinChange: true }),
           ...(held.window === "7d" ? { window: "7d" as const } : {}),

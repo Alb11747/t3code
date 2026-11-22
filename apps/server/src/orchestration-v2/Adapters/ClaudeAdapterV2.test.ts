@@ -3846,6 +3846,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly settings?: ClaudeSettings;
     readonly modelCatalog?: Effect.Effect<ClaudeModelCatalog>;
     readonly freshQueueOnReopen?: boolean;
+    readonly endFirstProcess?: Effect.Effect<void>;
     readonly claimAgentMessages?: ProviderContinuationRequests.ClaimAgentMessages;
     readonly allocateSessionId?: Effect.Effect<string>;
     readonly queryFailure?: Effect.Effect<never, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
@@ -3995,6 +3996,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     ),
                   ),
                 ),
+                (stream) =>
+                  options?.endFirstProcess === undefined || processQueues.length > 0
+                    ? stream
+                    : Stream.interruptWhen(stream, options.endFirstProcess),
                 (stream) =>
                   options?.queryFailure === undefined
                     ? stream
@@ -13822,6 +13827,121 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ),
         ),
       ),
+  );
+
+  it.effect.each([
+    "native retry",
+    "exhausted SDK retries",
+    "unanswered request",
+    "closed SDK stream",
+  ] as const)("keeps a verified quota stall active through the provider watchdog (%s)", (mode) =>
+    Effect.gen(function* () {
+      const keepWarm = yield* ClaudeKeepWarm.ClaudeKeepWarm;
+      const sessions: ClaudeKeepWarm.ClaudeKeepWarmSession[] = [];
+      const interrupted = yield* Deferred.make<void>();
+      const endFirstProcess = yield* Deferred.make<void>();
+      const harness = yield* makeWakeHarnessWithOptions({
+        freshQueueOnReopen: true,
+        endFirstProcess: Deferred.await(endFirstProcess),
+        interrupt: Deferred.succeed(interrupted, undefined).pipe(Effect.asVoid),
+      }).pipe(
+        Effect.provideService(ClaudeKeepWarm.ClaudeKeepWarm, {
+          ...keepWarm,
+          register: (session) => Effect.sync(() => void sessions.push(session)),
+        }),
+      );
+      const now = yield* DateTime.now;
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now,
+          attemptId: RunAttemptId.make("attempt-claude-quota-wait"),
+          text: "Continue.",
+          attachments: [],
+        }),
+      );
+      const quotaHold = {
+        kind: "pin" as const,
+        quotaWaitSince: DateTime.formatIso(yield* DateTime.now),
+        releaseAt: DateTime.formatIso(DateTime.add(now, { minutes: 22 })),
+        resetAt: DateTime.formatIso(DateTime.add(now, { minutes: 22 })),
+      };
+      const session = sessions[0]!;
+      const turn = yield* session.turn;
+      assert.isNotNull(turn);
+      yield* session.show(turn!, quotaHold);
+      if (mode === "unanswered request" || mode === "closed SDK stream") {
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "status",
+            status: "requesting",
+            session_id: WAKE_NATIVE_SESSION,
+            uuid: "00000000-0000-4000-8000-000000000219",
+          }),
+        );
+      } else {
+        yield* offerApiRetry(harness, "00000000-0000-4000-8000-000000000217");
+      }
+      yield* TestClock.adjust("20 minutes");
+      assert.isFalse(yield* Deferred.isDone(interrupted));
+      assert.lengthOf(harness.terminalEvents(), 0);
+
+      if (mode === "exhausted SDK retries") {
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000218",
+            result: "API Error: 503",
+            terminalReason: "api_error",
+            apiErrorStatus: 503,
+          }),
+        );
+      } else if (mode === "closed SDK stream") {
+        yield* Deferred.succeed(endFirstProcess, undefined);
+      }
+      if (mode === "exhausted SDK retries" || mode === "closed SDK stream") {
+        yield* harness.until(() =>
+          harness.events.some(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "error" &&
+              event.turnItem.retry?.maxAttempts === null,
+          ),
+        );
+        if (mode === "exhausted SDK retries") {
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              type: "stream_event",
+              event: { type: "message_start", message: { id: "background-reply" } },
+              parent_tool_use_id: "background-child",
+              session_id: WAKE_NATIVE_SESSION,
+              uuid: "00000000-0000-4000-8000-000000000220",
+            }),
+          );
+        }
+        yield* TestClock.adjust("1 minute");
+        yield* harness.until(() => harness.offeredMessages.length === 2);
+        assert.lengthOf(harness.terminalEvents(), 0);
+      }
+      yield* TestClock.adjust("2 minutes");
+      yield* session.show(turn!, null);
+      yield* Queue.offer(harness.processQueues.at(-1)!, turnOneResult);
+      const terminal = yield* Queue.take(harness.terminalReceipts);
+      assert.equal(terminal.status, "completed");
+      assert.lengthOf(harness.terminalEvents(), 1);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
   );
 
   it.effect("keeps a user Stop interrupted when the retry budget passes before it settles", () =>

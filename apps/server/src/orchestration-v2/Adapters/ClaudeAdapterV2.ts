@@ -5360,6 +5360,8 @@ interface ActiveClaudeTurnContext {
   retryBudgetFailure?: OrchestrationV2ProviderFailure;
   // Set when the prompt starts or a request goes out; cleared by the turn's next frame.
   unansweredRequestSince?: DateTime.Utc | undefined;
+  /** Router evidence retained across the brief gap between SDK requests. */
+  quotaPinRetryUntil?: number | undefined;
   readonly queryPolicy: ClaudeRuntimeQueryPolicy;
   readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
   readonly autoCompactWindow: string;
@@ -6934,6 +6936,27 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           );
         });
 
+        const waitForQuotaPin = Effect.fnUntraced(function* (
+          context: ActiveClaudeTurnContext,
+          stillWaiting: Effect.Effect<boolean>,
+        ) {
+          let held = false;
+          while (yield* stillWaiting) {
+            const now = yield* Clock.currentTimeMillis;
+            if ((context.quotaPinRetryUntil ?? 0) > now) {
+              held = true;
+              // A new pick can extend the wait. A pin change or a response can end it earlier.
+              yield* Effect.sleep("30 seconds");
+            } else if (held) {
+              held = false;
+              yield* Effect.sleep(PROVIDER_RETRY_BUDGET_MS);
+            } else {
+              return true;
+            }
+          }
+          return false;
+        });
+
         // A hung request can take many minutes per attempt, so the budget spans the
         // whole retry window rather than counting attempts.
         const failExpiredProviderRetry = Effect.fn("ClaudeAdapterV2.failExpiredProviderRetry")(
@@ -6944,6 +6967,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ? retry
                 : undefined;
             });
+            if (!(yield* waitForQuotaPin(context, Effect.map(isCurrentRetry, Boolean)))) return;
             const retry = yield* isCurrentRetry;
             if (retry === undefined) return;
             yield* failStalledTurn(
@@ -6964,7 +6988,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             Ref.get(activeTurn),
             (active) => active === context && context.unansweredRequestSince === since,
           );
-          if (!(yield* isUnanswered)) return;
+          if (!(yield* waitForQuotaPin(context, isUnanswered))) return;
           yield* failStalledTurn(
             context,
             makeProviderFailure({
@@ -9875,11 +9899,21 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           });
           const notice = state.notice;
           if (state.ended) return;
+          const nowMs = yield* Clock.currentTimeMillis;
+          // The control poll can see an empty list between the old pick and its retry.
+          const retryGraceMs = ClaudeKeepWarm.QUOTA_PIN_HOLD_GRACE_MS;
           if (hold === null || hold.released) {
+            if (hold !== null) context.quotaPinRetryUntil = undefined;
+            else if (notice !== null && context.quotaPinRetryUntil !== undefined) {
+              context.quotaPinRetryUntil = Math.min(
+                context.quotaPinRetryUntil,
+                nowMs + retryGraceMs,
+              );
+            }
             if (notice === null) {
               // A release ends with the reset; each poll passes here, so clients need no clock.
               const until = state.released?.hold.resetAt;
-              if (until !== undefined && Date.parse(until) <= (yield* Clock.currentTimeMillis)) {
+              if (until !== undefined && Date.parse(until) <= nowMs) {
                 yield* clearKeepWarmRelease(context);
               }
               return;
@@ -9896,10 +9930,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             shown?.releaseAt === hold.releaseAt &&
             shown.resetAt === hold.resetAt &&
             shown.kind === hold.kind &&
-            shown.account === hold.account
+            shown.account === hold.account &&
+            shown.quotaWaitSince === hold.quotaWaitSince
           ) {
             return;
           }
+          const deadline = ClaudeKeepWarm.quotaPinHoldDeadline(
+            hold,
+            DateTime.toEpochMillis(context.startedAt),
+          );
+          context.quotaPinRetryUntil = deadline === null ? undefined : deadline + retryGraceMs;
           // Clients read the newest notice, so the older one's mark needs no rewrite.
           state.released = null;
           // A keep-warm hold turning into a pin hold is a new wait, so its duration starts again.
@@ -10722,24 +10762,32 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                         ? false
                         : queryFailure.retryable,
                   };
+            const quotaRetry = (context.quotaPinRetryUntil ?? 0) > (yield* Clock.currentTimeMillis);
             const retryFailure =
               cause === undefined ||
               (context.overloadRetry !== null && Cause.hasInterruptsOnly(cause))
-                ? retry?.failure
+                ? (retry?.failure ??
+                  (cause === undefined && quotaRetry
+                    ? makeProviderFailure({
+                        class: "transport_error",
+                        message: "Claude closed a request held by the quota router.",
+                        retryable: true,
+                      })
+                    : undefined))
                 : failure;
             const recoverable =
               !interrupted &&
               (cause === undefined || !Cause.hasDies(cause)) &&
               (context.overloadRetry !== null ||
                 (cause !== undefined && !Cause.hasInterrupts(cause)) ||
-                (cause === undefined && retry?.retry.maxAttempts === null)) &&
+                (cause === undefined && (quotaRetry || retry?.retry.maxAttempts === null))) &&
               retryFailure !== undefined &&
               claudeFailureRecoverable(retryFailure);
             if (settlesHeld) {
               yield* settleHeldResult(context);
-            } else if (recoverable && (yield* overloadRetryWindowOpen(context))) {
+            } else if (recoverable && (quotaRetry || (yield* overloadRetryWindowOpen(context)))) {
               if (context.overloadRetry === null)
-                yield* holdForOverloadRetry(context, retryFailure);
+                yield* holdForOverloadRetry(context, retryFailure, quotaRetry);
             } else {
               yield* finalizeActiveTurn({
                 context,
@@ -12228,6 +12276,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               message.error === undefined &&
               message.message.model !== "<synthetic>"
             ) {
+              context.quotaPinRetryUntil = undefined;
               yield* completeProviderRetry(context, now);
               if (context.keepWarm?.notice) yield* showKeepWarmHold(context, null);
             }
@@ -13075,6 +13124,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                         : resetAt,
                   }
                 : resultFailure;
+            const quotaRetry =
+              (context.quotaPinRetryUntil ?? 0) > DateTime.toEpochMillis(completedAt);
             if (
               !interrupted &&
               terminalStatusFromResult(message, failureHint) === "failed" &&
@@ -13085,10 +13136,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   ? (yield* Ref.get(providerRetries)).get(context.providerTurnId)?.failure
                   : undefined,
               ) &&
-              (yield* overloadRetryWindowOpen(context))
+              (quotaRetry || (yield* overloadRetryWindowOpen(context)))
             ) {
               context.steeredSegmentUsage.push(message.usage);
-              yield* holdForOverloadRetry(context, terminalFailure);
+              yield* holdForOverloadRetry(context, terminalFailure, quotaRetry);
               return;
             }
             const status = interrupted
@@ -13396,8 +13447,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             context !== null &&
             liveQuery?.query === input.query &&
             message.type === "stream_event" &&
+            message.parent_tool_use_id === null &&
             message.event.type === "message_start"
           ) {
+            context.quotaPinRetryUntil = undefined;
             yield* completeProviderRetry(context, yield* DateTime.now);
           }
           if (
@@ -14987,12 +15040,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const holdForOverloadRetry = Effect.fn("ClaudeAdapterV2.holdForOverloadRetry")(function* (
           context: ActiveClaudeTurnContext,
           failure: OrchestrationV2ProviderFailure,
+          quotaRetry = false,
         ): Effect.fn.Return<void> {
           yield* cancelOverloadRetry(context);
           const previous = (yield* Ref.get(providerRetries)).get(context.providerTurnId);
           const attempt = (previous?.retry.maxAttempts === null ? previous.retry.attempt : 0) + 1;
           const updatedAt = yield* DateTime.now;
-          const startedAt = previous?.startedAt ?? updatedAt;
+          // The expired SDK batch was waiting on the router, so it spent no provider retry budget.
+          const startedAt = quotaRetry ? updatedAt : (previous?.startedAt ?? updatedAt);
           const retryDelayMs = clampToProviderRetryWindow(
             yield* claudeOverloadRetryDelayMs(attempt),
             startedAt,
@@ -15717,6 +15772,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     runId: context.input.runId,
                     providerTurnId: context.providerTurnId,
                     session: context.nativeThreadId,
+                    startedAt: DateTime.toEpochMillis(context.startedAt),
                     hold:
                       context.keepWarm?.notice?.hold ?? context.keepWarm?.released?.hold ?? null,
                   },

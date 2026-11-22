@@ -24,8 +24,28 @@ import { makeCliproxyApi, type RouterListing } from "../usage/cliproxyApi.ts";
 const KEEP_WARM_HEADER = "X-T3-Keep-Warm: 1";
 const POLL_INTERVAL = "30 seconds";
 const READ_TTL_MS = 10_000;
+// A poll can land between two router picks. Give the next poll time to see the retry.
+export const QUOTA_PIN_HOLD_GRACE_MS = 45_000;
 // The router re-places a switched conversation's held requests within milliseconds of the command.
 const SWITCH_SETTLE = "1 second";
+
+/** End of the current request's known quota wait, rather than the whole quota window. */
+export function quotaPinHoldDeadline(
+  hold: ClaudeKeepWarmHold | null | undefined,
+  turnStartedAt: number | undefined,
+): number | null {
+  if (
+    hold?.kind !== "pin" ||
+    hold.released ||
+    hold.resetUnknown ||
+    hold.quotaWaitSince === undefined
+  )
+    return null;
+  if (turnStartedAt === undefined || !(Date.parse(hold.quotaWaitSince) >= turnStartedAt))
+    return null;
+  const release = Date.parse(hold.releaseAt);
+  return Number.isFinite(release) && Number.isFinite(Date.parse(hold.resetAt)) ? release : null;
+}
 
 export function keepWarmClaudeEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const customHeaders = environment.ANTHROPIC_CUSTOM_HEADERS?.trim();
@@ -45,6 +65,7 @@ export interface ClaudeKeepWarmTurn {
   readonly runId: RunId;
   readonly providerTurnId: ProviderTurnId;
   readonly session: string;
+  readonly startedAt?: number;
   /** The hold its stall notice shows, or the `released` hold the user ended, if any. */
   readonly hold: ClaudeKeepWarmHold | null;
 }
@@ -212,7 +233,10 @@ export const make = Effect.gen(function* () {
           .filter((candidate) => candidate.session === turn.session)
           .toSorted(
             (left, right) =>
-              pinFirst(left) - pinFirst(right) || left.releaseAt.localeCompare(right.releaseAt),
+              Number(quotaPinHoldDeadline(right, turn.startedAt) !== null) -
+                Number(quotaPinHoldDeadline(left, turn.startedAt) !== null) ||
+              pinFirst(left) - pinFirst(right) ||
+              left.releaseAt.localeCompare(right.releaseAt),
           )[0];
         if (held === undefined) return session.show(turn, null);
         const { session: _session, ...hold } = held;

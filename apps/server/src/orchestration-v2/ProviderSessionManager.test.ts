@@ -40,6 +40,7 @@ import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 import { HttpServer } from "effect/http";
 
+import { ClaudeKeepWarm, QUOTA_PIN_HOLD_GRACE_MS } from "../provider/ClaudeKeepWarm.ts";
 import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -337,20 +338,22 @@ function makeProviderThread(input: {
   readonly providerSessionId: ProviderSessionId;
   readonly now: DateTime.Utc;
   readonly nativeThreadId?: string;
+  readonly driver?: ProviderDriverKind;
 }): OrchestrationV2ProviderThread {
   const nativeThreadId = input.nativeThreadId ?? "native-thread";
+  const driver = input.driver ?? CODEX_DRIVER;
   return {
     id: input.idAllocator.derive.providerThread({
-      driver: CODEX_DRIVER,
+      driver,
       nativeThreadId,
     }),
-    driver: CODEX_DRIVER,
+    driver,
     providerInstanceId: modelSelection.instanceId,
     providerSessionId: input.providerSessionId,
     appThreadId: input.threadId,
     ownerNodeId: null,
     nativeThreadRef: {
-      driver: CODEX_DRIVER,
+      driver,
       nativeId: nativeThreadId,
       strength: "strong",
     },
@@ -474,6 +477,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
   state: Ref.Ref<TestProviderRuntimeState>,
   options: {
     readonly instanceId?: ProviderInstanceId;
+    readonly driver?: ProviderDriverKind;
     readonly failEventStream?: boolean;
     readonly normalizeThreadLoadModelSelection?: (selection: ModelSelection) => ModelSelection;
     readonly capabilities?: OrchestrationV2ProviderCapabilities;
@@ -500,6 +504,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
   } = {},
 ) {
   const instanceId = options.instanceId ?? modelSelection.instanceId;
+  const driver = options.driver ?? CODEX_DRIVER;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const countClose = Effect.addFinalizer(() =>
     Ref.update(state, (current) => ({
@@ -520,7 +525,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
   );
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId,
-    driver: CODEX_DRIVER,
+    driver,
     getCapabilities: () => Effect.succeed(options.capabilities ?? CodexCapabilities),
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
     openSession: (input) =>
@@ -548,6 +553,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
             now,
             ...(options.capabilities === undefined ? {} : { capabilities: options.capabilities }),
           }),
+          driver,
           ...(options.extensionStatuses === undefined
             ? {}
             : { extensionStatuses: options.extensionStatuses }),
@@ -568,7 +574,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
 
         return {
           instanceId,
-          driver: CODEX_DRIVER,
+          driver,
           providerSessionId: input.providerSessionId,
           ...(options.normalizeThreadLoadModelSelection === undefined
             ? {}
@@ -653,6 +659,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
 function layerTest(input: {
   readonly state: Ref.Ref<TestProviderRuntimeState>;
   readonly idleTimeoutMs: number;
+  readonly driver?: ProviderDriverKind;
   readonly maxIdlePinMs?: number;
   readonly failEventStream?: boolean;
   readonly normalizeThreadLoadModelSelection?: (selection: ModelSelection) => ModelSelection;
@@ -709,6 +716,7 @@ function layerTest(input: {
               ? layerReleaseRecordedEventSink(input.releaseRecorded)
               : layerTestEventSink;
   const adapterOptions = {
+    ...(input.driver === undefined ? {} : { driver: input.driver }),
     ...(input.normalizeThreadLoadModelSelection === undefined
       ? {}
       : { normalizeThreadLoadModelSelection: input.normalizeThreadLoadModelSelection }),
@@ -2488,10 +2496,19 @@ it.effect("ProviderSessionManagerV2 drains subscribers when the provider stops",
   }),
 );
 
-it.effect("ProviderSessionManagerV2 fails a turn whose provider retry never resumes", () =>
+const retryStallScenarios = [
+  "codex",
+  "matching Claude hold",
+  "other Claude turn",
+  "older Claude hold",
+] as const;
+it.effect.each(retryStallScenarios)("retry watchdog respects its own quota hold (%s)", (scenario) =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
     const interrupted = yield* Deferred.make<void>();
+    const driver = scenario === "codex" ? CODEX_DRIVER : ProviderDriverKind.make("claude");
+    const keepWarm = yield* ClaudeKeepWarm;
+    const pinHold = yield* Ref.make<Effect.Success<ReturnType<typeof keepWarm.find>>>(null);
     const effect = Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -2502,10 +2519,20 @@ it.effect("ProviderSessionManagerV2 fails a turn whose provider retry never resu
         providerInstanceId: modelSelection.instanceId,
         threadId,
       });
-      const providerThread = makeProviderThread({ idAllocator, threadId, providerSessionId, now });
+      const providerThread = makeProviderThread({
+        idAllocator,
+        threadId,
+        providerSessionId,
+        now,
+        driver,
+      });
+      const created = yield* makeThreadCreatedEvent({ idAllocator, threadId, now });
       yield* eventSink.write({
         events: [
-          yield* makeThreadCreatedEvent({ idAllocator, threadId, now }),
+          {
+            ...created,
+            payload: { ...created.payload, activeProviderThreadId: providerThread.id },
+          },
           {
             id: yield* idAllocator.allocate.event({ threadId }),
             type: "provider-thread.updated",
@@ -2534,9 +2561,38 @@ it.effect("ProviderSessionManagerV2 fails a turn whose provider retry never resu
       const adapterQueue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId));
       assert.isDefined(adapterQueue);
       const providerTurnId = idAllocator.derive.providerTurn({
-        driver: CODEX_DRIVER,
+        driver,
         nativeTurnId: "retry-stall-turn",
       });
+      if (scenario !== "codex") {
+        const turn = {
+          threadId,
+          runId: idAllocator.derive.run({ threadId, ordinal: 1 }),
+          providerTurnId:
+            scenario === "other Claude turn"
+              ? idAllocator.derive.providerTurn({ driver, nativeTurnId: "other-turn" })
+              : providerTurnId,
+          session: "native-thread",
+          startedAt: DateTime.toEpochMillis(now),
+          hold: {
+            kind: "pin" as const,
+            quotaWaitSince: DateTime.formatIso(
+              scenario === "older Claude hold" ? DateTime.subtract(now, { seconds: 1 }) : now,
+            ),
+            resetAt: DateTime.formatIso(DateTime.add(now, { minutes: 40 })),
+            releaseAt: DateTime.formatIso(DateTime.add(now, { minutes: 35 })),
+          },
+        };
+        yield* Ref.set(pinHold, {
+          turn,
+          session: {
+            turn: Effect.succeed(turn),
+            show: () => Effect.void,
+            restore: () => Effect.void,
+            pause: () => Effect.void,
+          },
+        });
+      }
       const failure = makeProviderFailure({
         message: "Rate limit exceeded",
         code: "rate_limited",
@@ -2546,7 +2602,7 @@ it.effect("ProviderSessionManagerV2 fails a turn whose provider retry never resu
       const retry = { attempt: 2, maxAttempts: 5, retryDelayMs: 60_000 };
       const retryItem = (status: "running" | "interrupted") =>
         makeProviderRetryTurnItem({
-          driver: CODEX_DRIVER,
+          driver,
           threadId,
           runId: null,
           nodeId: null,
@@ -2561,17 +2617,17 @@ it.effect("ProviderSessionManagerV2 fails a turn whose provider retry never resu
         });
       yield* Queue.offer(adapterQueue!, {
         type: "turn_item.updated",
-        driver: CODEX_DRIVER,
+        driver,
         turnItem: retryItem("running"),
       });
       yield* Queue.take(published);
       const offerOutput = (outputThreadId: ThreadId) =>
         Queue.offer(adapterQueue!, {
           type: "turn_item.updated",
-          driver: CODEX_DRIVER,
+          driver,
           turnItem: {
             id: idAllocator.derive.turnItemFromProviderItem({
-              driver: CODEX_DRIVER,
+              driver,
               nativeItemId: `retry-stall-output-${outputThreadId}`,
             }),
             threadId: outputThreadId,
@@ -2583,7 +2639,7 @@ it.effect("ProviderSessionManagerV2 fails a turn whose provider retry never resu
             parentItemId: null,
             ordinal: 4,
             type: "compaction",
-            driver: CODEX_DRIVER,
+            driver,
             status: "running",
             title: "Compacting context",
             startedAt: now,
@@ -2602,15 +2658,25 @@ it.effect("ProviderSessionManagerV2 fails a turn whose provider retry never resu
       yield* TestClock.adjust("15 minutes");
       assert.equal((yield* Ref.get(state)).interruptCount, 0);
       yield* TestClock.adjust("1 minute");
+      if (scenario === "matching Claude hold") {
+        // The silent retry crosses its normal deadline at minute 32, with a hold until minute 35.
+        yield* TestClock.adjust(3 * 60_000 + QUOTA_PIN_HOLD_GRACE_MS - 1_000);
+        assert.equal((yield* Ref.get(state)).interruptCount, 0);
+        yield* TestClock.adjust("1 second");
+        // Silence while the router held the request does not spend the next provider window.
+        yield* TestClock.adjust("15 minutes");
+        assert.equal((yield* Ref.get(state)).interruptCount, 0);
+        yield* TestClock.adjust("1 minute");
+      }
       yield* Deferred.await(interrupted);
       yield* Queue.offer(adapterQueue!, {
         type: "turn_item.updated",
-        driver: CODEX_DRIVER,
+        driver,
         turnItem: retryItem("interrupted"),
       });
       yield* Queue.offer(adapterQueue!, {
         type: "provider_turn.updated",
-        driver: CODEX_DRIVER,
+        driver,
         threadId,
         providerTurn: {
           id: providerTurnId,
@@ -2628,7 +2694,7 @@ it.effect("ProviderSessionManagerV2 fails a turn whose provider retry never resu
       });
       yield* Queue.offer(adapterQueue!, {
         type: "turn.terminal",
-        driver: CODEX_DRIVER,
+        driver,
         providerThreadId: providerThread.id,
         providerTurnId,
         runOrdinal: 1,
@@ -2638,7 +2704,7 @@ it.effect("ProviderSessionManagerV2 fails a turn whose provider retry never resu
       });
       yield* Queue.offer(adapterQueue!, {
         type: "provider_session.updated",
-        driver: CODEX_DRIVER,
+        driver,
         providerSession: { ...runtime.providerSession, status: "stopped", updatedAt: now },
       });
       yield* Queue.end(adapterQueue!);
@@ -2652,7 +2718,7 @@ it.effect("ProviderSessionManagerV2 fails a turn whose provider retry never resu
       );
       assert.deepEqual(terminal, {
         type: "turn.terminal",
-        driver: CODEX_DRIVER,
+        driver,
         providerThreadId: providerThread.id,
         providerTurnId,
         runOrdinal: 1,
@@ -2669,10 +2735,12 @@ it.effect("ProviderSessionManagerV2 fails a turn whose provider retry never resu
       Effect.provide(
         layerTest({
           state,
+          driver,
           idleTimeoutMs: 60 * 60_000,
           interruptTurn: Deferred.succeed(interrupted, undefined).pipe(Effect.asVoid),
         }),
       ),
+      Effect.provideService(ClaudeKeepWarm, { ...keepWarm, find: () => Ref.get(pinHold) }),
     );
   }),
 );
