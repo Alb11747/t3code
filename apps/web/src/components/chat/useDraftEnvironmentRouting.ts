@@ -5,6 +5,7 @@ import { useLoadBalancedEnvironment } from "../../hooks/useLoadBalancedEnvironme
 import { useLogicalProjectEnvironments } from "../../hooks/useLogicalProjectEnvironments";
 import { useScratchProject } from "../../hooks/useScratchProject";
 import { useStableCallback } from "../../hooks/useStableCallback";
+import { rememberSelectedMachine } from "../../lastSelectedMachine";
 import {
   type EnvironmentId,
   type ProviderDriverKind,
@@ -345,6 +346,7 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
           loadBalancedEnvironmentId: null,
         });
       }
+      rememberSelectedMachine(target.environmentId);
       seedDraftModelSelection(draftId, projectRef);
     };
     const finish = () => {

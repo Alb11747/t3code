@@ -51,8 +51,11 @@ export function createScratchProjectActions(input: {
     return availableScratchWorkspaceRoot(environment?.connection.phase, environment?.serverConfig);
   };
 
-  // The primary (local) environment wins; `fallback` only applies when it offers no scratch root.
-  const scratchEnvironmentId = (fallback: EnvironmentId | null): EnvironmentId | null => {
+  const scratchEnvironmentId = (
+    fallback: EnvironmentId | null,
+    preferred: EnvironmentId | null = null,
+  ): EnvironmentId | null => {
+    if (preferred !== null && scratchWorkspaceRootFor(preferred) !== null) return preferred;
     const primary = input.primaryEnvironmentId();
     if (primary !== null && scratchWorkspaceRootFor(primary) !== null) return primary;
     if (fallback !== null && scratchWorkspaceRootFor(fallback) !== null) return fallback;

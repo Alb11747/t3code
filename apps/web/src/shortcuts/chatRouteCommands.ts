@@ -18,6 +18,7 @@ import {
 } from "../hooks/useHandleNewThread";
 import { createScratchProjectActions } from "../hooks/useScratchProject";
 import { getClientSettings } from "../hooks/useSettings";
+import { readLastSelectedMachine } from "../lastSelectedMachine";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { selectProjectGroupingSettings } from "@t3tools/client-runtime/state/project-grouping";
 import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
@@ -143,6 +144,7 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
         const { activeThread, activeDraftThread } = readThreadContext();
         const environmentId = scratch.scratchEnvironmentId(
           activeThread?.environmentId ?? activeDraftThread?.environmentId ?? null,
+          readLastSelectedMachine(),
         );
         if (environmentId === null) return;
         claim(event);

@@ -21,6 +21,10 @@ import { expect, it, vi } from "vite-plus/test";
 
 import { act, render } from "../../../test/render";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
+import {
+  LAST_SELECTED_MACHINE_STORAGE_KEY,
+  readLastSelectedMachine,
+} from "../../lastSelectedMachine";
 import { useDraftEnvironmentRouting } from "./useDraftEnvironmentRouting";
 import { appAtomRegistry, AppAtomRegistryProvider } from "../../rpc/atomRegistry";
 import { draftFanoutSelectionsAtom } from "./chatViewSend";
@@ -293,6 +297,12 @@ function fanoutSetup() {
 
 it("keeps the selected models when the draft switches machine by hand", async () => {
   const { a, b, draftId, input, store, selectionsOn, models } = fanoutSetup();
+  using storage = new DisposableStack();
+  const previous = localStorage.getItem(LAST_SELECTED_MACHINE_STORAGE_KEY);
+  storage.defer(() => {
+    if (previous === null) localStorage.removeItem(LAST_SELECTED_MACHINE_STORAGE_KEY);
+    else localStorage.setItem(LAST_SELECTED_MACHINE_STORAGE_KEY, previous);
+  });
   await using screen = await render(
     <Harness
       input={{ ...input, automaticEnvironment: false, draftThread: store.getDraftSession(draftId) }}
@@ -301,6 +311,7 @@ it("keeps the selected models when the draft switches machine by hand", async ()
   await expect.element(screen.getByText("gpt-6.1-sol, gpt-6.1-luna")).toBeInTheDocument();
   await screen.getByRole("button", { name: `Switch to ${b}` }).click();
   await expect.element(screen.getByText(b)).toBeInTheDocument();
+  expect(readLastSelectedMachine()).toBe(b);
   await expect.element(screen.getByText("gpt-6.1-sol, gpt-6.1-luna")).toBeInTheDocument();
   expect(store.getComposerDraft(draftId)?.prompt).toBe("Keep this prompt");
 
@@ -308,6 +319,7 @@ it("keeps the selected models when the draft switches machine by hand", async ()
   await act(async () => appAtomRegistry.set(selectionsOn(b), models("gpt-6.1-sol")));
   await screen.getByRole("button", { name: `Switch to ${a}` }).click();
   await expect.element(screen.getByText(a)).toBeInTheDocument();
+  expect(readLastSelectedMachine()).toBe(a);
   await expect.element(screen.getByText("gpt-6.1-sol", { exact: true })).toBeInTheDocument();
 });
 
