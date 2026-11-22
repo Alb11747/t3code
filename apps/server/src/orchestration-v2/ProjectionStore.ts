@@ -3852,18 +3852,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         threadId: ThreadId,
         keep: NonNullable<ProjectionRecordFilter["sinceLastCompaction"]>,
       ) {
-        // A held queue can run out of ordinal order, so a run that ended after the compaction's
-        // run was requested is recent too. Every run row is read anyway, so this scan reads no
-        // extra pages.
+        // A held queue can run out of ordinal order. A run that ended after compaction was
+        // requested is recent even if its ordinal is older.
+        // Seek completed compactions by type and status to avoid scanning the conversation
+        // when there is no recent compaction.
         const recent = yield* sql<{ readonly run_id: RunId }>`
           WITH compaction AS (
             SELECT run.ordinal, run.requested_at
             FROM orchestration_v2_projection_turn_items AS item
-              INDEXED BY orchestration_v2_projection_turn_items_conversation_idx
+              INDEXED BY orchestration_v2_projection_turn_items_thread_type_idx
             INNER JOIN orchestration_v2_projection_runs AS run ON run.run_id = item.run_id
             WHERE item.thread_id = ${threadId}
               AND item.type = 'compaction' AND item.status = 'completed'
-              AND item.type NOT IN ${CONVERSATION_INDEX_EXCLUDED_TYPES}
               AND run.status <> 'rolled_back'
             ORDER BY item.ordinal DESC
             LIMIT 1
