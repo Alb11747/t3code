@@ -5749,17 +5749,26 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               updated.set(context.providerTurnId, state);
               return updated;
             });
-            yield* failStalledProviderRetry(context, state, payload.error.codexErrorInfo).pipe(
-              // Every notice aims at the same deadline, so repeated notices cannot extend it.
-              Effect.delay(
-                Math.max(
-                  0,
-                  PROVIDER_RETRY_BUDGET_MS -
-                    (DateTime.toEpochMillis(updatedAt) - DateTime.toEpochMillis(state.startedAt)),
+            // Codex 0.171 reports its server-directed delay as a stream retry
+            // notice with the capacity cause in additionalDetails.
+            const modelCapacity =
+              notificationCode === "serverOverloaded" ||
+              (notificationCode === "responseStreamDisconnected" &&
+                payload.error.additionalDetails ===
+                  "Selected model is at capacity. Please try a different model.");
+            if (!modelCapacity) {
+              yield* failStalledProviderRetry(context, state, payload.error.codexErrorInfo).pipe(
+                // Every notice aims at the same deadline, so repeated notices cannot extend it.
+                Effect.delay(
+                  Math.max(
+                    0,
+                    PROVIDER_RETRY_BUDGET_MS -
+                      (DateTime.toEpochMillis(updatedAt) - DateTime.toEpochMillis(state.startedAt)),
+                  ),
                 ),
-              ),
-              Effect.forkIn(scope, { startImmediately: true }),
-            );
+                Effect.forkIn(scope, { startImmediately: true }),
+              );
+            }
             yield* emitProviderEvent({
               type: "turn_item.updated",
               driver: CODEX_PROVIDER,
@@ -6856,6 +6865,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           )
             return undefined;
           const notified = input.context.latestProviderFailure?.errorInfo;
+          const modelCapacity =
+            codexErrorInfoCode(input.failureErrorInfo ?? notified) === "serverOverloaded";
           const now = yield* DateTime.now;
           const retryable = codexFailureRetryable({
             errorInfo: input.failureErrorInfo ?? notified,
@@ -6865,13 +6876,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           });
           if (
             !retryable ||
-            (input.providerRetry !== undefined &&
+            (!modelCapacity &&
+              input.providerRetry !== undefined &&
               providerRetryWindowExpired(input.providerRetry.startedAt, now)) ||
             (yield* Ref.get(interruptingNativeTurns)).has(input.nativeTurnId)
           ) {
             return undefined;
           }
           return (overloadRetryAttempts.get(nativeThreadId) ?? 0) + 1;
+        });
+
+        const overloadRetryDelay = Effect.fnUntraced(function* (
+          failureCode: string | null,
+          attempt: number,
+          startedAt: DateTime.Utc,
+          now: DateTime.Utc,
+        ) {
+          const modelCapacity = failureCode === "serverOverloaded";
+          const delay = yield* codexOverloadRetryDelayMs(attempt, modelCapacity);
+          return modelCapacity ? delay : clampToProviderRetryWindow(delay, startedAt, now);
         });
 
         /**
@@ -6888,6 +6911,22 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           const { context, event, attempt } = input;
           const nativeThreadId = context.providerThread.nativeThreadRef?.nativeId;
           if (nativeThreadId == null) return;
+          // Stop holds this flag across both its hold and active-turn lookups.
+          // A capacity failure finalizing between them must settle, without
+          // creating a retry neither of those lookups can claim.
+          if (event.failure.code === "serverOverloaded" && goalStops.has(nativeThreadId)) {
+            yield* emitProviderEvent({
+              type: "provider_turn.updated",
+              driver: CODEX_PROVIDER,
+              threadId: context.projectionThreadId,
+              providerTurn: input.failedTurn,
+            });
+            if (input.providerRetry?.itemProviderTurnId !== undefined) {
+              yield* emitOverloadRetryRow(context, input.providerRetry, "interrupted");
+            }
+            yield* emitRootTerminal(context, { ...event, status: "interrupted", failure: null });
+            return;
+          }
           overloadRetryAttempts.set(nativeThreadId, attempt);
           const now = yield* DateTime.now;
           const startedAt = input.providerRetry?.startedAt ?? now;
@@ -6898,11 +6937,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             retry: {
               attempt,
               maxAttempts: null,
-              retryDelayMs: clampToProviderRetryWindow(
-                yield* codexOverloadRetryDelayMs(attempt),
-                startedAt,
-                now,
-              ),
+              retryDelayMs: yield* overloadRetryDelay(event.failure.code, attempt, startedAt, now),
             },
             startedAt,
             itemOrdinal: input.providerRetry?.itemOrdinal ?? event.failureItemOrdinal,
@@ -6998,12 +7033,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   if (
                     isCodexAppServerRequestError(cause) &&
                     cause.code === -32001 &&
-                    !providerRetryWindowExpired(state.startedAt, now)
+                    (state.failure.code === "serverOverloaded" ||
+                      !providerRetryWindowExpired(state.startedAt, now))
                   ) {
                     const attempt = (overloadRetryAttempts.get(nativeThreadId) ?? 0) + 1;
                     overloadRetryAttempts.set(nativeThreadId, attempt);
-                    const retryDelayMs = clampToProviderRetryWindow(
-                      yield* codexOverloadRetryDelayMs(attempt),
+                    const retryDelayMs = yield* overloadRetryDelay(
+                      state.failure.code,
+                      attempt,
                       state.startedAt,
                       now,
                     );
@@ -7059,6 +7096,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               }
               // Retrying now would orphan the turn's running subagents, so the
               // retry waits for them (see flushReadyRootTerminals).
+              const nativeThreadId = input.context.providerThread.nativeThreadRef?.nativeId;
               const deferred: DeferredCodexRootTerminal = {
                 context: input.context,
                 event,
@@ -7067,7 +7105,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ...(input.providerRetry === undefined
                     ? {}
                     : { providerRetry: input.providerRetry }),
-                  stopped: false,
+                  stopped:
+                    event.failure.code === "serverOverloaded" &&
+                    nativeThreadId != null &&
+                    goalStops.has(nativeThreadId),
                 },
               };
               yield* Ref.update(deferredRootTerminals, (current) =>

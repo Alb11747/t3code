@@ -4,12 +4,10 @@ import * as Random from "effect/Random";
 
 type CodexErrorInfo = CodexSchema.ServerNotification__CodexErrorInfo;
 
-// After Codex gives up on capacity, throttling or transport failures, the run
-// continues with empty-input turns until one makes progress or a day passes.
-// Waits double from 10s to 3 minutes, drawn from the upper half of each step so
-// threads that failed together don't retry in lockstep.
-export const codexOverloadRetryDelayMs = (attempt: number) => {
-  const step = Math.min(10_000 * 2 ** (attempt - 1), 180_000);
+// Stagger retries from threads that failed together. Confirmed model capacity
+// keeps retrying, with a shorter ceiling than other temporary failures.
+export const codexOverloadRetryDelayMs = (attempt: number, modelCapacity: boolean) => {
+  const step = Math.min(10_000 * 2 ** (attempt - 1), modelCapacity ? 60_000 : 180_000);
   return Effect.map(Random.next, (draw) => step - Math.floor((draw * step) / 2));
 };
 

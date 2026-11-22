@@ -600,7 +600,19 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
     });
     const nativeThreadId = "overload-thread";
     const prompt = "Fix the build";
-    const turnCompleted = (id: string, status: "completed" | "failed", includeErrorInfo = true) =>
+    interface RetryFixtureError {
+      readonly message: string;
+      readonly codexErrorInfo?: "serverOverloaded" | "rateLimitExceeded";
+    }
+    const capacityError: RetryFixtureError = {
+      message: "Selected model is at capacity. Please try a different model.",
+      codexErrorInfo: "serverOverloaded",
+    };
+    const throttlingError: RetryFixtureError = {
+      message: "Too many requests.",
+      codexErrorInfo: "rateLimitExceeded",
+    };
+    const turnCompleted = (id: string, status: "completed" | "failed", error = capacityError) =>
       ({
         type: "emit_inbound",
         label: `turn/completed ${id}`,
@@ -610,14 +622,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
             threadId: nativeThreadId,
             turn: {
               ...makeCodexReplayTurn({ id, status }),
-              ...(status === "failed"
-                ? {
-                    error: {
-                      message: "Selected model is at capacity. Please try a different model.",
-                      ...(includeErrorInfo ? { codexErrorInfo: "serverOverloaded" as const } : {}),
-                    },
-                  }
-                : {}),
+              ...(status === "failed" ? { error } : {}),
             },
           },
         },
@@ -660,6 +665,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
     const retryTurn = (
       retry: number,
       outcome: "failed" | "progress" | "completed",
+      error?: RetryFixtureError,
     ): Array<CodexReplay.CodexAppServerReplayEntry> => {
       const id = `turn-${retry + 1}`;
       return [
@@ -718,7 +724,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
               },
             ]
           : []),
-        turnCompleted(id, outcome === "completed" ? "completed" : "failed"),
+        turnCompleted(id, outcome === "completed" ? "completed" : "failed", error),
       ];
     };
 
@@ -755,7 +761,11 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
                     },
                   ]
                 : []),
-              turnCompleted("turn-1", "failed", source === "completion"),
+              turnCompleted(
+                "turn-1",
+                "failed",
+                source === "completion" ? capacityError : { message: capacityError.message },
+              ),
               {
                 type: "expect_outbound",
                 label: "retry turn/start",
@@ -1111,9 +1121,9 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
 
     it.effect("keeps retrying past an hour and restarts the backoff after progress", () =>
       Effect.gen(function* () {
-        // Thirty failed retries outlast the former one-hour, 24-attempt cap. The
+        // The 60-second ceiling still outlasts an hour with 65 attempts. The
         // next retry makes progress before failing, so its wait starts over.
-        const failedRetries = 30;
+        const failedRetries = 65;
         const transcript = makeCodexReplayTranscript({
           scenario: "overload-retry-persistent",
           entries: [
@@ -1151,7 +1161,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
         );
         assert.deepEqual(
           retries.slice(0, 7).map((retry) => retry.retryDelayMs),
-          [10_000, 20_000, 40_000, 80_000, 160_000, 180_000, 180_000],
+          [10_000, 20_000, 40_000, 60_000, 60_000, 60_000, 60_000],
         );
         assert.equal(retries.at(-1)?.retryDelayMs, 10_000);
         assert.isTrue(retries.every((retry) => retry.maxAttempts === null));
@@ -1173,7 +1183,7 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
       ),
     );
 
-    it.effect("fails the run once retries pass a day without progress", () =>
+    it.effect("fails the run once throttling retries pass a day without progress", () =>
       Effect.gen(function* () {
         // 10s, 20s, 40s, 80s and 160s, then 3-minute waits: the 484th retry
         // fails just past 24 hours, so no 485th is scheduled.
@@ -1182,9 +1192,9 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
           scenario: "overload-retry-day-cap",
           entries: [
             ...codexReplayPreamble({ nativeThreadId, nativeTurnId: "turn-1", prompt }),
-            turnCompleted("turn-1", "failed"),
+            turnCompleted("turn-1", "failed", throttlingError),
             ...Array.from({ length: failedRetries }, (_, index) =>
-              retryTurn(index + 1, "failed"),
+              retryTurn(index + 1, "failed", throttlingError),
             ).flat(),
           ],
         });
