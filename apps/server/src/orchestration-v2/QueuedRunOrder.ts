@@ -1,9 +1,15 @@
 import {
+  type OrchestrationV2ConversationMessage,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadProjection,
   parseGoalCommand,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
 } from "@t3tools/contracts";
+import { modelSelectionsEqual } from "@t3tools/shared/model";
+import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import * as DateTime from "effect/DateTime";
+import { hasClaudeSkillMention } from "../provider/Drivers/ClaudeSkillDispatch.ts";
+import { ordinaryAgentReportText } from "./AgentMessageBatch.ts";
 
 export function isAutomaticCompletionRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
@@ -100,6 +106,78 @@ export function queuedRunsInDeliveryOrder(
       messageIndex += 1;
     }
   }
+}
+
+export function queuedAgentReportBatch(
+  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
+  first: OrchestrationV2Run,
+  message: OrchestrationV2ConversationMessage,
+) {
+  const firstReport = queuedAgentReportText(
+    first.status === "queued" ? first : { ...first, startedAt: null },
+    message,
+  );
+  if (
+    firstReport === undefined ||
+    !projection.runs.some((run) => run.id !== first.id && run.status === "queued")
+  )
+    return [];
+  const ordered = queuedRunsInDeliveryOrder(projection);
+  if (first.status === "queued" && ordered[0]?.id !== first.id) return [];
+
+  const messages = new Map(projection.messages.map((row) => [row.id, row]));
+  const members: Array<{ run: OrchestrationV2Run; message: OrchestrationV2ConversationMessage }> =
+    [];
+  let prompt = firstReport;
+  for (const run of first.status === "queued" ? ordered.slice(1) : ordered) {
+    if (
+      run.providerThreadId !== first.providerThreadId ||
+      !modelSelectionsEqual(run.modelSelection, first.modelSelection)
+    )
+      break;
+    const message = messages.get(run.userMessageId);
+    const report = queuedAgentReportText(run, message);
+    if (message === undefined || report === undefined) break;
+    const candidate = `${prompt}\n\n${report}`;
+    if (candidate.length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) break;
+    const expanded = projectComposerContextForProvider({ text: candidate, records: [] });
+    if (expanded.length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS || hasClaudeSkillMention(expanded))
+      break;
+    members.push({ run, message });
+    prompt = candidate;
+  }
+  return members;
+}
+
+function queuedAgentReportText(
+  run: OrchestrationV2Run,
+  message: OrchestrationV2ConversationMessage | undefined,
+) {
+  if (
+    message === undefined ||
+    run.startedAt !== null ||
+    run.queuedReportMessageIds !== undefined ||
+    message.senderThreadId === run.threadId ||
+    message.context !== undefined ||
+    message.delegatedCompletion !== undefined ||
+    message.notification !== undefined ||
+    message.scheduledTaskId !== undefined ||
+    message.idleCompaction !== undefined ||
+    message.followsThreadSelection === true ||
+    run.queueHeld === true ||
+    run.boundaryOffer !== undefined ||
+    run.afterCompactionMessageId !== undefined ||
+    run.freshContext === true ||
+    run.outputSchema !== undefined ||
+    run.delegatedTaskId !== undefined ||
+    run.sourcePlanRef !== undefined ||
+    run.workspacePreparation !== undefined ||
+    run.manualContinuationOfRunId !== undefined ||
+    run.restartContinuationOfRunId !== undefined ||
+    run.usageLimitContinuationOfRunId !== undefined
+  )
+    return undefined;
+  return ordinaryAgentReportText(message);
 }
 
 /**

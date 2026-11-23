@@ -4193,6 +4193,94 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
 
+  it.effect("enqueues a claimed Claude report batch before startup interruption settles", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      const claimed = yield* Deferred.make<void>();
+      const returnPrompt = yield* Deferred.make<void>();
+      const batch = "First report.\n\nSecond report.";
+      const starting = yield* harness.runtime
+        .startTurn({
+          ...makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("interrupt-report-claim"),
+            text: "First report.",
+            attachments: [],
+          }),
+          preparePrompt: () =>
+            Deferred.succeed(claimed, undefined).pipe(
+              Effect.andThen(Deferred.await(returnPrompt)),
+              Effect.as(batch),
+            ),
+        })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(claimed);
+      const interrupting = yield* Fiber.interrupt(starting).pipe(Effect.forkScoped);
+      yield* TestClock.adjust("0 millis");
+      yield* Deferred.succeed(returnPrompt, undefined);
+      yield* Fiber.join(interrupting);
+      assert.lengthOf(harness.offeredMessages, 1);
+      assert.include(harness.offeredMessages[0]?.message.content, batch);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
+  it.effect("reuses a Claude query after an unread queued report claim fails", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      const now = yield* DateTime.now;
+      const turnInput = (ordinal: number) =>
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now,
+          attemptId: RunAttemptId.make("failed-report-claim-" + ordinal),
+          providerTurnOrdinal: ordinal,
+          text: "Read the report.",
+          attachments: [],
+        });
+      const failure = yield* harness.runtime
+        .startTurn({
+          ...turnInput(1),
+          preparePrompt: () =>
+            Effect.fail(
+              new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+                detail: "Report claim failed.",
+              }),
+            ),
+        })
+        .pipe(Effect.flip);
+      assert.equal(failure._tag, "ProviderAdapterTurnStartError");
+      assert.lengthOf(harness.offeredMessages, 0);
+
+      yield* harness.runtime.startTurn(turnInput(2));
+      assert.lengthOf(harness.offeredMessages, 1);
+      assert.lengthOf(harness.processQueues, 1);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
   it.effect.each([
     "read with the retry",
     "dropped unread",

@@ -648,7 +648,7 @@ describe("ProviderContinuationService", () => {
         creationSource: "mcp",
       }));
       const committed: Array<unknown> = [];
-      const withdrawn: Array<unknown> = [];
+      const withdrawn: Array<ReadonlyArray<RunId>> = [];
       const blocked = yield* Deferred.make<void>();
       const layerThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
         getThreadRecords: () =>
@@ -659,11 +659,11 @@ describe("ProviderContinuationService", () => {
           } as unknown as OrchestrationV2ThreadProjection),
         dispatch: (command) =>
           Effect.gen(function* () {
-            if (command.type !== "queued-message.promote-to-steer") return {} as never;
-            if (command.boundaryOffer?.step === "withdraw") {
-              withdrawn.push(command.queuedRunId);
+            if (command.type === "boundary-offers.withdraw") {
+              withdrawn.push(command.offers.map(({ queuedRunId }) => queuedRunId));
               return { sequence: 1, storedEvents: [] };
             }
+            if (command.type !== "queued-message.promote-to-steer") return {} as never;
             if (committed.length === 1) {
               yield* Deferred.succeed(blocked, undefined);
               return yield* Effect.never;
@@ -692,7 +692,7 @@ describe("ProviderContinuationService", () => {
       yield* Fiber.interrupt(claim);
       assert.isTrue(Exit.hasInterrupts(yield* Fiber.await(claim)));
       assert.deepEqual(committed, [runs[0]!.id]);
-      assert.deepEqual(withdrawn, [runs[0]!.id, runs[1]!.id]);
+      assert.deepEqual(withdrawn, [[runs[0]!.id, runs[1]!.id]]);
     }).pipe(Effect.scoped),
   );
 

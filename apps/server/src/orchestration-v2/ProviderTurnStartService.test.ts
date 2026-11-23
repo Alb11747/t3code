@@ -100,9 +100,9 @@ const normalize = (target: string) => {
   }
   return `/${parts.join("/")}`;
 };
-const layerWorktreeLocation = (worktreesDir = managedWorktreesDir) =>
+const layerWorktreeLocation = (worktreesDir = managedWorktreesDir, path?: Path.Path) =>
   Layer.mergeAll(
-    Path.layer,
+    path === undefined ? Path.layer : Layer.succeed(Path.Path, path),
     Layer.mock(ServerConfig.ServerConfig)({ worktreesDir } as ServerConfig.ServerConfig["Service"]),
     ServerSettings.layerTest(),
   );
@@ -167,6 +167,7 @@ function startWithMissingWorktree(
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        ThreadCommandExecutor.layer,
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
         Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
@@ -469,6 +470,7 @@ function makeLocalCommandHarness(input: {
   readonly workspaceRoot?: string;
   readonly gitWorkflow?: GitWorkflow.GitWorkflowService["Service"];
   readonly fileSystem?: FileSystem.FileSystem;
+  readonly path?: Path.Path;
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
   readonly createdBy?: "agent" | "system";
@@ -1371,6 +1373,7 @@ function makeLocalCommandHarness(input: {
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        ThreadCommandExecutor.layer,
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff,
         }),
@@ -1387,7 +1390,7 @@ function makeLocalCommandHarness(input: {
         }),
         IdAllocator.layer,
         Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({}),
-        layerWorktreeLocation(input.worktreesDir),
+        layerWorktreeLocation(input.worktreesDir, input.path),
         layerNoTaskFolders,
         input.fileSystem === undefined
           ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
@@ -2112,6 +2115,7 @@ effectIt.effect(
           worktreePath,
           worktreesDir,
           fileSystem,
+          path,
           gitWorkflow,
           failReadsAfterRunning: true,
         });
@@ -2164,6 +2168,7 @@ effectIt.effect("leaves a managed worktree folder without .git that holds user f
       worktreePath,
       worktreesDir,
       fileSystem,
+      path,
       failReadsAfterRunning: true,
     });
     yield* harness.start;
@@ -2187,6 +2192,7 @@ effectIt.effect(
         worktreesDir,
         worktreePath,
         fileSystem,
+        path,
         failReadsAfterRunning: true,
       });
       harness.createWorktree.mockImplementationOnce(() => Effect.interrupt);
@@ -2888,6 +2894,7 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
         worktreePath,
         worktreesDir: workspaceRoot,
         fileSystem,
+        path,
         failReadsAfterRunning: true,
       });
       harness.createWorktree.mockImplementation(() =>
@@ -3468,6 +3475,48 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
+
+effectIt.effect("starts one provider turn with the queued reports in delivery order", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "First report.", nativeTurn: true });
+    const projection = harness.projection();
+    const run = projection.runs[0]!;
+    const first = {
+      ...projection.messages[0]!,
+      createdBy: "agent" as const,
+      creationSource: "mcp" as const,
+      senderThreadId: ThreadId.make("sender:first"),
+    };
+    const second = {
+      ...first,
+      id: MessageId.make("message:second"),
+      senderThreadId: ThreadId.make("sender:second"),
+      text: "Second report.",
+    };
+    harness.setProjection({
+      ...projection,
+      runs: [
+        {
+          ...run,
+          queuedReportMessageIds: [second.id],
+        },
+      ],
+      messages: [second, first],
+    });
+
+    yield* harness.start;
+
+    expect(harness.startRootRun).toHaveBeenCalledOnce();
+    expect(harness.startRootRun.mock.calls[0]?.[0].message.text).toBe(
+      [
+        '[T3 Code: the agent in T3 thread "sender:first" sent this message, not the user.]',
+        "First report.",
+        '[T3 Code: the agent in T3 thread "sender:second" sent this message, not the user.]',
+        "Second report.",
+      ].join("\n\n"),
+    );
+  }),
+);
 
 effectIt.effect("rejects citation expansion before opening a provider session", () =>
   Effect.gen(function* () {

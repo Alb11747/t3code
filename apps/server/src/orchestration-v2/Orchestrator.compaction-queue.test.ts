@@ -14,7 +14,7 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2Run,
 } from "@t3tools/contracts";
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -25,6 +25,7 @@ import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import { queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
@@ -40,6 +41,157 @@ const layerTest = ProviderReplayHarness.layerWithRegistry(
   { name: "compaction-queue" },
   ProviderAdapterRegistry.layerFromAdapters([adapter]),
   { runEffectWorker: false },
+);
+const layerBatchTest = ProviderReplayHarness.layerWithRegistry(
+  { name: "queued-agent-report-recovery" },
+  ProviderAdapterRegistry.layerFromAdapters([
+    {
+      ...adapter,
+      openSession: ({ providerSessionId }) =>
+        Effect.fail(
+          new ProviderAdapter.ProviderAdapterOpenSessionError({
+            driver: adapter.driver,
+            providerSessionId,
+            requiresSignIn: true,
+          }),
+        ),
+    },
+  ]),
+  { runEffectWorker: false },
+);
+
+it.effect.each([
+  { outcome: "failed", lateArrival: false },
+  { outcome: "failed", lateArrival: true },
+  { outcome: "interrupted", lateArrival: true },
+] as const)(
+  "keeps unsent reports in queue order through startup ($outcome, late=$lateArrival)",
+  ({ outcome, lateArrival }) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("thread:agent-report-queue");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("create:agent-report-queue"),
+        projectId: ProjectId.make("project:agent-report-queue"),
+        threadId,
+        title: "Agent report queue",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const send = (
+        id: string,
+        text: string,
+        options: { readonly sender?: ThreadId; readonly starts?: boolean } = {},
+      ) =>
+        orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`dispatch:${id}`),
+          messageId: MessageId.make(id),
+          threadId,
+          text,
+          attachments: [],
+          dispatchMode: { type: options.starts ? "start_immediately" : "queue_after_active" },
+          ...(options.sender === undefined
+            ? { createdBy: "user" as const, creationSource: "web" as const }
+            : {
+                createdBy: "agent" as const,
+                creationSource: "mcp" as const,
+                senderThreadId: options.sender,
+              }),
+        });
+      yield* send("current-turn", "Current work", { starts: true });
+      yield* send("report-first", "[from: first agent]\nFirst result.", {
+        sender: ThreadId.make("thread:first-agent"),
+      });
+      yield* send("report-second", "[from: second agent]\nSecond result.", {
+        sender: ThreadId.make("thread:second-agent"),
+      });
+      const sendLater = Effect.gen(function* () {
+        yield* send("human-message", "Change direction.");
+        yield* send("report-third", "[from: third agent]\nThird result.", {
+          sender: ThreadId.make("thread:third-agent"),
+        });
+      });
+      if (!lateArrival) yield* sendLater;
+      const before = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+      const active = before.runs.find((run) => run.userMessageId === "current-turn")!;
+      const now = yield* DateTime.now;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("event:agent-report-queue-idle"),
+            type: "run.updated",
+            threadId,
+            runId: active.id,
+            occurredAt: now,
+            payload: { ...active, status: "completed", startedAt: now, completedAt: now },
+          },
+        ],
+      });
+      yield* orchestrator.resumeQueuedRuns;
+      if (lateArrival) yield* sendLater;
+      const current = yield* orchestrator.getThreadProjection(threadId);
+      const started = current.runs.find((run) => run.status === "starting")!;
+      expect(started.userMessageId).toBe("report-first");
+      expect(queuedRunsInDeliveryOrder(current).map((run) => run.userMessageId)).toEqual([
+        "report-second",
+        "human-message",
+        "report-third",
+      ]);
+
+      if (outcome === "interrupted") {
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("report-session-opened"),
+              type: "run.updated",
+              threadId,
+              runId: started.id,
+              occurredAt: now,
+              payload: { ...started, status: "running", startedAt: now },
+            },
+          ],
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make("stop-before-report-delivery"),
+          threadId,
+        });
+      } else {
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        yield* worker.drain();
+      }
+      const failed = yield* orchestrator.getThreadProjection(threadId);
+      expect(failed.runs.find((run) => run.id === started.id)).toMatchObject({
+        status: outcome,
+      });
+      const original = before.runs.find((run) => run.userMessageId === "report-second")!;
+      expect(failed.runs.find((run) => run.id === original.id)).toMatchObject({
+        status: "queued",
+        completedAt: null,
+        ...(outcome === "interrupted" ? { queueHeld: true } : {}),
+      });
+      expect(failed.messages.find((message) => message.id === "report-second")?.runId).toBe(
+        original.id,
+      );
+      expect(
+        failed.visibleTurnItems.some(
+          ({ item }) => item.type === "user_message" && item.messageId === "report-second",
+        ),
+      ).toBe(false);
+      expect(queuedRunsInDeliveryOrder(failed).map((run) => run.userMessageId)).toEqual([
+        "report-second",
+        "human-message",
+        "report-third",
+      ]);
+    }).pipe(Effect.provide(layerBatchTest)),
 );
 
 it.effect.each([

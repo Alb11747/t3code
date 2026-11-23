@@ -35,6 +35,7 @@ import {
   formatSearchToolLabel,
 } from "@t3tools/shared/toolActivity";
 import { field, text } from "../unknownField.ts";
+import { groupAgentReportOffers } from "../AgentMessageBatch.ts";
 import { mergeWorkflowAgentMetadata, type WorkflowAgentMetadata } from "../workflowAgentAnswers.ts";
 import {
   initialWorkflowAgentTranscriptCursor,
@@ -5711,6 +5712,11 @@ interface ClaudeLiveQueryContext {
 interface ClaudeBoundaryBatch {
   readonly context: ActiveClaudeTurnContext;
   readonly offers: ReadonlyArray<ProviderContinuationRequests.AgentMessageOffer>;
+  /** One native prompt UUID can acknowledge several original messages. */
+  readonly offersByPromptId: ReadonlyMap<
+    string,
+    ReadonlyArray<ProviderContinuationRequests.AgentMessageOffer>
+  >;
   /** Written to the CLI's input. */
   readonly consumed: Set<string>;
   /** Claude reported command_lifecycle "started": the input entered the conversation. */
@@ -13676,22 +13682,25 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               yield* liveQuery.boundaryLock.withPermits(1)(
                 Effect.gen(function* () {
                   for (const batch of liveQuery.boundaryBatches) {
-                    const offer = batch.offers.find((candidate) => candidate.id === lifecycle.uuid);
+                    const offers = batch.offersByPromptId.get(lifecycle.uuid);
                     if (
-                      offer === undefined ||
-                      batch.started.has(offer.id) ||
-                      batch.withdrawn.has(offer.id)
+                      offers === undefined ||
+                      batch.started.has(lifecycle.uuid) ||
+                      batch.withdrawn.has(lifecycle.uuid)
                     )
                       continue;
                     if (lifecycle.state === "started") {
-                      yield* acceptBoundaryOffers(batch, [offer.id]);
+                      yield* acceptBoundaryOffers(
+                        batch,
+                        offers.map((offer) => offer.id),
+                      );
                     } else if (
                       // Removed before it entered the conversation, so the agent never read it.
                       lifecycle.state === "cancelled" ||
                       lifecycle.state === "discarded" ||
                       lifecycle.state === "refused"
                     ) {
-                      yield* withdrawBoundaryOffers(batch, [offer]);
+                      yield* withdrawBoundaryOffers(batch, offers);
                     }
                   }
                   pruneBoundaryBatches(liveQuery.boundaryBatches);
@@ -14725,7 +14734,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     )
                       return {};
                     const prepared = [];
-                    for (const offer of offers) {
+                    for (const group of groupAgentReportOffers(offers)) {
+                      const offer = group.lead;
                       const reservation = yield* reserveClaudePdfBudget(
                         pdfBudgets.get(nativeThreadId) ??
                           makeClaudeAttachmentBudget({
@@ -14736,9 +14746,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       );
                       const message = yield* makeClaudeUserMessageWithAttachments({
                         text:
-                          offer.createdBy === "agent"
-                            ? `From another agent:\n${offer.text}`
-                            : offer.text,
+                          group.offers.length > 1 && group.report !== undefined
+                            ? group.report
+                            : offer.createdBy === "agent"
+                              ? `From another agent:\n${offer.text}`
+                              : offer.text,
                         attachments: offer.attachments,
                         priority: "next",
                         uuid: offer.id,
@@ -14751,7 +14763,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                         Effect.provideService(Path.Path, path),
                       );
                       prepared.push({
-                        offer,
+                        group,
                         reservation,
                         message,
                         consumed: yield* Deferred.make<void>(),
@@ -14760,12 +14772,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     const batch: ClaudeBoundaryBatch = {
                       context,
                       offers,
+                      offersByPromptId: new Map(
+                        prepared.map(({ group }) => [group.lead.id, group.offers]),
+                      ),
                       consumed: new Set(),
                       started: new Set(),
                       emitted: new Set(),
                       withdrawn,
                       pdfReservations: new Map(
-                        prepared.map(({ offer, reservation }) => [offer.id, reservation]),
+                        prepared.map(({ group, reservation }) => [group.lead.id, reservation]),
                       ),
                       reserved: false,
                       accepting: true,
@@ -14785,19 +14800,25 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       yield* live.query.offer(
                         preparedOffer.message,
                         () => {
-                          neverHandedOff.delete(preparedOffer.offer.id);
+                          for (const offer of preparedOffer.group.offers)
+                            neverHandedOff.delete(offer.id);
                         },
                         {
                           isCurrent,
                           onPulled: () => preparedOffer.reservation.commit(),
                           onConsumed: () => {
-                            batch.consumed.add(preparedOffer.offer.id);
-                            context.boundaryMessageSenders.set(preparedOffer.offer.messageId, null);
+                            for (const offer of preparedOffer.group.offers) {
+                              batch.consumed.add(offer.id);
+                              context.boundaryMessageSenders.set(offer.messageId, null);
+                            }
                             void runPromise(Deferred.succeed(preparedOffer.consumed, undefined));
                           },
                           onDiscarded: () => {
-                            batch.consumed.delete(preparedOffer.offer.id);
-                            neverHandedOff.add(preparedOffer.offer.id);
+                            const offers = preparedOffer.group.offers;
+                            for (const offer of offers) {
+                              batch.consumed.delete(offer.id);
+                              neverHandedOff.add(offer.id);
+                            }
                             void runPromise(Deferred.succeed(preparedOffer.consumed, undefined));
                             const withdraw = continuationRequests.withdrawAgentMessages;
                             if (withdraw !== undefined) {
@@ -14805,15 +14826,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                                 withdraw({
                                   threadId: context.input.threadId,
                                   runId: context.input.runId,
-                                  offers: [preparedOffer.offer],
+                                  offers,
                                 }).pipe(
-                                  Effect.andThen(
-                                    refundBoundaryPdfPages(batch, [preparedOffer.offer]),
-                                  ),
+                                  Effect.andThen(refundBoundaryPdfPages(batch, offers)),
                                   Effect.andThen(
                                     boundaryLock.withPermits(1)(
                                       Effect.sync(() => {
-                                        withdrawn.add(preparedOffer.offer.id);
+                                        for (const offer of offers) withdrawn.add(offer.id);
                                         pruneBoundaryBatches(boundaryBatches);
                                       }),
                                     ),
@@ -14821,7 +14840,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                                   Effect.catchCause((cause) =>
                                     Effect.logWarning(
                                       "orchestration-v2.claude-boundary-withdraw-failed",
-                                      { offerId: preparedOffer.offer.id, cause },
+                                      { offerId: preparedOffer.group.lead.id, cause },
                                     ),
                                   ),
                                 ),
@@ -15693,6 +15712,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               heldResult: undefined,
               executedModel: undefined,
             };
+            let previousQueryTurn: ActiveClaudeTurnContext | null = null;
             const attachTurn = Effect.gen(function* () {
               // Set before claiming: a query that exits after the claim finalizes this turn; one that exits before it fails the start.
               yield* Ref.set(activeTurn, context);
@@ -15700,6 +15720,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 if (current?.query !== querySession.query || querySession.stopping) {
                   return [false, current];
                 }
+                previousQueryTurn = querySession.lastTurn;
                 querySession.lastTurn = context;
                 return [true, current];
               });
@@ -15768,6 +15789,22 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }),
               });
             });
+            const detachUnsubmittedTurn = Effect.gen(function* () {
+              const detached = yield* Ref.modify(activeTurn, (current) =>
+                current === context ? [true, null] : [false, current],
+              );
+              if (!detached) return;
+              if (querySession.lastTurn === context) querySession.lastTurn = previousQueryTurn;
+              yield* emitProviderEvent({
+                type: "provider_turn.updated",
+                driver: CLAUDE_PROVIDER,
+                providerTurn: providerTurnPayload({
+                  context,
+                  status: "failed",
+                  completedAt: yield* DateTime.now,
+                }),
+              });
+            });
             // `offer` may call this twice; a second call must not restore notes compaction cleared.
             let offerCommitted = false;
             const commitOffer = () => {
@@ -15783,18 +15820,52 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const offerUserMessage =
               userMessage === null
                 ? Effect.void
-                : startUserTurnForWakeReports(nativeThreadId).pipe(
-                    Effect.andThen(
-                      Effect.uninterruptibleMask((restore) =>
-                        restore(querySession.query.offer(userMessage, commitOffer)).pipe(
-                          Effect.tap(() => Effect.sync(commitOffer)),
-                        ),
+                : Effect.gen(function* () {
+                    const prepared = yield* turnInput.preparePrompt?.() ?? Effect.undefined;
+                    yield* startUserTurnForWakeReports(nativeThreadId);
+                    let message = userMessage;
+                    if (prepared !== undefined) {
+                      const text = applyClaudePromptEffortPrefix(
+                        prepared,
+                        compileClaudeModelSelection(turnInput.modelSelection, modelCatalog)
+                          .promptEffort,
+                      );
+                      const original = userMessage.message.content;
+                      const content =
+                        typeof original === "string"
+                          ? text
+                          : original.map((block, index) =>
+                              index === original.length - 1 && block.type === "text"
+                                ? { ...block, text }
+                                : block,
+                            );
+                      const bytes =
+                        Buffer.byteLength(encodeClaudeJson(content)) -
+                        Buffer.byteLength(encodeClaudeJson(original));
+                      pdfReservation.budget.pending.bytes += bytes;
+                      pdfReservation.bytes += bytes;
+                      message = { ...userMessage, message: { ...userMessage.message, content } };
+                    }
+                    yield* Effect.uninterruptibleMask((restore) =>
+                      restore(querySession.query.offer(message, commitOffer)).pipe(
+                        Effect.tap(() => Effect.sync(commitOffer)),
                       ),
-                    ),
-                  );
+                    );
+                  });
             if (userMessage !== null && !turnInput.resume) {
-              yield* attachTurn;
-              yield* offerUserMessage;
+              // A report claim and local enqueue must finish before startup can be abandoned.
+              const offer =
+                turnInput.preparePrompt === undefined
+                  ? offerUserMessage
+                  : Effect.uninterruptible(offerUserMessage);
+              yield* attachTurn.pipe(
+                Effect.andThen(offer),
+                Effect.onError(() =>
+                  turnInput.preparePrompt === undefined || offerCommitted
+                    ? Effect.void
+                    : detachUnsubmittedTurn,
+                ),
+              );
               return;
             }
             // Transcript reads suspend replay; hold SDK frames until the buffer is applied to preserve order.

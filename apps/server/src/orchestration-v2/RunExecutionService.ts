@@ -668,6 +668,10 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly relatedThreadIds?: ReadonlyArray<ThreadId>;
   readonly relatedProviderThreadIds?: ReadonlyArray<ProviderThreadId>;
   readonly shouldStartProviderTurn?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
+  readonly prepareProviderInput?: () => Effect.Effect<
+    boolean | { readonly run: OrchestrationV2Run; readonly text: string },
+    unknown
+  >;
   readonly shouldFinalizeRun?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
   readonly loadRunInterruptReason?: () => Effect.Effect<string | undefined, never>;
@@ -2255,6 +2259,35 @@ export const layer: Layer.Layer<
           mcpAppModelContext,
           input.run.threadId,
         );
+        const prepareProviderInput = input.prepareProviderInput;
+        const preparePrompt =
+          prepareProviderInput === undefined
+            ? undefined
+            : yield* Effect.cached(
+                prepareProviderInput().pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapter.ProviderAdapterProtocolError({
+                        driver: input.session.driver,
+                        detail: "Could not prepare queued agent reports.",
+                        cause,
+                      }),
+                  ),
+                  Effect.flatMap((prepared) => {
+                    if (prepared === false)
+                      return Effect.fail(
+                        new ProviderAdapter.ProviderAdapterProtocolError({
+                          driver: input.session.driver,
+                          detail: "This turn no longer owns the queued prompt.",
+                        }),
+                      );
+                    if (prepared === true) return Effect.undefined;
+                    const { run, text } = prepared;
+                    input = { ...input, run, message: { ...input.message, text } };
+                    return Effect.succeed(text);
+                  }),
+                ),
+              );
         const turnInput = {
           ...(input.attempt.recovery === undefined ? {} : { recovery: input.attempt.recovery }),
           appThread: input.appThread,
@@ -2279,12 +2312,12 @@ export const layer: Layer.Layer<
           rootNodeId: input.rootNode.id,
           providerThread: input.providerThread,
           message: input.message,
+          ...(preparePrompt === undefined ? {} : { preparePrompt: () => preparePrompt }),
           modelSelection: input.modelSelection,
           runtimePolicy: input.runtimePolicy,
           ...(appContext.length === 0 ? {} : { appContext }),
         };
-        // Check after the context read: ingestion can settle the run while
-        // it awaits. A failed ownership read fails the start below.
+        // Check after the context read: ingestion or Stop can settle the run while it awaits.
         const shouldStart =
           input.shouldStartProviderTurn === undefined
             ? Exit.succeed(true)
@@ -2293,7 +2326,6 @@ export const layer: Layer.Layer<
           yield* Fiber.interrupt(providerEventFiber);
           return;
         }
-
         const compact =
           input.message.attachments.length === 0 &&
           input.message.text.trim().toLowerCase() === "/compact";
@@ -2358,6 +2390,9 @@ export const layer: Layer.Layer<
                           writeIfRunCurrent: {
                             activeAttemptId: input.attempt.id,
                             expectedStatus: "running",
+                            ...(preparePrompt === undefined
+                              ? {}
+                              : { unlessInterruptRequested: true }),
                           },
                           openRunOwnedSubagents: openSubagents,
                           terminal: makeFailedTerminalEvent(

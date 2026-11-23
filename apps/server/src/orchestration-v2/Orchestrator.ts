@@ -90,6 +90,7 @@ import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
 import { modelSwitchSince } from "./modelSwitch.ts";
+import { queuedRunCancellationEvents } from "./QueuedAgentReportDelivery.ts";
 import { claudeThinkingRecoveryTarget } from "@t3tools/shared/orchestrationV2ClaudeThinkingRecovery";
 import { contextBoundaryOrdinal, isScheduledFreshRun } from "./contextBoundary.ts";
 import { isPlaceholderThreadTitle } from "./placeholderThreadTitle.ts";
@@ -212,6 +213,7 @@ import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import { ProviderSwitchServiceV2 } from "./ProviderSwitchService.ts";
 import {
   isAutomaticCompletionRun,
+  queuedAgentReportBatch,
   queuedRunsInDeliveryOrder,
   queuedSteeringRunIds,
 } from "./QueuedRunOrder.ts";
@@ -724,6 +726,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "run.interrupt":
     case "run.retry":
     case "run.output.submit":
+    case "boundary-offers.withdraw":
     case "queued-message.promote-to-steer":
     case "queued-run.start":
     case "queue.resume":
@@ -1278,49 +1281,6 @@ function currentPullRequestWatchWake(
 
 function withoutSection({ section: _, ...stamp }: MonitorPullRequestStamp) {
   return stamp;
-}
-
-function queuedRunCancellationEvents(
-  projection: Pick<OrchestrationV2ThreadProjection, "nodes" | "attempts">,
-  run: OrchestrationV2Run,
-  now: DateTime.Utc,
-): ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">> {
-  const rootNode = projection.nodes.find((node) => node.id === run.rootNodeId);
-  const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
-  const events: Array<Omit<OrchestrationV2DomainEvent, "id">> = [
-    {
-      type: "run.updated",
-      threadId: run.threadId,
-      runId: run.id,
-      ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
-      providerInstanceId: run.providerInstanceId,
-      occurredAt: now,
-      payload: { ...run, status: "cancelled", queuePosition: null, completedAt: now },
-    },
-  ];
-  if (attempt !== undefined && rootNode !== undefined) {
-    events.push({
-      type: "run-attempt.updated",
-      threadId: run.threadId,
-      runId: run.id,
-      nodeId: rootNode.id,
-      providerInstanceId: run.providerInstanceId,
-      occurredAt: now,
-      payload: { ...attempt, status: "cancelled", completedAt: now },
-    });
-  }
-  if (rootNode !== undefined) {
-    events.push({
-      type: "node.updated",
-      threadId: run.threadId,
-      runId: run.id,
-      nodeId: rootNode.id,
-      providerInstanceId: run.providerInstanceId,
-      occurredAt: now,
-      payload: { ...rootNode, status: "cancelled", completedAt: now },
-    });
-  }
-  return events;
 }
 
 function latestStableRun(
@@ -2879,8 +2839,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // Failed worktree creation would run queued work in the project checkout; wait for the user.
       const failedRun = latestExecutedRun(projection.runs);
       const endedRunId = options?.latestRunEnded === true ? failedRun?.id : options?.endedRunId;
+      // A delayed terminal event must still respect the failure that now owns the queue.
       const failedRunId =
-        options?.latestRunEnded === true && failedRun?.status === "failed"
+        (options?.latestRunEnded === true || endedRunId !== undefined) &&
+        failedRun?.status === "failed"
           ? failedRun.id
           : options?.failedRunId;
       const failureClass =
@@ -3380,6 +3342,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ))
           ? "explicit-queue"
           : "automatic-queue";
+      const reportBatch =
+        options?.queuedRunId === undefined
+          ? queuedAgentReportBatch(projection, storedQueuedRun, queuedMessage)
+          : [];
       const startingRun: OrchestrationV2Run = {
         ...queuedRun,
         providerThreadId: queuedProviderThread.id,
@@ -3388,6 +3354,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         queuePosition: null,
         startedAt: null,
         contextHandoffId: activeHandoff?.id ?? null,
+        ...(reportBatch.length === 0 ? {} : { batchQueuedReports: true }),
         ...wakeWorkStartedAt(
           projection,
           {
@@ -7380,6 +7347,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       rootNodeId: nextRootNodeId,
       activeAttemptId: nextAttemptId,
       userMessageId: input.messageId,
+      batchQueuedReports: undefined,
+      queuedReportMessageIds: undefined,
       status: "starting",
       contextHandoffId: restartHandoff?.id ?? targetRun.contextHandoffId,
     };
@@ -13947,7 +13916,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
 
   const loadProjectionForCommand = <K extends ProjectionRecordField>(
-    command: OrchestrationV2Command,
+    command: OrchestrationV2ServerCommand,
     fields: ReadonlyArray<K>,
     filter?: ProjectionRecordFilter,
   ) =>
@@ -17789,6 +17758,50 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.stop":
         cancelUnsettledEffects = yield* dispatchThreadStop(command, events, effects);
         break;
+      case "boundary-offers.withdraw": {
+        const projection = yield* loadProjectionForCommand(command, ["runs"], {
+          runIds: command.offers.map((offer) => offer.queuedRunId),
+        });
+        if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Thread ${command.threadId} is not active.`,
+          });
+        }
+        const offered = new Map(command.offers.map((offer) => [offer.queuedRunId, offer.id]));
+        const now = yield* DateTime.now;
+        const emitEvent = emit(events, command);
+        let changed = false;
+        for (const run of projection.runs) {
+          const { boundaryOffer, ...unoffered } = run;
+          if (
+            run.status !== "queued" ||
+            boundaryOffer === undefined ||
+            boundaryOffer.id !== offered.get(run.id) ||
+            boundaryOffer.targetRunId !== command.targetRunId
+          )
+            continue;
+          yield* emitEvent({
+            type: "run.updated",
+            threadId: command.threadId,
+            runId: run.id,
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+            payload: unoffered,
+          });
+          changed = true;
+        }
+        if (!changed) {
+          yield* emitEvent({
+            type: "thread.metadata-updated",
+            threadId: command.threadId,
+            occurredAt: now,
+            payload: projection.thread,
+          });
+        }
+        break;
+      }
       case "queued-message.promote-to-steer": {
         const promotion = yield* dispatchQueuedMessagePromoteToSteer(command, events, effects);
         cancelUnsettledEffects = promotion?.cancelUnsettledEffects;
@@ -18262,11 +18275,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // An offer Claude drops after its turn ended rejoins an idle queue.
       (command.type === "queued-message.promote-to-steer" &&
         command.boundaryOffer?.step === "withdraw") ||
+      command.type === "boundary-offers.withdraw" ||
       (command.type === "thread.runtime-mode.set" && runtimeModeCeiling !== undefined)
     ) {
       yield* mapDispatchError(command)(
         startNextQueuedRun(command.threadId, {
-          userStarted: command.type !== "thread.runtime-mode.set",
+          userStarted:
+            command.type !== "thread.runtime-mode.set" &&
+            command.type !== "boundary-offers.withdraw",
+          ...(command.type === "boundary-offers.withdraw" ? { latestRunEnded: true } : {}),
           ...(command.type === "queued-run.start" ? { queuedRunId: command.runId } : {}),
         }),
       );

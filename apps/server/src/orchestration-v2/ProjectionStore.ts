@@ -5658,7 +5658,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               providerTurns,
             });
             const messageIds = [run, unsentSource].flatMap((source) =>
-              source === undefined ? [] : [source.userMessageId],
+              source === undefined
+                ? []
+                : [source.userMessageId, ...(source.queuedReportMessageIds ?? [])],
             );
             // Earlier /compact and /goal turns defer context too; parseGoalCommand narrows the /goal prefix match.
             const messages = yield* sql<PayloadRow>`

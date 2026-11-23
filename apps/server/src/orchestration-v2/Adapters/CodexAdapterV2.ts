@@ -2297,6 +2297,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly hold?: CodexGoalHold;
           abandoned: boolean;
           submitted: boolean;
+          promptSubmission?: Deferred.Deferred<void>;
           nativeTurnId?: string;
           nativeStarted: boolean;
         }
@@ -2957,6 +2958,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               yield* restore(Deferred.await(acceptance.accepted)).pipe(
                 Effect.onInterrupt(() =>
                   Effect.gen(function* () {
+                    // A queued report claim and local RPC enqueue settle together before abandonment.
+                    if (acceptance.promptSubmission !== undefined) {
+                      yield* Deferred.await(acceptance.promptSubmission);
+                    }
                     acceptance.abandoned = true;
                     if (!acceptance.submitted) {
                       yield* Fiber.interrupt(lane);
@@ -8150,7 +8155,28 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ...(yield* Ref.get(settledTurns)),
                 ...(yield* Ref.get(activeTurns)),
               ]);
-              const { turn } = yield* client.request("turn/start", turnStartParams);
+              const acceptance = nativeTurnAcceptances.get(threadId);
+              let finishPromptSubmission: Effect.Effect<void> | undefined;
+              if (turnInput.preparePrompt !== undefined && acceptance !== undefined) {
+                const submission = yield* Deferred.make<void>();
+                if (acceptance.abandoned) {
+                  return yield* toProtocolError("The turn was stopped before prompt submission.");
+                }
+                acceptance.promptSubmission = submission;
+                finishPromptSubmission = Deferred.succeed(submission, undefined).pipe(
+                  Effect.asVoid,
+                );
+              }
+              const { turn } = yield* Effect.gen(function* () {
+                const prepared = yield* turnInput.preparePrompt?.() ?? Effect.undefined;
+                return yield* client.request(
+                  "turn/start",
+                  prepared === undefined
+                    ? turnStartParams
+                    : { ...turnStartParams, input: [{ type: "text", text: prepared }] },
+                  finishPromptSubmission,
+                );
+              }).pipe(Effect.ensuring(finishPromptSubmission ?? Effect.void));
               const previousTurn =
                 previousTurns.get(turn.id) ?? (yield* Ref.get(activeTurns)).get(turn.id);
               if (

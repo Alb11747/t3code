@@ -68,6 +68,7 @@ export interface CodexAppServerPatchedProtocol {
   readonly request: (
     method: string,
     payload?: unknown,
+    onEnqueued?: Effect.Effect<void>,
   ) => Effect.Effect<unknown, CodexError.CodexAppServerError>;
   readonly notify: (
     method: string,
@@ -561,6 +562,7 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
     const request = Effect.fn("CodexAppServerProtocol.request")(function* (
       method: string,
       payload?: unknown,
+      onEnqueued?: Effect.Effect<void>,
     ) {
       const requestId = yield* Ref.modify(
         nextRequestId,
@@ -584,6 +586,7 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
               method,
               ...(payload !== undefined ? { params: payload } : {}),
             }).pipe(Effect.withSpan("CodexAppServerProtocol.request.enqueue", { attributes }));
+            if (onEnqueued !== undefined) yield* onEnqueued;
             // Includes queue/stdin delivery, Codex work and response routing, not just T3 CPU.
             return yield* Deferred.await(deferred).pipe(
               Effect.withSpan("CodexAppServerProtocol.request.awaitResponse", { attributes }),

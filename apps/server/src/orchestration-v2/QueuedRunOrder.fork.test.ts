@@ -1,7 +1,61 @@
+import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
+import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
 import * as DateTime from "effect/DateTime";
 import { expect, it } from "vite-plus/test";
 
-import { queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
+import { queuedAgentReportBatch, queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
+
+it.each([
+  { label: "follows the reordered queue", text: "Earlier report", expected: ["earlier"] },
+  { label: "stops before inline skills", text: "Please $review the diff", expected: [] },
+  {
+    label: "stops before quotes make the batch too long",
+    text:
+      "x".repeat(15_000) +
+      serializeAssistantCitation({
+        version: 1,
+        environmentId: EnvironmentId.make("env"),
+        threadId: ThreadId.make("thread"),
+        messageId: MessageId.make("assistant"),
+        text: "\u0001".repeat(8_000),
+        start: 0,
+        end: 8_000,
+        prefix: "",
+        suffix: "",
+      }),
+    expected: [],
+  },
+])("$label when batching queued reports", ({ text, expected }) => {
+  const messages = [
+    { id: "earlier", text },
+    { id: "later", text: "y".repeat(65_000) },
+  ].map((message) => ({
+    ...message,
+    createdBy: "agent",
+    creationSource: "mcp",
+    senderThreadId: "sender",
+    attachments: [],
+  }));
+  const runs = messages.map((message, index) => ({
+    id: message.id,
+    userMessageId: message.id,
+    threadId: "receiver",
+    providerThreadId: "provider",
+    ordinal: index + 1,
+    queuePosition: 2 - index,
+    startedAt: null,
+    requestedAt: DateTime.makeUnsafe("2026-01-01T00:00:00Z"),
+    modelSelection: { instanceId: "claude", model: "model" },
+    status: "queued",
+  }));
+
+  const batch = queuedAgentReportBatch(
+    { runs, messages } as never,
+    runs[1] as never,
+    messages[1] as never,
+  );
+  expect(batch.map(({ message }) => message.id)).toEqual(expected);
+});
 
 it("delivers pending steering before completion notices while explicit Queue keeps its order", () => {
   const projection = {

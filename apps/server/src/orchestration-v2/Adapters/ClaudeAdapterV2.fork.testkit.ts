@@ -17,7 +17,7 @@ import {
   type ResolvedProviderInstanceEnvironment,
   RunAttemptId,
   RunId,
-  type ThreadId,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -985,6 +985,105 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
         ),
       ),
     ),
+  );
+
+  it.effect.each(["started", "cancelled"] as const)(
+    "offers consecutive agent steers as one prompt and settles both when Claude reports %s",
+    (state) =>
+      Effect.gen(function* () {
+        const offers = [0, 1].map((index) => ({
+          id: `00000000-0000-4000-8000-${String(index + 201).padStart(12, "0")}` as const,
+          queuedRunId: RunId.make(`batch-queued-${index}`),
+          messageId: MessageId.make(`batch-message-${index}`),
+          text: `[from: agent-${index}]\nResult ${index}`,
+          attachments: [],
+          createdBy: "agent" as const,
+          creationSource: "mcp" as const,
+          senderThreadId: ThreadId.make(`thread:sender-${index}`),
+          batchable: true as const,
+        }));
+        const withdrawals =
+          yield* Queue.unbounded<
+            Parameters<ProviderContinuationRequests.AcknowledgeAgentMessages>[0]
+          >();
+        const harness = yield* makeWakeHarnessWithOptions({
+          claimAgentMessages: () => Effect.succeed(offers),
+          withdrawAgentMessages: (withdrawal) =>
+            Queue.offer(withdrawals, withdrawal).pipe(Effect.asVoid),
+          onHandoff: (handoff) => {
+            handoff.onPulled();
+            handoff.onConsumed();
+          },
+        });
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("batch-boundary-attempt"),
+            text: "Work.",
+            attachments: [],
+          }),
+        );
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "init",
+            capabilities: ["interrupt_cancel_queued_v1"],
+            user_message_uuid: harness.promptUuid(0),
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        const hook = harness.getOpenedOptions()?.hooks?.PostToolBatch?.[0]?.hooks[0];
+        assert.isDefined(hook);
+        if (hook === undefined) return;
+        yield* Effect.promise((signal) =>
+          hook(
+            {
+              hook_event_name: "PostToolBatch",
+              session_id: WAKE_NATIVE_SESSION,
+              transcript_path: "/repo/session.jsonl",
+              cwd: "/repo",
+              tool_calls: [],
+            },
+            undefined,
+            { signal },
+          ),
+        );
+        const steers = harness.offeredMessages.slice(1);
+        assert.lengthOf(steers, 1);
+        const content = steers[0]!.message.content;
+        const text =
+          typeof content === "string"
+            ? content
+            : content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+        assert.match(text, /thread:sender-0.*\n\n\[from: agent-0\]\nResult 0/);
+        assert.match(text, /Result 0\n\n.*thread:sender-1.*\n\n\[from: agent-1\]\nResult 1/);
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "command_lifecycle",
+            command_uuid: steers[0]!.uuid,
+            state,
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        if (state === "started") {
+          yield* harness.offerAndWait(makeResultFrame({ uuid: "batch-result", result: "Done." }));
+          yield* Queue.take(harness.terminalReceipts);
+        }
+        const settled =
+          state === "cancelled"
+            ? (yield* Queue.take(withdrawals)).offers
+            : harness.events.flatMap((event) =>
+                event.type === "boundary_messages.updated" && event.step === "receipt"
+                  ? event.offers
+                  : [],
+              );
+        assert.deepEqual(
+          settled.map((offer) => offer.id),
+          offers.map((offer) => offer.id),
+        );
+      }).pipe(Effect.scoped, Effect.provide(layers)),
   );
 
   it.effect("withdraws a never-pulled input discarded after its hook aborts", () =>

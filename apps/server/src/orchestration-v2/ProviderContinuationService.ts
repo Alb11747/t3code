@@ -344,17 +344,29 @@ export const layer = Layer.effectDiscard(
                 messageIds: [message.id],
               });
               const committed = current.messages.find((row) => row.id === message.id)!;
+              const text = projectComposerContextForProvider({
+                text: committed.text,
+                records: committed.context?.records ?? [],
+              });
               return {
                 id: offerId,
                 queuedRunId: run.id,
                 messageId: committed.id,
-                text: projectComposerContextForProvider({
-                  text: committed.text,
-                  records: committed.context?.records ?? [],
-                }),
+                text,
                 attachments: committed.attachments,
                 createdBy: committed.createdBy,
                 creationSource: committed.creationSource,
+                ...(committed.senderThreadId === undefined
+                  ? {}
+                  : { senderThreadId: committed.senderThreadId }),
+                ...(committed.linkedSender === undefined
+                  ? {}
+                  : { linkedSender: committed.linkedSender }),
+                ...(committed.context === undefined &&
+                text === committed.text &&
+                (committed.senderThreadId !== undefined || committed.linkedSender !== undefined)
+                  ? { batchable: true as const }
+                  : {}),
               };
             }).pipe(
               Effect.catch((cause) =>
@@ -422,6 +434,27 @@ export const layer = Layer.effectDiscard(
       step: "receipt" | "withdraw",
     ): ProviderContinuationRequests.AcknowledgeAgentMessages =>
       Effect.fn(`ProviderContinuationService.${step}AgentMessages`)(function* (input) {
+        if (step === "withdraw" && input.offers.length > 1) {
+          yield* threads
+            .dispatch({
+              type: "boundary-offers.withdraw",
+              commandId: CommandId.make(
+                `tool-boundary-withdraw:${input.offers.map(({ id }) => id).join(":")}`,
+              ),
+              threadId: input.threadId,
+              targetRunId: input.runId,
+              offers: input.offers.map(({ id, queuedRunId }) => ({ id, queuedRunId })),
+            })
+            .pipe(
+              Effect.tapError((cause) =>
+                Effect.logWarning(
+                  "orchestration-v2.provider-continuation.agent-message-settlement-failed",
+                  { threadId: input.threadId, step, cause },
+                ),
+              ),
+            );
+          return;
+        }
         for (const offer of input.offers) {
           yield* threads
             .dispatch({
@@ -444,10 +477,9 @@ export const layer = Layer.effectDiscard(
                   },
                 ),
               ),
-              Effect.orDie,
             );
         }
-      });
+      }, Effect.orDie);
     if (requests.serveAgentMessages !== undefined) {
       yield* requests.serveAgentMessages({
         claim: claimAgentMessages,

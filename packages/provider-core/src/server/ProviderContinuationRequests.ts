@@ -45,6 +45,9 @@ export interface AgentMessageOffer {
   readonly attachments: OrchestrationV2ConversationMessage["attachments"];
   readonly createdBy: OrchestrationV2ConversationMessage["createdBy"];
   readonly creationSource: OrchestrationV2ConversationMessage["creationSource"];
+  readonly senderThreadId?: OrchestrationV2ConversationMessage["senderThreadId"];
+  readonly linkedSender?: OrchestrationV2ConversationMessage["linkedSender"];
+  readonly batchable?: true;
 }
 
 export interface AgentMessageOfferRef {

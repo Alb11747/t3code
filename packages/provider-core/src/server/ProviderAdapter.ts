@@ -604,6 +604,8 @@ export interface ProviderAdapterV2TurnInput {
   readonly rootNodeId: NodeId;
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly message: ProviderAdapterV2TurnMessage;
+  /** Codex and Claude resolve queued report text after preparation, immediately before submission. */
+  readonly preparePrompt?: () => Effect.Effect<string | undefined, ProviderAdapterProtocolError>;
   /** Leading characters of `message.text` that are inline handoff context, not the user's words. */
   readonly inlineContextLength?: number;
   readonly modelSelection: ModelSelection;

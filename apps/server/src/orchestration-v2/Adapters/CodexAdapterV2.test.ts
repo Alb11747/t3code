@@ -1624,9 +1624,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   (client) =>
                     ({
                       ...client,
-                      request: (method, params) =>
+                      request: (method, params, onEnqueued) =>
                         onRequest(method, params).pipe(
-                          Effect.andThen(client.request(method, params)),
+                          Effect.andThen(client.request(method, params, onEnqueued)),
                         ),
                       handleServerNotification: (method, handler) =>
                         client.handleServerNotification(method, (payload) =>
@@ -3058,90 +3058,117 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect("stops a turn Codex starts after its turn/start was abandoned", () =>
-    Effect.gen(function* () {
-      const nativeThreadId = "abandoned-start-thread";
-      const nativeTurnId = "abandoned-start-turn";
-      const prompt = "Run a command.";
-      const preamble = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt });
-      const transcript = makeCodexReplayTranscript({
-        scenario: "abandoned-turn-start",
-        entries: [
-          // Codex never answers turn/start, then starts the turn anyway.
-          ...preamble.slice(0, -2),
-          {
-            type: "emit_inbound",
-            label: "turn/started",
-            afterMs: 1000,
-            frame: {
-              method: "turn/started",
-              params: {
-                threadId: nativeThreadId,
-                turn: makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }),
+  it.effect.each(["awaiting reply", "preparing queued reports"] as const)(
+    "stops an abandoned Codex start (%s)",
+    (phase) =>
+      Effect.gen(function* () {
+        const nativeThreadId = "abandoned-start-thread";
+        const nativeTurnId = "abandoned-start-turn";
+        const prompt = "Run a command.";
+        const preamble = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt });
+        const transcript = makeCodexReplayTranscript({
+          scenario: "abandoned-turn-start",
+          entries: [
+            // Codex never answers turn/start, then starts the turn anyway.
+            ...preamble.slice(0, -2),
+            {
+              type: "emit_inbound",
+              label: "turn/started",
+              afterMs: 1000,
+              frame: {
+                method: "turn/started",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }),
+                },
               },
             },
-          },
-          {
-            type: "expect_outbound",
-            label: "turn/interrupt",
-            frame: {
-              id: 4,
-              method: "turn/interrupt",
-              params: { threadId: nativeThreadId, turnId: nativeTurnId },
+            {
+              type: "expect_outbound",
+              label: "turn/interrupt",
+              frame: {
+                id: 4,
+                method: "turn/interrupt",
+                params: { threadId: nativeThreadId, turnId: nativeTurnId },
+              },
             },
-          },
-          { type: "emit_inbound", label: "turn/interrupt", frame: { id: 4, result: {} } },
-        ],
-      });
-      const interruptSent = yield* Deferred.make<void>();
-      const startRequested = yield* Deferred.make<void>();
-      const harness = yield* makeCodexReplayHarness(
-        transcript,
-        () => Effect.void,
-        (method) =>
-          method === "turn/start"
-            ? Deferred.succeed(startRequested, undefined)
-            : method === "turn/interrupt"
-              ? Deferred.succeed(interruptSent, undefined).pipe(Effect.asVoid)
-              : Effect.void,
-      );
-      const starting = yield* harness.runtime
-        .startTurn(
-          makeCodexTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now: yield* DateTime.now,
-            attemptId: RunAttemptId.make("abandoned-start-attempt"),
-            text: prompt,
-          }),
-        )
-        .pipe(Effect.forkScoped);
-      yield* Deferred.await(startRequested);
-      yield* TestClock.adjust("0 millis");
-      yield* TestClock.adjust("500 millis");
-      // The provider request deadline gives up on the start.
-      yield* Fiber.interrupt(starting);
-      assert.isFalse(yield* Deferred.isDone(interruptSent));
-      yield* TestClock.adjust("500 millis");
-      yield* Deferred.await(interruptSent);
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
+            { type: "emit_inbound", label: "turn/interrupt", frame: { id: 4, result: {} } },
+          ],
+        });
+        const interruptSent = yield* Deferred.make<void>();
+        const startRequested = yield* Deferred.make<void>();
+        const preparing = yield* Deferred.make<void>();
+        const releasePrompt = yield* Deferred.make<void>();
+        const callerStopped = yield* Deferred.make<void>();
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          () => Effect.void,
+          (method) =>
+            method === "turn/start"
+              ? Deferred.succeed(startRequested, undefined)
+              : method === "turn/interrupt"
+                ? Deferred.succeed(interruptSent, undefined).pipe(Effect.asVoid)
+                : Effect.void,
+        );
+        const starting = yield* harness.runtime
+          .startTurn({
+            ...makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("abandoned-start-attempt"),
+              text: prompt,
+            }),
+            ...(phase === "preparing queued reports"
+              ? {
+                  preparePrompt: () =>
+                    Deferred.succeed(preparing, undefined).pipe(
+                      Effect.andThen(Deferred.await(releasePrompt)),
+                      Effect.as(prompt),
+                    ),
+                }
+              : {}),
+          })
+          .pipe(Effect.forkScoped);
+        if (phase === "preparing queued reports") {
+          yield* Deferred.await(preparing);
+          const interrupting = yield* Fiber.interrupt(starting).pipe(
+            Effect.andThen(Deferred.succeed(callerStopped, undefined)),
+            Effect.forkScoped,
+          );
+          yield* TestClock.adjust("0 millis");
+          assert.isFalse(yield* Deferred.isDone(callerStopped));
+          yield* Deferred.succeed(releasePrompt, undefined);
+          yield* Fiber.join(interrupting);
+          yield* Deferred.await(startRequested);
+          yield* TestClock.adjust("500 millis");
+        } else {
+          yield* Deferred.await(startRequested);
+          yield* TestClock.adjust("0 millis");
+          yield* TestClock.adjust("500 millis");
+          yield* Fiber.interrupt(starting);
+        }
+        assert.isFalse(yield* Deferred.isDone(interruptSent));
+        yield* TestClock.adjust("500 millis");
+        yield* Deferred.await(interruptSent);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
         ),
       ),
-    ),
   );
 
   it.effect("accepts a native turn/started before its withheld turn/start response", () =>
     Effect.gen(function* () {
       const nativeThreadId = "abandoned-registered-thread";
       const nativeTurnId = "abandoned-registered-turn";
-      const prompt = "Run a command.";
+      const prompt = "First report.\n\nSecond report.";
       const preamble = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt });
       const transcript = makeCodexReplayTranscript({
         scenario: "abandoned-registered-turn-start",
@@ -3153,6 +3180,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       });
       const interruptSent = yield* Deferred.make<void>();
       const turnRegistered = yield* Deferred.make<void>();
+      let lastRequest: string | undefined;
       const harness = yield* makeCodexReplayHarness(
         transcript,
         (event) =>
@@ -3160,21 +3188,28 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           event.providerTurn.nativeTurnRef?.nativeId === nativeTurnId
             ? Deferred.succeed(turnRegistered, undefined)
             : Effect.void,
-        (method) =>
-          method === "turn/interrupt"
+        (method) => {
+          lastRequest = method;
+          return method === "turn/interrupt"
             ? Deferred.succeed(interruptSent, undefined).pipe(Effect.asVoid)
-            : Effect.void,
+            : Effect.void;
+        },
       );
       const starting = yield* harness.runtime
-        .startTurn(
-          makeCodexTestTurnInput({
+        .startTurn({
+          ...makeCodexTestTurnInput({
             threadId: harness.threadId,
             providerThread: harness.providerThread,
             now: yield* DateTime.now,
             attemptId: RunAttemptId.make("abandoned-registered-attempt"),
-            text: prompt,
+            text: "First report.",
           }),
-        )
+          preparePrompt: () =>
+            Effect.sync(() => {
+              assert.equal(lastRequest, "config/read");
+              return prompt;
+            }),
+        })
         .pipe(Effect.forkScoped);
       yield* Deferred.await(turnRegistered);
       assert.isFalse(yield* Deferred.isDone(interruptSent));

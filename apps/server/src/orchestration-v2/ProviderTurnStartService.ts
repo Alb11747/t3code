@@ -66,6 +66,8 @@ import { isProviderCommand, outputInstructions } from "./runOutput.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { prepareQueuedAgentReportDelivery } from "./QueuedAgentReportDelivery.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { unsentManualContinuationSource } from "@t3tools/shared/orchestrationV2ManualContinuation";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
@@ -272,6 +274,7 @@ export const layer: Layer.Layer<
   | ProviderSessionManager.ProviderSessionManagerV2
   | RunExecutionService.RunExecutionServiceV2
   | RuntimePolicy.RuntimePolicyV2
+  | ThreadCommandExecutor.ThreadCommandExecutor
   | TurnItemPositionStore.TurnItemPositionStoreV2
   | TaskFolders.TaskFolders
 > = Layer.effect(
@@ -286,6 +289,7 @@ export const layer: Layer.Layer<
     const projects = yield* ProjectService.ProjectService;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+    const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const threadAccountRouting = yield* ThreadAccountRouting.ThreadAccountRouting;
@@ -466,7 +470,15 @@ export const layer: Layer.Layer<
         };
         const eventPayloads = [
           { type: "turn-item.updated", payload: item },
-          { type: "run.updated", payload: { ...run, status, ...started, completedAt: now } },
+          {
+            type: "run.updated",
+            payload: {
+              ...run,
+              status,
+              ...started,
+              completedAt: now,
+            },
+          },
           {
             type: "run-attempt.updated",
             payload: { ...attempt, status, ...started, completedAt: now },
@@ -662,6 +674,22 @@ export const layer: Layer.Layer<
           ? projection.messages.find((source) => source.id === resumeSource.userMessageId)
           : undefined;
       const providerMessage = unsentResumeMessage ?? message;
+      const reportMessages = (unsentResumeMessage === undefined ? run : resumeSource)
+        ?.queuedReportMessageIds;
+      let batchText: string | undefined;
+      if (reportMessages !== undefined && attempt.recovery === undefined) {
+        const texts = [withMessageSenderNote(providerMessage, providerMessage.text)];
+        for (const id of reportMessages) {
+          const report = projection.messages.find((message) => message.id === id);
+          if (report === undefined)
+            return yield* new ProviderTurnStartError({
+              runId,
+              cause: `Queued report ${id} was not found.`,
+            });
+          texts.push(withMessageSenderNote(report, report.text));
+        }
+        batchText = texts.join("\n\n");
+      }
       const settleStartFailure = Effect.fn("ProviderTurnStartService.settleStartFailure")(
         function* (failed: {
           readonly signal: string;
@@ -693,7 +721,7 @@ export const layer: Layer.Layer<
       );
       if (
         attempt.recovery === undefined &&
-        expandAssistantCitationsForProvider(providerMessage.text).length >
+        expandAssistantCitationsForProvider(batchText ?? providerMessage.text).length >
           PROVIDER_SEND_TURN_MAX_INPUT_CHARS
       ) {
         yield* settleRunBeforeStart({
@@ -1002,16 +1030,16 @@ export const layer: Layer.Layer<
       });
       let effectiveHandoffs = handoffs;
       let resumeFellBack = false;
+      const projectedText = projectComposerContextForProvider({
+        text: batchText ?? providerMessage.text,
+        records: providerMessage.context?.records ?? [],
+      });
       const messageText =
         attempt.recovery === "drop_thinking"
           ? "Continue from where you stopped."
-          : withMessageSenderNote(
-              providerMessage,
-              projectComposerContextForProvider({
-                text: providerMessage.text,
-                records: providerMessage.context?.records ?? [],
-              }),
-            );
+          : batchText === undefined
+            ? withMessageSenderNote(providerMessage, projectedText)
+            : projectedText;
       // Native goal commands go verbatim; handoff history waits a turn.
       const goalDriver =
         session.driver === "codex" ||
@@ -2242,6 +2270,35 @@ export const layer: Layer.Layer<
         ...(message.idleCompaction === "beforeCacheExpires" ? { idleCompaction: true } : {}),
         ...(dropMismatchedThinking ? { dropMismatchedThinking } : {}),
         shouldStartProviderTurn: runControls.shouldStartProviderTurn,
+        ...(runningRun.batchQueuedReports === true &&
+        (session.driver === "codex" || session.driver === "claudeAgent") &&
+        deliverySession === session &&
+        attempt.recovery === undefined &&
+        unsentResumeMessage === undefined
+          ? {
+              prepareProviderInput: () =>
+                threadCommands.withLock(
+                  run.threadId,
+                  Effect.gen(function* () {
+                    if (
+                      !(yield* runControls.shouldStartProviderTurn()) ||
+                      (yield* runControls.hasUnpairedRunInterruptRequest())
+                    )
+                      return false as const;
+                    const current = yield* projectionStore.getRun(run.threadId, run.id);
+                    if (current === undefined) return false as const;
+                    const prepared = yield* prepareQueuedAgentReportDelivery({
+                      store: projectionStore,
+                      sink: eventSink,
+                      ids: idAllocator,
+                      run: current,
+                      message,
+                    });
+                    return prepared === undefined ? (true as const) : (prepared ?? false);
+                  }),
+                ),
+            }
+          : {}),
         shouldFinalizeRun: runControls.shouldFinalizeRun,
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
         loadRunInterruptReason: runControls.loadRunInterruptReason,

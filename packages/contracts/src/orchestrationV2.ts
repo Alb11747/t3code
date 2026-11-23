@@ -833,6 +833,10 @@ export const OrchestrationV2Run = Schema.Struct({
   modelSelection: ModelSelection,
   providerThreadId: Schema.NullOr(ProviderThreadId),
   userMessageId: MessageId,
+  /** Queue admission allows eligible reports to join when the provider is ready. */
+  batchQueuedReports: Schema.optional(Schema.Literal(true)),
+  /** Original messages joined to this provider input, in delivery order. */
+  queuedReportMessageIds: Schema.optional(Schema.Array(MessageId)),
   rootNodeId: Schema.NullOr(NodeId),
   activeAttemptId: Schema.NullOr(RunAttemptId),
   status: OrchestrationV2RunStatus,
@@ -4112,6 +4116,13 @@ const OrchestrationV2InternalCommand = Schema.Union([
     threadId: ThreadId,
     requestId: CommandId,
     message: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("boundary-offers.withdraw"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    targetRunId: RunId,
+    offers: Schema.Array(Schema.Struct({ id: TrimmedNonEmptyString, queuedRunId: RunId })),
   }),
   /** Delivering the answer to request `requestId` failed on its last attempt. */
   Schema.Struct({
