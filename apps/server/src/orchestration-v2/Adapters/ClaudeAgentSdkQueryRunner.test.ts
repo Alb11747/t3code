@@ -232,6 +232,60 @@ const resumedMcpQueryInput = {
   },
 } satisfies ClaudeAgentSdkQueryOpenInput;
 
+describe.skipIf(HostProcess.Platform.defaultValue() !== "win32")("Windows Claude launchers", () => {
+  it.live("ends the launcher and its CLI before closing the query", () =>
+    Effect.gen(function* () {
+      const childReady = Promise.withResolvers<number>();
+      const launcherExit = Promise.withResolvers<void>();
+      const signal = yield* Effect.abortSignal;
+      const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(({ options }) => {
+        const launch = options?.spawnClaudeCodeProcess;
+        assert.isDefined(launch);
+        const child = launch({
+          command: "powershell.exe",
+          args: [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "& $Env:T3_FIXTURE_NODE -e $Env:T3_FIXTURE_CLI",
+          ],
+          env: {
+            ...process.env,
+            T3_FIXTURE_NODE: process.execPath,
+            T3_FIXTURE_CLI: "console.log(process.pid); setTimeout(() => {}, 20000)",
+          },
+          signal,
+        });
+        child.stdout.once("data", (data) => childReady.resolve(Number(String(data).trim())));
+        child.once("exit", () => launcherExit.resolve());
+        return {
+          close: () => {
+            if (child.exitCode === null && child.signalCode == null) child.kill("SIGKILL");
+          },
+        } as unknown as ClaudeSdk.Query;
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(() => querySpy.mockRestore()));
+      const runner = yield* ClaudeAgentSdkQueryRunner;
+      const { mcpServers: _mcpServers, ...options } = resumedMcpQueryInput.options;
+      const session = yield* runner.open({ ...resumedMcpQueryInput, options });
+      const cliPid = yield* Effect.promise(() => childReady.promise).pipe(
+        Effect.timeout("5 seconds"),
+      );
+      assert.isTrue(Number.isSafeInteger(cliPid) && cliPid > 1);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          try {
+            process.kill(cliPid, "SIGKILL");
+          } catch {}
+        }),
+      );
+      yield* session.close;
+      yield* Effect.promise(() => launcherExit.promise).pipe(Effect.timeout("5 seconds"));
+      assert.throws(() => process.kill(cliPid, 0), /ESRCH/);
+    }).pipe(Effect.provide(realQueryRunner)),
+  );
+});
+
 it.effect("resumes a session whose history exceeds the status-probe output limit", () =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;

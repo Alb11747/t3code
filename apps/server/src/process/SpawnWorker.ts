@@ -184,6 +184,7 @@ class WorkerChild
   readonly #writes = new Map<number, Array<(error?: Error | null) => void>>();
   readonly #finals = new Map<number, (error?: Error | null) => void>();
   readonly #paused = new Set<number>();
+  #treeTermination: Promise<void> | undefined;
 
   readonly worker: SpawnWorker;
   readonly id: number;
@@ -270,6 +271,29 @@ class WorkerChild
     this.killed = true;
     this.worker.post({ type: "kill", id: this.id, signal });
     return true;
+  }
+
+  terminateWindowsTree(): Promise<void> {
+    return (this.#treeTermination ??= this.#terminateWindowsTree());
+  }
+
+  async #terminateWindowsTree(): Promise<void> {
+    if (!this.spawned && !this.exited) {
+      await new Promise<void>((resolve) => {
+        const ready = () => {
+          this.off("spawn", ready);
+          this.off("error", ready);
+          resolve();
+        };
+        this.once("spawn", ready);
+        this.once("error", ready);
+      });
+    }
+    if (this.exited || this.pid === undefined) return;
+    await this.worker.pool.terminateWindowsTree(this.pid);
+    if (!this.exited) {
+      await new Promise<void>((resolve) => this.once("exit", () => resolve()));
+    }
   }
 
   ref(): void {
@@ -495,20 +519,30 @@ class SpawnWorkerPool {
       done();
       return;
     }
-    let settled = false;
-    const finish = (killed: boolean) => {
-      if (settled) return;
-      settled = true;
-      // As Effect's own kill does when taskkill fails, end at least the direct child.
-      if (!killed) killPid();
+    void this.terminateWindowsTree(pid).then(done, () => {
+      // The worker has died. If tree termination failed, still stop the root.
+      killPid();
       done();
-    };
-    this.spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
-      stdio: "ignore",
-      windowsHide: true,
-    })
-      .on("error", () => finish(false))
-      .on("exit", (code) => finish(code === 0));
+    });
+  }
+
+  terminateWindowsTree(pid: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      })
+        .once("error", reject)
+        .once("exit", (code) =>
+          code === 0
+            ? resolve()
+            : reject(
+                new Error(
+                  `Could not terminate Windows process tree ${pid} (taskkill exit ${code})`,
+                ),
+              ),
+        );
+    });
   }
 
   #add(): SpawnWorker {

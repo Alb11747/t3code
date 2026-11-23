@@ -1733,6 +1733,19 @@ export const layerQueryRunner: Layer.Layer<
         stderrTail = (stderrTail + text).slice(-CLAUDE_STDERR_TAIL_LENGTH);
       };
       let refreshDescendants: Effect.Effect<void> = Effect.void;
+      let windowsChild: ReturnType<typeof SpawnWorker.spawnPiped> | undefined;
+      const terminateWindowsChild = Effect.tryPromise({
+        try: () => windowsChild?.terminateWindowsTree() ?? Promise.resolve(),
+        catch: (cause) => queryRunnerError(cause, "close"),
+      }).pipe(
+        Effect.tapError(() =>
+          Effect.logWarning("orchestration-v2.claude-process-tree-close-failed", {
+            threadId: input.threadId,
+            providerSessionId: input.providerSessionId,
+            pid: windowsChild?.pid,
+          }),
+        ),
+      );
       const spawnProcess =
         options.spawnClaudeCodeProcess ??
         ((spawnOptions: ClaudeSpawnOptions) => {
@@ -1765,6 +1778,7 @@ export const layerQueryRunner: Layer.Layer<
             signal: spawnOptions.signal,
             windowsHide: true,
           });
+          windowsChild = child;
           child.stderr.setEncoding("utf8").on("data", (chunk: string) => options.stderr?.(chunk));
           return child;
         });
@@ -1856,15 +1870,19 @@ export const layerQueryRunner: Layer.Layer<
                 Queue.shutdown(promptQueue).pipe(
                   // SDK disposal can return before process exit; await the owned child's exit before retrying.
                   Effect.andThen(
-                    Effect.tryPromise({
-                      try: async () => {
-                        if (spawnedProcess !== undefined && !processExited) {
-                          spawnedProcess.kill("SIGKILL");
-                        }
-                        await processExit;
-                      },
-                      catch: (cause) => queryRunnerError(cause, "close"),
-                    }).pipe(Effect.timeout("10 seconds")),
+                    Effect.suspend(() =>
+                      windowsChild !== undefined
+                        ? terminateWindowsChild
+                        : Effect.tryPromise({
+                            try: async () => {
+                              if (spawnedProcess !== undefined && !processExited) {
+                                spawnedProcess.kill("SIGKILL");
+                              }
+                              await processExit;
+                            },
+                            catch: (cause) => queryRunnerError(cause, "close"),
+                          }),
+                    ).pipe(Effect.timeout("10 seconds")),
                   ),
                   Effect.ensuring(
                     Effect.tryPromise({
@@ -2169,6 +2187,8 @@ export const layerQueryRunner: Layer.Layer<
         // A job started since the last poll is recorded before the CLI is told to exit.
         close: fencePrompts.pipe(
           Effect.andThen(Effect.suspend(() => (processExited ? Effect.void : refreshDescendants))),
+          // Close the tree before the SDK can close its pipes or kill only a launcher PID.
+          Effect.andThen(terminateWindowsChild),
           Effect.andThen(Queue.shutdown(promptQueue)),
           Effect.andThen(closeClaudeQuery(queryRuntime)),
           Effect.tap(() =>
