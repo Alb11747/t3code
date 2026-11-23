@@ -44,6 +44,10 @@ the fork, that request also authorizes a fork fix. Fix it yourself, delegate
 the fix to a subagent, or start a new top-level T3 thread to fix it. Give
 the agent or thread the reproduction and the evidence that the bug is fork-only.
 
+## Upstream bugs are reported by default
+
+Report every real upstream bug upstream, not only the ones that block you: a bug a fork change fixes, or one you find while working, once it reproduces on fetched `upstream/main` (_Whose is it?_ below). Follow steps 1 and 3 of _Upstream's: unblock the fork, then report it_: search first, then open the issue, plus a PR when the fix applies to upstream without fork-only code. This needs no request. A fork-only bug gets no upstream report; say so in its `CHANGES.md` entry. Public text names no local paths, accounts, thread ids or private projects.
+
 ## When something blocks your work
 
 A failing check, a stuck sync or a bug you hit along the way is part of your task. Decide whose it is, act, and report what you did. "Cause unknown" is not a stopping point.
