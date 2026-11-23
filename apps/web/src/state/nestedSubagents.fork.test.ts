@@ -1,7 +1,7 @@
 import type { OrchestrationV2ThreadShell } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { deriveNestedSubagentTree } from "./nestedSubagents.fork";
+import { deriveNestedSubagentTree, descendantRunStatus } from "./nestedSubagents.fork";
 
 const shell = (
   id: string,
@@ -75,6 +75,9 @@ describe("deriveNestedSubagentTree", () => {
         "backgrounded@1:running",
       ],
     });
+    // A direct subagent whose own turn ended reads as running while its subagents run.
+    expect(descendantRunStatus(tree.rowsByChild.get("done-child" as typeof root))).toBe("running");
+    expect(descendantRunStatus(tree.rowsByChild.get("idle-child" as typeof root))).toBeUndefined();
   });
 
   it("keeps the root out of its own tree when lineage loops", () => {

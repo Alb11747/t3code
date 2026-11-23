@@ -96,6 +96,17 @@ export function deriveNestedSubagentTree(
   return rowsByChild.size === 0 ? EMPTY_TREE : { runningCount, rowsByChild };
 }
 
+/**
+ * How a direct subagent reads while its own subagents work, even after its own turn ended:
+ * running while any of them runs, otherwise stalled with them. Undefined when none work.
+ */
+export function descendantRunStatus(
+  rows: ReadonlyArray<NestedSubagentRow> | undefined,
+): "running" | "stalled" | undefined {
+  if (rows === undefined) return undefined;
+  return rows.some((row) => row.status === "running") ? "running" : "stalled";
+}
+
 const sameRow = (left: NestedSubagentRow, right: NestedSubagentRow) =>
   left.threadId === right.threadId &&
   left.title === right.title &&

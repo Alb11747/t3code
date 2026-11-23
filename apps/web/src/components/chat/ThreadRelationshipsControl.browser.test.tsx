@@ -41,7 +41,8 @@ vi.mock(import("../../state/entities"), () => ({
   useHiddenThreadKeys: (() => new Set()) as never,
   useAnyEnvironmentHiding: (() => false) as never,
 }));
-vi.mock(import("../../state/nestedSubagents.fork"), () => ({
+vi.mock(import("../../state/nestedSubagents.fork"), async (original) => ({
+  ...(await original()),
   useNestedSubagentTree: (() => ({ runningCount: 0, rowsByChild: new Map() })) as never,
 }));
 vi.mock(import("../../state/environments"), () => ({

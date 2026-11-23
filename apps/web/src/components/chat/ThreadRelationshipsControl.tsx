@@ -74,7 +74,7 @@ import {
   useAnyEnvironmentHiding,
 } from "../../state/entities";
 import { useEnvironment, useEnvironmentProviders } from "../../state/environments";
-import { useNestedSubagentTree } from "../../state/nestedSubagents.fork";
+import { descendantRunStatus, useNestedSubagentTree } from "../../state/nestedSubagents.fork";
 import { serverEnvironment } from "../../state/server";
 import {
   applyProviderInstanceSettings,
@@ -588,10 +588,18 @@ export function ThreadRelationshipsPanel(props: {
           ? subagentsByThreadId.get(row.threadId)
           : undefined;
       const workflowGroup = agent === undefined ? undefined : workflowGroupsById.get(agent.id);
-      const status = workflowGroup?.workflow.status ?? row.edge.status;
+      const ownStatus = workflowGroup?.workflow.status ?? row.edge.status;
+      const descendantStatus =
+        row.edge.kind === "subagent" &&
+        !isParentThreadRelationship(row.edge, props.threadId) &&
+        isFinishedAgentStatus(ownStatus)
+          ? descendantRunStatus(nestedTree.rowsByChild.get(row.threadId))
+          : undefined;
+      const status = descendantStatus ?? ownStatus;
       // Held children, and children waiting on a held subagent, read as stalled, not running.
       const stalled =
         status === "running" &&
+        descendantStatus === undefined &&
         !isParentThreadRelationship(row.edge, props.threadId) &&
         (graph.nodes.get(row.threadId)?.thread?.keepWarmStalled === true ||
           stalledSubagentIds?.includes(row.threadId) === true);
@@ -637,10 +645,7 @@ export function ThreadRelationshipsPanel(props: {
     if (!isParent && graph.nodes.get(threadId)?.thread?.lineage.sideChat === true)
       return "sideChats";
     if (edge.kind !== "subagent" || isParent) return "related";
-    // A finished subagent whose own subagents still run stays in view with them.
-    return isFinishedAgentStatus(edge.status) && !nestedTree.rowsByChild.has(threadId)
-      ? "previous"
-      : "active";
+    return isFinishedAgentStatus(edge.status) ? "previous" : "active";
   });
   const { remoteActive = [], remotePrevious = [] } = groupBy(
     (projection?.subagents ?? [])
@@ -882,7 +887,7 @@ export function ThreadRelationshipsPanel(props: {
         providers={providers}
         driver={providerDriver}
         elapsed={<AgentElapsed agent={agent} />}
-        status={agent.status}
+        status={rowStatus === "running" || stalled ? "running" : agent.status}
         stalled={stalled}
         result={agent.result}
         progress={agent.progress}
