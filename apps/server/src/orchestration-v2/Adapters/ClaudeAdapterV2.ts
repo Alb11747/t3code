@@ -108,6 +108,7 @@ import {
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as ProviderProcesses from "../../process/providerProcesses.ts";
 import * as SpawnWorker from "../../process/SpawnWorker.ts";
+import { ResourceMonitorBinary } from "../../resourceTelemetry/ResourceMonitorBinary.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
 import { compareSemverVersions } from "@t3tools/shared/semver";
@@ -1580,6 +1581,8 @@ export const layerQueryRunner: Layer.Layer<
     const providerProcesses = yield* ProviderProcesses.ProviderProcesses;
     const platform = yield* HostProcess.Platform;
     const runFork = Effect.runForkWith(yield* Effect.context<never>());
+    const resourceMonitor = yield* Effect.serviceOption(ResourceMonitorBinary);
+    const windowsOwners = new Map<ThreadId, Promise<void>>();
     const hostEnvironment = yield* HostProcess.Environment;
     const portDiscovery = yield* PortScanner.PortDiscovery;
     const processRunner = yield* ProcessRunner.make();
@@ -1604,6 +1607,31 @@ export const layerQueryRunner: Layer.Layer<
 
     // The open span below is the tracing boundary for both attempts.
     const openQuery = Effect.fnUntraced(function* (input: ClaudeAgentSdkQueryOpenInput) {
+      const managesWindowsProcess =
+        platform === "win32" && input.options.spawnClaudeCodeProcess === undefined;
+      const windowsJobExecutable =
+        managesWindowsProcess && Option.isSome(resourceMonitor)
+          ? yield* resourceMonitor.value.resolve.pipe(
+              Effect.mapError((cause) => queryRunnerError(cause, "query")),
+            )
+          : undefined;
+      if (managesWindowsProcess) {
+        const previous = windowsOwners.get(input.threadId);
+        if (previous !== undefined) {
+          yield* Effect.promise(() => previous).pipe(
+            Effect.timeoutOrElse({
+              duration: "10 seconds",
+              orElse: () =>
+                Effect.fail(
+                  queryRunnerError(
+                    new Error("The previous Claude process is still running."),
+                    "query",
+                  ),
+                ),
+            }),
+          );
+        }
+      }
       const protocolLogger = makeClaudeAgentSdkProtocolLogger({
         nativeEventLogger,
         threadId: input.threadId,
@@ -1734,10 +1762,19 @@ export const layerQueryRunner: Layer.Layer<
       };
       let refreshDescendants: Effect.Effect<void> = Effect.void;
       let windowsChild: ReturnType<typeof SpawnWorker.spawnPiped> | undefined;
+      let windowsExit: Promise<void> | undefined;
       const terminateWindowsChild = Effect.tryPromise({
-        try: () => windowsChild?.terminateWindowsTree() ?? Promise.resolve(),
+        try: async () => {
+          if (windowsChild?.exited === false) windowsChild.kill("SIGKILL");
+          await windowsExit;
+        },
         catch: (cause) => queryRunnerError(cause, "close"),
       }).pipe(
+        Effect.timeoutOrElse({
+          duration: "10 seconds",
+          orElse: () =>
+            Effect.fail(queryRunnerError(new Error("The Claude process did not exit."), "close")),
+        }),
         Effect.tapError(() =>
           Effect.logWarning("orchestration-v2.claude-process-tree-close-failed", {
             threadId: input.threadId,
@@ -1772,13 +1809,36 @@ export const layerQueryRunner: Layer.Layer<
             }
             return child;
           }
-          const child = SpawnWorker.spawnPiped(spawnOptions.command, spawnOptions.args, {
-            cwd: spawnOptions.cwd,
-            env: spawnOptions.env,
-            signal: spawnOptions.signal,
-            windowsHide: true,
-          });
+          if (windowsJobExecutable === undefined) {
+            throw new Error("The bundled Windows process helper is required to launch Claude.");
+          }
+          if (windowsOwners.has(input.threadId)) {
+            throw new Error("The previous Claude process is still running.");
+          }
+          const child = SpawnWorker.spawnPiped(
+            windowsJobExecutable,
+            ["--run-in-job", spawnOptions.command, ...spawnOptions.args],
+            {
+              cwd: spawnOptions.cwd,
+              env: spawnOptions.env,
+              signal: spawnOptions.signal,
+              windowsHide: true,
+            },
+          );
           windowsChild = child;
+          const exited = Promise.withResolvers<void>();
+          windowsExit = exited.promise;
+          windowsOwners.set(input.threadId, exited.promise);
+          const release = () => {
+            if (windowsOwners.get(input.threadId) === exited.promise) {
+              windowsOwners.delete(input.threadId);
+            }
+            exited.resolve();
+          };
+          child.once("exit", release);
+          child.on("error", () => {
+            if (child.exited) release();
+          });
           child.stderr.setEncoding("utf8").on("data", (chunk: string) => options.stderr?.(chunk));
           return child;
         });
@@ -1811,6 +1871,7 @@ export const layerQueryRunner: Layer.Layer<
             ),
           catch: (cause) => queryRunnerError(cause, "query"),
         }).pipe(
+          Effect.onError(() => terminateWindowsChild.pipe(Effect.orDie)),
           Effect.tap((queryRuntime) =>
             restore(
               Effect.gen(function* () {
@@ -1867,13 +1928,16 @@ export const layerQueryRunner: Layer.Layer<
               }),
             ).pipe(
               Effect.onError(() =>
-                Queue.shutdown(promptQueue).pipe(
-                  // SDK disposal can return before process exit; await the owned child's exit before retrying.
-                  Effect.andThen(
-                    Effect.suspend(() =>
-                      windowsChild !== undefined
-                        ? terminateWindowsChild
-                        : Effect.tryPromise({
+                // Keep Windows launch ownership until the job ends, before the queue can send EOF.
+                Effect.suspend(() =>
+                  windowsChild !== undefined
+                    ? fencePrompts.pipe(
+                        Effect.andThen(terminateWindowsChild),
+                        Effect.andThen(Queue.shutdown(promptQueue)),
+                      )
+                    : Queue.shutdown(promptQueue).pipe(
+                        Effect.andThen(
+                          Effect.tryPromise({
                             try: async () => {
                               if (spawnedProcess !== undefined && !processExited) {
                                 spawnedProcess.kill("SIGKILL");
@@ -1881,9 +1945,10 @@ export const layerQueryRunner: Layer.Layer<
                               await processExit;
                             },
                             catch: (cause) => queryRunnerError(cause, "close"),
-                          }),
-                    ).pipe(Effect.timeout("10 seconds")),
-                  ),
+                          }).pipe(Effect.timeout("10 seconds")),
+                        ),
+                      ),
+                ).pipe(
                   Effect.ensuring(
                     Effect.tryPromise({
                       try: () => queryRuntime[Symbol.asyncDispose](),
@@ -2187,7 +2252,7 @@ export const layerQueryRunner: Layer.Layer<
         // A job started since the last poll is recorded before the CLI is told to exit.
         close: fencePrompts.pipe(
           Effect.andThen(Effect.suspend(() => (processExited ? Effect.void : refreshDescendants))),
-          // Close the tree before the SDK can close its pipes or kill only a launcher PID.
+          // End the Windows job before explicitly closing the SDK connection.
           Effect.andThen(terminateWindowsChild),
           Effect.andThen(Queue.shutdown(promptQueue)),
           Effect.andThen(closeClaudeQuery(queryRuntime)),

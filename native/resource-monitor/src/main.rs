@@ -8,6 +8,9 @@ use sysinfo::{
     MINIMUM_CPU_UPDATE_INTERVAL, Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind,
 };
 
+#[cfg(windows)]
+mod windows_job;
+
 const PROTOCOL_VERSION: u32 = 3;
 const MIN_SAMPLE_INTERVAL_MS: u64 = 250;
 const MAX_SAMPLE_INTERVAL_MS: u64 = 60_000;
@@ -827,6 +830,16 @@ fn write_history(
 }
 
 fn main() -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        let mut args = std::env::args_os().skip(1);
+        if args
+            .next()
+            .is_some_and(|argument| argument == "--run-in-job")
+        {
+            return windows_job::run(args);
+        }
+    }
     let mut writer = BufWriter::new(io::stdout().lock());
     write_event(
         &mut writer,
