@@ -22,6 +22,7 @@ import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts"
 import * as ServerSettings from "../serverSettings.ts";
 import {
   compactOnceApplies,
+  EARLY_IDLE_COMPACTION_MESSAGE_PREFIX,
   idleCompactionCompacts,
   idleCompactionScope,
   idleCompactionWindow,
@@ -29,6 +30,8 @@ import {
 } from "./IdleCompaction.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+
+const EARLY_IDLE_MS = 5 * 60_000;
 
 function canAddIdleWake(event: OrchestrationV2DomainEvent): boolean {
   switch (event.type) {
@@ -59,6 +62,7 @@ export const make = Effect.gen(function* () {
     // Without a run, takes the latest completed run.
     function* (threadId: ThreadId, completedRunId: RunId | undefined) {
       let runId = completedRunId;
+      let checkedEarlyRunId: RunId | undefined;
       // Loops after the wait or a retarget: the thread may have moved on.
       while (true) {
         const current = yield* settings.getSettings;
@@ -114,12 +118,7 @@ export const make = Effect.gen(function* () {
             contextTransferStatuses: ["pending"],
           },
         );
-        const scope = scopeOf(
-          records.thread,
-          compactOnceApplies(records.thread.compactOnceRequestedAt, records.runs),
-        );
         if (
-          scope === null ||
           !resolveProjectProviderInstanceEnabled(
             current,
             records.thread.projectId,
@@ -134,7 +133,7 @@ export const make = Effect.gen(function* () {
             undefined,
           );
         // A late update for an earlier run replaced the latest run's timer, so take it over.
-        if (latestRun?.status !== "completed") return;
+        if (latestRun?.status !== "completed" || latestRun.completedAt === null) return;
         if (latestRun.id !== runId) {
           runId = latestRun.id;
           continue;
@@ -145,13 +144,41 @@ export const make = Effect.gen(function* () {
           (task) =>
             task.threadId === threadId && task.enabled && task.blockedByPolicy === undefined,
         );
-        const window = idleCompactionWindow(records, nowMs, {
-          compactSnoozed: compactSnoozedThreadsOf(current),
-          scheduledWakesMs: wakes.flatMap((task) =>
-            task.nextRunAt === null ? [] : [Date.parse(task.nextRunAt)],
-          ),
-        });
+        const earlyAttempt = records.messages.some(
+          (message) =>
+            message.id === latestRun.userMessageId &&
+            message.id.startsWith(EARLY_IDLE_COMPACTION_MESSAGE_PREFIX),
+        );
+        const compaction = earlyAttempt
+          ? yield* projections.getThreadRecords(threadId, ["turnItems"], {
+              turnItemRunIds: [latestRun.id],
+              turnItemTypes: ["compaction"],
+              turnItemStatuses: ["cancelled"],
+            })
+          : null;
+        const window = idleCompactionWindow(
+          compaction === null
+            ? records
+            : { ...records, turnItems: [...records.turnItems, ...compaction.turnItems] },
+          nowMs,
+          {
+            compactSnoozed: compactSnoozedThreadsOf(current),
+            scheduledWakesMs: wakes.flatMap((task) =>
+              task.nextRunAt === null ? [] : [Date.parse(task.nextRunAt)],
+            ),
+          },
+        );
         if (window === null || window.runId !== runId) return;
+        const scope = scopeOf(
+          records.thread,
+          compactOnceApplies(
+            records.thread.compactOnceRequestedAt,
+            window.retryingEarlySkip
+              ? records.runs.filter((run) => run.id !== runId)
+              : records.runs,
+          ),
+        );
+        if (scope === null) return;
         const compacts = yield* idleCompactionCompacts(
           scope,
           idleCompactionTiersOf(current),
@@ -163,15 +190,45 @@ export const make = Effect.gen(function* () {
           projections.hasIdleCompactionWait(threadId),
         );
         if (!compacts) return;
+        let expedite = false;
         if (nowMs < window.startMs) {
-          yield* Effect.sleep(Duration.millis(window.startMs - nowMs));
-          continue;
+          const session = records.providerThreads.find(
+            (candidate) => candidate.id === records.thread.activeProviderThreadId,
+          )?.nativeThreadRef;
+          const earlyAt = DateTime.toEpochMillis(latestRun.completedAt) + EARLY_IDLE_MS;
+          if (
+            session?.strength === "strong" &&
+            session.nativeId !== null &&
+            !window.retryingEarlySkip &&
+            earlyAt < window.startMs &&
+            checkedEarlyRunId !== runId &&
+            orchestrator.shouldExpediteIdleCompaction !== undefined
+          ) {
+            if (nowMs < earlyAt) {
+              yield* Effect.sleep(Duration.millis(earlyAt - nowMs));
+              continue;
+            }
+            checkedEarlyRunId = runId;
+            expedite = yield* orchestrator.shouldExpediteIdleCompaction(
+              records.thread,
+              session.nativeId,
+              DateTime.formatIso(DateTime.makeUnsafe(window.startMs)),
+            );
+          }
+          if (!expedite) {
+            yield* Effect.sleep(Duration.millis(window.startMs - nowMs));
+            continue;
+          }
         }
         yield* orchestrator.dispatch({
           type: "message.dispatch",
           // One compaction per completed run, even across duplicate events.
-          commandId: CommandId.make(`server:idle-compact:${threadId}:${runId}`),
-          messageId: MessageId.make(`idle-compact:${threadId}:${runId}`),
+          commandId: CommandId.make(
+            `server:${expedite ? "idle-compact-early" : "idle-compact"}:${threadId}:${runId}`,
+          ),
+          messageId: MessageId.make(
+            `${expedite ? EARLY_IDLE_COMPACTION_MESSAGE_PREFIX : "idle-compact:"}${threadId}:${runId}`,
+          ),
           threadId,
           text: IDLE_COMPACTION_TEXT,
           attachments: [],

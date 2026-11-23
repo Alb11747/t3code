@@ -40,6 +40,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 
 import {
   compactOnceApplies,
+  EARLY_IDLE_COMPACTION_MESSAGE_PREFIX,
   idleCompactionScope,
   idleCompactionWindow,
   type IdleCompactionPolicy,
@@ -662,10 +663,59 @@ describe("IdleCompactionService", () => {
       ...records().thread,
       snoozedUntil: at(90 * MINUTE_MS),
     },
+    early?: {
+      readonly urgent: boolean;
+      readonly advanceMs: number;
+      readonly previousAttempt?: "skipped" | "completed";
+    },
   ) =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW_MS);
-      const base = records({ cacheExpiresInMs: 10 * MINUTE_MS });
+      const base = records({ cacheExpiresInMs: (early === undefined ? 10 : 60) * MINUTE_MS });
+      if (early !== undefined) {
+        base.providerThreads = base.providerThreads.map((providerThread) => ({
+          ...providerThread,
+          nativeThreadRef: {
+            driver: providerThread.driver,
+            nativeId: "native-idle-thread",
+            strength: "strong",
+          },
+        }));
+      }
+      if (early?.previousAttempt !== undefined) {
+        const messageId = MessageId.make(EARLY_IDLE_COMPACTION_MESSAGE_PREFIX + "prior-run");
+        base.runs = [{ ...base.runs[0]!, userMessageId: messageId }];
+        base.messages = [
+          {
+            ...base.messages[0]!,
+            id: messageId,
+            text: "/compact",
+            idleCompaction: "beforeCacheExpires",
+          },
+        ];
+        base.turnItems = [
+          {
+            id: TurnItemId.make("previous-early-compaction"),
+            threadId,
+            runId,
+            nodeId: null,
+            providerThreadId,
+            providerTurnId: null,
+            parentItemId: null,
+            nativeItemRef: null,
+            ordinal: 1,
+            type: "compaction",
+            driver: ProviderDriverKind.make("claudeAgent"),
+            title: null,
+            startedAt: at(),
+            completedAt: at(),
+            updatedAt: at(),
+            ...(early.previousAttempt === "skipped"
+              ? { status: "cancelled", skipped: true }
+              : { status: "completed" }),
+          },
+        ];
+      }
       const data: OrchestrationV2ThreadProjection = {
         ...base,
         thread,
@@ -685,6 +735,7 @@ describe("IdleCompactionService", () => {
         scheduledTasks,
         Layer.mock(Orchestrator.OrchestratorV2)({
           streamDomainEvents: events,
+          shouldExpediteIdleCompaction: () => Effect.succeed(early?.urgent ?? false),
           dispatch: (command) =>
             Effect.sync(() => {
               dispatched.push(command.commandId);
@@ -698,6 +749,9 @@ describe("IdleCompactionService", () => {
             beforeRead().pipe(
               Effect.as({
                 ...data,
+                turnItems: data.turnItems.filter(
+                  (item) => options?.turnItemStatuses?.includes(item.status) ?? true,
+                ),
                 messages: data.messages.filter(
                   (message) =>
                     message.runId !== null &&
@@ -719,10 +773,49 @@ describe("IdleCompactionService", () => {
       yield* Effect.gen(function* () {
         const service = yield* IdleCompactionService.make;
         yield* service.start();
-        yield* TestClock.adjust(9 * MINUTE_MS);
+        yield* TestClock.adjust(early?.advanceMs ?? 9 * MINUTE_MS);
       }).pipe(Effect.provide(dependencies));
       return dispatched;
     });
+
+  it.effect.each([
+    { urgent: true, minutes: 4, command: null },
+    { urgent: true, minutes: 5, command: "idle-compact-early" },
+    { urgent: false, minutes: 5, command: null },
+    { urgent: false, minutes: 58, command: "idle-compact" },
+    { urgent: true, minutes: 5, previousAttempt: "skipped", command: null },
+    { urgent: true, minutes: 58, previousAttempt: "skipped", command: "idle-compact" },
+    { urgent: true, minutes: 58, previousAttempt: "completed", command: null },
+  ] as const)(
+    "opens the idle compaction window at the right time ($urgent, $minutes minutes)",
+    (test) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = records();
+          const dispatched = yield* serviceDispatches(
+            Stream.make({
+              id: EventId.make("idle-compaction-quota-pressure"),
+              type: "run.updated",
+              threadId,
+              runId,
+              occurredAt: at(),
+              payload: base.runs[0]!,
+            }),
+            noScheduledTasks,
+            () => Effect.void,
+            { ...base.thread, compactBeforeCacheExpires: true },
+            {
+              urgent: test.urgent,
+              advanceMs: test.minutes * MINUTE_MS,
+              ...("previousAttempt" in test ? { previousAttempt: test.previousAttempt } : {}),
+            },
+          );
+          expect(dispatched).toEqual(
+            test.command === null ? [] : ["server:" + test.command + ":idle-thread:run-1"],
+          );
+        }),
+      ),
+  );
 
   it.effect.each(["thread.snoozed", "thread.unsettled"] as const)(
     "arms waiting compaction on %s after its run completed",

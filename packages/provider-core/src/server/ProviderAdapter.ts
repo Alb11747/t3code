@@ -917,6 +917,12 @@ export class ProviderAdapterV2 extends Context.Service<
       readonly cwd: string | null;
       readonly messageId: MessageId;
     }) => Effect.Effect<boolean, ProviderAdapterV2Error>;
+    readonly shouldExpediteIdleCompaction?: (input: {
+      readonly cwd: string | null;
+      readonly session: string;
+      readonly model: string;
+      readonly normalAt: string;
+    }) => Effect.Effect<boolean>;
     readonly planSelectionTransition: (
       input: ProviderSelectionTransitionInput,
     ) => Effect.Effect<ProviderSelectionTransitionPlan, ProviderAdapterV2Error>;

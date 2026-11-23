@@ -968,7 +968,8 @@ export const makeCliproxyApi = Effect.gen(function* () {
       readonly provider: RouterProvider;
       readonly session?: string;
       readonly model?: string;
-      readonly kind?: "compaction";
+      readonly kind?: "compaction" | "idle_compaction";
+      readonly normalAt?: string;
       readonly keepWarm?: boolean;
     },
   ) {
@@ -976,6 +977,7 @@ export const makeCliproxyApi = Effect.gen(function* () {
     if (input.session) query.set("session", input.session);
     if (input.model) query.set("model", input.model);
     if (input.kind) query.set("kind", input.kind);
+    if (input.normalAt) query.set("normal_at", input.normalAt);
     if (input.keepWarm) query.set("keep_warm", "1");
     const pick = yield* management(config, `control/next?${query}`).pipe(
       Effect.flatMap(decodeNextPick),

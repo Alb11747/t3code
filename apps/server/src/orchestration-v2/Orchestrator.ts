@@ -421,6 +421,11 @@ export interface OrchestratorV2DispatchResult {
 }
 
 export interface OrchestratorV2Shape {
+  readonly shouldExpediteIdleCompaction?: (
+    thread: OrchestrationV2ThreadProjection["thread"],
+    session: string,
+    normalAt: string,
+  ) => Effect.Effect<boolean>;
   readonly resumeQueuedRuns: Effect.Effect<number, OrchestratorV2Error>;
   /** Starts one thread's queue if nothing holds it; for work that ends outside a run. */
   readonly resumeQueue: (
@@ -18935,6 +18940,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     new OrchestratorProjectionError({ threadId: ThreadId.make("thread:shell"), cause });
 
   return OrchestratorV2.of({
+    shouldExpediteIdleCompaction: Effect.fn("OrchestratorV2.shouldExpediteIdleCompaction")(
+      function* (thread, session, normalAt) {
+        const modelSelection = thread.modelSelection;
+        const adapter = yield* providerAdapters.get(modelSelection.instanceId);
+        if (adapter.shouldExpediteIdleCompaction === undefined) return false;
+        const policy = yield* runtimePolicy.resolve({ thread, modelSelection });
+        return yield* adapter.shouldExpediteIdleCompaction({
+          cwd: policy.cwd,
+          session,
+          model: modelSelection.model,
+          normalAt,
+        });
+      },
+      Effect.orElseSucceed(() => false),
+    ),
     resumeQueuedRuns,
     resumeQueue,
     recoverDelegatedTasks,
