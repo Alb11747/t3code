@@ -1729,14 +1729,19 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
 
 describe("ClaudeAdapterV2 provider installation gate", () => {
   it.effect.each([
-    { name: "opens the Claude query inside the installation gate", cancel: false },
+    { name: "opens the Claude query inside the installation gate", mode: "open" },
     {
       name: "closes an acquired Claude query if the installation gate is cancelled before return",
-      cancel: true,
+      mode: "interrupt",
     },
-  ])("$name", ({ cancel }) =>
+    {
+      name: "closes the pending query and rejects installation when Force Stop closes the scope",
+      mode: "scope-close",
+    },
+  ])("$name", ({ mode }) =>
     Effect.gen(function* () {
       const opened = yield* Deferred.make<void>();
+      const sessionScope = yield* Scope.fork(yield* Scope.Scope);
       const fileSystem = yield* FileSystem.FileSystem;
       const log: Array<string> = [];
       const instanceId = ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID;
@@ -1754,9 +1759,9 @@ describe("ClaudeAdapterV2 provider installation gate", () => {
             Effect.sync(() => log.push(`enter ${gatedInstanceId}`)).pipe(
               Effect.andThen(effect),
               Effect.tap(() =>
-                cancel
-                  ? Deferred.succeed(opened, undefined).pipe(Effect.andThen(Effect.never))
-                  : Effect.void,
+                mode === "open"
+                  ? Effect.void
+                  : Deferred.succeed(opened, undefined).pipe(Effect.andThen(Effect.never)),
               ),
               Effect.ensuring(Effect.sync(() => log.push("exit"))),
             ),
@@ -1803,12 +1808,14 @@ describe("ClaudeAdapterV2 provider installation gate", () => {
         cwd: yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-gate-cwd-" }),
       });
       const threadId = ThreadId.make("thread-claude-gate");
-      const runtime = yield* adapter.openSession({
-        threadId,
-        providerSessionId: ProviderSessionId.make("provider-session-claude-gate"),
-        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-        runtimePolicy,
-      });
+      const runtime = yield* adapter
+        .openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-claude-gate"),
+          modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+          runtimePolicy,
+        })
+        .pipe(Effect.provideService(Scope.Scope, sessionScope));
       const providerThread = yield* runtime.ensureThread({
         threadId,
         modelSelection: CLAUDE_TEST_MODEL_SELECTION,
@@ -1828,7 +1835,13 @@ describe("ClaudeAdapterV2 provider installation gate", () => {
         }),
       );
 
-      if (cancel) {
+      if (mode === "scope-close") {
+        const starting = yield* start.pipe(Effect.forkChild);
+        yield* Deferred.await(opened);
+        yield* Scope.close(sessionScope, Exit.void);
+        assert.isTrue(Exit.isFailure(yield* Fiber.await(starting)));
+        assert.deepStrictEqual(log, [`enter ${instanceId}`, "open query", "exit", "close query"]);
+      } else if (mode === "interrupt") {
         const starting = yield* start.pipe(Effect.forkChild);
         yield* Deferred.await(opened);
         yield* Fiber.interrupt(starting);

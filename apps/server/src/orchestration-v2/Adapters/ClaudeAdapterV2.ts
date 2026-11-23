@@ -178,6 +178,7 @@ import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Schedule from "effect/Schedule";
+import * as Scope from "effect/Scope";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -14920,7 +14921,26 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const resolvedTurnCwd = yield* fileSystem
             .realPath(turnInput.runtimePolicy.cwd ?? ".")
             .pipe(Effect.orElseSucceed(() => turnInput.runtimePolicy.cwd));
-          let pendingQuery: ClaudeAgentSdkQuerySession | undefined;
+          // Force Stop can close the session while the installation gate still owns the open.
+          const handoffScope = yield* Scope.fork(sessionScope);
+          let pendingQuery: ClaudeAgentSdkQuerySession | null | undefined;
+          const closePendingQuery = Effect.suspend(() => {
+            const query = pendingQuery;
+            if (query == null) return Effect.void;
+            pendingQuery = null;
+            return query.close.pipe(
+              Effect.ignoreCause({
+                log: true,
+                message: "Could not close an unpublished Claude query.",
+              }),
+            );
+          });
+          yield* Scope.addFinalizer(handoffScope, closePendingQuery);
+
+          const sessionClosed = new ClaudeAgentSdkQueryRunnerError({
+            method: "open",
+            cause: new Error("The Claude session closed before its query was installed."),
+          });
           const openQueryRuntime = queryRunner.open({
             onAcquire: (session) => {
               pendingQuery = session;
@@ -14950,7 +14970,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const installQuery = Effect.fn("ClaudeAdapterV2.installQuery")(function* (
             querySession: ClaudeAgentSdkQuerySession,
           ) {
-            pendingQuery = querySession;
+            if (pendingQuery === undefined) pendingQuery = querySession;
+            if (sessionScope.state._tag === "Closed") return yield* sessionClosed;
             // Mark only successful opens; retries must not resume sessions that failed to create.
             yield* Ref.update(openedNativeThreads, (current) => {
               if (current.has(nativeThreadId)) {
@@ -15004,9 +15025,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               boundaryBatches,
               boundaryLock,
             };
-            ownedQuery = context;
-            // One step, so the replaced process cannot exit between the install and the handoff.
-            yield* Ref.update(queryContext, (replaced) => {
+            // Transfer ownership atomically with publication, so a closing scope always sees it.
+            const installed = yield* Ref.modify(queryContext, (replaced) => {
+              if (sessionScope.state._tag === "Closed") return [false, replaced];
               if (replaced !== null) {
                 replaced.handedOffSubagents = new Set(
                   [...context.subagentsFromEarlierProcesses].filter(
@@ -15014,8 +15035,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   ),
                 );
               }
-              return context;
+              ownedQuery = context;
+              pendingQuery = null;
+              return [true, context];
             });
+            if (!installed) return yield* sessionClosed;
             yield* querySession.messages.pipe(
               Stream.runForEach((message) =>
                 sdkMessageLock.withPermits(1)(
@@ -15122,26 +15146,22 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               Effect.interruptible,
               Effect.forkIn(sessionScope),
             );
-            pendingQuery = undefined;
             return context;
           });
 
           return yield* Effect.uninterruptibleMask((restore) =>
-            restore(acquireQuery).pipe(Effect.flatMap(installQuery)),
-          ).pipe(
-            Effect.onError(() => {
-              const query = pendingQuery;
-              if (query === undefined) return Effect.void;
-              return Ref.update(queryContext, (current) =>
-                current?.query === query ? null : current,
-              ).pipe(
-                Effect.andThen(query.close),
-                Effect.ignoreCause({
-                  log: true,
-                  message: "Could not close an unpublished Claude query.",
-                }),
+            Effect.gen(function* () {
+              if (sessionScope.state._tag === "Closed") return yield* sessionClosed;
+              // A scope close also interrupts an SDK launch that is still initializing.
+              const opening = yield* acquireQuery.pipe(
+                Effect.interruptible,
+                Effect.forkIn(handoffScope),
               );
+              return yield* installQuery(yield* restore(Fiber.join(opening)));
             }),
+          ).pipe(
+            Effect.ensuring(Scope.close(handoffScope, Exit.void)),
+            Effect.onError(() => closePendingQuery),
           );
         });
 
