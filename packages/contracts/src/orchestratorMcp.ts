@@ -131,7 +131,7 @@ export const OrchestratorMcpAutoCompactLimit = Schema.optional(
 export const OrchestratorMcpCompactAfterIdle = Schema.optional(
   CodexIdleCompactionOverride.annotate({
     description:
-      'Codex idle compaction: "once" compacts once after a full idle period with no pending work, then follows the instance. true keeps it enabled, false disables it, and null follows the provider instance.',
+      'Codex: "once" compacts after one work-free idle period. true repeats, false disables, null inherits.',
   }),
 );
 
