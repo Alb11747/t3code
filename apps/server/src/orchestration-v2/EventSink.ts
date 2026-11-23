@@ -408,17 +408,40 @@ const layerBase: Layer.Layer<
             : [],
         ),
       );
+      // Earlier events in this write do not reach the projection until normalization finishes.
+      const recoveredInBatch = new Map<string, boolean>();
+      const isRecoveredRetry = (item: OrchestrationV2TurnItem | null) =>
+        item?.type === "error" && item.status === "completed" && item.retry !== undefined;
       return Effect.forEach(
         events,
-        (event): Effect.Effect<OrchestrationV2DomainEvent, unknown> =>
-          event.type === "turn-item.updated"
-            ? turnItemPositions
-                .normalize(
-                  event.payload,
-                  event.payload.runId === null ? undefined : runOrdinals.get(event.payload.runId),
-                )
-                .pipe(Effect.map((payload) => ({ ...event, payload })))
-            : Effect.succeed(event),
+        (event) =>
+          Effect.gen(function* () {
+            if (event.type !== "turn-item.updated") return event;
+            const item = event.payload;
+            let moveToEnd = false;
+            if (item.type === "error" && item.providerTurnId !== null) {
+              if (
+                item.status === "failed" ||
+                (item.status === "running" && item.retry !== undefined)
+              ) {
+                moveToEnd =
+                  recoveredInBatch.get(item.id) ??
+                  isRecoveredRetry(
+                    yield* projectionStore.getTurnItem({
+                      threadId: item.threadId,
+                      itemId: item.id,
+                    }),
+                  );
+              }
+              recoveredInBatch.set(item.id, isRecoveredRetry(item));
+            }
+            const payload = yield* turnItemPositions.normalize(
+              item,
+              item.runId === null ? undefined : runOrdinals.get(item.runId),
+              moveToEnd,
+            );
+            return { ...event, payload };
+          }),
         { concurrency: 1 },
       );
     };

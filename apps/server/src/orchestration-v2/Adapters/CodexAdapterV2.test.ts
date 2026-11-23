@@ -5641,6 +5641,19 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           }),
           {
             type: "emit_inbound",
+            frame: {
+              method: "item/reasoning/summaryTextDelta",
+              params: {
+                threadId: nativeThreadId,
+                turnId: nativeTurnId,
+                itemId: "thought",
+                summaryIndex: 0,
+                delta: "Checking.",
+              },
+            },
+          },
+          {
+            type: "emit_inbound",
             label: "error/retry",
             frame: {
               method: "error",
@@ -5777,6 +5790,18 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       assert.equal(retryItems[2]?.status, "completed");
       assert.equal(retryItems[2]?.title, "Provider recovered");
 
+      const pendingText = harness.events.findIndex(
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "reasoning" &&
+          event.turnItem.text === "Checking." &&
+          event.turnItem.status === "running",
+      );
+      const firstRetry = harness.events.findIndex(
+        (event) => event.type === "turn_item.updated" && event.turnItem.type === "error",
+      );
+      assert.isAtLeast(pendingText, 0);
+      assert.isAbove(firstRetry, pendingText);
       const recoveredIndex = harness.events.findIndex(
         (event) =>
           event.type === "turn_item.updated" &&

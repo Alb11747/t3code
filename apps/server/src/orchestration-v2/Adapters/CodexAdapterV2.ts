@@ -5371,6 +5371,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }).pipe(turnTerminalizationPermit.withPermits(1)),
         );
 
+        // Publish pending text before the retry row so persistence sees the provider's order.
+        const flushPendingProgress = Effect.fnUntraced(function* (turnId: string) {
+          yield* agentMessageDeltas.flushPendingTurn(turnId);
+          yield* reasoningDeltas.flushPendingTurn(turnId);
+          yield* planDeltas.flushPendingTurn(turnId);
+        });
+
         yield* client.handleServerNotification("error", (payload) =>
           Effect.gen(function* () {
             const context = yield* awaitActiveTurn(payload.turnId);
@@ -5401,6 +5408,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
             const updatedAt = yield* DateTime.now;
             const previous = (yield* Ref.get(providerRetries)).get(context.providerTurnId);
+            if (previous === undefined) yield* flushPendingProgress(payload.turnId);
             const progress = parseCodexRetryProgress(payload.error.message);
             const retry: OrchestrationV2ProviderRetry = {
               attempt: progress?.attempt ?? (previous?.retry.attempt ?? 0) + 1,
@@ -7398,6 +7406,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const retryDelayMs = Math.min(2_000 * 2 ** (attempt - 1), 30_000);
               const now = yield* DateTime.now;
               const previous = (yield* Ref.get(providerRetries)).get(context.providerTurnId);
+              if (previous === undefined) yield* flushPendingProgress(terminal.nativeTurnId);
               const state: ActiveCodexProviderRetry = {
                 context: previous?.context ?? context,
                 nativeMessage:

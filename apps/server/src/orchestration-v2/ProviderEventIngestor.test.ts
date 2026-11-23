@@ -55,7 +55,10 @@ import { UsageLimitResetFallback } from "../usage/UsageLimitSources.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import type { ServerProvider } from "@t3tools/contracts";
-import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import {
+  makeProviderFailure,
+  makeProviderRetryTurnItem,
+} from "@t3tools/provider-core/server/failure";
 import {
   makeProviderEventRoutingState,
   type ProviderEventRouteIdentity,
@@ -1649,6 +1652,138 @@ layer("ProviderEventIngestorV2", (it) => {
       assert.equal(errorItem.providerThreadId, providerThreadId);
       assert.equal(errorItem.providerTurnId, providerTurnId);
     }),
+  );
+
+  it.effect.each(["retry", "terminal", "ordinary", "carried", "batch"] as const)(
+    "persists the correct timeline position for a %s provider failure",
+    (scenario) =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const thread = yield* threadCreatedEvent(now);
+        const threadId = thread.threadId;
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        const providerThreadId = idAllocator.derive.providerThread({
+          driver: CODEX_DRIVER,
+          nativeThreadId: "native-provider-thread",
+        });
+        const providerTurnId = ProviderTurnId.make("provider-turn");
+        const failure = makeProviderFailure({
+          class: "transport_error",
+          message: "The response stream disconnected.",
+          code: "responseStreamDisconnected",
+          retryable: true,
+        });
+        const retryItem = makeProviderRetryTurnItem({
+          driver: CODEX_DRIVER,
+          threadId,
+          runId: null,
+          nodeId: null,
+          providerThreadId,
+          providerTurnId,
+          itemOrdinal: 101,
+          failure,
+          retry: { attempt: 1, maxAttempts: 5, retryDelayMs: null },
+          status: "running",
+          startedAt: now,
+          updatedAt: now,
+        });
+        const recovered = { ...retryItem, status: "completed", completedAt: now } as const;
+        const command = {
+          ...retryItem,
+          id: TurnItemId.make("command"),
+          ordinal: 102,
+          title: null,
+          type: "command_execution",
+          status: "completed",
+          completedAt: now,
+          input: "pwd",
+          output: ".",
+          exitCode: 0,
+        } satisfies OrchestrationV2TurnItem;
+        const nextRetry = {
+          ...retryItem,
+          ordinal: 103,
+          retry: { attempt: 2, maxAttempts: 5, retryDelayMs: null },
+        };
+        const ingest = (event: ProviderAdapter.ProviderAdapterV2Event) =>
+          ingestor.ingestNormalized({
+            providerSessionId,
+            providerInstanceId: modelSelection.instanceId,
+            threadId,
+            event,
+          });
+        const ingestItem = (turnItem: OrchestrationV2TurnItem) =>
+          ingest({ type: "turn_item.updated", driver: CODEX_DRIVER, turnItem });
+        const ingestTerminal = (terminalTurnId: ProviderTurnId) =>
+          ingest({
+            type: "turn.terminal",
+            driver: CODEX_DRIVER,
+            providerThreadId,
+            providerTurnId: terminalTurnId,
+            runOrdinal: 1,
+            failureItemOrdinal: 103,
+            status: "failed",
+            failure: { ...failure, retryable: false },
+            threadDisposition: "reusable",
+          });
+
+        yield* eventSink.write({ events: [thread] });
+        if (scenario === "batch") {
+          const events = yield* Effect.forEach(
+            [retryItem, recovered, command, nextRetry],
+            (payload) =>
+              idAllocator.allocate.event({ threadId }).pipe(
+                Effect.map((id): OrchestrationV2DomainEvent => ({
+                  id,
+                  type: "turn-item.updated",
+                  threadId,
+                  payload,
+                  occurredAt: now,
+                })),
+              ),
+          );
+          yield* eventSink.write({ events });
+        } else {
+          if (scenario !== "ordinary") {
+            yield* ingestItem(retryItem);
+            if (scenario === "retry" || scenario === "terminal") yield* ingestItem(recovered);
+          }
+          yield* ingestItem(command);
+          if (scenario === "retry" || scenario === "carried") yield* ingestItem(nextRetry);
+          if (scenario === "terminal" || scenario === "ordinary")
+            yield* ingestTerminal(providerTurnId);
+          if (scenario === "carried") {
+            yield* ingestItem({ ...nextRetry, status: "interrupted", completedAt: now });
+            yield* ingestTerminal(ProviderTurnId.make("continuation-turn"));
+          }
+        }
+
+        const { visibleTurnItems } = yield* projections.getThreadProjection(threadId);
+        const items = visibleTurnItems.map(({ item }) => item);
+        const expected =
+          scenario === "carried"
+            ? ["interrupted", "command", "failed"]
+            : scenario === "retry" || scenario === "batch"
+              ? ["command", "running"]
+              : ["command", "failed"];
+        assert.deepEqual(
+          items.map((item) => (item.type === "error" ? item.status : item.id)),
+          expected,
+        );
+        if (scenario !== "ordinary") {
+          assert.equal(
+            items.find((item) => item.id === retryItem.id)?.providerTurnId,
+            providerTurnId,
+          );
+        }
+      }),
   );
 
   it.effect("stores tool image bytes only where a tool-output-image asset serves them", () =>
