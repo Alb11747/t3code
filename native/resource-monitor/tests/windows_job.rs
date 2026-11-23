@@ -2,10 +2,16 @@
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::mem::size_of_val;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::process::{Command, Stdio};
 use windows::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+use windows::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+    SetInformationJobObject,
+};
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
 };
@@ -76,6 +82,32 @@ fn assert_job_stops_cli(action: &str) {
         (b'A', b'C') => (second, first),
         roles => panic!("invalid pipe roles: {roles:?}"),
     };
+    if action == "start-fails" {
+        // Force the controller's trampoline spawn to fail before the gate can open.
+        let outer_job = unsafe { CreateJobObjectW(None, None).unwrap() };
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+        limits.BasicLimitInformation.ActiveProcessLimit = 1;
+        unsafe {
+            SetInformationJobObject(
+                outer_job,
+                JobObjectExtendedLimitInformation,
+                (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                size_of_val(&limits) as u32,
+            )
+            .unwrap();
+            AssignProcessToJobObject(outer_job, HANDLE(owner.as_raw_handle())).unwrap();
+        }
+        control.write_all(b"S").unwrap();
+        let mut confirmation = [0];
+        let result = receipt.read_exact(&mut confirmation);
+        let status = owner.wait().unwrap();
+        unsafe { CloseHandle(outer_job).unwrap() };
+        result.expect("a pre-launch failure must release ownership");
+        assert_eq!(confirmation, *b"F");
+        assert!(!status.success());
+        return;
+    }
     control.write_all(b"S").unwrap();
     let mut stdout = BufReader::new(owner.stdout.take().unwrap());
     let mut pid = String::new();
@@ -118,4 +150,9 @@ fn job_confirms_a_requested_stop_after_the_cli_exits() {
 #[test]
 fn job_stops_the_cli_without_a_receipt_when_the_owner_is_killed() {
     assert_job_stops_cli("kill");
+}
+
+#[test]
+fn job_reports_a_failure_before_launching_the_cli() {
+    assert_job_stops_cli("start-fails");
 }

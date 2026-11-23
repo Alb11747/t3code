@@ -757,6 +757,7 @@ export type ClaudeAgentSdkQueryOptions = Omit<
 
 export interface ClaudeAgentSdkQueryOpenInput {
   readonly resume?: true;
+  readonly onAcquire?: (session: ClaudeAgentSdkQuerySession) => void;
   readonly options: ClaudeAgentSdkQueryOptions;
   readonly threadId: ThreadId;
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
@@ -1880,7 +1881,318 @@ export const layerQueryRunner: Layer.Layer<
         });
         return child;
       };
-      const queryRuntime = yield* Effect.uninterruptibleMask((restore) =>
+      const makeSession = (queryRuntime: ClaudeQuery) =>
+        ({
+          messages: Stream.fromAsyncIterable(
+            claudeQueryMessages(queryRuntime),
+            (cause) => cause,
+          ).pipe(
+            Stream.catch((cause) =>
+              Stream.fromEffect(
+                Effect.gen(function* () {
+                  if (!answered) {
+                    yield* Effect.promise(() => stderrClosed).pipe(
+                      Effect.timeoutOption(CLAUDE_STDERR_DRAIN_TIMEOUT),
+                    );
+                  }
+                  const refusedRoot = !answered && stderrTail.includes(CLAUDE_ROOT_REFUSAL);
+                  const startupExit = answered ? undefined : claudeProcessExit(cause);
+                  if (startupExit !== undefined) {
+                    // The turn failure omits this output, so the log is the only place it is kept.
+                    yield* Effect.logWarning("orchestration-v2.claude-startup-exit", {
+                      threadId: input.threadId,
+                      status: startupExit.status,
+                      stderr: stderrTail,
+                    });
+                  }
+                  return yield* queryRunnerError(
+                    refusedRoot
+                      ? new ClaudeCodeRootRefusalError({ cause })
+                      : conversationMissing ||
+                          (!answered && stderrTail.includes(CLAUDE_CONVERSATION_NOT_FOUND))
+                        ? new ClaudeConversationNotFoundError({ cause })
+                        : startupExit !== undefined
+                          ? new ClaudeCodeStartupExitError({
+                              status: startupExit.status,
+                              guidance: providerProcessExitGuidance(stderrTail),
+                              cause,
+                            })
+                          : cause,
+                    "fromAsyncIterable",
+                  );
+                }),
+              ),
+            ),
+            Stream.tap((message) =>
+              Effect.sync(() => {
+                answered = true;
+                if (
+                  message.type === "result" &&
+                  message.subtype !== "success" &&
+                  message.errors.some((error) => error.startsWith(CLAUDE_CONVERSATION_NOT_FOUND))
+                )
+                  conversationMissing = true;
+                if (message.type === "system" && message.subtype === "init") {
+                  cancelsQueuedOnInterrupt =
+                    message.capabilities?.includes("interrupt_cancel_queued_v1") === true;
+                }
+              }),
+            ),
+            Stream.tap((message) =>
+              logProtocolEvent({
+                direction: "incoming",
+                stage: "decoded",
+                payload: message,
+              }),
+            ),
+          ),
+          offer: (message, onQueued, handoff) =>
+            promptLock
+              .withPermits(1)(
+                Effect.uninterruptible(
+                  Effect.gen(function* () {
+                    if (promptFenced || handoff?.isCurrent() === false) {
+                      handoff?.onDiscarded();
+                      if (handoff === undefined) {
+                        return yield* queryRunnerError(
+                          new Error("Claude input is closed."),
+                          "offer",
+                        );
+                      }
+                      return;
+                    }
+                    yield* Queue.offer(promptQueue, {
+                      message,
+                      ...(handoff === undefined ? {} : { handoff }),
+                    });
+                    onQueued?.();
+                  }),
+                ),
+              )
+              .pipe(
+                Effect.asVoid,
+                Effect.tap(() =>
+                  logProtocolEvent({
+                    direction: "outgoing",
+                    stage: "decoded",
+                    payload: {
+                      type: "prompt.offer",
+                      message,
+                    },
+                  }),
+                ),
+              ),
+          setModel: (model) =>
+            Effect.tryPromise({
+              try: () => queryRuntime.setModel(model),
+              catch: (cause) => queryRunnerError(cause, "setModel"),
+            }).pipe(
+              Effect.tap(() =>
+                logProtocolEvent({
+                  direction: "outgoing",
+                  stage: "decoded",
+                  payload: {
+                    type: "query.set_model",
+                    model,
+                  },
+                }),
+              ),
+            ),
+          applyFlagSettings: (settings) =>
+            Effect.tryPromise({
+              try: () => queryRuntime.applyFlagSettings(settings),
+              catch: (cause) => queryRunnerError(cause, "applyFlagSettings"),
+            }).pipe(
+              Effect.tap(() =>
+                logProtocolEvent({
+                  direction: "outgoing",
+                  stage: "decoded",
+                  payload: {
+                    type: "query.apply_flag_settings",
+                    settings,
+                  },
+                }),
+              ),
+            ),
+          setPermissionMode: (mode) =>
+            Effect.tryPromise({
+              try: () => queryRuntime.setPermissionMode(mode),
+              catch: (cause) => queryRunnerError(cause, "setPermissionMode"),
+            }).pipe(
+              Effect.tap(() =>
+                logProtocolEvent({
+                  direction: "outgoing",
+                  stage: "decoded",
+                  payload: {
+                    type: "query.set_permission_mode",
+                    mode,
+                  },
+                }),
+              ),
+            ),
+          renameSession: (title) =>
+            Effect.tryPromise({
+              try: () =>
+                sendClaudeControlRequest(queryRuntime, {
+                  subtype: "rename_session",
+                  title,
+                  source: "host",
+                }),
+              catch: (cause) => queryRunnerError(cause, "renameSession"),
+            }).pipe(
+              Effect.asVoid,
+              Effect.tap(() =>
+                logProtocolEvent({
+                  direction: "outgoing",
+                  stage: "decoded",
+                  payload: {
+                    type: "query.rename_session",
+                    title,
+                  },
+                }),
+              ),
+            ),
+          stopTask: (taskId) =>
+            Effect.tryPromise({
+              try: () => queryRuntime.stopTask(taskId),
+              catch: (cause) => queryRunnerError(cause, "stopTask"),
+            }).pipe(
+              Effect.tap(() =>
+                logProtocolEvent({
+                  direction: "outgoing",
+                  stage: "decoded",
+                  payload: { type: "query.stop_task", taskId },
+                }),
+              ),
+            ),
+          backgroundTasks: (toolUseId) =>
+            Effect.tryPromise({
+              try: () => queryRuntime.backgroundTasks(toolUseId),
+              catch: (cause) => queryRunnerError(cause, "backgroundTasks"),
+            }).pipe(
+              Effect.tap(() =>
+                logProtocolEvent({
+                  direction: "outgoing",
+                  stage: "decoded",
+                  payload: { type: "query.background_tasks", toolUseId },
+                }),
+              ),
+            ),
+          mcpServerStatus: Effect.tryPromise({
+            try: () => queryRuntime.mcpServerStatus(),
+            catch: (cause) => queryRunnerError(cause, "mcpServerStatus"),
+          }),
+          readMcpResource: ({ server, uri }) =>
+            Effect.tryPromise({
+              try: () => queryRuntime.readMcpResource(server, uri),
+              catch: (cause) => queryRunnerError(cause, "readMcpResource"),
+            }),
+          mcpAuthenticate: (server) =>
+            Effect.tryPromise({
+              try: () =>
+                sendClaudeControlRequest(queryRuntime, {
+                  subtype: "mcp_authenticate",
+                  serverName: server,
+                }),
+              catch: (cause) => queryRunnerError(cause, "mcpAuthenticate"),
+            }).pipe(
+              Effect.flatMap(decodeClaudeMcpAuthenticateReply),
+              Effect.map((reply) =>
+                reply.requiresUserAction === true && reply.authUrl !== undefined
+                  ? reply.authUrl
+                  : null,
+              ),
+              Effect.mapError((cause) => queryRunnerError(cause, "mcpAuthenticate")),
+            ),
+          mcpSubmitOAuthCallbackUrl: ({ server, callbackUrl }) =>
+            Effect.tryPromise({
+              try: () =>
+                sendClaudeControlRequest(queryRuntime, {
+                  subtype: "mcp_oauth_callback_url",
+                  serverName: server,
+                  callbackUrl,
+                }),
+              catch: (cause) => queryRunnerError(cause, "mcpSubmitOAuthCallbackUrl"),
+            }).pipe(Effect.asVoid),
+          reconnectMcpServer: (server) =>
+            Effect.tryPromise({
+              try: () => queryRuntime.reconnectMcpServer(server),
+              catch: (cause) => queryRunnerError(cause, "reconnectMcpServer"),
+            }),
+          callMcpTool: (call) =>
+            Effect.tryPromise({
+              try: () =>
+                sendClaudeControlRequest(queryRuntime, {
+                  subtype: "mcp_call",
+                  tool: call.tool,
+                  arguments: call.arguments,
+                  result_not_for_model: true,
+                }),
+              catch: (cause) => queryRunnerError(cause, "callMcpTool"),
+            }),
+          listPermissionRules: Effect.tryPromise({
+            try: () => sendClaudeControlRequest(queryRuntime, { subtype: "list_permission_rules" }),
+            catch: (cause) => queryRunnerError(cause, "listPermissionRules"),
+          }).pipe(
+            Effect.flatMap(decodeClaudePermissionRules),
+            // A settings file Claude couldn't parse was skipped, so its rules are missing from the list.
+            Effect.filterOrFail(
+              ({ state }) => (state.errors ?? []).length === 0,
+              ({ state }) => new Error(`Claude skipped ${state.errors?.length} settings file(s)`),
+            ),
+            Effect.map(({ state }) => state.rules),
+            Effect.mapError((cause) => queryRunnerError(cause, "listPermissionRules")),
+          ),
+          interrupt: fencePrompts.pipe(
+            Effect.andThen(Effect.promise(() => inFlightPrompt ?? Promise.resolve())),
+            Effect.andThen(
+              Effect.tryPromise({
+                // Stop is the only interrupt, and it must not leave queued input to run on its own.
+                try: () => interruptClaudeQuery(queryRuntime, cancelsQueuedOnInterrupt),
+                catch: (cause) => queryRunnerError(cause, "interrupt"),
+              }),
+            ),
+            // The receipt precedes the stopped turn's result; its lifecycle frames may not
+            // be read before the process closes.
+            Effect.tap((receipt) =>
+              Effect.sync(() => {
+                for (const uuid of receipt?.cancelled ?? [])
+                  writtenHandoffs.get(uuid)?.onDiscarded();
+                writtenHandoffs.clear();
+              }),
+            ),
+            Effect.tap(() =>
+              logProtocolEvent({
+                direction: "outgoing",
+                stage: "decoded",
+                payload: {
+                  type: "query.interrupt",
+                  cancelQueued: cancelsQueuedOnInterrupt,
+                },
+              }),
+            ),
+          ),
+          // A job started since the last poll is recorded before the CLI is told to exit.
+          close: fencePrompts.pipe(
+            Effect.andThen(
+              Effect.suspend(() => (processExited ? Effect.void : refreshDescendants)),
+            ),
+            // End the Windows job before explicitly closing the SDK connection.
+            Effect.andThen(terminateWindowsChild),
+            Effect.andThen(Queue.shutdown(promptQueue)),
+            Effect.andThen(closeClaudeQuery(queryRuntime)),
+            Effect.tap(() =>
+              logProtocolEvent({
+                direction: "outgoing",
+                stage: "decoded",
+                payload: {
+                  type: "query.close",
+                },
+              }),
+            ),
+          ),
+        }) satisfies ClaudeAgentSdkQuerySession;
+      return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           if (windowsJobExecutable !== undefined) {
             const jobId = yield* random.uuidV4();
@@ -1889,7 +2201,7 @@ export const layerQueryRunner: Layer.Layer<
               catch: (cause) => queryRunnerError(cause, "query"),
             });
           }
-          return yield* Effect.try({
+          const queryRuntime = yield* Effect.try({
             try: () =>
               withoutClaudeCanUseToolShadowedWarning(() =>
                 query({ prompt, options: { ...options, spawnClaudeCodeProcess } }),
@@ -1989,313 +2301,12 @@ export const layerQueryRunner: Layer.Layer<
               ),
             ),
           );
+          const session = makeSession(queryRuntime);
+          // Transfer ownership before interruption can discard the return value.
+          input.onAcquire?.(session);
+          return session;
         }),
       );
-
-      return {
-        messages: Stream.fromAsyncIterable(
-          claudeQueryMessages(queryRuntime),
-          (cause) => cause,
-        ).pipe(
-          Stream.catch((cause) =>
-            Stream.fromEffect(
-              Effect.gen(function* () {
-                if (!answered) {
-                  yield* Effect.promise(() => stderrClosed).pipe(
-                    Effect.timeoutOption(CLAUDE_STDERR_DRAIN_TIMEOUT),
-                  );
-                }
-                const refusedRoot = !answered && stderrTail.includes(CLAUDE_ROOT_REFUSAL);
-                const startupExit = answered ? undefined : claudeProcessExit(cause);
-                if (startupExit !== undefined) {
-                  // The turn failure omits this output, so the log is the only place it is kept.
-                  yield* Effect.logWarning("orchestration-v2.claude-startup-exit", {
-                    threadId: input.threadId,
-                    status: startupExit.status,
-                    stderr: stderrTail,
-                  });
-                }
-                return yield* queryRunnerError(
-                  refusedRoot
-                    ? new ClaudeCodeRootRefusalError({ cause })
-                    : conversationMissing ||
-                        (!answered && stderrTail.includes(CLAUDE_CONVERSATION_NOT_FOUND))
-                      ? new ClaudeConversationNotFoundError({ cause })
-                      : startupExit !== undefined
-                        ? new ClaudeCodeStartupExitError({
-                            status: startupExit.status,
-                            guidance: providerProcessExitGuidance(stderrTail),
-                            cause,
-                          })
-                        : cause,
-                  "fromAsyncIterable",
-                );
-              }),
-            ),
-          ),
-          Stream.tap((message) =>
-            Effect.sync(() => {
-              answered = true;
-              if (
-                message.type === "result" &&
-                message.subtype !== "success" &&
-                message.errors.some((error) => error.startsWith(CLAUDE_CONVERSATION_NOT_FOUND))
-              )
-                conversationMissing = true;
-              if (message.type === "system" && message.subtype === "init") {
-                cancelsQueuedOnInterrupt =
-                  message.capabilities?.includes("interrupt_cancel_queued_v1") === true;
-              }
-            }),
-          ),
-          Stream.tap((message) =>
-            logProtocolEvent({
-              direction: "incoming",
-              stage: "decoded",
-              payload: message,
-            }),
-          ),
-        ),
-        offer: (message, onQueued, handoff) =>
-          promptLock
-            .withPermits(1)(
-              Effect.uninterruptible(
-                Effect.gen(function* () {
-                  if (promptFenced || handoff?.isCurrent() === false) {
-                    handoff?.onDiscarded();
-                    if (handoff === undefined) {
-                      return yield* queryRunnerError(new Error("Claude input is closed."), "offer");
-                    }
-                    return;
-                  }
-                  yield* Queue.offer(promptQueue, {
-                    message,
-                    ...(handoff === undefined ? {} : { handoff }),
-                  });
-                  onQueued?.();
-                }),
-              ),
-            )
-            .pipe(
-              Effect.asVoid,
-              Effect.tap(() =>
-                logProtocolEvent({
-                  direction: "outgoing",
-                  stage: "decoded",
-                  payload: {
-                    type: "prompt.offer",
-                    message,
-                  },
-                }),
-              ),
-            ),
-        setModel: (model) =>
-          Effect.tryPromise({
-            try: () => queryRuntime.setModel(model),
-            catch: (cause) => queryRunnerError(cause, "setModel"),
-          }).pipe(
-            Effect.tap(() =>
-              logProtocolEvent({
-                direction: "outgoing",
-                stage: "decoded",
-                payload: {
-                  type: "query.set_model",
-                  model,
-                },
-              }),
-            ),
-          ),
-        applyFlagSettings: (settings) =>
-          Effect.tryPromise({
-            try: () => queryRuntime.applyFlagSettings(settings),
-            catch: (cause) => queryRunnerError(cause, "applyFlagSettings"),
-          }).pipe(
-            Effect.tap(() =>
-              logProtocolEvent({
-                direction: "outgoing",
-                stage: "decoded",
-                payload: {
-                  type: "query.apply_flag_settings",
-                  settings,
-                },
-              }),
-            ),
-          ),
-        setPermissionMode: (mode) =>
-          Effect.tryPromise({
-            try: () => queryRuntime.setPermissionMode(mode),
-            catch: (cause) => queryRunnerError(cause, "setPermissionMode"),
-          }).pipe(
-            Effect.tap(() =>
-              logProtocolEvent({
-                direction: "outgoing",
-                stage: "decoded",
-                payload: {
-                  type: "query.set_permission_mode",
-                  mode,
-                },
-              }),
-            ),
-          ),
-        renameSession: (title) =>
-          Effect.tryPromise({
-            try: () =>
-              sendClaudeControlRequest(queryRuntime, {
-                subtype: "rename_session",
-                title,
-                source: "host",
-              }),
-            catch: (cause) => queryRunnerError(cause, "renameSession"),
-          }).pipe(
-            Effect.asVoid,
-            Effect.tap(() =>
-              logProtocolEvent({
-                direction: "outgoing",
-                stage: "decoded",
-                payload: {
-                  type: "query.rename_session",
-                  title,
-                },
-              }),
-            ),
-          ),
-        stopTask: (taskId) =>
-          Effect.tryPromise({
-            try: () => queryRuntime.stopTask(taskId),
-            catch: (cause) => queryRunnerError(cause, "stopTask"),
-          }).pipe(
-            Effect.tap(() =>
-              logProtocolEvent({
-                direction: "outgoing",
-                stage: "decoded",
-                payload: { type: "query.stop_task", taskId },
-              }),
-            ),
-          ),
-        backgroundTasks: (toolUseId) =>
-          Effect.tryPromise({
-            try: () => queryRuntime.backgroundTasks(toolUseId),
-            catch: (cause) => queryRunnerError(cause, "backgroundTasks"),
-          }).pipe(
-            Effect.tap(() =>
-              logProtocolEvent({
-                direction: "outgoing",
-                stage: "decoded",
-                payload: { type: "query.background_tasks", toolUseId },
-              }),
-            ),
-          ),
-        mcpServerStatus: Effect.tryPromise({
-          try: () => queryRuntime.mcpServerStatus(),
-          catch: (cause) => queryRunnerError(cause, "mcpServerStatus"),
-        }),
-        readMcpResource: ({ server, uri }) =>
-          Effect.tryPromise({
-            try: () => queryRuntime.readMcpResource(server, uri),
-            catch: (cause) => queryRunnerError(cause, "readMcpResource"),
-          }),
-        mcpAuthenticate: (server) =>
-          Effect.tryPromise({
-            try: () =>
-              sendClaudeControlRequest(queryRuntime, {
-                subtype: "mcp_authenticate",
-                serverName: server,
-              }),
-            catch: (cause) => queryRunnerError(cause, "mcpAuthenticate"),
-          }).pipe(
-            Effect.flatMap(decodeClaudeMcpAuthenticateReply),
-            Effect.map((reply) =>
-              reply.requiresUserAction === true && reply.authUrl !== undefined
-                ? reply.authUrl
-                : null,
-            ),
-            Effect.mapError((cause) => queryRunnerError(cause, "mcpAuthenticate")),
-          ),
-        mcpSubmitOAuthCallbackUrl: ({ server, callbackUrl }) =>
-          Effect.tryPromise({
-            try: () =>
-              sendClaudeControlRequest(queryRuntime, {
-                subtype: "mcp_oauth_callback_url",
-                serverName: server,
-                callbackUrl,
-              }),
-            catch: (cause) => queryRunnerError(cause, "mcpSubmitOAuthCallbackUrl"),
-          }).pipe(Effect.asVoid),
-        reconnectMcpServer: (server) =>
-          Effect.tryPromise({
-            try: () => queryRuntime.reconnectMcpServer(server),
-            catch: (cause) => queryRunnerError(cause, "reconnectMcpServer"),
-          }),
-        callMcpTool: (call) =>
-          Effect.tryPromise({
-            try: () =>
-              sendClaudeControlRequest(queryRuntime, {
-                subtype: "mcp_call",
-                tool: call.tool,
-                arguments: call.arguments,
-                result_not_for_model: true,
-              }),
-            catch: (cause) => queryRunnerError(cause, "callMcpTool"),
-          }),
-        listPermissionRules: Effect.tryPromise({
-          try: () => sendClaudeControlRequest(queryRuntime, { subtype: "list_permission_rules" }),
-          catch: (cause) => queryRunnerError(cause, "listPermissionRules"),
-        }).pipe(
-          Effect.flatMap(decodeClaudePermissionRules),
-          // A settings file Claude couldn't parse was skipped, so its rules are missing from the list.
-          Effect.filterOrFail(
-            ({ state }) => (state.errors ?? []).length === 0,
-            ({ state }) => new Error(`Claude skipped ${state.errors?.length} settings file(s)`),
-          ),
-          Effect.map(({ state }) => state.rules),
-          Effect.mapError((cause) => queryRunnerError(cause, "listPermissionRules")),
-        ),
-        interrupt: fencePrompts.pipe(
-          Effect.andThen(Effect.promise(() => inFlightPrompt ?? Promise.resolve())),
-          Effect.andThen(
-            Effect.tryPromise({
-              // Stop is the only interrupt, and it must not leave queued input to run on its own.
-              try: () => interruptClaudeQuery(queryRuntime, cancelsQueuedOnInterrupt),
-              catch: (cause) => queryRunnerError(cause, "interrupt"),
-            }),
-          ),
-          // The receipt precedes the stopped turn's result; its lifecycle frames may not
-          // be read before the process closes.
-          Effect.tap((receipt) =>
-            Effect.sync(() => {
-              for (const uuid of receipt?.cancelled ?? []) writtenHandoffs.get(uuid)?.onDiscarded();
-              writtenHandoffs.clear();
-            }),
-          ),
-          Effect.tap(() =>
-            logProtocolEvent({
-              direction: "outgoing",
-              stage: "decoded",
-              payload: {
-                type: "query.interrupt",
-                cancelQueued: cancelsQueuedOnInterrupt,
-              },
-            }),
-          ),
-        ),
-        // A job started since the last poll is recorded before the CLI is told to exit.
-        close: fencePrompts.pipe(
-          Effect.andThen(Effect.suspend(() => (processExited ? Effect.void : refreshDescendants))),
-          // End the Windows job before explicitly closing the SDK connection.
-          Effect.andThen(terminateWindowsChild),
-          Effect.andThen(Queue.shutdown(promptQueue)),
-          Effect.andThen(closeClaudeQuery(queryRuntime)),
-          Effect.tap(() =>
-            logProtocolEvent({
-              direction: "outgoing",
-              stage: "decoded",
-              payload: {
-                type: "query.close",
-              },
-            }),
-          ),
-        ),
-      } satisfies ClaudeAgentSdkQuerySession;
     });
 
     return ClaudeAgentSdkQueryRunner.of({
@@ -14909,7 +14920,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const resolvedTurnCwd = yield* fileSystem
             .realPath(turnInput.runtimePolicy.cwd ?? ".")
             .pipe(Effect.orElseSucceed(() => turnInput.runtimePolicy.cwd));
+          let pendingQuery: ClaudeAgentSdkQuerySession | undefined;
           const openQueryRuntime = queryRunner.open({
+            onAcquire: (session) => {
+              pendingQuery = session;
+            },
             threadId: turnInput.threadId,
             providerSessionId: input.providerSessionId,
             options: queryOptions,
@@ -14932,198 +14947,202 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 : Effect.void,
             ),
           );
-          const context = yield* Effect.uninterruptibleMask((restore) =>
-            restore(acquireQuery).pipe(
-              Effect.flatMap((querySession) =>
-                restore(
-                  Effect.gen(function* () {
-                    // Mark only successful opens; retries must not resume sessions that failed to create.
-                    yield* Ref.update(openedNativeThreads, (current) => {
-                      if (current.has(nativeThreadId)) {
-                        return current;
-                      }
-                      const updated = new Set(current);
-                      updated.add(nativeThreadId);
-                      return updated;
-                    });
-                    // A new session's spawn applied this turn's title. A resume keeps the session's stored
-                    // title, so the last applied one stays authoritative until a turn compares again.
-                    if (!shouldResume) {
-                      appliedSessionTitles.set(nativeThreadId, turnInput.appThread.title);
-                    }
-                    yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId, {
-                      status: "active",
-                    });
-                    const closed = yield* Deferred.make<void, never>();
-                    const context: ClaudeLiveQueryContext = {
-                      queryPolicy,
-                      nativeThreadId,
-                      settingsCwd: turnInput.runtimePolicy.cwd,
-                      launchArgSettings,
-                      query: querySession,
-                      queryPolicyKey,
-                      selection: compiledSelection,
-                      closed,
-                      lastTurn: null,
-                      promptEchoMode: "unknown",
-                      openedPermissionMode: queryOptions.permissionMode,
-                      receivedInit: false,
-                      checkMcpSignIns: false,
-                      capabilities: new Set(),
-                      claudeCodeVersion: undefined,
-                      permissionMode: queryOptions.permissionMode,
-                      stopping: false,
-                      exitCause: undefined,
-                      handedOffSubagents: new Set(),
-                      subagentsFromEarlierProcesses: new Set(
-                        [...(yield* Ref.get(sessionSubagentsByTaskId)).values()].filter(
-                          (subagent) => subagent.task.status === "running",
-                        ),
-                      ),
-                      modelLedger: new Map(),
-                      taskOutputRoot: claudeTaskOutputRoot(
-                        adapterOptions.environment,
-                        path,
-                        resolvedTurnCwd,
-                        hostPlatform,
-                      ),
-                      boundaryBatches,
-                      boundaryLock,
-                    };
-                    ownedQuery = context;
-                    // One step, so the replaced process cannot exit between the install and the handoff.
-                    yield* Ref.update(queryContext, (replaced) => {
-                      if (replaced !== null) {
-                        replaced.handedOffSubagents = new Set(
-                          [...context.subagentsFromEarlierProcesses].filter(
-                            (subagent) => !replaced.subagentsFromEarlierProcesses.has(subagent),
-                          ),
-                        );
-                      }
-                      return context;
-                    });
-                    return context;
-                  }),
-                ).pipe(
-                  Effect.onError(() =>
-                    querySession.close.pipe(
-                      Effect.ignoreCause({
-                        log: true,
-                        message: "Could not close an unpublished Claude query.",
-                      }),
-                    ),
-                  ),
+          const installQuery = Effect.fn("ClaudeAdapterV2.installQuery")(function* (
+            querySession: ClaudeAgentSdkQuerySession,
+          ) {
+            pendingQuery = querySession;
+            // Mark only successful opens; retries must not resume sessions that failed to create.
+            yield* Ref.update(openedNativeThreads, (current) => {
+              if (current.has(nativeThreadId)) {
+                return current;
+              }
+              const updated = new Set(current);
+              updated.add(nativeThreadId);
+              return updated;
+            });
+            // A new session's spawn applied this turn's title. A resume keeps the session's stored
+            // title, so the last applied one stays authoritative until a turn compares again.
+            if (!shouldResume) {
+              appliedSessionTitles.set(nativeThreadId, turnInput.appThread.title);
+            }
+            yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId, {
+              status: "active",
+            });
+            const closed = yield* Deferred.make<void, never>();
+            const context: ClaudeLiveQueryContext = {
+              queryPolicy,
+              nativeThreadId,
+              settingsCwd: turnInput.runtimePolicy.cwd,
+              launchArgSettings,
+              query: querySession,
+              queryPolicyKey,
+              selection: compiledSelection,
+              closed,
+              lastTurn: null,
+              promptEchoMode: "unknown",
+              openedPermissionMode: queryOptions.permissionMode,
+              receivedInit: false,
+              checkMcpSignIns: false,
+              capabilities: new Set(),
+              claudeCodeVersion: undefined,
+              permissionMode: queryOptions.permissionMode,
+              stopping: false,
+              exitCause: undefined,
+              handedOffSubagents: new Set(),
+              subagentsFromEarlierProcesses: new Set(
+                [...(yield* Ref.get(sessionSubagentsByTaskId)).values()].filter(
+                  (subagent) => subagent.task.status === "running",
                 ),
               ),
-            ),
-          );
-          const { query: querySession, closed } = context;
-          yield* querySession.messages.pipe(
-            Stream.runForEach((message) =>
-              sdkMessageLock.withPermits(1)(
-                Effect.suspend(() => {
-                  let firstInit = false;
-                  if (
-                    message.type === "system" &&
-                    message.subtype === "init" &&
-                    !context.receivedInit
-                  ) {
-                    firstInit = true;
-                    context.openedPermissionMode =
-                      message.permissionMode ?? context.openedPermissionMode;
-                    context.receivedInit = true;
-                    context.capabilities = new Set(message.capabilities ?? []);
-                    context.claudeCodeVersion = message.claude_code_version;
-                  }
-                  if (message.type === "system" && message.subtype === "init") {
-                    // Recorded frames from older CLIs can omit the list.
-                    context.checkMcpSignIns = (message.mcp_servers ?? []).some(
-                      (server) =>
-                        (server.status === "pending" || server.status === "needs-auth") &&
-                        // claude.ai connectors the user never connected need a sign-in too.
-                        !server.name.startsWith("claude.ai "),
-                    );
-                  }
-                  if (
-                    message.type === "system" &&
-                    message.subtype === "init" &&
-                    message.session_id.length > 0 &&
-                    message.session_id !== context.nativeThreadId
-                  ) {
-                    clearedNativeSessions.set(context.nativeThreadId, message.session_id);
-                  }
-                  if (
-                    message.type === "system" &&
-                    (message.subtype === "init" || message.subtype === "status") &&
-                    message.permissionMode !== undefined
-                  ) {
-                    context.permissionMode = message.permissionMode;
-                  }
-                  if (message.type === "result") {
-                    const ledger = claudeModelLedger(message.modelUsage);
-                    const growth = claudeLedgerDelta(context.modelLedger, ledger);
-                    if (growth !== undefined) resultLedgerUsage.set(message, growth);
-                    // A ledger that went backwards cannot anchor the next turn's growth.
-                    context.modelLedger =
-                      growth === undefined && context.modelLedger !== undefined
-                        ? undefined
-                        : ledger;
-                    for (const [model, window] of claudeReportedContextWindows(
-                      message.modelUsage,
-                    )) {
-                      if (reportedContextWindows.get(model) === window) continue;
-                      reportedContextWindows.set(model, window);
-                      resultsReportingNewContextWindow.add(message);
+              modelLedger: new Map(),
+              taskOutputRoot: claudeTaskOutputRoot(
+                adapterOptions.environment,
+                path,
+                resolvedTurnCwd,
+                hostPlatform,
+              ),
+              boundaryBatches,
+              boundaryLock,
+            };
+            ownedQuery = context;
+            // One step, so the replaced process cannot exit between the install and the handoff.
+            yield* Ref.update(queryContext, (replaced) => {
+              if (replaced !== null) {
+                replaced.handedOffSubagents = new Set(
+                  [...context.subagentsFromEarlierProcesses].filter(
+                    (subagent) => !replaced.subagentsFromEarlierProcesses.has(subagent),
+                  ),
+                );
+              }
+              return context;
+            });
+            yield* querySession.messages.pipe(
+              Stream.runForEach((message) =>
+                sdkMessageLock.withPermits(1)(
+                  Effect.suspend(() => {
+                    let firstInit = false;
+                    if (
+                      message.type === "system" &&
+                      message.subtype === "init" &&
+                      !context.receivedInit
+                    ) {
+                      firstInit = true;
+                      context.openedPermissionMode =
+                        message.permissionMode ?? context.openedPermissionMode;
+                      context.receivedInit = true;
+                      context.capabilities = new Set(message.capabilities ?? []);
+                      context.claudeCodeVersion = message.claude_code_version;
+                    }
+                    if (message.type === "system" && message.subtype === "init") {
+                      // Recorded frames from older CLIs can omit the list.
+                      context.checkMcpSignIns = (message.mcp_servers ?? []).some(
+                        (server) =>
+                          (server.status === "pending" || server.status === "needs-auth") &&
+                          // claude.ai connectors the user never connected need a sign-in too.
+                          !server.name.startsWith("claude.ai "),
+                      );
+                    }
+                    if (
+                      message.type === "system" &&
+                      message.subtype === "init" &&
+                      message.session_id.length > 0 &&
+                      message.session_id !== context.nativeThreadId
+                    ) {
+                      clearedNativeSessions.set(context.nativeThreadId, message.session_id);
+                    }
+                    if (
+                      message.type === "system" &&
+                      (message.subtype === "init" || message.subtype === "status") &&
+                      message.permissionMode !== undefined
+                    ) {
+                      context.permissionMode = message.permissionMode;
+                    }
+                    if (message.type === "result") {
+                      const ledger = claudeModelLedger(message.modelUsage);
+                      const growth = claudeLedgerDelta(context.modelLedger, ledger);
+                      if (growth !== undefined) resultLedgerUsage.set(message, growth);
+                      // A ledger that went backwards cannot anchor the next turn's growth.
+                      context.modelLedger =
+                        growth === undefined && context.modelLedger !== undefined
+                          ? undefined
+                          : ledger;
+                      for (const [model, window] of claudeReportedContextWindows(
+                        message.modelUsage,
+                      )) {
+                        if (reportedContextWindows.get(model) === window) continue;
+                        reportedContextWindows.set(model, window);
+                        resultsReportingNewContextWindow.add(message);
+                      }
+                    }
+                    const handled = handleSdkMessage({ query: querySession, message });
+                    const reportedCwd = turnInput.runtimePolicy.cwd;
+                    if (!firstInit || reportedCwd === null || !adapterOptions.onSessionInit) {
+                      return handled;
+                    }
+                    return adapterOptions.onSessionInit(reportedCwd).pipe(Effect.andThen(handled));
+                  }),
+                ),
+              ),
+              Effect.exit,
+              Effect.flatMap(
+                Effect.fnUntraced(function* (exit: ClaudeQueryStreamExit) {
+                  yield* settleBoundaryOffersOfEndedProcess(context);
+                  if (exit._tag === "Failure") {
+                    context.exitCause = exit.cause;
+                    if (isClaudeConversationNotFound(exit.cause)) {
+                      missingNativeThreads.add(context.nativeThreadId);
                     }
                   }
-                  const handled = handleSdkMessage({ query: querySession, message });
-                  const reportedCwd = turnInput.runtimePolicy.cwd;
-                  if (!firstInit || reportedCwd === null || !adapterOptions.onSessionInit) {
-                    return handled;
+                  const heldContext = yield* Ref.get(activeTurn);
+                  if (
+                    (yield* Ref.get(queryContext))?.query === querySession &&
+                    heldContext !== null &&
+                    heldContext.heldRootFrames.length > 0
+                  ) {
+                    yield* releaseHeldRootFrames(heldContext);
                   }
-                  return adapterOptions.onSessionInit(reportedCwd).pipe(Effect.andThen(handled));
+                  const ownsLiveQuery = yield* Ref.modify(queryContext, (current) =>
+                    current?.query === querySession ? [true, null] : [false, current],
+                  );
+                  if (ownsLiveQuery) {
+                    yield* finalizeActiveTurnAfterQueryExit(
+                      context,
+                      exit._tag === "Failure" ? exit.cause : undefined,
+                    );
+                    yield* endSubagentCallsOfClosedQuery(
+                      context.nativeThreadId,
+                      context.stopping ? "interrupted" : "failed",
+                    );
+                  } else {
+                    yield* endSubagentsOfReplacedQuery(context);
+                  }
                 }),
               ),
-            ),
-            Effect.exit,
-            Effect.flatMap(
-              Effect.fnUntraced(function* (exit: ClaudeQueryStreamExit) {
-                yield* settleBoundaryOffersOfEndedProcess(context);
-                if (exit._tag === "Failure") {
-                  context.exitCause = exit.cause;
-                  if (isClaudeConversationNotFound(exit.cause)) {
-                    missingNativeThreads.add(context.nativeThreadId);
-                  }
-                }
-                const heldContext = yield* Ref.get(activeTurn);
-                if (
-                  (yield* Ref.get(queryContext))?.query === querySession &&
-                  heldContext !== null &&
-                  heldContext.heldRootFrames.length > 0
-                ) {
-                  yield* releaseHeldRootFrames(heldContext);
-                }
-                const ownsLiveQuery = yield* Ref.modify(queryContext, (current) =>
-                  current?.query === querySession ? [true, null] : [false, current],
-                );
-                if (ownsLiveQuery) {
-                  yield* finalizeActiveTurnAfterQueryExit(
-                    context,
-                    exit._tag === "Failure" ? exit.cause : undefined,
-                  );
-                  yield* endSubagentCallsOfClosedQuery(
-                    context.nativeThreadId,
-                    context.stopping ? "interrupted" : "failed",
-                  );
-                } else {
-                  yield* endSubagentsOfReplacedQuery(context);
-                }
-              }),
-            ),
-            Effect.ensuring(Deferred.succeed(closed, undefined)),
-            Effect.forkIn(sessionScope),
+              Effect.ensuring(Deferred.succeed(closed, undefined)),
+              Effect.interruptible,
+              Effect.forkIn(sessionScope),
+            );
+            pendingQuery = undefined;
+            return context;
+          });
+
+          return yield* Effect.uninterruptibleMask((restore) =>
+            restore(acquireQuery).pipe(Effect.flatMap(installQuery)),
+          ).pipe(
+            Effect.onError(() => {
+              const query = pendingQuery;
+              if (query === undefined) return Effect.void;
+              return Ref.update(queryContext, (current) =>
+                current?.query === query ? null : current,
+              ).pipe(
+                Effect.andThen(query.close),
+                Effect.ignoreCause({
+                  log: true,
+                  message: "Could not close an unpublished Claude query.",
+                }),
+              );
+            }),
           );
-          return context;
         });
 
         const prepareSteeringOffer = Effect.fn("ClaudeAdapterV2.prepareSteeringOffer")(function* (

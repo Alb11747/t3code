@@ -1728,8 +1728,15 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
 });
 
 describe("ClaudeAdapterV2 provider installation gate", () => {
-  it.effect("opens each turn's Claude process inside the installation gate", () =>
+  it.effect.each([
+    { name: "opens the Claude query inside the installation gate", cancel: false },
+    {
+      name: "closes an acquired Claude query if the installation gate is cancelled before return",
+      cancel: true,
+    },
+  ])("$name", ({ cancel }) =>
     Effect.gen(function* () {
+      const opened = yield* Deferred.make<void>();
       const fileSystem = yield* FileSystem.FileSystem;
       const log: Array<string> = [];
       const instanceId = ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID;
@@ -1746,16 +1753,21 @@ describe("ClaudeAdapterV2 provider installation gate", () => {
           execute: (gatedInstanceId, effect) =>
             Effect.sync(() => log.push(`enter ${gatedInstanceId}`)).pipe(
               Effect.andThen(effect),
+              Effect.tap(() =>
+                cancel
+                  ? Deferred.succeed(opened, undefined).pipe(Effect.andThen(Effect.never))
+                  : Effect.void,
+              ),
               Effect.ensuring(Effect.sync(() => log.push("exit"))),
             ),
           update: () => Effect.die("unused"),
         }),
         queryRunner: {
           allocateSessionId: Effect.succeed("native-thread-claude-gate"),
-          open: () =>
+          open: (input) =>
             Effect.sync(() => {
               log.push("open query");
-              return {
+              const query = {
                 messages: Stream.never,
                 offer: () => Effect.void,
                 setModel: () => Effect.void,
@@ -1772,8 +1784,12 @@ describe("ClaudeAdapterV2 provider installation gate", () => {
                 listPermissionRules: Effect.die("unexpected permission rules read"),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
-                close: Effect.void,
+                close: Effect.sync(() => {
+                  log.push("close query");
+                }),
               };
+              input.onAcquire?.(query);
+              return query;
             }),
           forkSession: () => Effect.die("unused"),
           subagentLaunchToolUseId: () => Effect.succeed(null),
@@ -1800,7 +1816,7 @@ describe("ClaudeAdapterV2 provider installation gate", () => {
       });
       assert.deepStrictEqual(log, []);
 
-      yield* runtime.startTurn(
+      const start = runtime.startTurn(
         makeClaudeTestTurnInput({
           threadId,
           providerThread,
@@ -1812,7 +1828,15 @@ describe("ClaudeAdapterV2 provider installation gate", () => {
         }),
       );
 
-      assert.deepStrictEqual(log, [`enter ${instanceId}`, "open query", "exit"]);
+      if (cancel) {
+        const starting = yield* start.pipe(Effect.forkChild);
+        yield* Deferred.await(opened);
+        yield* Fiber.interrupt(starting);
+        assert.deepStrictEqual(log, [`enter ${instanceId}`, "open query", "exit", "close query"]);
+      } else {
+        yield* start;
+        assert.deepStrictEqual(log, [`enter ${instanceId}`, "open query", "exit"]);
+      }
     }).pipe(
       Effect.provide(
         Layer.mergeAll(

@@ -5,7 +5,7 @@ use std::mem::{forget, offset_of, size_of, size_of_val};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
-use std::process::Command;
+use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, HANDLE, WAIT_OBJECT_0,
@@ -148,26 +148,21 @@ fn wait_for_empty_job(job: HANDLE) -> io::Result<()> {
     }
 }
 
-pub fn run(mut args: impl Iterator<Item = OsString>) -> io::Result<()> {
-    let pipe = argument(&mut args)?;
-    let gate_name = argument(&mut args)?;
-    let gate = wide(&gate_name);
-    let mut control = OpenOptions::new().read(true).write(true).open(&pipe)?;
-    control.write_all(b"C")?;
-    // A separate pipe instance lets the receipt write proceed while the stop reader is blocked.
-    let mut receipts = OpenOptions::new().write(true).open(pipe)?;
-    receipts.write_all(b"A")?;
-    let mut message = [0];
-    if control.read_exact(&mut message).is_err() || message != *b"S" {
-        // There is no child before the server explicitly authorizes it.
-        receipts.write_all(b"D")?;
-        return Ok(());
-    }
-
+fn spawn_gated_child(
+    gate_name: OsString,
+    args: impl Iterator<Item = OsString>,
+) -> io::Result<(
+    OwnedHandle,
+    OwnedHandle,
+    OwnedHandle,
+    Child,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+)> {
     let job = OwnedHandle(unsafe { CreateJobObjectW(None, None)? });
     let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     set_limits(job.0, &limits)?;
+    let gate = wide(&gate_name);
     let start = OwnedHandle(unsafe { CreateEventW(None, true, false, PCWSTR(gate.as_ptr()))? });
     let stop = OwnedHandle(unsafe { CreateEventW(None, true, false, PCWSTR::null())? });
     let mut child = Command::new(std::env::current_exe()?)
@@ -180,9 +175,35 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> io::Result<()> {
     if let Err(error) = unsafe { AssignProcessToJobObject(job.0, child_handle) } {
         child.kill()?;
         child.wait()?;
-        receipts.write_all(b"D")?;
         return Err(error.into());
     }
+    Ok((job, start, stop, child, limits))
+}
+
+pub fn run(mut args: impl Iterator<Item = OsString>) -> io::Result<()> {
+    let pipe = argument(&mut args)?;
+    let gate_name = argument(&mut args)?;
+    let mut control = OpenOptions::new().read(true).write(true).open(&pipe)?;
+    control.write_all(b"C")?;
+    // A separate pipe instance lets the receipt write proceed while the stop reader is blocked.
+    let mut receipts = OpenOptions::new().write(true).open(pipe)?;
+    receipts.write_all(b"A")?;
+    let mut message = [0];
+    if control.read_exact(&mut message).is_err() || message != *b"S" {
+        // There is no child before the server explicitly authorizes it.
+        receipts.write_all(b"D")?;
+        return Ok(());
+    }
+
+    let (job, start, stop, mut child, mut limits) = match spawn_gated_child(gate_name, args) {
+        Ok(owned) => owned,
+        Err(error) => {
+            // The gate has not opened. Even a failed trampoline cleanup cannot launch Claude.
+            receipts.write_all(b"F")?;
+            return Err(error);
+        }
+    };
+    let child_handle = HANDLE(child.as_raw_handle());
     // The reader owns its stop handle until process exit, including when no stop is needed.
     let stop_handle = stop.0.0 as usize;
     forget(stop);

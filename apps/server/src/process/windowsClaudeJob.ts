@@ -49,7 +49,8 @@ export async function createWindowsClaudeJob(id: string): Promise<WindowsClaudeJ
     socket.once("data", (data: Buffer) => {
       const role = data.subarray(0, 1).toString();
       const receive = (chunk: Buffer) => {
-        if (chunk.length === 1 && chunk[0] === 68) finish();
+        // D confirms the job drained. F confirms launch failed before the gate opened.
+        if (chunk.length === 1 && (chunk[0] === 68 || chunk[0] === 70)) finish();
       };
       if (role === "C" && control === undefined) {
         control = socket;
