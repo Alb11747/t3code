@@ -101,8 +101,9 @@ export function V2LifecycleRow(props: {
       item.beforeTokenCount === undefined && item.afterTokenCount === undefined
         ? null
         : `${item.beforeTokenCount ?? "?"} → ${item.afterTokenCount ?? "?"} tokens`;
-    const label =
-      item.status === "failed"
+    const label = item.skipped
+      ? "Idle compaction skipped"
+      : item.status === "failed"
         ? "Context compaction failed"
         : item.status === "cancelled" || item.status === "interrupted"
           ? "Context compaction stopped"

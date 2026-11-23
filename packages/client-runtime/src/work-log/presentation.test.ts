@@ -4,6 +4,7 @@ import { ThreadId, TurnItemId, type OrchestrationV2TurnItem } from "@t3tools/con
 import * as DateTime from "effect/DateTime";
 
 import {
+  contextCompactionLabel,
   resolveWorkEntryToolPresentation,
   toolItemForDisplay,
   type WorkLogPresentationEntry,
@@ -34,6 +35,17 @@ function commandItem(
     ...fields,
   };
 }
+
+it("explains a skipped idle compaction distinctly from a stopped compaction", () => {
+  expect(contextCompactionLabel({ status: "cancelled" })).toBe("Context compaction stopped");
+  expect(
+    contextCompactionLabel({
+      status: "cancelled",
+      skipped: true,
+      summary: "The warm account was unavailable.",
+    }),
+  ).toBe("Idle compaction skipped · The warm account was unavailable.");
+});
 
 describe("workEntryIndicatesToolFailure", () => {
   const base = {

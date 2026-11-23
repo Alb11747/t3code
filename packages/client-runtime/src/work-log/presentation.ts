@@ -56,7 +56,7 @@ export function toolItemForDisplay(item: OrchestrationV2TurnItem): Orchestration
 
 type CompactionLabelItem = Pick<
   Extract<OrchestrationV2TurnItem, { type: "compaction" }>,
-  "status" | "beforeTokenCount" | "afterTokenCount"
+  "status" | "beforeTokenCount" | "afterTokenCount" | "skipped" | "summary"
 >;
 
 export function contextCompactionTokenCounts(
@@ -76,6 +76,10 @@ export function contextCompactionLabel(
   item: CompactionLabelItem,
   resolve: MFunctionType = mFallback,
 ): string {
+  if (item.skipped) {
+    const title = resolve(msg("Idle compaction skipped"));
+    return item.summary ? `${title} · ${item.summary}` : title;
+  }
   if (item.status === "failed") return resolve(msg("Context compaction failed"));
   if (item.status === "cancelled" || item.status === "interrupted")
     return resolve(msg("Context compaction stopped"));

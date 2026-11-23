@@ -181,10 +181,16 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
     turnOneResult,
   } = input;
   const makeWakeHarness = makeWakeHarnessWithOptions();
+  const idleCompactionSkipError =
+    "Error during compaction: API Error: 400 idle_compaction_skipped: Idle compaction skipped: the warm account cannot serve before cache expiry.";
 
   it.effect.each([
     "generic retry",
     "failed compaction",
+    "skipped idle compaction",
+    "idle compaction skipped after limit cleared",
+    "failed idle compaction",
+    "router skip error on manual compaction",
     "successful compaction",
     "expired compaction",
     "partly expired compaction",
@@ -222,19 +228,30 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
       const start = (
         modelSelection = CLAUDE_TEST_MODEL_SELECTION,
         providerThread = harness.providerThread,
-      ) =>
-        harness.runtime.startTurn(
-          makeClaudeTestTurnInput({
-            threadId: harness.threadId,
-            providerThread,
-            now,
-            attemptId: RunAttemptId.make(`attempt-reset-retention-${++ordinal}`),
-            providerTurnOrdinal: ordinal,
-            modelSelection,
-            text: "Continue.",
-            attachments: [],
-          }),
-        );
+        compaction?: "idle" | "manual",
+      ) => {
+        const turn = makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread,
+          now,
+          attemptId: RunAttemptId.make(`attempt-reset-retention-${++ordinal}`),
+          providerTurnOrdinal: ordinal,
+          modelSelection,
+          text: compaction ? "/compact" : "Continue.",
+          attachments: [],
+        });
+        return compaction === undefined
+          ? harness.runtime.startTurn(turn)
+          : harness.runtime.compactThread!({
+              ...turn,
+              ...(compaction === "idle"
+                ? {
+                    idleCompaction: true,
+                    promptCacheExpiresAt: DateTime.addDuration(now, Duration.minutes(2)),
+                  }
+                : {}),
+            });
+      };
       const limit = (rate_limit_info: SDKRateLimitInfo) =>
         Queue.offer(
           messages(),
@@ -292,6 +309,10 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
       );
 
       if (scenario === "expired reset") yield* TestClock.adjust("3 hours");
+      const limitCleared = scenario === "idle compaction skipped after limit cleared";
+      const skipped = scenario === "skipped idle compaction" || limitCleared;
+      const failedIdleCompaction = scenario === "failed idle compaction";
+      const manualSkipError = scenario === "router skip error on manual compaction";
       yield* start(
         scenario === "different model" || scenario === "model switch back"
           ? { ...CLAUDE_TEST_MODEL_SELECTION, model: "claude-opus-4-6" }
@@ -306,16 +327,24 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
               },
             }
           : harness.providerThread,
+        skipped || failedIdleCompaction ? "idle" : manualSkipError ? "manual" : undefined,
       );
       if (
         scenario === "failed compaction" ||
+        skipped ||
+        failedIdleCompaction ||
+        manualSkipError ||
         scenario === "successful compaction" ||
         scenario === "expired compaction" ||
         scenario === "partly expired compaction"
       ) {
         const blocked =
-          scenario === "failed compaction" || scenario === "partly expired compaction";
+          scenario === "failed compaction" ||
+          scenario === "partly expired compaction" ||
+          failedIdleCompaction ||
+          manualSkipError;
         const expectedReset = scenario === "partly expired compaction" ? laterResetAt : resetAt;
+        if (limitCleared) yield* limit({ status: "allowed", rateLimitType: "five_hour" });
         if (scenario === "expired compaction" || scenario === "partly expired compaction")
           yield* TestClock.adjust("3 hours");
         yield* Queue.offerAll(messages(), [
@@ -332,7 +361,12 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
             status: null,
             compact_result: scenario === "successful compaction" ? "success" : "failed",
             ...(scenario !== "successful compaction"
-              ? { compact_error: "Compaction stopped by the provider." }
+              ? {
+                  compact_error:
+                    skipped || manualSkipError
+                      ? idleCompactionSkipError
+                      : "Compaction stopped by the provider.",
+                }
               : {}),
             uuid: uuid(),
             session_id: WAKE_NATIVE_SESSION,
@@ -343,13 +377,26 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
           }),
         ]);
         const terminal = yield* Queue.take(harness.terminalReceipts);
+        const lastCompaction = harness.events.findLast(
+          (event) => event.type === "turn_item.updated" && event.turnItem.type === "compaction",
+        );
+        assert.equal(
+          lastCompaction?.type === "turn_item.updated" ? lastCompaction.turnItem.status : undefined,
+          skipped ? "cancelled" : scenario === "successful compaction" ? "completed" : "failed",
+        );
+        if (
+          lastCompaction?.type === "turn_item.updated" &&
+          lastCompaction.turnItem.type === "compaction"
+        ) {
+          assert.equal(lastCompaction.turnItem.skipped, skipped ? true : undefined);
+        }
         assert.equal(terminal.status, blocked ? "failed" : "completed");
         if (terminal.status === "failed") {
           assert.equal(terminal.failure.class, "usage_limit");
           assert.equal(terminal.failure.resetAt, expectedReset);
         }
         yield* start();
-        yield* fail(blocked ? expectedReset : null);
+        yield* fail(blocked || (skipped && !limitCleared) ? expectedReset : null);
         return;
       }
       if (scenario === "successful recovery" || scenario === "non-limit failure") {

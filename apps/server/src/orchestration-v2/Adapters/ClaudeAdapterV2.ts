@@ -5577,9 +5577,7 @@ interface ActiveClaudeTurnContext {
     readonly type: string | null;
     readonly resetAt: string | null;
   } | null;
-  // Set while this turn's latest compaction status reports a failure, with
-  // Claude's error text when it sent one.
-  compactionFailure: { readonly message: string | undefined } | null;
+  compactionRejection: { readonly message: string | undefined; readonly skipped: boolean } | null;
   // The title a `session_title_changed` frame reported; a `/rename` result applies it to the thread.
   nativeSessionTitle: string | null;
   // Steers end segments whose usage is excluded from the final result; bill them too, oldest first.
@@ -10415,9 +10413,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           input.context.retryRiders.clear();
           const nativeThreadId = input.context.nativeThreadId;
           const model = input.context.input.modelSelection.model;
-          if (input.status === "failed" && input.failure?.class === "usage_limit") {
-            // Keep incomplete windows too: an unknown reset must continue to
-            // prevent scheduling until that window is reported or cleared.
+          // A router skip is no evidence of recovery. Preserve the windows Claude has yet to clear.
+          const skippedWithRetainedLimits =
+            input.status === "completed" &&
+            input.context.compactionRejection?.skipped === true &&
+            input.context.rateLimitResetTimes.size > 0;
+          if (
+            (input.status === "failed" && input.failure?.class === "usage_limit") ||
+            skippedWithRetainedLimits
+          ) {
             usageLimitResetsByNativeThread.set(nativeThreadId, {
               model,
               windows: new Map(input.context.rateLimitResetTimes),
@@ -12251,26 +12255,43 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const failed =
               message.compact_result === "failed" &&
               !(yield* Ref.get(interruptedTurns)).has(context.providerTurnId);
+            const skipped =
+              failed &&
+              context.input.idleCompaction === true &&
+              message.compact_error?.startsWith(
+                "Error during compaction: API Error: 400 idle_compaction_skipped:",
+              ) === true;
             if (message.compact_result !== undefined) {
-              context.compactionFailure = failed ? { message: message.compact_error } : null;
+              context.compactionRejection = failed
+                ? { message: message.compact_error, skipped }
+                : null;
             }
             if (context.compaction?.status === "running") {
               const now = yield* DateTime.now;
-              context.compaction = {
-                ...context.compaction,
-                status:
-                  message.compact_result === "success"
-                    ? "completed"
+              const status =
+                message.compact_result === "success"
+                  ? "completed"
+                  : skipped
+                    ? "cancelled"
                     : failed
                       ? "failed"
-                      : "interrupted",
-                title:
-                  message.compact_result === "success"
-                    ? "Context compacted"
-                    : failed
-                      ? "Context compaction failed"
-                      : "Context compaction stopped",
-                ...(failed && message.compact_error ? { summary: message.compact_error } : {}),
+                      : "interrupted";
+              const summary = skipped
+                ? "The account with the warm cache could not run the compaction before expiry."
+                : failed
+                  ? message.compact_error
+                  : undefined;
+              context.compaction = {
+                ...context.compaction,
+                status,
+                title: {
+                  completed: "Context compacted",
+                  cancelled: "Idle compaction skipped",
+                  failed: "Context compaction failed",
+                  interrupted: "Context compaction stopped",
+                }[status],
+                ...(skipped ? { skipped: true as const } : {}),
+                ...(summary ? { summary } : {}),
                 completedAt: now,
                 updatedAt: now,
               };
@@ -13232,6 +13253,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (!isClaudeProviderContinuationTurn(context.input)) {
               yield* markAbsorbedWake(liveQuery.nativeThreadId);
             }
+            const compactionFailure =
+              context.compactionRejection?.skipped === false ? context.compactionRejection : null;
             const usageLimited =
               context.authenticationFailureMessage === undefined &&
               (context.rejectedRateLimitTypes.size > 0 ||
@@ -13239,7 +13262,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 // A failed local compaction does not establish recovery from a retained limit.
                 (message.subtype === "success" &&
                   message.local_command === "compact" &&
-                  context.compactionFailure !== null &&
+                  compactionFailure !== null &&
                   context.rateLimitResetTimes.size > 0)) &&
               (message.subtype !== "success" ||
                 message.api_error_status == null ||
@@ -13277,7 +13300,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             // Usage-limited /compact reports success; fail it so queued messages wait for the limit to clear.
             const limitedCompaction =
               usageLimited && message.subtype === "success" && message.local_command === "compact"
-                ? context.compactionFailure
+                ? compactionFailure
                 : null;
             const assistantLimit = context.latestAssistantRateLimit;
             if (
@@ -15628,7 +15651,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ),
               ),
               latestAssistantRateLimit: null,
-              compactionFailure: null,
+              compactionRejection: null,
               nativeSessionTitle: null,
               steeredSegmentUsage: [],
               steersClosed: false,
