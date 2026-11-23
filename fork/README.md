@@ -314,7 +314,12 @@ attempt at the previous one.
    pushed within two hours of the previous one ships in one release. There's
    no need to hold a finished change for other threads' work; push it and let
    the wait collect them. To ship sooner, approve the waiting deployment in
-   the run's page (repository admins can bypass the timer).
+   the run's page (repository admins can bypass the timer). Do that for an
+   important change (a fix for lost work, duplicated agents, broken delegation
+   or a similar user-facing failure) once no other agent is building or about
+   to push T3 Code changes on any connected machine: check the T3 thread lists
+   and AgentBridge agents on every linked and reachable environment for active
+   t3code work, and ask those agents when unsure. Otherwise let the timer run.
    If the push is rejected because another thread pushed first,
    `git fetch origin`, rebase onto `origin/main`, and push again. After the
    wait, Fork release compares files with the newest published release and
