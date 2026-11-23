@@ -46,7 +46,7 @@ the agent or thread the reproduction and the evidence that the bug is fork-only.
 
 ## Upstream bugs are reported by default
 
-Report every real upstream bug upstream, not only the ones that block you: a bug a fork change fixes, or one you find while working, once it reproduces on fetched `upstream/main` (_Whose is it?_ below). Follow steps 1 and 3 of _Upstream's: unblock the fork, then report it_: search first, then open the issue, plus a PR when the fix applies to upstream without fork-only code. This needs no request. A fork-only bug gets no upstream report; say so in its `CHANGES.md` entry. Public text names no local paths, accounts, thread ids or private projects.
+Report every real upstream bug upstream, not only the ones that block you: a bug a fork change fixes, or one you find while working, once it reproduces on fetched `upstream/main` (_Whose is it?_ below). Follow steps 1 and 3 of _Upstream's: unblock the fork, then report it_: search first, then open the issue, plus a PR when the fix applies to upstream without fork-only code. This needs no request. A cost-efficient model such as Sol (`gpt-6.2-sol`) is good enough to build the repro and write the report; the agent that found the bug reviews it before filing. A fork-only bug gets no upstream report; say so in its `CHANGES.md` entry. Public text names no local paths, accounts, thread ids or private projects.
 
 ## When something blocks your work
 
