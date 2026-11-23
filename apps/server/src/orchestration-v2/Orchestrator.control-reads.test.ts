@@ -1003,7 +1003,7 @@ it.effect("Codex idle compaction only consumes its one-time override when admitt
 
     yield* compact("admit-idle-compaction");
     const admitted = yield* projections.getThreadRecords(threadId, ["messages"]);
-    assert.isNull(admitted.thread.compactAfterIdle);
+    assert.isFalse(admitted.thread.compactAfterIdle);
     assert.deepEqual(
       admitted.messages.map((message) => message.text),
       ["Wait for the next event.", "/compact"],

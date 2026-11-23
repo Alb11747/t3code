@@ -680,12 +680,11 @@ describe("IdleCompactionService", () => {
     },
   );
 
-  it.effect("starts the Codex idle period only after pending work ends", () =>
+  it.effect("starts the default Codex idle period only after pending work ends", () =>
     Effect.scoped(
       Effect.gen(function* () {
         yield* TestClock.setTime(NOW_MS);
         const data = codexRecords();
-        data.thread = { ...data.thread, compactAfterIdle: "once" };
         data.providerThreads = [
           {
             ...data.providerThreads[0]!,
@@ -739,7 +738,7 @@ describe("IdleCompactionService", () => {
                 [codexInstanceId]: {
                   driver: codexDriver,
                   config: {
-                    idleCompactionEnabled: false,
+                    idleCompactionEnabled: true,
                     idleCompactionMinutes: 12,
                     idleCompactionMinTokens: 130_000,
                   },

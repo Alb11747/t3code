@@ -7988,7 +7988,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
 
-    if (command.idleCompaction === "afterIdle" && projection.thread.compactAfterIdle === "once") {
+    // Persist a spent one-time setting so the provider default cannot arm it again.
+    if (command.idleCompaction === "afterIdle" && projection.thread.compactAfterIdle !== true) {
       const now = yield* DateTime.now;
       const event = yield* emit(
         events,
@@ -7997,7 +7998,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         type: "thread.metadata-updated",
         threadId: command.threadId,
         occurredAt: now,
-        payload: { ...projection.thread, compactAfterIdle: null, updatedAt: now },
+        payload: { ...projection.thread, compactAfterIdle: false, updatedAt: now },
       });
       projection = applyToProjection(projection, event);
     }
