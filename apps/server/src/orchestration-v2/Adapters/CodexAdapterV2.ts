@@ -3338,6 +3338,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             Effect.map((position) => position.ordinal),
           );
 
+        // A turn has one retry row. A retry that starts after the turn made progress moves
+        // the row below that progress instead of reviving it at its first position. The
+        // terminal failure shares the row, so its key follows the move.
+        const placeRetryRowLast = Effect.fnUntraced(function* (context: ActiveCodexTurnContext) {
+          const key = `terminal-failure:${context.providerTurnId}`;
+          if (!context.itemPositions.has(key)) return yield* resolveItemOrdinal(context, key);
+          const position = yield* resolveItemPosition(
+            context,
+            `${key}:${context.itemPositions.size}`,
+          );
+          context.itemPositions.set(key, position);
+          return position.ordinal;
+        });
+
         const nextProviderTurnOrdinal = (
           providerThreadId: OrchestrationV2ProviderThread["id"],
           minimum: number,
@@ -5723,9 +5737,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               }),
               payload.error,
             );
-            const itemOrdinal =
-              previous?.itemOrdinal ??
-              (yield* resolveItemOrdinal(context, `terminal-failure:${context.providerTurnId}`));
+            const itemOrdinal = previous?.itemOrdinal ?? (yield* placeRetryRowLast(context));
             const state: ActiveCodexProviderRetry = {
               ...(previous?.context === undefined ? {} : { context: previous.context }),
               nativeMessage: payload.error.message,
@@ -6745,10 +6757,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 providerThreadId: input.context.providerThread.id,
                 providerTurnId: input.context.providerTurnId,
                 runOrdinal: input.context.input.runOrdinal,
-                failureItemOrdinal: yield* resolveItemOrdinal(
-                  input.context,
-                  `terminal-failure:${input.context.providerTurnId}`,
-                ),
+                failureItemOrdinal:
+                  input.providerRetry?.itemOrdinal ?? (yield* placeRetryRowLast(input.context)),
                 status: terminalStatus,
                 failure:
                   failure.class === "usage_limit"

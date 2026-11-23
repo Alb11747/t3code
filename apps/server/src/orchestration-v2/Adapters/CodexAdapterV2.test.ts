@@ -6058,6 +6058,25 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             },
             {
               type: "emit_inbound",
+              label: "error/retry/after-progress",
+              frame: {
+                method: "error",
+                params: {
+                  threadId: nativeThreadId,
+                  turnId: nativeTurnId,
+                  willRetry: true,
+                  error: {
+                    message: "Reconnecting... 1/5",
+                    additionalDetails: "The response stream disconnected.",
+                    codexErrorInfo: {
+                      responseStreamDisconnected: { httpStatusCode: 529 },
+                    },
+                  },
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
               label: "turn/completed",
               frame: {
                 method: "turn/completed",
@@ -6089,7 +6108,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             ? [event.turnItem]
             : [],
         );
-        assert.lengthOf(retryItems, 3);
+        assert.isAtLeast(retryItems.length, 4);
         assert.equal(retryItems[0]?.status, "running");
         assert.equal(retryItems[0]?.failure.code, "responseStreamDisconnected");
         assert.deepEqual(retryItems[0]?.retry, {
@@ -6122,6 +6141,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.isAtLeast(recoveredIndex, 0);
         assert.isAbove(resumedCommandIndex, recoveredIndex);
         assert.isAbove(terminalIndex, resumedCommandIndex);
+
+        // A retry after progress moves the turn's retry row below that progress.
+        const resumedCommand = harness.events.flatMap((event) =>
+          event.type === "turn_item.updated" && event.turnItem.type === "command_execution"
+            ? [event.turnItem]
+            : [],
+        )[0];
+        assert.equal(retryItems[3]?.id, retryItems[0]?.id);
+        assert.equal(retryItems[3]?.status, "running");
+        assert.isAbove(retryItems[3]!.ordinal, resumedCommand!.ordinal);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(

@@ -7779,6 +7779,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             return ordinal;
           });
 
+        // A turn has one retry row. A retry that starts after the turn made progress moves
+        // the row below that progress instead of reviving it at its first position. The
+        // terminal failure shares the row, so its key follows the move.
+        const placeRetryRowLast = (context: ActiveClaudeTurnContext) => {
+          const key = `terminal-failure:${context.providerTurnId}`;
+          if (!context.itemOrdinals.has(key)) return resolveItemOrdinal(context, key);
+          return resolveItemOrdinal(context, `${key}:${context.itemOrdinals.size}`).pipe(
+            Effect.tap((ordinal) => Effect.sync(() => context.itemOrdinals.set(key, ordinal))),
+          );
+        };
+
         const providerTurnPayload = (input: {
           readonly context: ActiveClaudeTurnContext;
           readonly status: OrchestrationV2ProviderTurn["status"];
@@ -12452,9 +12463,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               retryDelayMs: Math.max(0, Math.trunc(message.retry_delay_ms)),
             };
             const failure = providerFailureFromApiRetry(message);
-            const itemOrdinal =
-              previous?.itemOrdinal ??
-              (yield* resolveItemOrdinal(context, `terminal-failure:${context.providerTurnId}`));
+            const itemOrdinal = previous?.itemOrdinal ?? (yield* placeRetryRowLast(context));
             const state: ActiveClaudeProviderRetry = {
               retry,
               failure,
@@ -15292,9 +15301,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             failure: { ...failure, retryable: true },
             retry: { attempt, maxAttempts: null, retryDelayMs },
             startedAt,
-            itemOrdinal:
-              previous?.itemOrdinal ??
-              (yield* resolveItemOrdinal(context, `terminal-failure:${context.providerTurnId}`)),
+            itemOrdinal: previous?.itemOrdinal ?? (yield* placeRetryRowLast(context)),
           };
           yield* Ref.update(providerRetries, (current) =>
             new Map(current).set(context.providerTurnId, state),
