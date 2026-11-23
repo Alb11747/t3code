@@ -1548,6 +1548,8 @@ export const OrchestrationV2ConversationMessage = Schema.Struct({
   senderThreadId: Schema.optional(ThreadId),
   linkedSender: Schema.optional(OrchestrationV2LinkedSender),
   idleCompaction: Schema.optional(OrchestrationV2IdleCompaction),
+  /** Direct client input attested when queued. An edit removes the attestation. */
+  directUserInput: Schema.optional(Schema.Literal(true)),
   /**
    * The message is the script a provider-native workflow run executes, not prose. Clients show
    * the workflow's opening instead and keep the script behind a disclosure.

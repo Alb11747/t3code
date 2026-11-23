@@ -10,6 +10,8 @@ than the fork's fix. Keep each entry on a single line; the sync script deletes
 the line of a change whose upstream PR merged. Closing an issue alone does not
 revert a patch. See `fork/README.md` for how to add or drop an entry.
 
+- `feat(mcp): expose queued message sender metadata`: queue list and read include authorship, scheduled-task origin, request time, and proof of direct user input. Editing a queued entry clears that proof so unattended clients can distinguish user text from generated or edited prompts. Issue: none linked. PR: none yet.
+
 - `fix(claude): stop the Windows process tree when releasing a query`: the bundled process helper owns each Claude query's Windows job from launch. Query release stops its launcher and CLI, and another query for that thread waits for confirmation that the old job is empty. Issue: none linked. PR: none yet.
 
 - `fix(codex): retain recently listed models during catalog gaps`: a Codex instance keeps a recently advertised model selectable for 24 hours from its last listing, so a delegation requesting that model can enter the normal capacity retry. Issue: none linked. PR: none yet.

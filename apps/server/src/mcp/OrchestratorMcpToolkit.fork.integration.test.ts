@@ -965,8 +965,23 @@ describe("orchestrator MCP toolkit", () => {
               cursor: 1,
               limit: 1,
             });
+            const queuedUserMetadata = {
+              createdBy: "user",
+              creationSource: "web",
+              senderThreadId: null,
+              scheduledTaskId: null,
+              directUserInput: true,
+              requestedAt: DateTime.formatIso(queuedUserRun.requestedAt),
+            };
             expect(queueSecondPage.structuredContent).toEqual({
-              items: [{ queuedRunId: queuedUserRun.id, text: "🙂".repeat(1000), truncated: true }],
+              items: [
+                {
+                  queuedRunId: queuedUserRun.id,
+                  text: "🙂".repeat(1000),
+                  truncated: true,
+                  ...queuedUserMetadata,
+                },
+              ],
               nextCursor: null,
             });
             const queueRead = yield* invoke("t3_queue", {
@@ -977,6 +992,23 @@ describe("orchestrator MCP toolkit", () => {
               queuedRunId: queuedUserRun.id,
               text: "🙂".repeat(16000),
               truncated: true,
+              ...queuedUserMetadata,
+            });
+            const editedQueueMessage = yield* invoke("t3_queue", {
+              action: "edit",
+              queuedRunId: queuedUserRun.id,
+              text: "Edited by the agent.",
+            });
+            expect(editedQueueMessage.isError).toBe(false);
+            const editedQueueRead = yield* invoke("t3_queue", {
+              action: "read",
+              queuedRunId: queuedUserRun.id,
+            });
+            expect(editedQueueRead.structuredContent).toMatchObject({
+              queuedRunId: queuedUserRun.id,
+              createdBy: "user",
+              directUserInput: false,
+              text: "Edited by the agent.",
             });
             const missingQueueRead = yield* invoke("t3_queue", {
               action: "read",

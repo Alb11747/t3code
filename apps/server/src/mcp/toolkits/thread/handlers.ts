@@ -8,6 +8,7 @@ import {
   type OrchestrationV2Command,
   threadAccountChoiceFor,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 import { isModelFamilyAlias } from "@t3tools/shared/latestModel";
@@ -44,6 +45,12 @@ function queueEntry(
     queuedRunId: run.id,
     text: characters.slice(0, limit).join(""),
     truncated: characters.length > limit,
+    createdBy: message.createdBy,
+    creationSource: message.creationSource,
+    senderThreadId: message.senderThreadId ?? null,
+    scheduledTaskId: message.scheduledTaskId ?? null,
+    directUserInput: message.directUserInput === true,
+    requestedAt: DateTime.formatIso(run.requestedAt),
   };
 }
 const dispatch = Effect.fn("mcp.dispatchThreadCommand")(function* (

@@ -6,6 +6,8 @@ import {
   OrchestrationThreadSearchMatch,
   OrchestrationV2ThreadForkSourcePoint,
   OrchestrationV2ContextTransfer,
+  OrchestrationV2Actor,
+  OrchestrationV2CreationSource,
   TrimmedNonEmptyString,
   ModelSelection,
   RuntimeMode,
@@ -88,6 +90,13 @@ const queueEntry = Schema.Struct({
   queuedRunId: RunId,
   text: Schema.String,
   truncated: Schema.Boolean,
+  // Older linked environments still return the original three-field entry.
+  createdBy: Schema.optional(OrchestrationV2Actor),
+  creationSource: Schema.optional(OrchestrationV2CreationSource),
+  senderThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  scheduledTaskId: Schema.optional(Schema.NullOr(ScheduledTaskId)),
+  directUserInput: Schema.optional(Schema.Boolean),
+  requestedAt: Schema.optional(IsoDateTime),
 });
 const QUEUE_READ_ACTIONS = ["list", "read"] as const;
 const QueueTool = Tool.make("t3_queue", {

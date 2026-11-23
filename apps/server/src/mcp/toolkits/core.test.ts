@@ -479,7 +479,11 @@ it.effect("records only failed calls of tools that hand off no work", () => {
 // A thread read whose runs or messages are bounded by nothing but the thread.
 const historyReads = (
   reads: Array<string>,
-  queued?: { readonly attachments: ReadonlyArray<unknown>; readonly dispatched: Array<unknown> },
+  queued?: {
+    readonly attachments: ReadonlyArray<unknown>;
+    readonly dispatched: Array<unknown>;
+    readonly metadata?: Readonly<Record<string, unknown>>;
+  },
 ) => {
   const record = (
     fields: ReadonlyArray<string>,
@@ -501,22 +505,38 @@ const historyReads = (
   const projection = McpToolAccessTestkit.idleThreadProjection(
     McpToolAccessTestkit.liveThreadShell(threadId),
   );
+  const recordRead = (
+    fields: ReadonlyArray<string>,
+    filter: ProjectionStore.ProjectionRecordFilter | undefined,
+  ) =>
+    Effect.sync(() => record(fields, filter)).pipe(
+      Effect.as({
+        ...projection,
+        runs:
+          queued !== undefined && fields.includes("runs")
+            ? [
+                {
+                  id: "run:queued",
+                  status: "queued",
+                  userMessageId: "message:queued",
+                  requestedAt: DateTime.makeUnsafe("2026-11-23T05:00:00.000Z"),
+                },
+              ]
+            : projection.runs,
+      } as never),
+    );
   return Layer.mock(ThreadManagement.ThreadManagementService)({
     getThreadShell: (id) => Effect.succeed(McpToolAccessTestkit.liveThreadShell(id)),
-    getProjectThreadRecords: (_target, fields, filter) =>
-      Effect.sync(() => record(fields, filter)).pipe(Effect.as(projection as never)),
-    getThreadRecords: (_id, fields, filter) =>
-      Effect.sync(() => record(fields, filter)).pipe(
-        Effect.as({
-          ...projection,
-          runs:
-            queued === undefined
-              ? projection.runs
-              : [{ id: "run:queued", status: "queued", userMessageId: "message:queued" }],
-        } as never),
-      ),
+    getProjectThreadRecords: (_target, fields, filter) => recordRead(fields, filter),
+    getThreadRecords: (_id, fields, filter) => recordRead(fields, filter),
     getMessagesById: () =>
-      Effect.succeed(new Map(queued === undefined ? [] : [["message:queued", queued]]) as never),
+      Effect.succeed(
+        new Map(
+          queued === undefined
+            ? []
+            : [["message:queued", { ...queued, ...queued.metadata, id: "message:queued" }]],
+        ) as never,
+      ),
     hasReceipt: () => Effect.succeed(false),
     dispatch: (command) =>
       Effect.sync(() => queued?.dispatched.push(command)).pipe(Effect.as({ sequence: 1 } as never)),
@@ -525,6 +545,13 @@ const historyReads = (
 
 it.effect("t3_queue list and read load only the queued runs and their messages", () => {
   const reads: Array<string> = [];
+  const metadata = {
+    createdBy: "agent",
+    creationSource: "server",
+    senderThreadId: "thread:scheduled-sender",
+    scheduledTaskId: "task:queued",
+    text: "Scheduled prompt",
+  };
   return Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
     const call = (args: Record<string, unknown>) =>
@@ -534,15 +561,24 @@ it.effect("t3_queue list and read load only the queued runs and their messages",
           Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
           Effect.provideService(McpSchema.McpServerClient, client),
         );
-    yield* call({ action: "list" });
-    yield* call({ action: "read", queuedRunId: "run:queued" });
+    const list = yield* call({ action: "list" });
+    const read = yield* call({ action: "read", queuedRunId: "run:queued" });
+    const entry = {
+      ...metadata,
+      queuedRunId: "run:queued",
+      directUserInput: false,
+      requestedAt: "2026-11-23T05:00:00.000Z",
+      truncated: false,
+    };
+    expect(list.structuredContent).toEqual({ items: [entry], nextCursor: null });
+    expect(read.structuredContent).toEqual(entry);
     expect(reads).toEqual([]);
   }).pipe(
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
-        Layer.provide(historyReads(reads)),
+        Layer.provide(historyReads(reads, { attachments: [], dispatched: [], metadata })),
       ),
     ),
   );
