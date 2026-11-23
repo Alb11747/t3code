@@ -103,7 +103,10 @@ export function withCreationProvenance(
       } = command;
       return { ...rest, ...provenance };
     }
-    case "message.dispatch":
+    case "message.dispatch": {
+      const { idleSinceMs: _idleSinceMs, ...rest } = command;
+      return { ...rest, ...provenance };
+    }
     case "thread.fork":
     case "thread.merge_back":
     case "delegated_task.request":

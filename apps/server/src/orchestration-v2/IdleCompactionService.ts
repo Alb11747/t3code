@@ -56,8 +56,6 @@ function canChangeCodexIdleWork(event: OrchestrationV2DomainEvent): boolean {
     case "runtime-request.updated":
     case "subagent.updated":
     case "context-transfer.updated":
-    case "thread.pull-request-link-updated":
-    case "thread.pull-request-synced":
       return true;
     case "run.created":
     case "run.updated":
@@ -162,7 +160,12 @@ export const make = Effect.gen(function* () {
           return;
         const latestRun = lastStartedOrPendingRun(records.runs);
         // A late update for an earlier run replaced the latest run's timer, so take it over.
-        if (latestRun?.status !== "completed" || latestRun.completedAt === null) {
+        if (
+          latestRun === undefined ||
+          latestRun.completedAt === null ||
+          (latestRun.status !== "completed" &&
+            (codexPolicy === null || latestRun.status !== "interrupted"))
+        ) {
           if (codexClocks.has(threadId)) codexClocks.set(threadId, null);
           return;
         }
@@ -185,7 +188,7 @@ export const make = Effect.gen(function* () {
           const clock = codexClocks.get(threadId);
           const idleSinceMs = clock?.runId === runId ? clock.sinceMs : nowMs;
           codexClocks.set(threadId, { runId, sinceMs: idleSinceMs });
-          const startMs = idleSinceMs + policy.delayMs;
+          const startMs = Math.max(idleSinceMs, window.idleAtMs) + policy.delayMs;
           if (nowMs < startMs) {
             yield* Effect.sleep(Duration.millis(startMs - nowMs));
             continue;
@@ -328,7 +331,10 @@ export const make = Effect.gen(function* () {
           codexClocks.set(event.threadId, null);
           return recheck(event.threadId);
         }
-        if (event.type === "run.updated" && event.payload.status === "completed")
+        if (
+          event.type === "run.updated" &&
+          (event.payload.status === "completed" || event.payload.status === "interrupted")
+        )
           return FiberMap.run(
             timers,
             event.threadId,

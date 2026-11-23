@@ -87,7 +87,7 @@ const modelSelection = { instanceId, model: "gpt-5.4" };
 
 type LaunchedWith = Pick<
   ThreadLaunch.ThreadLaunchInput,
-  "modelSelection" | "runtimeMode" | "interactionMode"
+  "modelSelection" | "runtimeMode" | "interactionMode" | "compactAfterIdle"
 >;
 
 /** The thread the box launches for the task, which the test finishes. */
@@ -549,6 +549,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
                 modelSelection: input.modelSelection,
                 runtimeMode: input.runtimeMode,
                 interactionMode: input.interactionMode,
+                compactAfterIdle: input.compactAfterIdle,
               }),
             ),
             Effect.andThen(Effect.flatten(Ref.get(thread.afterLaunch))),
@@ -1293,7 +1294,7 @@ it.effect("a task named only by environment inherits the parent's model, within 
 
       const result = yield* a.call("delegate_task", {
         task: "Run the suite on the box.",
-        target: { environmentId: box.environmentId },
+        target: { environmentId: box.environmentId, compactAfterIdle: false },
       });
       expect(result.isError, JSON.stringify(result.content)).toBe(false);
       // The parent's model and options, and the link's modes rather than the parent's.
@@ -1301,6 +1302,7 @@ it.effect("a task named only by environment inherits the parent's model, within 
         modelSelection: parentModelSelection,
         runtimeMode: "auto-accept-edits",
         interactionMode: "default",
+        compactAfterIdle: false,
       });
 
       // Asking for more than the link allows is still refused there.

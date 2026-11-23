@@ -7948,6 +7948,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         if (timedIdleSinceMs !== undefined) {
           if (
             command.creationSource !== "server" ||
+            command.createdBy !== "agent" ||
             command.idleCompaction !== undefined ||
             command.modelSelection !== undefined ||
             command.freshContext === true ||
@@ -7958,12 +7959,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           const current = yield* serverSettings.getSettings;
           const policy = codexIdleCompactionPolicy(current, projection.thread);
           if (policy === null) return false;
-          const window = codexIdleCompactionWindow(projection, policy);
+          const { turnItems } = yield* projectionStore.getThreadRecords(
+            command.threadId,
+            ["turnItems"],
+            {
+              turnItemTypes: ["command_execution", "dynamic_tool", "subagent"],
+              turnItemStatuses: ["pending", "running", "waiting"],
+            },
+          );
+          const window = codexIdleCompactionWindow({ ...projection, turnItems }, policy);
           return (
             window !== null &&
             !window.blocked &&
             command.messageId === idleCompactionMessageId(command.threadId, window.runId) &&
-            Math.max(window.completedAtMs, timedIdleSinceMs) + policy.delayMs <=
+            Math.max(window.idleAtMs, timedIdleSinceMs) + policy.delayMs <=
               DateTime.toEpochMillis(yield* DateTime.now)
           );
         }

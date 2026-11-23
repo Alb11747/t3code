@@ -91,6 +91,22 @@ it("stamps authoritative provenance on commands that create threads or messages"
   });
   expect(stamped).not.toHaveProperty("linkOrigin");
   expect(stamped).not.toHaveProperty("delegatedFrom");
+  const message = ThreadManagementService.withCreationProvenance(
+    {
+      type: "message.dispatch",
+      commandId: command.commandId,
+      threadId: command.threadId,
+      messageId: MessageId.make("message:thread-management:manual-compact"),
+      text: "/compact",
+      attachments: [],
+      createdBy: "agent",
+      creationSource: "server",
+      dispatchMode: { type: "start_immediately" },
+      idleSinceMs: 0,
+    },
+    { createdBy: "user", creationSource: "server" },
+  );
+  expect(message).not.toHaveProperty("idleSinceMs");
   const note = ThreadManagementService.withCreationProvenance(
     {
       type: "thread.metadata.update",

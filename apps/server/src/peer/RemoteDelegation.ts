@@ -380,6 +380,9 @@ const make = Effect.gen(function* () {
           projectId,
           title,
           modelSelection: { instanceId, model, ...(options === undefined ? {} : { options }) },
+          ...(target.compactAfterIdle === undefined
+            ? {}
+            : { compactAfterIdle: target.compactAfterIdle }),
           ...(target.autoCompactLimit === undefined
             ? {}
             : { autoCompactLimit: target.autoCompactLimit }),

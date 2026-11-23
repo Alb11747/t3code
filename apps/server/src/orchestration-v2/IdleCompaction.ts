@@ -279,7 +279,12 @@ export function codexIdleCompactionWindow(
     return null;
 
   const run = lastStartedOrPendingRun(runs);
-  if (run?.status !== "completed" || run.completedAt === null || run.startedAt === null)
+  if (
+    run === undefined ||
+    (run.status !== "completed" && run.status !== "interrupted") ||
+    run.completedAt === null ||
+    run.startedAt === null
+  )
     return null;
   const message = messages.find((candidate) => candidate.id === run.userMessageId);
   if (message === undefined || isCompactionCommandMessage(message)) return null;
@@ -302,8 +307,6 @@ export function codexIdleCompactionWindow(
     providerThreads,
     turnItems,
     activeProviderThreadId: session.id,
-    pullRequests: thread.pullRequests,
-    issueWatches: thread.issueWatches,
   });
   const usage = providerTurns
     .filter((turn) => turn.providerThreadId === session.id && turn.tokenUsage !== undefined)
@@ -312,13 +315,18 @@ export function codexIdleCompactionWindow(
   if (
     usage === undefined ||
     usage.usedTokens < policy.minTokens ||
-    Date.parse(usage.updatedAt) < DateTime.toEpochMillis(run.startedAt)
+    (run.status === "completed" &&
+      Date.parse(usage.updatedAt) < DateTime.toEpochMillis(run.startedAt))
   )
     return null;
 
   return {
     runId: run.id,
-    completedAtMs: DateTime.toEpochMillis(run.completedAt),
+    // The projection is touched when tracked work starts or ends, even between timer checks.
+    idleAtMs: Math.max(
+      DateTime.toEpochMillis(run.completedAt),
+      DateTime.toEpochMillis(thread.updatedAt),
+    ),
     blocked:
       pending.length > 0 ||
       hasBlockingIdleCompactionWork(records) ||

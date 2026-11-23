@@ -890,7 +890,7 @@ it.effect("Codex idle compaction only consumes its one-time override when admitt
       threadId,
       text: "Wait for the next event.",
       attachments: [],
-      dispatchMode: { type: "defer_start" },
+      dispatchMode: { type: "start_immediately" },
       createdBy: "agent",
       creationSource: "mcp",
     });
@@ -985,14 +985,17 @@ it.effect("Codex idle compaction only consumes its one-time override when admitt
       });
 
     yield* compact("skip-pending-question");
+    const answeredAt = yield* DateTime.now;
     yield* projections.apply({
       ...scope,
       id: EventId.make("codex-idle-answer"),
+      occurredAt: answeredAt,
       type: "runtime-request.updated",
       runId: run.id,
-      payload: { ...question, status: "resolved", resolvedAt: yield* DateTime.now },
+      payload: { ...question, status: "resolved", resolvedAt: answeredAt },
     });
     yield* compact("skip-stale-timer", RunId.make("earlier-run"));
+    yield* compact("skip-old-idle-timestamp");
     const blocked = yield* projections.getThreadRecords(threadId, ["messages"]);
     assert.equal(blocked.thread.compactAfterIdle, "once");
     assert.deepEqual(
@@ -1000,6 +1003,50 @@ it.effect("Codex idle compaction only consumes its one-time override when admitt
       ["Wait for the next event."],
     );
 
+    yield* TestClock.adjust("20 minutes");
+    const commandItem = {
+      id: TurnItemId.make("codex-idle-live-command"),
+      threadId,
+      runId: run.id,
+      nodeId: run.rootNodeId!,
+      providerThreadId,
+      providerTurnId: ProviderTurnId.make("codex-idle-usage"),
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 30,
+      status: "running",
+      title: "Background command",
+      startedAt: answeredAt,
+      completedAt: null,
+      updatedAt: answeredAt,
+      type: "command_execution",
+      input: "npm run build",
+    } as const;
+    yield* projections.apply({
+      ...scope,
+      id: EventId.make("codex-idle-command-started"),
+      occurredAt: answeredAt,
+      type: "turn-item.updated",
+      runId: run.id,
+      payload: commandItem,
+    });
+    yield* compact("skip-running-background-command");
+    assert.equal((yield* projections.getThread(threadId)).compactAfterIdle, "once");
+    const commandEndedAt = yield* DateTime.now;
+    yield* projections.apply({
+      ...scope,
+      id: EventId.make("codex-idle-command-ended"),
+      occurredAt: commandEndedAt,
+      type: "turn-item.updated",
+      runId: run.id,
+      payload: {
+        ...commandItem,
+        status: "completed",
+        completedAt: commandEndedAt,
+        updatedAt: commandEndedAt,
+      },
+    });
+    yield* TestClock.adjust("20 minutes");
     yield* compact("admit-idle-compaction");
     const admitted = yield* projections.getThreadRecords(threadId, ["messages"]);
     assert.isFalse(admitted.thread.compactAfterIdle);
