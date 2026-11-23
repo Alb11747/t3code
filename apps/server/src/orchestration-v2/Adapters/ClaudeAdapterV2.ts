@@ -108,6 +108,7 @@ import {
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as ProviderProcesses from "../../process/providerProcesses.ts";
 import * as SpawnWorker from "../../process/SpawnWorker.ts";
+import * as WindowsClaudeJob from "../../process/windowsClaudeJob.ts";
 import { ResourceMonitorBinary } from "../../resourceTelemetry/ResourceMonitorBinary.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
@@ -1762,18 +1763,20 @@ export const layerQueryRunner: Layer.Layer<
       };
       let refreshDescendants: Effect.Effect<void> = Effect.void;
       let windowsChild: ReturnType<typeof SpawnWorker.spawnPiped> | undefined;
-      let windowsExit: Promise<void> | undefined;
+      let windowsJob: WindowsClaudeJob.WindowsClaudeJob | undefined;
       const terminateWindowsChild = Effect.tryPromise({
-        try: async () => {
-          if (windowsChild?.exited === false) windowsChild.kill("SIGKILL");
-          await windowsExit;
-        },
+        try: () => windowsJob?.stop() ?? Promise.resolve(),
         catch: (cause) => queryRunnerError(cause, "close"),
       }).pipe(
         Effect.timeoutOrElse({
           duration: "10 seconds",
           orElse: () =>
-            Effect.fail(queryRunnerError(new Error("The Claude process did not exit."), "close")),
+            Effect.fail(
+              queryRunnerError(
+                new Error("The Windows Claude job did not confirm shutdown."),
+                "close",
+              ),
+            ),
         }),
         Effect.tapError(() =>
           Effect.logWarning("orchestration-v2.claude-process-tree-close-failed", {
@@ -1809,35 +1812,49 @@ export const layerQueryRunner: Layer.Layer<
             }
             return child;
           }
-          if (windowsJobExecutable === undefined) {
+          if (windowsJobExecutable === undefined || windowsJob === undefined) {
             throw new Error("The bundled Windows process helper is required to launch Claude.");
           }
           if (windowsOwners.has(input.threadId)) {
             throw new Error("The previous Claude process is still running.");
           }
+          const job = windowsJob;
           const child = SpawnWorker.spawnPiped(
             windowsJobExecutable,
-            ["--run-in-job", spawnOptions.command, ...spawnOptions.args],
+            ["--run-in-job", job.pipe, job.gate, spawnOptions.command, ...spawnOptions.args],
             {
               cwd: spawnOptions.cwd,
               env: spawnOptions.env,
-              signal: spawnOptions.signal,
               windowsHide: true,
             },
           );
           windowsChild = child;
-          const exited = Promise.withResolvers<void>();
-          windowsExit = exited.promise;
-          windowsOwners.set(input.threadId, exited.promise);
-          const release = () => {
-            if (windowsOwners.get(input.threadId) === exited.promise) {
+          windowsOwners.set(input.threadId, job.released);
+          void job.released.then(() => {
+            if (windowsOwners.get(input.threadId) === job.released) {
               windowsOwners.delete(input.threadId);
             }
-            exited.resolve();
+          });
+          const stop = () => void job.stop();
+          // SDK fallback and abort ask the controller to stop, so it can confirm the job drained.
+          child.kill = () => {
+            if (child.exited) return false;
+            child.killed = true;
+            stop();
+            return true;
           };
-          child.once("exit", release);
+          if (spawnOptions.signal.aborted) stop();
+          else spawnOptions.signal.addEventListener("abort", stop, { once: true });
+          child.once("spawn", job.start);
+          child.once("exit", () => {
+            spawnOptions.signal.removeEventListener("abort", stop);
+            job.processExited();
+          });
           child.on("error", () => {
-            if (child.exited) release();
+            if (child.exited) {
+              spawnOptions.signal.removeEventListener("abort", stop);
+              job.processExited();
+            }
           });
           child.stderr.setEncoding("utf8").on("data", (chunk: string) => options.stderr?.(chunk));
           return child;
@@ -1864,103 +1881,115 @@ export const layerQueryRunner: Layer.Layer<
         return child;
       };
       const queryRuntime = yield* Effect.uninterruptibleMask((restore) =>
-        Effect.try({
-          try: () =>
-            withoutClaudeCanUseToolShadowedWarning(() =>
-              query({ prompt, options: { ...options, spawnClaudeCodeProcess } }),
-            ),
-          catch: (cause) => queryRunnerError(cause, "query"),
-        }).pipe(
-          Effect.onError(() => terminateWindowsChild.pipe(Effect.orDie)),
-          Effect.tap((queryRuntime) =>
-            restore(
-              Effect.gen(function* () {
-                if (mcpServers !== undefined) {
-                  const timedOut = (phase: ClaudeMcpRegistrationTimeoutError["phase"]) => () =>
-                    Effect.logWarning("orchestration-v2.claude-mcp-registration-timeout", {
-                      threadId: input.threadId,
-                      providerSessionId: input.providerSessionId,
-                      phase,
-                    }).pipe(
-                      Effect.andThen(
-                        Effect.fail(
-                          queryRunnerError(new ClaudeMcpRegistrationTimeoutError({ phase }), phase),
-                        ),
-                      ),
-                    );
-                  // The SDK leaves query() boot unbounded, and it takes about a minute on a host
-                  // with CPUs 12x oversubscribed, so it gets its own, longer deadline.
-                  yield* Effect.promise(() =>
-                    queryRuntime.initializationResult().catch(() => undefined),
-                  ).pipe(
-                    Effect.timeoutOrElse({
-                      duration: CLAUDE_BOOT_TIMEOUT,
-                      orElse: timedOut("initialize"),
-                    }),
-                  );
-                  // Errors and mcp_status can echo headers; log only server names.
-                  const failed = yield* Effect.tryPromise({
-                    try: () => queryRuntime.setMcpServers(mcpServers),
-                    catch: (cause) => queryRunnerError(cause, "setMcpServers"),
-                  }).pipe(
-                    Effect.map((result) => Object.keys(result.errors)),
-                    Effect.orElseSucceed(() => Object.keys(mcpServers)),
-                    Effect.timeoutOrElse({
-                      duration: CLAUDE_MCP_REGISTRATION_TIMEOUT,
-                      orElse: timedOut("setMcpServers"),
-                    }),
-                  );
-                  if (failed.length > 0) {
-                    yield* Effect.logWarning("orchestration-v2.claude-mcp-servers-unavailable", {
-                      threadId: input.threadId,
-                      servers: failed,
-                    });
-                  }
-                }
-                yield* logProtocolEvent({
-                  direction: "outgoing",
-                  stage: "decoded",
-                  payload: {
-                    type: "query.open",
-                    options: loggedClaudeQueryOptions(input.options),
-                  },
-                });
-              }),
-            ).pipe(
-              Effect.onError(() =>
-                // Keep Windows launch ownership until the job ends, before the queue can send EOF.
-                Effect.suspend(() =>
-                  windowsChild !== undefined
-                    ? fencePrompts.pipe(
-                        Effect.andThen(terminateWindowsChild),
-                        Effect.andThen(Queue.shutdown(promptQueue)),
-                      )
-                    : Queue.shutdown(promptQueue).pipe(
+        Effect.gen(function* () {
+          if (windowsJobExecutable !== undefined) {
+            const jobId = yield* random.uuidV4();
+            windowsJob = yield* Effect.tryPromise({
+              try: () => WindowsClaudeJob.createWindowsClaudeJob(jobId),
+              catch: (cause) => queryRunnerError(cause, "query"),
+            });
+          }
+          return yield* Effect.try({
+            try: () =>
+              withoutClaudeCanUseToolShadowedWarning(() =>
+                query({ prompt, options: { ...options, spawnClaudeCodeProcess } }),
+              ),
+            catch: (cause) => queryRunnerError(cause, "query"),
+          }).pipe(
+            Effect.onError(() => terminateWindowsChild.pipe(Effect.orDie)),
+            Effect.tap((queryRuntime) =>
+              restore(
+                Effect.gen(function* () {
+                  if (mcpServers !== undefined) {
+                    const timedOut = (phase: ClaudeMcpRegistrationTimeoutError["phase"]) => () =>
+                      Effect.logWarning("orchestration-v2.claude-mcp-registration-timeout", {
+                        threadId: input.threadId,
+                        providerSessionId: input.providerSessionId,
+                        phase,
+                      }).pipe(
                         Effect.andThen(
-                          Effect.tryPromise({
-                            try: async () => {
-                              if (spawnedProcess !== undefined && !processExited) {
-                                spawnedProcess.kill("SIGKILL");
-                              }
-                              await processExit;
-                            },
-                            catch: (cause) => queryRunnerError(cause, "close"),
-                          }).pipe(Effect.timeout("10 seconds")),
+                          Effect.fail(
+                            queryRunnerError(
+                              new ClaudeMcpRegistrationTimeoutError({ phase }),
+                              phase,
+                            ),
+                          ),
                         ),
-                      ),
-                ).pipe(
-                  Effect.ensuring(
-                    Effect.tryPromise({
-                      try: () => queryRuntime[Symbol.asyncDispose](),
-                      catch: (cause) => queryRunnerError(cause, "close"),
-                    }).pipe(Effect.orDie),
+                      );
+                    // The SDK leaves query() boot unbounded, and it takes about a minute on a host
+                    // with CPUs 12x oversubscribed, so it gets its own, longer deadline.
+                    yield* Effect.promise(() =>
+                      queryRuntime.initializationResult().catch(() => undefined),
+                    ).pipe(
+                      Effect.timeoutOrElse({
+                        duration: CLAUDE_BOOT_TIMEOUT,
+                        orElse: timedOut("initialize"),
+                      }),
+                    );
+                    // Errors and mcp_status can echo headers; log only server names.
+                    const failed = yield* Effect.tryPromise({
+                      try: () => queryRuntime.setMcpServers(mcpServers),
+                      catch: (cause) => queryRunnerError(cause, "setMcpServers"),
+                    }).pipe(
+                      Effect.map((result) => Object.keys(result.errors)),
+                      Effect.orElseSucceed(() => Object.keys(mcpServers)),
+                      Effect.timeoutOrElse({
+                        duration: CLAUDE_MCP_REGISTRATION_TIMEOUT,
+                        orElse: timedOut("setMcpServers"),
+                      }),
+                    );
+                    if (failed.length > 0) {
+                      yield* Effect.logWarning("orchestration-v2.claude-mcp-servers-unavailable", {
+                        threadId: input.threadId,
+                        servers: failed,
+                      });
+                    }
+                  }
+                  yield* logProtocolEvent({
+                    direction: "outgoing",
+                    stage: "decoded",
+                    payload: {
+                      type: "query.open",
+                      options: loggedClaudeQueryOptions(input.options),
+                    },
+                  });
+                }),
+              ).pipe(
+                Effect.onError(() =>
+                  // Keep Windows launch ownership until the job ends, before the queue can send EOF.
+                  Effect.suspend(() =>
+                    windowsChild !== undefined
+                      ? fencePrompts.pipe(
+                          Effect.andThen(terminateWindowsChild),
+                          Effect.andThen(Queue.shutdown(promptQueue)),
+                        )
+                      : Queue.shutdown(promptQueue).pipe(
+                          Effect.andThen(
+                            Effect.tryPromise({
+                              try: async () => {
+                                if (spawnedProcess !== undefined && !processExited) {
+                                  spawnedProcess.kill("SIGKILL");
+                                }
+                                await processExit;
+                              },
+                              catch: (cause) => queryRunnerError(cause, "close"),
+                            }).pipe(Effect.timeout("10 seconds")),
+                          ),
+                        ),
+                  ).pipe(
+                    Effect.ensuring(
+                      Effect.tryPromise({
+                        try: () => queryRuntime[Symbol.asyncDispose](),
+                        catch: (cause) => queryRunnerError(cause, "close"),
+                      }).pipe(Effect.orDie),
+                    ),
+                    Effect.orDie,
                   ),
-                  Effect.orDie,
                 ),
               ),
             ),
-          ),
-        ),
+          );
+        }),
       );
 
       return {
@@ -14887,7 +14916,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(turnInput.resume ? { resume: true } : {}),
           });
           // The SDK spawns the CLI per turn, so only the open waits for a provider update.
-          const querySession = yield* (
+          const acquireQuery = (
             adapterOptions.installationGate === undefined
               ? openQueryRuntime
               : adapterOptions.installationGate.execute(adapterOptions.instanceId, openQueryRuntime)
@@ -14903,71 +14932,92 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 : Effect.void,
             ),
           );
-          // Mark only successful opens; retries must not resume sessions that failed to create.
-          yield* Ref.update(openedNativeThreads, (current) => {
-            if (current.has(nativeThreadId)) {
-              return current;
-            }
-            const updated = new Set(current);
-            updated.add(nativeThreadId);
-            return updated;
-          });
-          // A new session's spawn applied this turn's title. A resume keeps the session's stored
-          // title, so the last applied one stays authoritative until a turn compares again.
-          if (!shouldResume) {
-            appliedSessionTitles.set(nativeThreadId, turnInput.appThread.title);
-          }
-          yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId, {
-            status: "active",
-          });
-          const closed = yield* Deferred.make<void, never>();
-          const context: ClaudeLiveQueryContext = {
-            queryPolicy,
-            nativeThreadId,
-            settingsCwd: turnInput.runtimePolicy.cwd,
-            launchArgSettings,
-            query: querySession,
-            queryPolicyKey,
-            selection: compiledSelection,
-            closed,
-            lastTurn: null,
-            promptEchoMode: "unknown",
-            openedPermissionMode: queryOptions.permissionMode,
-            receivedInit: false,
-            checkMcpSignIns: false,
-            capabilities: new Set(),
-            claudeCodeVersion: undefined,
-            permissionMode: queryOptions.permissionMode,
-            stopping: false,
-            exitCause: undefined,
-            handedOffSubagents: new Set(),
-            subagentsFromEarlierProcesses: new Set(
-              [...(yield* Ref.get(sessionSubagentsByTaskId)).values()].filter(
-                (subagent) => subagent.task.status === "running",
+          const context = yield* Effect.uninterruptibleMask((restore) =>
+            restore(acquireQuery).pipe(
+              Effect.flatMap((querySession) =>
+                restore(
+                  Effect.gen(function* () {
+                    // Mark only successful opens; retries must not resume sessions that failed to create.
+                    yield* Ref.update(openedNativeThreads, (current) => {
+                      if (current.has(nativeThreadId)) {
+                        return current;
+                      }
+                      const updated = new Set(current);
+                      updated.add(nativeThreadId);
+                      return updated;
+                    });
+                    // A new session's spawn applied this turn's title. A resume keeps the session's stored
+                    // title, so the last applied one stays authoritative until a turn compares again.
+                    if (!shouldResume) {
+                      appliedSessionTitles.set(nativeThreadId, turnInput.appThread.title);
+                    }
+                    yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId, {
+                      status: "active",
+                    });
+                    const closed = yield* Deferred.make<void, never>();
+                    const context: ClaudeLiveQueryContext = {
+                      queryPolicy,
+                      nativeThreadId,
+                      settingsCwd: turnInput.runtimePolicy.cwd,
+                      launchArgSettings,
+                      query: querySession,
+                      queryPolicyKey,
+                      selection: compiledSelection,
+                      closed,
+                      lastTurn: null,
+                      promptEchoMode: "unknown",
+                      openedPermissionMode: queryOptions.permissionMode,
+                      receivedInit: false,
+                      checkMcpSignIns: false,
+                      capabilities: new Set(),
+                      claudeCodeVersion: undefined,
+                      permissionMode: queryOptions.permissionMode,
+                      stopping: false,
+                      exitCause: undefined,
+                      handedOffSubagents: new Set(),
+                      subagentsFromEarlierProcesses: new Set(
+                        [...(yield* Ref.get(sessionSubagentsByTaskId)).values()].filter(
+                          (subagent) => subagent.task.status === "running",
+                        ),
+                      ),
+                      modelLedger: new Map(),
+                      taskOutputRoot: claudeTaskOutputRoot(
+                        adapterOptions.environment,
+                        path,
+                        resolvedTurnCwd,
+                        hostPlatform,
+                      ),
+                      boundaryBatches,
+                      boundaryLock,
+                    };
+                    ownedQuery = context;
+                    // One step, so the replaced process cannot exit between the install and the handoff.
+                    yield* Ref.update(queryContext, (replaced) => {
+                      if (replaced !== null) {
+                        replaced.handedOffSubagents = new Set(
+                          [...context.subagentsFromEarlierProcesses].filter(
+                            (subagent) => !replaced.subagentsFromEarlierProcesses.has(subagent),
+                          ),
+                        );
+                      }
+                      return context;
+                    });
+                    return context;
+                  }),
+                ).pipe(
+                  Effect.onError(() =>
+                    querySession.close.pipe(
+                      Effect.ignoreCause({
+                        log: true,
+                        message: "Could not close an unpublished Claude query.",
+                      }),
+                    ),
+                  ),
+                ),
               ),
             ),
-            modelLedger: new Map(),
-            taskOutputRoot: claudeTaskOutputRoot(
-              adapterOptions.environment,
-              path,
-              resolvedTurnCwd,
-              hostPlatform,
-            ),
-            boundaryBatches,
-            boundaryLock,
-          };
-          ownedQuery = context;
-          // One step, so the replaced process cannot exit between the install and the handoff.
-          yield* Ref.update(queryContext, (replaced) => {
-            if (replaced !== null) {
-              replaced.handedOffSubagents = new Set(
-                [...context.subagentsFromEarlierProcesses].filter(
-                  (subagent) => !replaced.subagentsFromEarlierProcesses.has(subagent),
-                ),
-              );
-            }
-            return context;
-          });
+          );
+          const { query: querySession, closed } = context;
           yield* querySession.messages.pipe(
             Stream.runForEach((message) =>
               sdkMessageLock.withPermits(1)(

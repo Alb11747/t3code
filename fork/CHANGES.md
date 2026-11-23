@@ -10,7 +10,7 @@ than the fork's fix. Keep each entry on a single line; the sync script deletes
 the line of a change whose upstream PR merged. Closing an issue alone does not
 revert a patch. See `fork/README.md` for how to add or drop an entry.
 
-- `fix(claude): stop the Windows process tree when releasing a query`: the bundled process helper owns each Claude query's Windows job from launch. Query release stops its launcher and CLI, and another query for that thread waits for the old owner to exit. Issue: none linked. PR: none yet.
+- `fix(claude): stop the Windows process tree when releasing a query`: the bundled process helper owns each Claude query's Windows job from launch. Query release stops its launcher and CLI, and another query for that thread waits for confirmation that the old job is empty. Issue: none linked. PR: none yet.
 
 - `perf(server): seek completed compactions by type`: message acceptance finds completed compactions through the existing type and status index, so checking a long thread without a recent compaction avoids scanning its conversation history. Related upstream PR: https://github.com/pingdotgg/t3code/pull/35180. Issue: none linked. PR: none yet.
 
