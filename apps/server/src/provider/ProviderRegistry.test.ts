@@ -43,7 +43,7 @@ import {
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { WindowsShellEnvironment } from "@t3tools/shared/shell";
+import { mergePathValues, WindowsShellEnvironment } from "@t3tools/shared/shell";
 import { deepMerge } from "@t3tools/shared/Struct";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
@@ -553,6 +553,16 @@ const buildRegistryOverSnapshot = Effect.fn("buildRegistryOverSnapshot")(functio
 });
 
 const layerTestNodeServices = Layer.mergeAll(
+  // Registry tests start with a stable PATH. The Windows rebuild case supplies its own change.
+  Layer.effect(
+    HostProcess.Environment,
+    Effect.gen(function* () {
+      const env = yield* HostProcess.Environment;
+      const platform = yield* HostProcess.Platform;
+      return { ...env, PATH: mergePathValues(env.PATH, undefined, platform) };
+    }),
+  ),
+  Layer.succeed(WindowsShellEnvironment, () => Effect.succeed({})),
   ProviderLatestVersions.layer,
   NodeServices.layer,
   NodeCrypto.layer,
@@ -1810,6 +1820,56 @@ it.layer(
     });
 
     describe("Codex model inventories", () => {
+      it.effect("keeps omitted Codex models for 24 hours from their last listing", () =>
+        Effect.gen(function* () {
+          const astra = {
+            slug: "gpt-6.2-astra",
+            name: "Astra",
+            isCustom: false,
+            capabilities: null,
+          };
+          const sol = { slug: "gpt-6.2-sol", name: "Sol", isCustom: false, capabilities: null };
+          const listing = (models: ServerProvider["models"]) =>
+            DateTime.now.pipe(
+              Effect.map((now) => ({
+                ...codexUpdateSnapshot("current"),
+                checkedAt: DateTime.formatIso(now),
+                models,
+              })),
+            );
+          const snapshot = yield* Ref.make<ServerProvider>(yield* listing([astra, sol]));
+          const runtimeServices = yield* buildRegistryOverSnapshot(snapshot);
+
+          yield* Effect.gen(function* () {
+            const registry = yield* ProviderRegistry.ProviderRegistry;
+            const instanceId = ProviderInstanceId.make("codex");
+            const publishListingWithoutSol = Effect.gen(function* () {
+              const next = yield* listing([astra]);
+              yield* Ref.set(snapshot, next);
+              const [provider] = yield* registry.refreshInstance(instanceId);
+              assert.strictEqual(provider?.checkedAt, next.checkedAt);
+              return provider?.models;
+            });
+
+            yield* TestClock.adjust("13 minutes");
+            assert.deepStrictEqual(yield* publishListingWithoutSol, [astra, sol]);
+
+            const config = yield* ServerConfig.ServerConfig;
+            const filePath = yield* resolveProviderStatusCachePath({
+              cacheDir: config.providerStatusCacheDir,
+              instanceId,
+            });
+            assert.deepStrictEqual((yield* readProviderStatusCache(filePath))?.models, [astra]);
+
+            yield* TestClock.adjust("23 hours");
+            assert.deepStrictEqual(yield* publishListingWithoutSol, [astra, sol]);
+
+            yield* TestClock.adjust("48 minutes");
+            assert.deepStrictEqual(yield* publishListingWithoutSol, [astra]);
+          }).pipe(Effect.provide(runtimeServices));
+        }),
+      );
+
       const cachedProvider = {
         instanceId: ProviderInstanceId.make("codex-personal"),
         driver: ProviderDriverKind.make("codex"),

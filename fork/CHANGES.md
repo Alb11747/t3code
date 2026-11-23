@@ -12,6 +12,8 @@ revert a patch. See `fork/README.md` for how to add or drop an entry.
 
 - `fix(claude): stop the Windows process tree when releasing a query`: the bundled process helper owns each Claude query's Windows job from launch. Query release stops its launcher and CLI, and another query for that thread waits for confirmation that the old job is empty. Issue: none linked. PR: none yet.
 
+- `fix(codex): retain recently listed models during catalog gaps`: a Codex instance keeps a recently advertised model selectable for 24 hours from its last listing, so a delegation requesting that model can enter the normal capacity retry. Issue: none linked. PR: none yet.
+
 - `perf(server): seek completed compactions by type`: message acceptance finds completed compactions through the existing type and status index, so checking a long thread without a recent compaction avoids scanning its conversation history. Related upstream PR: https://github.com/pingdotgg/t3code/pull/35180. Issue: none linked. PR: none yet.
 
 - `feat(mobile): publish standalone fork Android APKs`: a separately installed **T3 Code Fork** ARM64 APK embeds the fork client, disables upstream Expo OTA, and uses persistent private signing so later APKs keep saved data; Vokoma-style updates automatically download signed, verified APKs and offer Android installation at next launch or through Settings → About; mobile-related pushes publish an Android prerelease with source SHA, checksum and signed update manifest, and a run whose commit does not contain the newest Android release's commit fails before building, so a rerun cannot publish older code as the newest update. Fork-only. Issue: none linked. PR: none yet

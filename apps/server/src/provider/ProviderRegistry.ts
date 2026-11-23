@@ -153,6 +153,7 @@ const hasModelCapabilities = (model: ServerProvider["models"][number]): boolean 
   (model.capabilities?.optionDescriptors?.length ?? 0) > 0;
 
 const MAX_WORKSPACE_SNAPSHOTS_PER_PROVIDER = 16;
+const CODEX_MODEL_LISTING_TTL_MS = Duration.toMillis(Duration.hours(24));
 
 function dropProviderWorkspaceSnapshot(provider: ServerProvider, cwd: string): ServerProvider {
   return provider.workspaceSnapshots?.some((snapshot) => snapshot.cwd === cwd)
@@ -262,6 +263,7 @@ const mergeProviderModels = (
   provider: ServerProvider,
   previousModels: ReadonlyArray<ServerProvider["models"][number]>,
   nextModels: ReadonlyArray<ServerProvider["models"][number]>,
+  retainMissingModel?: (slug: string, retainByDefault: boolean) => boolean,
 ): ReadonlyArray<ServerProvider["models"][number]> => {
   const shouldRetainMissingModels = shouldRetainMissingProviderModels(provider);
   const updateRequiredSlugs = new Set(provider.updateRequiredModels?.map((model) => model.slug));
@@ -274,7 +276,8 @@ const mergeProviderModels = (
     (model) =>
       !model.isCustom &&
       !updateRequiredSlugs.has(model.slug) &&
-      !unavailableSubProviders.has(model.subProvider ?? ""),
+      !unavailableSubProviders.has(model.subProvider ?? "") &&
+      (retainMissingModel?.(model.slug, shouldRetainMissingModels) ?? shouldRetainMissingModels),
   );
 
   if (shouldRetainMissingModels && nextModels.length === 0 && retainablePreviousModels.length > 0) {
@@ -293,9 +296,15 @@ const mergeProviderModels = (
     };
   });
   const nextSlugs = new Set(nextModels.map((model) => model.slug));
-  return shouldRetainMissingModels
-    ? [...mergedModels, ...retainablePreviousModels.filter((model) => !nextSlugs.has(model.slug))]
-    : mergedModels;
+  const missingModels = retainablePreviousModels.filter((model) => !nextSlugs.has(model.slug));
+  return [
+    ...mergedModels,
+    ...missingModels.map((model) => {
+      if (shouldRetainMissingModels || !model.isDefault) return model;
+      const { isDefault: _isDefault, ...modelWithoutDefault } = model;
+      return modelWithoutDefault;
+    }),
+  ];
 };
 
 /** Antigravity health checks only initialize; preserve previously verified Google auth across restarts. */
@@ -341,13 +350,19 @@ const retainsReadyCatalog = (
 export const mergeProviderSnapshot = (
   previousProvider: ServerProvider | undefined,
   nextProvider: ServerProvider,
+  retainMissingModel?: (slug: string, retainByDefault: boolean) => boolean,
 ): ServerProvider => {
   if (!previousProvider) {
     return nextProvider;
   }
   const savedAccount = carrySavedAntigravityAccount(previousProvider, nextProvider);
   const { message: _uncheckedMessage, ...nextWithoutMessage } = nextProvider;
-  const models = mergeProviderModels(nextProvider, previousProvider.models, nextProvider.models);
+  const models = mergeProviderModels(
+    nextProvider,
+    previousProvider.models,
+    nextProvider.models,
+    retainMissingModel,
+  );
   // Folder catalogs were compared with the old machine catalog, so every folder rescans.
   const previousWorkspaceSnapshots = Equal.equals(models, previousProvider.models)
     ? previousProvider.workspaceSnapshots
@@ -542,6 +557,10 @@ export const layer = Layer.effect(
         ),
       ),
     );
+    const codexModelListings = new Map<
+      ProviderInstanceId,
+      Map<string, { readonly lastListedAt: number; readonly omitted: boolean }>
+    >();
     const workspaceRefreshesRef = yield* Ref.make<
       ReadonlyMap<ProviderInstance, ReadonlyMap<string, Deferred.Deferred<void>>>
     >(new Map());
@@ -614,6 +633,7 @@ export const layer = Layer.effect(
           concurrency: "unbounded",
         },
       );
+      const cutoff = DateTime.toEpochMillis(yield* DateTime.now) - CODEX_MODEL_LISTING_TTL_MS;
       const [previousProviders, providers, providersToPersist] = yield* Ref.modify(
         providersRef,
         (previousProviders) => {
@@ -625,12 +645,49 @@ export const layer = Layer.effect(
           for (const provider of nextProvidersWithUpdateState) {
             const key = snapshotInstanceKey(provider);
             updatedKeys.add(key);
+            if (
+              options?.replace === true ||
+              !provider.enabled ||
+              provider.auth.status === "unauthenticated" ||
+              (!provider.installed && provider.status === "error")
+            ) {
+              codexModelListings.delete(key);
+            } else if (
+              options?.persist !== false &&
+              provider.driver === ProviderDriverKind.make("codex") &&
+              provider.installed &&
+              provider.status === "ready"
+            ) {
+              // Codex's backend omits a model from its listing while that model is at
+              // capacity. Keep one listed in the last 24 hours selectable, so a delegation
+              // asking for it starts and waits through the capacity retry instead of failing.
+              const listedAt = Date.parse(provider.checkedAt);
+              const listings = codexModelListings.get(key) ?? new Map();
+              for (const [slug, model] of listings) {
+                listings.set(slug, { ...model, omitted: true });
+              }
+              for (const model of provider.models) {
+                if (!model.isCustom) {
+                  listings.set(model.slug, { lastListedAt: listedAt, omitted: false });
+                }
+              }
+              codexModelListings.set(key, listings);
+            }
+            const listings = codexModelListings.get(key);
             mergedProviders.set(
               key,
               options?.replace === true
                 ? provider
-                : mergeProviderSnapshot(mergedProviders.get(key), provider),
+                : mergeProviderSnapshot(mergedProviders.get(key), provider, (slug, fallback) => {
+                    const listing = listings?.get(slug);
+                    return listing?.omitted ? listing.lastListedAt > cutoff : fallback;
+                  }),
             );
+            if (listings) {
+              for (const [slug, listing] of listings) {
+                if (listing.omitted && listing.lastListedAt <= cutoff) listings.delete(slug);
+              }
+            }
           }
 
           const providers = orderProviderSnapshots(
@@ -641,9 +698,16 @@ export const layer = Layer.effect(
               ),
             ),
           );
-          const providersToPersist = providers.filter((provider) =>
-            updatedKeys.has(snapshotInstanceKey(provider)),
-          );
+          const providersToPersist = providers
+            .filter((provider) => updatedKeys.has(snapshotInstanceKey(provider)))
+            .map((provider) => {
+              const listings = codexModelListings.get(snapshotInstanceKey(provider));
+              if (!listings) return provider;
+              const models = provider.models.filter(
+                (model) => model.isCustom || !listings.get(model.slug)?.omitted,
+              );
+              return { ...provider, models };
+            });
           return [[previousProviders, providers, providersToPersist] as const, providers];
         },
       );
@@ -1001,6 +1065,9 @@ export const layer = Layer.effect(
           const [previousProviders, providers] = yield* Ref.modify(
             providersRef,
             (previousProviders) => {
+              for (const instanceId of rebuiltInstanceIds) {
+                codexModelListings.delete(instanceId);
+              }
               const providers = previousProviders.map((provider) => {
                 if (!rebuiltInstanceIds.has(provider.instanceId)) return provider;
                 const { workspaceSnapshots: _workspaceSnapshots, ...machineSnapshot } = provider;
@@ -1061,6 +1128,9 @@ export const layer = Layer.effect(
         const [previousProviders, providers] = yield* Ref.modify(
           providersRef,
           (previousProviders) => {
+            for (const instanceId of codexModelListings.keys()) {
+              if (!knownInstanceIds.has(instanceId)) codexModelListings.delete(instanceId);
+            }
             const providers = orderProviderSnapshots(
               previousProviders.filter((provider) =>
                 knownInstanceIds.has(snapshotInstanceKey(provider)),
