@@ -292,6 +292,7 @@ export function layerWithRegistry<Error>(
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
+    readonly settingsLayer?: Layer.Layer<ServerSettings.ServerSettingsService>;
     /** Lets a test hold a projection read open to order concurrent dispatches. */
     readonly wrapProjectionStore?: (
       store: ProjectionStore.ProjectionStoreV2Shape,
@@ -329,19 +330,21 @@ export function layerWithRegistry<Error>(
   const layerProvidedRegistry = registryLayer.pipe(
     Layer.provide(Layer.merge(layerContinuationRequests, McpProviderSessions.layer)),
   );
-  const layerServerSettings = Layer.unwrap(
-    Effect.map(ManagedPolicy.fromDocument("/test/policy.json", options.managedPolicy), (policy) =>
-      ServerSettings.layerTest(
-        {
-          responseStreamingMode: "turn",
-          ...(options.continueThreadsAfterServerUpdate === undefined
-            ? {}
-            : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
-        },
-        policy.summary,
+  const layerServerSettings =
+    options.settingsLayer ??
+    Layer.unwrap(
+      Effect.map(ManagedPolicy.fromDocument("/test/policy.json", options.managedPolicy), (policy) =>
+        ServerSettings.layerTest(
+          {
+            responseStreamingMode: "turn",
+            ...(options.continueThreadsAfterServerUpdate === undefined
+              ? {}
+              : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
+          },
+          policy.summary,
+        ),
       ),
-    ),
-  ).pipe(Layer.orDie);
+    ).pipe(Layer.orDie);
   const layerEffectOutboxProvided = EffectOutbox.layer.pipe(Layer.provide(layerDatabase));
   const wrapProjectionStore = options.wrapProjectionStore;
   const layerProjectionStore =

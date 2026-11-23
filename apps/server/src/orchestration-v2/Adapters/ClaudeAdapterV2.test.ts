@@ -2923,21 +2923,8 @@ describe("ClaudeAdapterV2 attachments", () => {
             },
           });
 
-          assert.equal(offeredMessages[1]?.priority, "now");
-          const steerText = `${ultrathink ? "Ultrathink:\n" : ""}${ClaudeAdapterV2.CLAUDE_STEER_CANCELLATION_NOTE}\n\n${expectedText.replace(/^Ultrathink:\n/u, "")}`;
-          const steerRequest = { type: "text" as const, text: steerText + attachmentNotes };
-          const steerCommand = command ?? (prompt.startsWith("$") ? expectedText : undefined);
-          assert.deepEqual(
-            offeredMessages[1]?.message.content,
-            steerCommand
-              ? [
-                  steerRequest,
-                  expectedImageBlock,
-                  ...(!resumed ? [expectedDocumentBlock] : []),
-                  { type: "text", text: steerCommand + attachmentNotes },
-                ]
-              : [expectedImageBlock, ...(!resumed ? [expectedDocumentBlock] : []), steerRequest],
-          );
+          assert.equal(offeredMessages[1]?.priority, "next");
+          assert.deepEqual(offeredMessages[1]?.message.content, expectedContent);
           const documentPath = path.join(attachmentsDir, attachmentRelativePath(document)!);
           for (const scenario of [
             "pages",
@@ -3077,10 +3064,7 @@ describe("ClaudeAdapterV2 attachments", () => {
               scenario,
             );
             if (scenario === "text-only")
-              assert.equal(
-                sent,
-                `${ultrathink ? "Ultrathink:\n" : ""}${ClaudeAdapterV2.CLAUDE_STEER_CANCELLATION_NOTE}\n\nContinue.`,
-              );
+              assert.equal(sent, `${ultrathink ? "Ultrathink:\n" : ""}Continue.`);
             else assert.include(JSON.stringify(sent), JSON.stringify(documentPath).slice(1, -1));
           }
         }).pipe(
@@ -6470,12 +6454,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           },
         });
         const attachmentNote = `\n\n[Attached file "requirements.pdf" is saved at: ${path.join(harness.attachmentsDir, attachmentRelativePath(attachment)!)}]`;
-        assert.equal(harness.offeredMessages[1]?.priority, "now");
+        assert.equal(harness.offeredMessages[1]?.priority, "next");
         assert.deepEqual(harness.offeredMessages[1]?.message.content, [
-          {
-            type: "text",
-            text: `${leadingText.replace("Ultrathink:\n", `Ultrathink:\n${ClaudeAdapterV2.CLAUDE_STEER_CANCELLATION_NOTE}\n\n`)}${attachmentNote}`,
-          },
+          { type: "text", text: `${leadingText}${attachmentNote}` },
           { type: "text", text: `/implement the fixes${attachmentNote}` },
         ]);
       }).pipe(
@@ -6845,6 +6826,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           }),
         );
       yield* harness.offerAndWait(
+        makeAssistantTextFrame({
+          uuid: "00000000-0000-4000-8000-000000002505",
+          text: "Build answer.",
+        }),
+      );
+      yield* harness.offerAndWait(
         claudeSdkFrame({
           ...makeResultFrame({ uuid: "00000000-0000-4000-8000-000000002500", result: "Built." }),
           user_message_uuid: harness.promptUuid(0),
@@ -6869,6 +6856,18 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         (event) => event.type === "message.updated" && event.message.text === "Steer reply.",
       );
       assert.equal(reply?.type === "message.updated" ? reply.message.runId : null, input.runId);
+      const answer = harness.events.findLast(
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "assistant_message" &&
+          event.turnItem.text === "Build answer.",
+      );
+      assert.equal(
+        answer?.type === "turn_item.updated" && answer.turnItem.type === "assistant_message"
+          ? answer.turnItem.phase
+          : null,
+        "final_answer",
+      );
       assert.deepEqual(
         harness.events.flatMap((event) =>
           event.type === "steer.updated" ? [[event.messageId, event.status]] : [],
@@ -6969,7 +6968,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       let settleDuringOffer: (message: SDKUserMessage) => Effect.Effect<void> = () => Effect.void;
       const harness = yield* makeWakeHarnessWithOptions({
         offer: (message) =>
-          message.priority === "now"
+          message.priority === "next"
             ? Effect.suspend(() => settleDuringOffer(message))
             : Effect.void,
       });
@@ -7035,7 +7034,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       let failOffer: (message: SDKUserMessage) => Effect.Effect<void> = () => Effect.void;
       const harness = yield* makeWakeHarnessWithOptions({
         offer: (message) =>
-          message.priority === "now" ? Effect.suspend(() => failOffer(message)) : Effect.void,
+          message.priority === "next" ? Effect.suspend(() => failOffer(message)) : Effect.void,
       });
       failOffer = () =>
         harness
@@ -9331,6 +9330,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
             nativeTurnId: `turn:${attemptId}`,
           }),
+          interrupt: true,
           message: {
             createdBy: "user",
             creationSource: "web",
@@ -26680,7 +26680,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           }
           assert.isTrue(Exit.isSuccess(steered));
           assert.equal(harness.offeredMessages.length, offered + 1);
-          assert.equal(harness.offeredMessages.at(-1)?.priority, "now");
+          assert.equal(harness.offeredMessages.at(-1)?.priority, "next");
           if (backgrounding === "never answers") {
             for (let repeat = 1; repeat <= 2; repeat++) {
               const again = yield* Effect.forkScoped(steer);

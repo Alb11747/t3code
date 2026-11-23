@@ -142,10 +142,17 @@ turn. The stock mobile app stores this preference on the phone and defaults to
 Queue; changing the desktop preference or updating the fork server does not
 change the phone's choice.
 
-Ordinary human and agent steers, including attachments, wait for Claude's next
-root tool-batch boundary and use its non-interrupting native message queue.
-Parallel tools finish their batch before delivery. Questions and completion
-notices from delegated tasks arrive the same way. If Claude is waiting on its
+In **Settings → Providers**, open a Claude provider instance and set **Steer
+delivery**. **Claude's native queue** is the default. It hands off steers
+immediately, and Claude reads them after its current tools finish. **At tool
+boundary** keeps them editable in T3 until that point. The setting applies to
+new steers on that provider, including in open threads.
+
+In **At tool boundary** mode, ordinary human and agent steers, including
+attachments, wait for Claude's next root tool-batch boundary. Parallel tools
+finish their batch before delivery. Delegated task questions also wait for a
+boundary in this mode. Completion notices use the boundary in either mode so T3
+can confirm when Claude reads them. If Claude is waiting on its
 own foreground subagents when a message arrives, T3 asks Claude to move them to
 the background so the message is read sooner; their results then arrive as a
 background-task notice. Messages arriving during a final reply wait for the next
@@ -166,8 +173,8 @@ before it reported it, the message counts as delivered and is never sent twice.
 
 **Send now** on a Pending or Queued message during a running Claude turn
 (or its keyboard shortcut) does not wait: Claude reads it at once, which can
-cancel the tools it is running. Sending from the composer still waits for a
-boundary, and an agent's promotion never interrupts. If Claude finishes its
+cancel the tools it is running. Composer steers follow the provider setting,
+and an agent's promotion never interrupts. If Claude finishes its
 reply before reading the message, the turn stays open until Claude reads or
 drops it. If Claude drops it unread, it runs as the next turn, in its place in
 the queue. If the turn ends any other way first, such as an error, Stop, or

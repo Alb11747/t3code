@@ -909,6 +909,20 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         providerSettingsForm: { control: "switch", clearWhenEmpty: "omit" },
       }),
     ),
+    steerDelivery: Schema.Literals(["upstream", "toolBoundary"]).pipe(
+      Schema.withDecodingDefault(Effect.succeed("upstream" as const)),
+      Schema.annotateKey({
+        title: "Steer delivery",
+        description: "When ordinary steers are handed to Claude during a running turn.",
+        providerSettingsForm: {
+          control: "select",
+          options: [
+            { value: "upstream", label: "Claude's native queue" },
+            { value: "toolBoundary", label: "At tool boundary" },
+          ],
+        },
+      }),
+    ),
     // Fork: how long a question holds the turn open before Claude continues without an answer.
     // The maximum is further capped one minute before the prompt cache expires.
     questionMinWaitMinutes: PositiveInt.pipe(
@@ -939,6 +953,7 @@ export const ClaudeSettings = makeProviderSettingsSchema(
       "homePath",
       "autoCompactWindow",
       "idleCompaction",
+      "steerDelivery",
       "launchArgs",
       "uncachedColdCompaction",
     ],

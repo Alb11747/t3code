@@ -135,15 +135,15 @@ timestamp shows when the displayed wait started.
 
 ## Steering
 
-A steer waits in the queue until Claude finishes the tool calls it is running, then
-Claude reads it in the same turn. If the turn ends first, the steer starts the next
-turn, ahead of messages queued before it. **Send now** on a waiting message makes Claude
-read it at once, even if that cancels the tools it is running; it then shows as unread
-until Claude reads it. If Claude drops it before reading it, the message is sent as the
-next turn, in its place in the queue. If the turn ends any other way before Claude
-confirms reading it, for example because of an error, Stop, Claude exiting or a server
-restart, T3 Code shows a notice with its text instead of sending it again, since Claude
-may already have read it.
+A steer goes to Claude's native queue by default. It shows as unread until Claude
+finishes the tool calls it is running and reads it in the same turn. To keep steers
+editable in T3 until the tools finish, open the Claude provider's settings and set
+**Steer delivery** to **At tool boundary**.
+
+**Send now** on a waiting message makes Claude read it at once, even if that cancels
+the tools it is running. If Claude drops the steer before reading it, the message
+returns to the queue. If delivery cannot be confirmed, T3 Code can show a notice
+with its text so you can decide whether to send it again.
 
 ## Skills
 

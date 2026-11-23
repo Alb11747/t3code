@@ -1162,13 +1162,14 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
   );
 
   it.effect.each([
-    { createdBy: "agent", text: "See the attached screenshot." },
-    { createdBy: "user", text: "See the attached screenshot." },
-    { createdBy: "user", text: "/review the diff" },
-    { createdBy: "user", text: "\n/review the diff" },
+    { createdBy: "agent", text: "See the attached screenshot.", interrupt: false },
+    { createdBy: "user", text: "See the attached screenshot.", interrupt: false },
+    { createdBy: "user", text: "See the attached screenshot.", interrupt: true },
+    { createdBy: "user", text: "/review the diff", interrupt: true },
+    { createdBy: "user", text: "\n/review the diff", interrupt: true },
   ] as const)(
-    "tells Claude what a native $createdBy steer's tool cancellations mean ($text)",
-    ({ createdBy, text }) =>
+    "formats Claude's $createdBy steer (interrupt=$interrupt, text=$text)",
+    ({ createdBy, text, interrupt }) =>
       Effect.scoped(
         Effect.gen(function* () {
           const harness = yield* makeWakeHarness;
@@ -1191,6 +1192,7 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
               driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
               nativeTurnId: `turn:${attemptId}`,
             }),
+            ...(interrupt ? { interrupt: true } : {}),
             message: {
               createdBy,
               creationSource: createdBy === "agent" ? "mcp" : "web",
@@ -1199,6 +1201,7 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
               attachments: [],
             },
           });
+          assert.equal(harness.offeredMessages[1]?.priority, interrupt ? "now" : "next");
           const steer = encodeJson(harness.offeredMessages[1]?.message.content);
           assert.include(steer, text.trim());
           assert.equal(steer.includes("came from another agent"), createdBy === "agent");
@@ -1206,7 +1209,7 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
           // that can cause that says so, except a slash command the note would break.
           assert.equal(
             steer.includes(ClaudeAdapterV2.CLAUDE_STEER_CANCELLATION_NOTE),
-            !text.trim().startsWith("/"),
+            interrupt && !text.trim().startsWith("/"),
           );
           if (text.trim().startsWith("/")) {
             assert.equal(harness.offeredMessages[1]?.message.content, text.trim());

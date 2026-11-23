@@ -1713,6 +1713,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           maxRuntimeMode: managedPolicy.limits.maxRuntimeMode,
         };
 
+  const claudeSteersWaitForToolBoundary = Effect.fn("Orchestrator.claudeSteersWaitForToolBoundary")(
+    function* (instanceId: ProviderInstanceId) {
+      const settings = yield* serverSettings.getSettings;
+      const config = settings.providerInstances[instanceId]?.config;
+      return (
+        typeof config === "object" &&
+        config !== null &&
+        "steerDelivery" in config &&
+        config.steerDelivery === "toolBoundary"
+      );
+    },
+  );
+
+  const steeringWaitsForToolBoundary = (
+    session: Pick<OrchestrationV2ProviderSession, "capabilities" | "driver" | "providerInstanceId">,
+  ) =>
+    session.driver === "claudeAgent"
+      ? claudeSteersWaitForToolBoundary(session.providerInstanceId)
+      : Effect.succeed(session.capabilities.turns.activeSteeringInterruptsTools === true);
+
   /** The driver when this provider runs `/goal` natively, else undefined. */
   const goalDriverFor = Effect.fn("Orchestrator.goalDriverFor")(function* (
     command: Pick<OrchestrationV2ServerCommand, "commandId" | "type">,
@@ -7081,6 +7101,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             providerTurnId: providerTurn.id,
             messageId: input.messageId,
             ...(steerCarriesSelection ? { modelSelection: input.modelSelection } : {}),
+            ...(input.command.type === "queued-message.promote-to-steer" &&
+            input.command.interrupt === true &&
+            input.command.requestedBy !== "agent" &&
+            providerThread.driver === "claudeAgent"
+              ? { interrupt: true as const }
+              : {}),
             steerFollowUpAfterRunOrdinal: Math.max(
               0,
               ...input.projection.runs.map((run) => run.ordinal),
@@ -8113,8 +8139,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             .pipe(mapDispatchError(command));
           if (
             Option.isSome(session) &&
-            session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools ===
-              true &&
+            (yield* steeringWaitsForToolBoundary(session.value.providerSession).pipe(
+              mapDispatchError(command),
+            )) &&
             // Cursor accepts human input natively and has no Claude boundary hook to drain it.
             !(providerThread.driver === "cursor" && command.createdBy === "user")
           ) {
@@ -8378,6 +8405,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           Option.isSome(session) &&
           session.value.providerSession.capabilities.turns.supportsActiveSteering &&
           session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools !== true &&
+          // Claude's boundary receipts keep a dropped completion claimed until it can be retried.
+          (providerThread.driver !== "claudeAgent" ||
+            (delegatedCompletion === undefined &&
+              !(yield* claudeSteersWaitForToolBoundary(providerThread.providerInstanceId).pipe(
+                mapDispatchError(command),
+              )))) &&
           !(yield* stopReachedRun(command, command.threadId, active.id))
         ) {
           dispatchMode = { type: "steer_active", targetRunId: active.id };
@@ -8704,6 +8737,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Thread ${command.threadId} has a pending merge-back transfer; queued merge-back consumption is not implemented yet.`,
         });
       }
+      const runningProviderThread = projection.providerThreads.find(
+        (thread) => thread.id === activeRun?.providerThreadId,
+      );
       const deliverAtToolBoundary =
         !freshContext &&
         outputSchema === undefined &&
@@ -8718,7 +8754,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.deliveryIntent === "steer" ||
           command.dispatchMode.type === "steer_active" ||
           command.delegatedCompletion !== undefined ||
-          command.notification?.source.kind === "delegated_task");
+          command.notification?.source.kind === "delegated_task") &&
+        (runningProviderThread?.driver !== "claudeAgent" ||
+          atToolBoundary ||
+          delegatedCompletion !== undefined ||
+          (yield* claudeSteersWaitForToolBoundary(runningProviderThread.providerInstanceId).pipe(
+            mapDispatchError(command),
+          )));
+      const startupClaudeSteer =
+        startupDeliveryIntent !== undefined && runningProviderThread?.driver === "claudeAgent";
       if (
         steerWhenReadyRunId === undefined &&
         (startupDeliveryIntent !== undefined || deliverAtToolBoundary)
@@ -8883,6 +8927,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? {}
           : { afterCompactionMessageId: command.afterCompactionMessageId }),
         ...(steerWhenReadyRunId === undefined ? {} : { steerWhenReadyRunId }),
+        ...(startupClaudeSteer ? { startupSteerAtToolBoundary: deliverAtToolBoundary } : {}),
         // A restart cancels its run; nobody knows whether the provider read the steer, so a person decides.
         ...(worktreeMissingRun !== undefined ||
         steerFollowUpSource?.status === "cancelled" ||
@@ -8977,7 +9022,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         updatedAt: now,
         ...(delegatedCompletion === undefined ? {} : { delegatedCompletion }),
         ...(notification === undefined ? {} : { notification }),
-        ...(deliverAtToolBoundary ? { atToolBoundary: true as const } : {}),
+        ...(deliverAtToolBoundary && !startupClaudeSteer ? { atToolBoundary: true as const } : {}),
       };
       const emitEvent = emit(events, command);
       if (targetProviderThread === undefined) {
@@ -9079,7 +9124,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           },
         });
       }
-      if (deliverAtToolBoundary && activeRun !== undefined && run.queueHeld !== true) {
+      if (
+        deliverAtToolBoundary &&
+        !startupClaudeSteer &&
+        activeRun !== undefined &&
+        run.queueHeld !== true
+      ) {
         yield* requestSubagentsBackground(command, effects, command.threadId, activeRun, message);
       }
       if (queuedRunStop !== undefined) {
@@ -13086,6 +13136,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         targetRun?.status !== "running" ||
         providerTurn === undefined ||
         targetRun.providerInstanceId !== queuedRun.providerInstanceId ||
+        (queuedRun.startupSteerAtToolBoundary === true &&
+          !modelSelectionsEqual(queuedRun.modelSelection, targetRun.modelSelection)) ||
         (targetMessage !== undefined && isNativeMaintenanceCommand(targetMessage))
       ) {
         return yield* new OrchestratorDispatchError({
@@ -13203,6 +13255,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
       return cancelUnsettledEffects === undefined ? undefined : { cancelUnsettledEffects };
     }
+
+    const targetProviderThread = projection.providerThreads.find(
+      (candidate) => candidate.id === targetRun?.providerThreadId,
+    );
+    const claudeTarget = targetProviderThread?.driver === "claudeAgent";
+    if (claudeTarget && (queuedRun.queueHeld === true || queuedRun.delegatedTaskId !== undefined)) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Held messages and delegated task runs cannot steer the active Claude turn.`,
+      });
+    }
     if (
       (target?.status === "preparing" ||
         target?.status === "starting" ||
@@ -13225,6 +13289,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           capabilities,
         })
         .pipe(mapDispatchError(command));
+      // The startup watcher checks the model selection before it can offer the steer.
+      const startupSteerAtToolBoundary =
+        adapter.driver === "claudeAgent"
+          ? (queuedRun.startupSteerAtToolBoundary ??
+            (queuedMessage.atToolBoundary === true ||
+              (yield* steeringWaitsForToolBoundary({
+                driver: adapter.driver,
+                providerInstanceId: target.providerInstanceId,
+                capabilities,
+              }).pipe(mapDispatchError(command)))))
+          : undefined;
       yield* emitEvent({
         type: "run.updated",
         threadId: command.threadId,
@@ -13232,23 +13307,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         nodeId: queuedRootNode.id,
         providerInstanceId: queuedRun.providerInstanceId,
         occurredAt: now,
-        payload: { ...queuedRun, steerWhenReadyRunId: target.id, deliveryIntent: "steer" },
+        payload: {
+          ...queuedRun,
+          steerWhenReadyRunId: target.id,
+          deliveryIntent: "steer",
+          ...(startupSteerAtToolBoundary === undefined ? {} : { startupSteerAtToolBoundary }),
+        },
       });
       return;
     }
     if (targetRun?.status === "running" || targetRun?.status === "waiting") {
-      const targetProviderThread = projection.providerThreads.find(
-        (candidate) => candidate.id === targetRun.providerThreadId,
-      );
       const session =
         targetProviderThread?.providerSessionId == null
           ? Option.none()
           : yield* providerSessions
               .get(targetProviderThread.providerSessionId)
               .pipe(mapDispatchError(command));
+      const storedClaudeRoute = claudeTarget
+        ? (queuedRun.startupSteerAtToolBoundary ?? queuedMessage.atToolBoundary)
+        : undefined;
+      const waitsForToolBoundary =
+        storedClaudeRoute ??
+        (Option.isSome(session) &&
+          (yield* steeringWaitsForToolBoundary(session.value.providerSession).pipe(
+            mapDispatchError(command),
+          )));
       if (
-        Option.isSome(session) &&
-        session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools === true &&
+        waitsForToolBoundary &&
         !(
           targetProviderThread?.driver === "cursor" &&
           queuedMessage.createdBy === "user" &&
@@ -13270,9 +13355,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
       }
       if (
-        Option.isSome(session) &&
-        session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools === true &&
-        // A person's Send now interrupts Claude; an agent's promotion still waits for a boundary.
+        waitsForToolBoundary &&
+        // A person's Send now interrupts Claude; an agent's promotion waits in boundary mode.
         !(
           command.interrupt === true &&
           command.requestedBy !== "agent" &&

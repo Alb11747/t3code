@@ -116,6 +116,7 @@ const makeClaudeConfig = (overrides: Partial<ClaudeSettings>): ClaudeSettings =>
   autoCompactWindow: "",
   autoCompactLimits: {},
   uncachedColdCompaction: false,
+  steerDelivery: "upstream",
   questionMinWaitMinutes: 5,
   questionMaxWaitMinutes: 60,
   idleCompaction: "default",

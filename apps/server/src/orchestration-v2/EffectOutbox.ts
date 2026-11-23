@@ -85,6 +85,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     providerTurnId: ProviderTurnId,
     messageId: MessageId,
     modelSelection: Schema.optional(ModelSelection),
+    interrupt: Schema.optionalKey(Schema.Literal(true)),
     steerFollowUpAfterRunOrdinal: Schema.optional(NonNegativeInt),
   }),
   Schema.Struct({

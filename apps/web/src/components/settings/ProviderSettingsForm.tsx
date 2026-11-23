@@ -110,6 +110,13 @@ const PACKAGE_FIELD_TEXT: ReadonlyMap<string, string> = new Map([
   ["CLAUDE_CONFIG_DIR path", msg("CLAUDE_CONFIG_DIR path")],
   ["Auto-compact after", msg("Auto-compact after")],
   ["Compact idle threads", msg("Compact idle threads")],
+  ["Steer delivery", msg("Steer delivery")],
+  [
+    "When ordinary steers are handed to Claude during a running turn.",
+    msg("When ordinary steers are handed to Claude during a running turn."),
+  ],
+  ["Claude's native queue", msg("Claude's native queue")],
+  ["At tool boundary", msg("At tool boundary")],
   ["Sign-in method", msg("Sign-in method")],
   ["API key", msg("API key")],
   ["GCP project", msg("GCP project")],

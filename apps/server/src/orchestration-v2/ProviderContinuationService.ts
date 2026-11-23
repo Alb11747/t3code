@@ -10,6 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
+import { modelSelectionsEqual } from "@t3tools/shared/model";
 import * as Stream from "effect/Stream";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -305,9 +306,10 @@ export const layer = Layer.effectDiscard(
         const unhanded: Array<ProviderContinuationRequests.AgentMessageOfferRef> = [];
         return yield* Effect.gen(function* () {
           const { runs } = yield* threads.getThreadRecords(input.threadId, ["runs"], {
-            runStatuses: ["queued"],
+            runStatuses: ["queued", "running"],
           });
-          if (runs.length === 0) return [];
+          if (!runs.some((run) => run.status === "queued")) return [];
+          const activeRun = runs.find((run) => run.id === input.runId);
           const { messages } = yield* threads.getThreadRecords(input.threadId, ["messages"], {
             messageIds: runs.map((run) => run.userMessageId),
           });
@@ -320,6 +322,9 @@ export const layer = Layer.effectDiscard(
               run.queueHeld === true ||
               run.freshContext === true ||
               run.delegatedTaskId !== undefined ||
+              (run.startupSteerAtToolBoundary === true &&
+                (activeRun === undefined ||
+                  !modelSelectionsEqual(run.modelSelection, activeRun.modelSelection))) ||
               isNativeMaintenanceCommand(message) ||
               parseGoalCommand(message) !== null
             )

@@ -413,7 +413,7 @@ export const CLAUDE_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CLAUDE_PROV
 const CLAUDE_SCRIPT_EXTENSIONS = [".js", ".mjs", ".tsx", ".ts", ".jsx"];
 // The SDK has no control-request deadline; the CLI waits up to 30 s per MCP server.
 const CLAUDE_MCP_REGISTRATION_TIMEOUT = "90 seconds";
-// Native steering cancels in-flight tools; Claude Code words that as the user refusing
+// Send now can cancel in-flight tools; Claude Code words that as the user refusing
 // them ("The user doesn't want to take this action...") or as an interruption. The
 // CLI owns that text, so the steer itself tells Claude what the cancellation means.
 export const CLAUDE_STEER_CANCELLATION_NOTE =
@@ -635,7 +635,7 @@ export const ClaudeProviderCapabilitiesV2 = {
     supportsInterrupt: true,
     supportsNativeResume: true,
     supportsActiveSteering: true,
-    activeSteeringInterruptsTools: true,
+    activeSteeringInterruptsTools: false,
     supportsSteeringByInterruptRestart: false,
     supportsQueuedMessages: true,
     terminalStatusQuality: "strong",
@@ -13372,6 +13372,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               claudeEchoedPromptUuids(message).length > 0
             ) {
               context.heldResult = message;
+              // Claude ended its native turn on this reply; the run continues only for the steer.
+              const answer = context.assistant.lastReply;
+              if (answer !== null) {
+                yield* publishAssistantArtifacts({
+                  context,
+                  ...answer,
+                  createdAt: answer.startedAt,
+                  status: "completed",
+                  completedAt,
+                  phase: "final_answer",
+                });
+              }
               return;
             }
             yield* finalizeActiveTurn({
@@ -15180,6 +15192,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           uuid?: SDKUserMessage["uuid"],
           selection?: CompiledClaudeModelSelection,
           appContext: ProviderAdapter.ProviderAdapterV2SteerInput["appContext"] = [],
+          interrupt = false,
         ) {
           const pendingCount = context.pendingRetrySteers.length;
           const steers = [...context.pendingRetrySteers, ...messages];
@@ -15200,12 +15213,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             .join("\n\n");
           const steerMessage = yield* makeClaudeUserMessageWithAttachments({
             text: applyClaudePromptEffortPrefix(
-              formatClaudeSteerText(steerText),
+              interrupt ? formatClaudeSteerText(steerText) : steerText,
               (selection ?? compileClaudeModelSelection(context.input.modelSelection, modelCatalog))
                 .promptEffort,
             ),
             attachments: steers.flatMap((message) => message.attachments),
-            priority: "now",
+            priority: "next",
+            ...(interrupt ? { priority: "now" as const } : {}),
             ...(uuid === undefined ? {} : { uuid }),
             attachmentsDir,
             fileSystem,
@@ -16168,7 +16182,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               });
             }
             // A steer read now would cancel a waiting question; end its wait so the card stays open.
-            yield* interruptPendingQuestions(turnInput.message);
+            if (turnInput.interrupt === true) {
+              yield* interruptPendingQuestions(turnInput.message);
+            }
             const steerUuid = yield* random.uuidV4().pipe(
               Effect.filterOrFail(isClaudePromptUuid),
               Effect.mapError(
@@ -16204,6 +16220,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 steerUuid,
                 liveSteerSelection,
                 turnInput.appContext,
+                turnInput.interrupt,
               );
             yield* backgroundForegroundSubagents(existing, backgroundDeadline);
             if (liveSteerSelection !== undefined) {

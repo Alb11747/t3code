@@ -55,6 +55,7 @@ describe("ProviderSettingsForm helpers", () => {
       "homePath",
       "autoCompactWindow",
       "idleCompaction",
+      "steerDelivery",
       "launchArgs",
       "uncachedColdCompaction",
     ]);

@@ -386,6 +386,7 @@ export const layerExecutor: Layer.Layer<
                 providerThreadId: effect.request.providerThreadId,
                 providerTurnId: effect.request.providerTurnId,
                 messageId: effect.request.messageId,
+                ...(effect.request.interrupt === true ? { interrupt: true } : {}),
                 ...(effect.request.modelSelection === undefined
                   ? {}
                   : { modelSelection: effect.request.modelSelection }),

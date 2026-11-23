@@ -633,6 +633,8 @@ export interface ProviderAdapterV2SteerInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly providerTurnId: ProviderTurnId;
   readonly message: ProviderAdapterV2TurnMessage;
+  /** A person's explicit Send now may interrupt the provider's running tools. */
+  readonly interrupt?: true;
   /** The selection sent with the message when it differs from the running turn's. */
   readonly modelSelection?: ModelSelection;
   /** The thread's MCP app notes; the adapter sends those the agent has not seen yet. */
