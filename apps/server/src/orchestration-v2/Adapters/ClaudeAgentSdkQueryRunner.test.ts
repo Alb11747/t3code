@@ -27,6 +27,8 @@ import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEven
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import * as PortScanner from "../../preview/PortScanner.ts";
+import * as SpawnWorker from "../../process/SpawnWorker.ts";
+import { ResourceMonitorBinary } from "../../resourceTelemetry/ResourceMonitorBinary.ts";
 import {
   ClaudeAgentSdkQueryRunner,
   type ClaudeAgentSdkQueryOpenInput,
@@ -232,59 +234,82 @@ const resumedMcpQueryInput = {
   },
 } satisfies ClaudeAgentSdkQueryOpenInput;
 
-describe.skipIf(HostProcess.Platform.defaultValue() !== "win32")("Windows Claude launchers", () => {
-  it.live("ends the launcher and its CLI before closing the query", () =>
+it.effect(
+  "keeps Windows Claude ownership until its process exits, even after close times out",
+  () =>
     Effect.gen(function* () {
-      const childReady = Promise.withResolvers<number>();
-      const launcherExit = Promise.withResolvers<void>();
+      const stopping = Promise.withResolvers<void>();
+      const processes: Array<ReturnType<typeof makeProcess>> = [];
       const signal = yield* Effect.abortSignal;
+      function makeProcess() {
+        return Object.assign(new NodeEvents.EventEmitter(), {
+          pid: 123,
+          exited: false,
+          exitCode: null,
+          signalCode: null,
+          stderr: new NodeStream.PassThrough(),
+          kill: vi.fn(() => {
+            stopping.resolve();
+            return true;
+          }),
+        });
+      }
+      const spawnSpy = vi.spyOn(SpawnWorker, "spawnPiped").mockImplementation(() => {
+        const child = makeProcess();
+        processes.push(child);
+        return child as unknown as ReturnType<typeof SpawnWorker.spawnPiped>;
+      });
       const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(({ options }) => {
         const launch = options?.spawnClaudeCodeProcess;
         assert.isDefined(launch);
-        const child = launch({
-          command: "powershell.exe",
-          args: [
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "& $Env:T3_FIXTURE_NODE -e $Env:T3_FIXTURE_CLI",
-          ],
-          env: {
-            ...process.env,
-            T3_FIXTURE_NODE: process.execPath,
-            T3_FIXTURE_CLI: "console.log(process.pid); setTimeout(() => {}, 20000)",
-          },
-          signal,
-        });
-        child.stdout.once("data", (data) => childReady.resolve(Number(String(data).trim())));
-        child.once("exit", () => launcherExit.resolve());
-        return {
-          close: () => {
-            if (child.exitCode === null && child.signalCode == null) child.kill("SIGKILL");
-          },
-        } as unknown as ClaudeSdk.Query;
+        launch({ command: "claude.exe", args: ["--resume", FORK_SESSION_ID], env: {}, signal });
+        return { close: vi.fn() } as unknown as ClaudeSdk.Query;
       });
-      yield* Effect.addFinalizer(() => Effect.sync(() => querySpy.mockRestore()));
-      const runner = yield* ClaudeAgentSdkQueryRunner;
-      const { mcpServers: _mcpServers, ...options } = resumedMcpQueryInput.options;
-      const session = yield* runner.open({ ...resumedMcpQueryInput, options });
-      const cliPid = yield* Effect.promise(() => childReady.promise).pipe(
-        Effect.timeout("5 seconds"),
-      );
-      assert.isTrue(Number.isSafeInteger(cliPid) && cliPid > 1);
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
-          try {
-            process.kill(cliPid, "SIGKILL");
-          } catch {}
+          spawnSpy.mockRestore();
+          querySpy.mockRestore();
+          for (const child of processes) child.stderr.destroy();
         }),
       );
-      yield* session.close;
-      yield* Effect.promise(() => launcherExit.promise).pipe(Effect.timeout("5 seconds"));
-      assert.throws(() => process.kill(cliPid, 0), /ESRCH/);
-    }).pipe(Effect.provide(realQueryRunner)),
-  );
-});
+      const runner = yield* ClaudeAgentSdkQueryRunner;
+      const { mcpServers: _mcpServers, ...options } = resumedMcpQueryInput.options;
+      const input = { ...resumedMcpQueryInput, options };
+      const session = yield* runner.open(input);
+      assert.deepEqual(spawnSpy.mock.calls[0]?.slice(0, 2), [
+        "t3-resource-monitor.exe",
+        ["--run-in-job", "claude.exe", "--resume", FORK_SESSION_ID],
+      ]);
+      const closing = yield* session.close.pipe(Effect.exit, Effect.forkChild);
+      yield* Effect.promise(() => stopping.promise);
+      const opening = yield* runner
+        .open(input)
+        .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+      yield* TestClock.adjust("11 seconds");
+      assert.isTrue(Exit.isFailure(yield* Fiber.join(closing)));
+      assert.isTrue(Exit.isFailure(yield* Fiber.join(opening)));
+      assert.lengthOf(spawnSpy.mock.calls, 1);
+
+      processes[0]!.exited = true;
+      processes[0]!.emit("exit");
+      const replacement = yield* runner.open(input);
+      assert.lengthOf(spawnSpy.mock.calls, 2);
+      processes[1]!.exited = true;
+      processes[1]!.emit("exit");
+      yield* replacement.close;
+    }).pipe(
+      Effect.provide(
+        realQueryRunner.pipe(
+          Layer.provide(Layer.succeed(HostProcess.Platform, "win32")),
+          Layer.provide(
+            Layer.succeed(ResourceMonitorBinary, {
+              resolve: Effect.succeed("t3-resource-monitor.exe"),
+            }),
+          ),
+        ),
+      ),
+    ),
+);
 
 it.effect("resumes a session whose history exceeds the status-probe output limit", () =>
   Effect.gen(function* () {

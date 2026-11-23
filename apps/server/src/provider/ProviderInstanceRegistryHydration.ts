@@ -32,6 +32,7 @@ import type * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import type * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../config.ts";
 import type * as PortScanner from "../preview/PortScanner.ts";
+import * as ResourceMonitorBinary from "../resourceTelemetry/ResourceMonitorBinary.ts";
 
 type ProviderInstanceRegistryHydrationEnv =
   | Exclude<
@@ -205,7 +206,11 @@ export const layer: Layer.Layer<
       blockedReason: (driver) =>
         ManagedProviders.disallowedDriverReason(serverSettings.managedPolicy, driver),
     }).pipe(
-      Layer.provide(ProviderOrchestrationAdapterInfrastructure.layer),
+      Layer.provide(
+        ProviderOrchestrationAdapterInfrastructure.layer.pipe(
+          Layer.provide(ResourceMonitorBinary.layer),
+        ),
+      ),
       Layer.provide(AcpRegistrySupport.layerFromHost),
       Layer.provide(providerHostLayer),
       Layer.provide(Layer.succeed(HostProcess.Environment, hostEnvironment)),
