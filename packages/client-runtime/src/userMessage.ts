@@ -5,7 +5,7 @@ import {
   type OrchestrationMessageContext,
   type OrchestrationV2Actor,
   type OrchestrationV2CreationSource,
-  type OrchestrationV2IdleCompaction,
+  type idleCompactionOf,
   type OrchestrationV2UserMessageInputIntent,
   ScheduledTaskId,
 } from "@t3tools/contracts";
@@ -23,14 +23,14 @@ export const IDLE_COMPACTING_LABELS = {
   beforeCacheExpires: msg("Compacting before the cache expires…"),
   onReturn: msg("Compacting…"),
   afterIdle: msg("Compacting…"),
-} satisfies Record<OrchestrationV2IdleCompaction, string>;
+} satisfies Record<NonNullable<ReturnType<typeof idleCompactionOf>>, string>;
 
 /** Leads the finished compaction's token counts, in place of "Context compacted". */
 export const IDLE_COMPACTION_TITLES = {
   beforeCacheExpires: msg("Auto-compacted before cache expiry"),
   onReturn: msg("Context compacted before sending"),
   afterIdle: msg("Context compacted"),
-} satisfies Record<OrchestrationV2IdleCompaction, string>;
+} satisfies Record<NonNullable<ReturnType<typeof idleCompactionOf>>, string>;
 
 const LEGACY_AUTOMATION_PREFIX = /^\[Triggered by schedule task: [^\r\n]+\]\r?\n\r?\n/;
 const LEGACY_AUTOMATION_MESSAGE_ID = /^scheduled-task-message:(.+):\d+:(?:scheduled|manual)$/;

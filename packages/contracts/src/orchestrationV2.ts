@@ -627,8 +627,10 @@ export function isProviderNativeSubagentThread(
 }
 
 export const IDLE_COMPACTION_TEXT = "/compact";
+export const TIMED_IDLE_COMPACTION_MESSAGE_PREFIX = "timed-idle-compact:";
 
 interface CompactionMessageFields {
+  readonly id?: string | undefined;
   readonly role: string;
   readonly text: string;
   readonly attachments?: ReadonlyArray<unknown> | undefined;
@@ -712,13 +714,14 @@ export function parseGoalCommand(message: {
 /** Why T3 Code sent this `/compact` on its own, or undefined for one someone asked for. */
 export function idleCompactionOf(
   message: CompactionMessageFields,
-): OrchestrationV2IdleCompaction | undefined {
+): OrchestrationV2IdleCompaction | "afterIdle" | undefined {
   if (!isCompactionCommandMessage(message)) return undefined;
   if (message.idleCompaction !== undefined) return message.idleCompaction;
-  // Servers before `idleCompaction` marked their own as agent-created.
-  return message.createdBy === "agent" && message.creationSource === "server"
-    ? "beforeCacheExpires"
-    : undefined;
+  if (message.createdBy !== "agent" || message.creationSource !== "server") return undefined;
+  // The synthetic ID keeps timed compaction readable on clients with the older wire enum.
+  return message.id?.startsWith(TIMED_IDLE_COMPACTION_MESSAGE_PREFIX)
+    ? "afterIdle"
+    : "beforeCacheExpires";
 }
 
 export const OrchestrationV2RunStatus = Schema.Literals([
@@ -1542,11 +1545,7 @@ export const OrchestrationV2Notification = Schema.Struct({
 export type OrchestrationV2Notification = typeof OrchestrationV2Notification.Type;
 
 /** Why T3 Code compacted a thread on its own, on the `/compact` it sent. */
-export const OrchestrationV2IdleCompaction = Schema.Literals([
-  "beforeCacheExpires",
-  "onReturn",
-  "afterIdle",
-]);
+export const OrchestrationV2IdleCompaction = Schema.Literals(["beforeCacheExpires", "onReturn"]);
 export type OrchestrationV2IdleCompaction = typeof OrchestrationV2IdleCompaction.Type;
 
 export const OrchestrationV2ConversationMessage = Schema.Struct({

@@ -981,7 +981,6 @@ it.effect("Codex idle compaction only consumes its one-time override when admitt
         creationSource: "server",
         createdBy: "agent",
         dispatchMode: { type: "start_immediately" },
-        idleCompaction: "afterIdle",
         idleSinceMs: DateTime.toEpochMillis(now),
       });
 

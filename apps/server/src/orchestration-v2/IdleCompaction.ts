@@ -5,6 +5,7 @@ import {
   MessageId,
   pendingGuestMessageCount,
   resolveProjectProviderInstanceEnabled,
+  TIMED_IDLE_COMPACTION_MESSAGE_PREFIX,
   type RunId,
   type ServerSettings,
   type ThreadId,
@@ -257,7 +258,7 @@ export function codexIdleCompactionPolicy(
 }
 
 export const idleCompactionMessageId = (threadId: ThreadId, runId: RunId) =>
-  MessageId.make(`idle-compact:${threadId}:${runId}`);
+  MessageId.make(`${TIMED_IDLE_COMPACTION_MESSAGE_PREFIX}${threadId}:${runId}`);
 
 export const lastStartedOrPendingRun = (runs: IdleCompactionRecords["runs"]) =>
   runs.reduce<(typeof runs)[number] | undefined>(

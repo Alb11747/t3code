@@ -7696,13 +7696,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
     workspaceBasePinned = false,
   ) {
+    const timedIdleSinceMs = command.idleSinceMs;
     // A compacted thread reads every run, but attempts, nodes, messages, provider turns and prompts
     // only for its recent runs and the runs this command names. An idle compaction reads in full:
     // its busy check below looks for a delegated result's message under any old run.
     let projection = yield* getProjectionWithPendingEvents(
       command.threadId,
       events,
-      command.idleCompaction === undefined
+      command.idleCompaction === undefined && timedIdleSinceMs === undefined
         ? {
             keepRunIds: [
               command.manualContinuationOfRunId,
@@ -7930,7 +7931,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
 
     // Recheck eligibility under the dispatch lock, before creating a visible message or run.
-    if (command.idleCompaction === "beforeCacheExpires" || command.idleCompaction === "afterIdle") {
+    if (command.idleCompaction === "beforeCacheExpires" || timedIdleSinceMs !== undefined) {
       const eligible = yield* Effect.gen(function* () {
         if (
           hasBlockingIdleCompactionWork(projection) ||
@@ -7944,9 +7945,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           )
         )
           return false;
-        if (command.idleCompaction === "afterIdle") {
+        if (timedIdleSinceMs !== undefined) {
           if (
             command.creationSource !== "server" ||
+            command.idleCompaction !== undefined ||
             command.modelSelection !== undefined ||
             command.freshContext === true ||
             command.dispatchMode.type !== "start_immediately" ||
@@ -7955,13 +7957,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             return false;
           const current = yield* serverSettings.getSettings;
           const policy = codexIdleCompactionPolicy(current, projection.thread);
-          if (policy === null || command.idleSinceMs === undefined) return false;
+          if (policy === null) return false;
           const window = codexIdleCompactionWindow(projection, policy);
           return (
             window !== null &&
             !window.blocked &&
             command.messageId === idleCompactionMessageId(command.threadId, window.runId) &&
-            Math.max(window.completedAtMs, command.idleSinceMs) + policy.delayMs <=
+            Math.max(window.completedAtMs, timedIdleSinceMs) + policy.delayMs <=
               DateTime.toEpochMillis(yield* DateTime.now)
           );
         }
@@ -7989,7 +7991,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
 
     // Persist a spent one-time setting so the provider default cannot arm it again.
-    if (command.idleCompaction === "afterIdle" && projection.thread.compactAfterIdle !== true) {
+    if (timedIdleSinceMs !== undefined && projection.thread.compactAfterIdle !== true) {
       const now = yield* DateTime.now;
       const event = yield* emit(
         events,
@@ -8034,7 +8036,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // Fork: idle compaction of a settled thread keeps it settled.
     const serverIdleCompaction =
       command.creationSource === "server" &&
-      (command.idleCompaction === "beforeCacheExpires" || command.idleCompaction === "afterIdle");
+      (command.idleCompaction === "beforeCacheExpires" || timedIdleSinceMs !== undefined);
     if (projection.thread.settledOverride !== null && !serverIdleCompaction) {
       const now = yield* DateTime.now;
       const thread: OrchestrationV2AppThread = {

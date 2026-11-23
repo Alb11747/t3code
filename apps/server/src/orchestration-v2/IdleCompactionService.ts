@@ -199,7 +199,6 @@ export const make = Effect.gen(function* () {
             attachments: [],
             createdBy: "agent",
             creationSource: "server",
-            idleCompaction: "afterIdle",
             idleSinceMs,
             dispatchMode: { type: "start_immediately" },
           });

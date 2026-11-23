@@ -702,7 +702,7 @@ describe("IdleCompactionService", () => {
         });
         const commands: Array<{
           readonly text: string;
-          readonly idleCompaction?: string | undefined;
+          readonly idleSinceMs?: number | undefined;
         }> = [];
         const dependencies = Layer.mergeAll(
           noScheduledTasks,
@@ -763,7 +763,9 @@ describe("IdleCompactionService", () => {
           yield* TestClock.adjust(Duration.minutes(11));
           expect(commands).toEqual([]);
           yield* TestClock.adjust(Duration.minutes(1));
-          expect(commands).toMatchObject([{ text: "/compact", idleCompaction: "afterIdle" }]);
+          expect(commands).toMatchObject([
+            { text: "/compact", idleSinceMs: NOW_MS + 30 * MINUTE_MS },
+          ]);
         }).pipe(Effect.provide(dependencies));
       }),
     ),

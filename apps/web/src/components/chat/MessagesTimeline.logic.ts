@@ -57,7 +57,6 @@ import {
   isCompactionCommandMessage,
   isOrchestrationV2WorkActive,
   type MessageId,
-  type OrchestrationV2IdleCompaction,
   type WorktreeSetupSnapshot,
   type OrchestrationV2ProjectedTurnItem,
   type RunAttemptId,
@@ -1849,7 +1848,7 @@ export function deriveMessagesTimelineRows(
   // A bare `/compact` turn is the compaction itself: one compaction row stands in for its prompt
   // and working indicator, from the moment the turn starts. Likewise an answered "compact before
   // continuing?" question folds into the compaction it asked for.
-  const compactionRuns = new Map<RunId, OrchestrationV2IdleCompaction | undefined>();
+  const compactionRuns = new Map<RunId, ReturnType<typeof idleCompactionOf>>();
   const compactedRunIds = new Set<RunId>();
   const pendingResumeCompactionAgeByRunId = new Map<RunId, string>();
   const resumeCompactionAgeByEntryId = new Map<string, string>();

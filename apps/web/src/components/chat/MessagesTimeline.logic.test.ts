@@ -6,6 +6,7 @@ import {
   ProviderInstanceId,
   ProviderTurnId,
   RunAttemptId,
+  TIMED_IDLE_COMPACTION_MESSAGE_PREFIX,
   TurnItemId,
   RuntimeRequestId,
   type OrchestrationV2ProjectedTurnItem,
@@ -645,9 +646,21 @@ describe("deriveMessagesTimelineRows", () => {
     const [history0, history1, history2, liveUser, , liveAssistant] = fixture.visibleTurnItems;
     if (liveUser?.item.type !== "user_message" || liveAssistant?.item.type !== "assistant_message")
       throw new Error("Expected live fixture items");
-    const compactPrompt = (idleCompaction: "beforeCacheExpires" | "onReturn" | undefined) => ({
+    const compactPrompt = (
+      idleCompaction: "beforeCacheExpires" | "onReturn" | "afterIdle" | undefined,
+    ) => ({
       ...liveUser,
-      item: { ...liveUser.item, text: "/compact", idleCompaction },
+      item: {
+        ...liveUser.item,
+        text: "/compact",
+        ...(idleCompaction === "afterIdle"
+          ? {
+              createdBy: "agent" as const,
+              creationSource: "server" as const,
+              messageId: MessageId.make(`${TIMED_IDLE_COMPACTION_MESSAGE_PREFIX}fixture`),
+            }
+          : { idleCompaction }),
+      },
     });
     const compaction = {
       ...liveAssistant,
@@ -690,6 +703,7 @@ describe("deriveMessagesTimelineRows", () => {
         "Auto-compacted before cache expiry",
       ],
       ["onReturn", { kind: "working", compacting: true }, "Context compacted before sending"],
+      ["afterIdle", { kind: "context-compaction", active: true }, "Context compacted"],
       [undefined, { kind: "context-compaction", active: true }, undefined],
     ] as const) {
       const prompt = compactPrompt(reason);
