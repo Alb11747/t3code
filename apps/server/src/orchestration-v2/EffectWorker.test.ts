@@ -877,49 +877,58 @@ it.effect("frees a worker from an effect that outlives its lease", () =>
   ),
 );
 
-it.effect("drain waits for settlement after an effect outlives its lease", () =>
-  Effect.gen(function* () {
-    const outbox = yield* EffectOutbox.EffectOutboxV2;
-    const effectId = "effect:drain-long-execution";
-    yield* outbox.enqueue([
-      {
-        id: effectId,
-        commandId: CommandId.make("command:drain-long-execution"),
-        threadId,
-        request: { type: "terminal.cleanup" },
-      },
-    ]);
-    const reached = yield* Deferred.make<void>();
-    const release = yield* Deferred.make<void>();
-    const drained = yield* Deferred.make<void>();
-    const layerWorker = EffectWorker.layerWithOptions({ leaseDurationMs: 1_000 }).pipe(
-      Layer.provide(
-        Layer.merge(
-          Layer.succeed(EffectOutbox.EffectOutboxV2, outbox),
-          Layer.succeed(
-            EffectWorker.OrchestrationEffectExecutorV2,
-            EffectWorker.OrchestrationEffectExecutorV2.of({
-              execute: () =>
-                Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release))),
-            }),
+it.effect.each(["runOnce", "runRecoveryOnce", "drain"] as const)(
+  "%s waits for settlement after the daemon slot timeout",
+  (operation) =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const effectId = "effect:long-execution";
+      yield* outbox.enqueue([
+        {
+          id: effectId,
+          commandId: CommandId.make("command:long-execution"),
+          threadId,
+          request: { type: "terminal.cleanup" },
+        },
+      ]);
+      const reached = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const completed = yield* Deferred.make<void>();
+      const layerWorker = EffectWorker.layer.pipe(
+        Layer.provide(
+          Layer.merge(
+            Layer.succeed(EffectOutbox.EffectOutboxV2, outbox),
+            Layer.succeed(
+              EffectWorker.OrchestrationEffectExecutorV2,
+              EffectWorker.OrchestrationEffectExecutorV2.of({
+                execute: () =>
+                  Deferred.succeed(reached, undefined).pipe(
+                    Effect.andThen(Deferred.await(release)),
+                  ),
+              }),
+            ),
           ),
         ),
-      ),
-    );
-    const draining = yield* Effect.gen(function* () {
-      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-      return yield* worker.drain(1).pipe(Effect.tap(() => Deferred.succeed(drained, undefined)));
-    }).pipe(Effect.provide(layerWorker), Effect.forkScoped);
-    yield* Deferred.await(reached);
-    yield* TestClock.adjust("1 second");
-    assert.isFalse(yield* Deferred.isDone(drained));
-    yield* Deferred.succeed(release, undefined);
-    assert.equal(yield* Fiber.join(draining), 1);
-    assert.deepEqual(
-      yield* outbox.get(effectId).pipe(Effect.map(Option.map((effect) => effect.status))),
-      Option.some("succeeded"),
-    );
-  }).pipe(Effect.provide(EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)))),
+      );
+      const settling = yield* Effect.gen(function* () {
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const result =
+          operation === "drain"
+            ? yield* worker.drain(1)
+            : yield* operation === "runOnce" ? worker.runOnce() : worker.runRecoveryOnce;
+        yield* Deferred.succeed(completed, undefined);
+        return result;
+      }).pipe(Effect.provide(layerWorker), Effect.forkScoped);
+      yield* Deferred.await(reached);
+      yield* TestClock.adjust("30 seconds");
+      assert.isFalse(yield* Deferred.isDone(completed));
+      yield* Deferred.succeed(release, undefined);
+      assert.strictEqual(yield* Fiber.join(settling), operation === "drain" ? 1 : true);
+      assert.deepEqual(
+        yield* outbox.get(effectId).pipe(Effect.map(Option.map((effect) => effect.status))),
+        Option.some("succeeded"),
+      );
+    }).pipe(Effect.provide(EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)))),
 );
 
 it.effect.each([3, 4])(

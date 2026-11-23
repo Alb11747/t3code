@@ -15,33 +15,20 @@ import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 const ProcessIdentity = Schema.Struct({ pid: Schema.Int, startTime: Schema.String });
 type ProcessIdentity = typeof ProcessIdentity.Type;
 
-const OpenCodeServerEntryFields = {
+const OpenCodeServerEntry = Schema.Struct({
+  version: Schema.Literal(1),
   pgid: Schema.Int,
   pid: Schema.Int,
   startTime: Schema.String,
-  command: Schema.optionalKey(Schema.String),
+  command: Schema.String,
+  args: Schema.optionalKey(Schema.Array(Schema.String)),
   port: Schema.Int,
   stateDir: Schema.String,
   owner: ProcessIdentity,
-};
-const OpenCodeServerEntry = Schema.Struct({
-  ...OpenCodeServerEntryFields,
-  version: Schema.Literal(2),
-  args: Schema.Array(Schema.String),
 });
 type OpenCodeServerEntry = typeof OpenCodeServerEntry.Type;
 const OpenCodeServerEntryJson = Schema.fromJsonString(OpenCodeServerEntry);
-// A previous installation may have crashed with a version-1 record still on disk.
-const RecordedOpenCodeServerEntry = Schema.Union([
-  OpenCodeServerEntry,
-  Schema.Struct({
-    ...OpenCodeServerEntryFields,
-    version: Schema.Literal(1),
-    command: Schema.String,
-    args: Schema.optionalKey(Schema.Array(Schema.String)),
-  }),
-]);
-const decodeEntry = Schema.decodeUnknownOption(Schema.fromJsonString(RecordedOpenCodeServerEntry));
+const decodeEntry = Schema.decodeUnknownOption(OpenCodeServerEntryJson);
 const encodeEntry = Schema.encodeEffect(OpenCodeServerEntryJson);
 
 export class OpenCodeServerLedger extends Context.Service<
@@ -224,7 +211,7 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
       }
       const entryPath = path.join(directory, `${pgid}.json`);
       const entry: OpenCodeServerEntry = {
-        version: 2,
+        version: 1,
         pgid,
         pid: member.pid,
         startTime: member.startTime,
@@ -260,7 +247,7 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
   // time, and group and still has the same command line or serve arguments, so
   // a recycled pid is never touched.
   const stopOrphan = Effect.fn("OpenCodeServerLedger.stopOrphan")(function* (
-    entry: typeof RecordedOpenCodeServerEntry.Type,
+    entry: OpenCodeServerEntry,
   ) {
     const observed = yield* observe(entry.pid);
     if (
