@@ -60,7 +60,7 @@ A failing check, a stuck sync or a bug you hit along the way is part of your tas
 
 1. Search for an existing report or fix (_Fixing bugs_, step 1, and the closed-issue rule above). If one exists, link it and file nothing.
 2. Unblock the fork without waiting on upstream: carry the fix as a fork change, or in the candidate during a sync. With no fix yet, skip only the one failing test, with `// quarantine: <upstream issue URL> <why>` above it; file the issue first to get its URL.
-3. Report it. With a fix upstream could take, open the issue and PR together (_Fixing bugs_ from step 2) and carry the fix once the PR is open, with its `Upstream-PR:` trailer, instead of waiting for its review (_Release lineage_); that completes step 6 there. Otherwise open the issue alone, written as _Fixing bugs_, step 4 describes, with reproduction steps and the evidence that it is upstream's. If no upstream CI run shows the failure, have a cost-efficient model such as Sol (`gpt-6.2-sol` at `high`) build a minimal failing test on `upstream/main` or the pinned commit, and check its result before filing. Link the issue in the fork change's `CHANGES.md` entry.
+3. Report it. With a fix upstream could take, open the issue and PR together (_Fixing bugs_ from step 2) and carry the fix once the PR is open, with its `Upstream-PR:` trailer, instead of waiting for its review (_Release lineage_); that completes step 6 there. Otherwise open the issue alone, using the reproduction checklist in _Fixing bugs_, step 4. Link any upstream CI run that shows the failure. If you need to build a failing test, Sol (`gpt-6.2-sol` at `high`) can prepare it. Link the issue in the fork change's `CHANGES.md` entry.
 
 These need no question either:
 
@@ -628,17 +628,16 @@ label, or request review for an upstream PR.
    for that revision. Prepare the PR body and triage the branch and drafted body;
    resolve any gaps before creating an issue or opening the PR.
 
-   If a substantial fix has no existing issue, create the bug issue on
-   `pingdotgg/t3code` once the fix is implemented, reviewed, validated and
-   ready for PR publication.
-   Follow the sections of the `via-triage` template
-   (`.github/ISSUE_TEMPLATE/via-triage.yml`) and redact secrets and home directory
-   paths from quoted evidence. Include the proposed fix, links to the published
-   fork branch and its comparison against upstream `main`, and the validation
-   results and any hosted checks run. Explain that the prepared fix is available for
-   maintainers to consider; they decide whether to use it or take another approach.
-   This gives their issue workflow the PR's context from the start. Do not create
-   a duplicate issue when an existing one covers the bug.
+   For every upstream bug report, use the [upstream bug report form](https://github.com/pingdotgg/t3code/blob/main/.github/ISSUE_TEMPLATE/bug_report.yml). Put **Steps to reproduce** before diagnosis and fork context. Fill in **Expected behavior**, **Actual behavior**, **Version or commit**, and **Environment** with what you ran and observed. Expected behavior describes the existing behavior the fix should restore. Put proposals for new behavior in [Ideas discussions](https://github.com/pingdotgg/t3code/discussions/categories/ideas) only when the user asks.
+
+   - Start the steps with “No provider sign-in required” and the measured run time. Give the exact upstream SHA, prerequisites, setup commands, file paths and contents, inputs, and output or visible result that shows the bug. Start from a clean checkout and use synthetic data.
+   - For bugs involving a live provider, also give the exact app actions, prompts or tool inputs, the state to wait for, and the app version, OS, provider, CLI version and model. Give triage a sign-in-free route by driving the affected upstream code with a fake adapter or recorded event replay. Explain which result proves the defect and what the live run confirms.
+   - For a scripted repro, paste the full test or script, or pin it to a commit on a public fork branch and give exact fetch, apply and run commands. Use APIs already on the tested upstream commit. Assert the correct behavior so the test fails for the reported reason on upstream and passes with the fix. Paste the relevant failure and, if a fix exists, the passing output.
+   - Before filing, follow the steps as written in a clean worktree at fetched `upstream/main` (or the pinned upstream commit for a sync failure). Record the SHA and output you actually observed. Redact secrets and home directory paths from the evidence.
+
+   Triage lacked provider sign-in in [#36106](https://github.com/pingdotgg/t3code/issues/36106), [#36453](https://github.com/pingdotgg/t3code/issues/36453), [#36454](https://github.com/pingdotgg/t3code/issues/36454) and [#41268](https://github.com/pingdotgg/t3code/issues/41268), and closed them as no repro even when it recorded a failing offline case.
+
+   If a substantial fix has no existing issue, file the report on `pingdotgg/t3code` once the fix is reviewed, validated and ready for PR publication. Include the proposed fix below the evidence with links to the published fork branch and its comparison against upstream `main`, plus the validation results and any hosted checks. Maintainers decide whether to use it. Reuse the existing issue if it covers the bug.
 
    Then open the PR with a Conventional Commits title in plain
    language (`fix(web): …`) and the template's sections: **Problem**,
