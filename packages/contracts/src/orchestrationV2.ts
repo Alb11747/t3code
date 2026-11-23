@@ -865,6 +865,7 @@ export const OrchestrationV2Run = Schema.Struct({
   workspaceBasePinned: Schema.optional(Schema.Literal(true)),
   /** A message queued only because the active turn had not started yet; delivered so once it does. */
   deliveryIntent: Schema.optional(Schema.Literals(["auto", "steer"])),
+  explicitQueue: Schema.optional(Schema.Literal(true)),
   /** Starts a new provider conversation; earlier runs stay visible but never reach the provider. */
   freshContext: Schema.optional(Schema.Boolean),
   /** The JSON Schema of the result this run was asked to return as data. */
@@ -3652,6 +3653,7 @@ export const OrchestrationV2Command = Schema.Union([
     steerFollowUpAfterRunOrdinal: Schema.optional(NonNegativeInt),
     usageLimitRecoveryRequestId: Schema.optional(CommandId),
     deliveryIntent: Schema.optional(Schema.Literals(["auto", "steer", "restart"])),
+    explicitQueue: Schema.optional(Schema.Literal(true)),
     delegatedCompletion: Schema.optional(
       Schema.Struct({
         parentRunId: RunId,

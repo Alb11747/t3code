@@ -8136,8 +8136,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ) {
       dispatchMode = { type: "queue_after_active" };
     }
-    // An agent's automatic send must not overtake an earlier agent message still queued
-    // (e.g. behind /compact), or the agent receives them out of send order.
+    // Only an explicit later-turn request can yield to Codex's native steer. Old
+    // queue records may represent deferred steers, so keep their send order.
     if (
       command.deliveryIntent === "auto" &&
       command.createdBy === "agent" &&
@@ -8147,13 +8147,42 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (run) => run.status === "queued" && run.queueHeld !== true,
       );
       if (queuedRuns.length > 0) {
+        const { targetRunId } = dispatchMode;
+        const targetRun = projection.runs.find((run) => run.id === targetRunId);
+        const targetProvider = projection.providerThreads.find(
+          (thread) => thread.id === targetRun?.providerThreadId,
+        );
+        const nativeCodexSteer =
+          dispatchMode.type === "steer_active" &&
+          targetProvider?.driver === "codex" &&
+          !isNativeMaintenanceCommand(command);
         const queuedMessages = yield* projectionStore
           .getMessagesById(
             command.threadId,
             queuedRuns.map((run) => run.userMessageId),
           )
           .pipe(mapDispatchError(command));
-        if ([...queuedMessages.values()].some((message) => message.createdBy === "agent")) {
+        const queuedAgentRuns = queuedRuns.filter(
+          (run) => queuedMessages.get(run.userMessageId)?.createdBy === "agent",
+        );
+        if (
+          queuedAgentRuns.length > 0 &&
+          (!nativeCodexSteer ||
+            queuedAgentRuns.some(
+              (run) =>
+                run.explicitQueue !== true ||
+                run.deliveryIntent !== undefined ||
+                queuedMessages.get(run.userMessageId)?.atToolBoundary === true,
+            ) ||
+            queuedRuns.some((run) => {
+              const message = queuedMessages.get(run.userMessageId);
+              return (
+                run.afterCompactionMessageId !== undefined ||
+                run.freshContext === true ||
+                (message !== undefined && isNativeMaintenanceCommand(message))
+              );
+            }))
+        ) {
           dispatchMode = { type: "queue_after_active" };
         }
       }
@@ -8919,6 +8948,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : { usageLimitContinuationOfRunId: command.usageLimitContinuationOfRunId }),
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         ...(startupDeliveryIntent === undefined ? {} : { deliveryIntent: startupDeliveryIntent }),
+        ...(command.explicitQueue === true ? { explicitQueue: true as const } : {}),
         ...(freshContext ? { freshContext: true } : {}),
         ...output,
       };

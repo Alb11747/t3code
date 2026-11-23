@@ -1061,6 +1061,9 @@ const make = Effect.gen(function* () {
         : {}),
       dispatchMode,
       ...(mode === "auto" ? { deliveryIntent: "auto" } : {}),
+      ...(input.mode === "queue" && input.createdBy === "agent" && input.creationSource === "mcp"
+        ? { explicitQueue: true as const }
+        : {}),
       createdBy: input.createdBy,
       creationSource: input.creationSource,
     }).pipe(

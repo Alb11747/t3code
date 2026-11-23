@@ -1948,6 +1948,74 @@ it.effect("queues a steer until the turn ends when the provider cannot steer it"
   ),
 );
 
+it.effect("steers an agent auto send into Codex while an explicit queue send waits", () =>
+  Effect.gen(function* () {
+    const name = "codex-auto-with-queued-agent-message";
+    const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(name);
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const threadId = yield* startFirstTurn;
+      const send = (text: string, mode: "auto" | "queue") =>
+        threads.sendToThread({
+          projectId: ProjectId.make(`project:${name}`),
+          threadId,
+          commandId: CommandId.make(`send-${text}`),
+          messageId: MessageId.make(`message:${text}`),
+          text,
+          attachments: [],
+          mode,
+          createdBy: "agent",
+          creationSource: "mcp",
+          senderThreadId: ThreadId.make("thread:orchestrator"),
+        });
+      const later = yield* send("later", "queue");
+      const immediate = yield* send("now", "auto");
+      yield* worker.drain();
+
+      assert.equal(later.delivery, "queued");
+      assert.equal(immediate.delivery, "steered");
+      assert.equal(immediate.run.id, started[0]?.runId);
+      const compact = yield* send("/compact", "auto");
+      assert.equal(compact.delivery, "queued");
+      yield* orchestrator.dispatch({
+        type: "queued-run.cancel",
+        commandId: CommandId.make("cancel-compact"),
+        threadId,
+        runId: compact.run.id,
+      });
+
+      const fresh = yield* threads.sendToThread({
+        projectId: ProjectId.make(`project:${name}`),
+        threadId,
+        commandId: CommandId.make("send-fresh"),
+        messageId: MessageId.make("message:fresh"),
+        text: "new conversation",
+        attachments: [],
+        mode: "queue",
+        freshContext: true,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const afterFresh = yield* send("after fresh context", "auto");
+      assert.equal(fresh.delivery, "queued");
+      assert.equal(afterFresh.delivery, "queued");
+      yield* worker.drain();
+
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        steered.map((text) => text.split("\n").at(-1)),
+        ["now"],
+      );
+      assert.deepEqual(
+        projection.runs.filter((run) => run.status === "queued").map((run) => run.id),
+        [later.run.id, fresh.run.id, afterFresh.run.id],
+      );
+    }).pipe(Effect.provide(layer));
+  }),
+);
+
 // regression: #39404 a later agent message steers ahead of one queued behind /compact
 it.effect("delivers agent messages queued behind /compact before a later one steers", () =>
   Effect.gen(function* () {
