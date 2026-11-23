@@ -699,11 +699,13 @@ export const layer: Layer.Layer<
                       (instance) => instance?.snapshot.getSnapshot ?? Effect.undefined,
                     ))?.auth.endpoint
                   : undefined;
+              const submittedModel = input.event.submittedModel;
               const hubResetAt =
                 endpoint === undefined
                   ? null
                   : yield* Effect.gen(function* () {
-                      // The failing run's model, which may differ from a selection changed mid-turn.
+                      if (submittedModel !== undefined) return submittedModel;
+                      // Older adapters report only the run selection.
                       const { runs } =
                         input.runId === undefined
                           ? { runs: [] }

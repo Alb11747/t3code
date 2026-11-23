@@ -1318,6 +1318,8 @@ function failureResetAt(
 interface ActiveCodexTurnContext {
   hookStopReason?: string;
   appliedServiceTier?: string;
+  /** The thread's selection changed while this turn ran; a T3 overload retry starts with it. */
+  appliedModelSelection?: ModelSelection;
   closedCommandItemIds?: ReadonlySet<string>;
   latestProviderFailure?: {
     readonly nativeMessage: string;
@@ -2736,6 +2738,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             readonly startedAt: DateTime.Utc;
             readonly queued?: boolean;
           },
+          turnInput = hold.context.input,
           isAbandoned = () => false,
         ) {
           yield* emitProviderEvent({
@@ -2747,7 +2750,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           const next = yield* registerRootTurn(
             {
               turnInput: {
-                ...hold.context.input,
+                ...turnInput,
                 providerTurnOrdinal: hold.context.providerTurnOrdinal + 1,
               },
               nativeTurnId: turn.id,
@@ -2757,6 +2760,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             () => isAbandoned() || goalHolds.get(nativeThreadId) !== hold,
           );
           if (isAbandoned() || goalHolds.get(nativeThreadId) !== hold) return next;
+          const selection = hold.context.appliedModelSelection;
+          if (selection !== undefined) next.appliedModelSelection ??= selection;
           const appliedServiceTier = hold.context.appliedServiceTier;
           if (appliedServiceTier !== undefined) next.appliedServiceTier ??= appliedServiceTier;
           goalHolds.delete(nativeThreadId);
@@ -2808,7 +2813,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   },
                   () => acceptance.abandoned,
                 )
-              : registerHeldTurn(nativeThreadId, acceptance.hold, turn, () => acceptance.abandoned);
+              : registerHeldTurn(
+                  nativeThreadId,
+                  acceptance.hold,
+                  turn,
+                  acceptance.input,
+                  () => acceptance.abandoned,
+                );
             // turn/started can arrive while registration is publishing the
             // context, before that handler can see nativeStartReady itself.
             if (acceptance.nativeStarted && context.nativeStartReady !== undefined) {
@@ -6758,8 +6769,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 providerTurnId: input.context.providerTurnId,
                 runOrdinal: input.context.input.runOrdinal,
                 failureItemOrdinal:
-                  input.providerRetry?.itemOrdinal ?? (yield* placeRetryRowLast(input.context)),
+                  input.providerRetry === undefined
+                    ? yield* placeRetryRowLast(input.context)
+                    : yield* resolveItemOrdinal(
+                        input.context,
+                        `terminal-failure:${input.context.providerTurnId}`,
+                      ),
                 status: terminalStatus,
+                submittedModel: input.context.input.modelSelection.model,
                 failure:
                   failure.class === "usage_limit"
                     ? {
@@ -6994,7 +7011,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           const stillHeld = () =>
             goalHolds.get(nativeThreadId) === hold && !goalStops.has(nativeThreadId);
           if (!(yield* turnTerminalizationPermit.withPermits(1)(Effect.sync(stillHeld)))) return;
-          const { input, appliedServiceTier } = hold.context;
+          const { appliedServiceTier, appliedModelSelection } = hold.context;
+          const input =
+            appliedModelSelection === undefined
+              ? hold.context.input
+              : { ...hold.context.input, modelSelection: appliedModelSelection };
           const turnInput =
             appliedServiceTier === undefined
               ? input
@@ -8769,7 +8790,27 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             modelSelection,
           }) {
             const threadId = providerThread.nativeThreadRef?.nativeId;
-            if (threadId != null) yield* applyServiceTier(threadId, modelSelection);
+            if (threadId == null) return;
+            // Codex cannot change a running turn's model, but a capacity retry starts a
+            // new turn, which must use the model the thread was switched to meanwhile.
+            yield* turnTerminalizationPermit.withPermits(1)(
+              Effect.gen(function* () {
+                const running = yield* Ref.get(activeTurns);
+                const deferred = yield* Ref.get(deferredRootTerminals);
+                // A failed root can be waiting for its native children before it enters backoff.
+                for (const turn of [
+                  ...running.values(),
+                  ...Array.from(deferred.values(), (terminal) => terminal.context),
+                ]) {
+                  if (turn.providerThread.nativeThreadRef?.nativeId === threadId) {
+                    turn.appliedModelSelection = modelSelection;
+                  }
+                }
+                const hold = goalHolds.get(threadId);
+                if (hold !== undefined) hold.context.appliedModelSelection = modelSelection;
+              }),
+            );
+            yield* applyServiceTier(threadId, modelSelection);
           }),
           // Dropping this connection's subscription lets the shared app-server
           // shut the native thread (and its MCP servers) down once it is idle.

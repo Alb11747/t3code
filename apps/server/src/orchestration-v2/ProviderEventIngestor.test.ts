@@ -315,6 +315,7 @@ it.effect("takes a hub's reset for an unreset usage_limit, then refreshes the sn
             }),
             runOrdinal: 1,
             failureItemOrdinal: 1,
+            submittedModel: "retry-model",
             status: "failed",
             failure: makeProviderFailure({
               class: failureClass,
@@ -336,7 +337,7 @@ it.effect("takes a hub's reset for an unreset usage_limit, then refreshes the sn
         }
       }
       assert.deepEqual(lookups, [instance.instanceId, instance.instanceId]);
-      assert.deepEqual(hubLookups, [["cursor", "http://hub.test:8317", "gpt-5.4"]]);
+      assert.deepEqual(hubLookups, [["cursor", "http://hub.test:8317", "retry-model"]]);
       yield* Deferred.await(refreshed);
     }).pipe(
       Effect.provide(makeLayerTest(layerTestEventSink, instances)),

@@ -5357,6 +5357,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     "steer",
     "start-fails",
     "keep-changed-tier",
+    "switch-model",
+    "usage-limit",
   ] as const)("handles terminal Codex capacity failures when retries %s", (outcome) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -5371,6 +5373,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const failureEntries = (
           attempt: number,
           firstNoticeDelayMs?: number,
+          error = capacityError,
         ): Array<CodexReplay.CodexAppServerReplayEntry> => [
           {
             type: "emit_inbound",
@@ -5381,7 +5384,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 threadId: nativeThreadId,
                 turnId: nativeTurnId(attempt),
                 willRetry: false,
-                error: capacityError,
+                error,
               },
             },
           },
@@ -5393,7 +5396,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 threadId: nativeThreadId,
                 turn: {
                   ...makeCodexReplayTurn({ id: nativeTurnId(attempt), status: "failed" }),
-                  error: capacityError,
+                  error,
                 },
               },
             },
@@ -5406,6 +5409,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         });
         // A speed picked while the first attempt runs; the retry must not send the old one.
         const changedTier = outcome === "keep-changed-tier" ? "fast" : undefined;
+        // A model picked while the run waits to retry; the retry turn must use it.
+        const switchModel = outcome === "switch-model" || outcome === "usage-limit";
+        const retryModel = switchModel ? "gpt-5.5" : "gpt-5.4";
         if (changedTier !== undefined) {
           entries.push(
             {
@@ -5424,8 +5430,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ...(outcome === "completion-only" ? failureEntries(0).slice(1) : failureEntries(0)),
         );
         if (outcome === "completion-only") entries.push(...failureEntries(0).slice(1));
-        const retries =
-          outcome === "past-limit" ? 5 : outcome === "stop" ? 0 : changedTier === undefined ? 1 : 2;
+        const retryTwice = changedTier !== undefined || outcome === "switch-model";
+        const retries = outcome === "past-limit" ? 5 : outcome === "stop" ? 0 : retryTwice ? 2 : 1;
         const longCapacityWaitMs = 25 * 60 * 60 * 1_000;
         const steeredText = "Use the smaller change.";
         for (let attempt = 1; attempt <= retries; attempt++) {
@@ -5454,12 +5460,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                     threadId: nativeThreadId,
                     input: [],
                     cwd: "/workspace",
-                    model: "gpt-5.4",
+                    model: retryModel,
                     approvalPolicy: "never",
                     approvalsReviewer: "user",
                     sandboxPolicy: { type: "dangerFullAccess" },
                     summary: "auto",
-                    collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+                    collaborationMode: { mode: "default", settings: { model: retryModel } },
                     ...(changedTier === undefined ? {} : { serviceTier: changedTier }),
                   },
                 },
@@ -5520,7 +5526,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               }
             }
           }
-          if (outcome === "past-limit" || (changedTier !== undefined && attempt < retries)) {
+          if (outcome === "past-limit" || (retryTwice && attempt < retries)) {
             if (outcome === "past-limit" && attempt === retries) {
               // Codex 0.171 reports the capacity cause in additionalDetails on
               // native retry notices, then sends serverOverloaded on exhaustion.
@@ -5545,9 +5551,29 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               entries.push(...failureEntries(attempt));
             }
           }
+          if (outcome === "usage-limit") {
+            entries.push(
+              {
+                type: "emit_inbound",
+                frame: {
+                  method: "account/rateLimits/updated",
+                  params: {
+                    rateLimits: {
+                      limitId: "codex",
+                      primary: { usedPercent: 100, resetsAt: 2000100000, windowDurationMins: 300 },
+                    },
+                  },
+                },
+              },
+              ...failureEntries(attempt, undefined, {
+                message: "Usage limit reached.",
+                codexErrorInfo: "usageLimitExceeded",
+              }),
+            );
+          }
           if (
             outcome === "recover" ||
-            (changedTier !== undefined && attempt === retries) ||
+            (retryTwice && attempt === retries) ||
             outcome === "completion-only" ||
             outcome === "started-first" ||
             outcome === "stop-starting"
@@ -5688,6 +5714,14 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   })
                   .pipe(Effect.forkScoped)
               : undefined;
+          if (switchModel && attempt === 1) {
+            yield* (
+              harness.runtime.applyModelSelection?.({
+                providerThread: harness.providerThread,
+                modelSelection: { ...CODEX_TEST_MODEL_SELECTION, model: retryModel },
+              }) ?? Effect.void
+            );
+          }
           yield* TestClock.adjust(retry.retryDelayMs!);
           if (outcome === "stop-starting") {
             yield* Deferred.await(retryStarted);
@@ -5749,6 +5783,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.equal(
           terminal?.status,
           outcome === "recover" ||
+            outcome === "switch-model" ||
             outcome === "keep-changed-tier" ||
             outcome === "completion-only" ||
             outcome === "steer" ||
@@ -5780,6 +5815,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ["completed", "failed", "interrupted"].includes(retryItems.at(-1)?.status ?? ""),
         );
         assert.lengthOf(new Set(retryItems.map((item) => item.id)), 1);
+        if (outcome === "usage-limit") {
+          assert(terminal?.status === "failed");
+          assert.equal(terminal.failure.class, "usage_limit");
+          assert.equal(terminal.submittedModel, retryModel);
+          assert.isAbove(terminal.failureItemOrdinal, retryItems.at(-1)!.ordinal);
+        }
 
         if (outcome === "recover") {
           const fs = yield* FileSystem.FileSystem;

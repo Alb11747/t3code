@@ -232,6 +232,8 @@ export const ProviderAdapterV2Event = Schema.Union([
     providerTurnId: ProviderTurnId,
     runOrdinal: PositiveInt,
     failureItemOrdinal: PositiveInt,
+    /** The model submitted for this provider turn, which can change between retries of one run. */
+    submittedModel: Schema.optional(Schema.String),
     status: Schema.Literal("failed"),
     failure: OrchestrationV2ProviderFailure,
     retry: Schema.optional(OrchestrationV2ProviderRetry),
