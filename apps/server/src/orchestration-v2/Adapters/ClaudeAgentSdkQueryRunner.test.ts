@@ -28,6 +28,7 @@ import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import * as SpawnWorker from "../../process/SpawnWorker.ts";
+import * as WindowsClaudeJob from "../../process/windowsClaudeJob.ts";
 import { ResourceMonitorBinary } from "../../resourceTelemetry/ResourceMonitorBinary.ts";
 import {
   ClaudeAgentSdkQueryRunner,
@@ -234,81 +235,100 @@ const resumedMcpQueryInput = {
   },
 } satisfies ClaudeAgentSdkQueryOpenInput;
 
-it.effect(
-  "keeps Windows Claude ownership until its process exits, even after close times out",
-  () =>
-    Effect.gen(function* () {
-      const stopping = Promise.withResolvers<void>();
-      const processes: Array<ReturnType<typeof makeProcess>> = [];
-      const signal = yield* Effect.abortSignal;
-      function makeProcess() {
-        return Object.assign(new NodeEvents.EventEmitter(), {
-          pid: 123,
-          exited: false,
-          exitCode: null,
-          signalCode: null,
-          stderr: new NodeStream.PassThrough(),
-          kill: vi.fn(() => {
-            stopping.resolve();
-            return true;
-          }),
-        });
-      }
-      const spawnSpy = vi.spyOn(SpawnWorker, "spawnPiped").mockImplementation(() => {
-        const child = makeProcess();
-        processes.push(child);
-        return child as unknown as ReturnType<typeof SpawnWorker.spawnPiped>;
-      });
-      const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(({ options }) => {
-        const launch = options?.spawnClaudeCodeProcess;
-        assert.isDefined(launch);
-        launch({ command: "claude.exe", args: ["--resume", FORK_SESSION_ID], env: {}, signal });
-        return { close: vi.fn() } as unknown as ClaudeSdk.Query;
-      });
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          spawnSpy.mockRestore();
-          querySpy.mockRestore();
-          for (const child of processes) child.stderr.destroy();
+it.effect("keeps Windows Claude ownership until a drain receipt, even after a worker exit", () =>
+  Effect.gen(function* () {
+    const stopping = Promise.withResolvers<void>();
+    const processes: Array<ReturnType<typeof makeProcess>> = [];
+    const receipts: Array<PromiseWithResolvers<void>> = [];
+    const signal = yield* Effect.abortSignal;
+    function makeProcess() {
+      return Object.assign(new NodeEvents.EventEmitter(), {
+        pid: 123,
+        exited: false,
+        exitCode: null,
+        signalCode: null,
+        stderr: new NodeStream.PassThrough(),
+        kill: vi.fn(() => {
+          stopping.resolve();
+          return true;
         }),
-      );
-      const runner = yield* ClaudeAgentSdkQueryRunner;
-      const { mcpServers: _mcpServers, ...options } = resumedMcpQueryInput.options;
-      const input = { ...resumedMcpQueryInput, options };
-      const session = yield* runner.open(input);
-      assert.deepEqual(spawnSpy.mock.calls[0]?.slice(0, 2), [
-        "t3-resource-monitor.exe",
-        ["--run-in-job", "claude.exe", "--resume", FORK_SESSION_ID],
-      ]);
-      const closing = yield* session.close.pipe(Effect.exit, Effect.forkChild);
-      yield* Effect.promise(() => stopping.promise);
-      const opening = yield* runner
-        .open(input)
-        .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
-      yield* TestClock.adjust("11 seconds");
-      assert.isTrue(Exit.isFailure(yield* Fiber.join(closing)));
-      assert.isTrue(Exit.isFailure(yield* Fiber.join(opening)));
-      assert.lengthOf(spawnSpy.mock.calls, 1);
+      });
+    }
+    const spawnSpy = vi.spyOn(SpawnWorker, "spawnPiped").mockImplementation(() => {
+      const child = makeProcess();
+      processes.push(child);
+      return child as unknown as ReturnType<typeof SpawnWorker.spawnPiped>;
+    });
+    const jobSpy = vi
+      .spyOn(WindowsClaudeJob, "createWindowsClaudeJob")
+      .mockImplementation(async () => {
+        const receipt = Promise.withResolvers<void>();
+        receipts.push(receipt);
+        return {
+          pipe: "test-pipe",
+          gate: "test-gate",
+          released: receipt.promise,
+          start: () => {},
+          processExited: () => {},
+          stop: () => {
+            stopping.resolve();
+            return receipt.promise;
+          },
+        };
+      });
+    const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(({ options }) => {
+      const launch = options?.spawnClaudeCodeProcess;
+      assert.isDefined(launch);
+      launch({ command: "claude.exe", args: ["--resume", FORK_SESSION_ID], env: {}, signal });
+      return { close: vi.fn() } as unknown as ClaudeSdk.Query;
+    });
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        spawnSpy.mockRestore();
+        jobSpy.mockRestore();
+        querySpy.mockRestore();
+        for (const child of processes) child.stderr.destroy();
+      }),
+    );
+    const runner = yield* ClaudeAgentSdkQueryRunner;
+    const { mcpServers: _mcpServers, ...options } = resumedMcpQueryInput.options;
+    const input = { ...resumedMcpQueryInput, options };
+    const session = yield* runner.open(input);
+    assert.deepEqual(spawnSpy.mock.calls[0]?.slice(0, 2), [
+      "t3-resource-monitor.exe",
+      ["--run-in-job", "test-pipe", "test-gate", "claude.exe", "--resume", FORK_SESSION_ID],
+    ]);
+    const closing = yield* session.close.pipe(Effect.exit, Effect.forkChild);
+    yield* Effect.promise(() => stopping.promise);
+    processes[0]!.exited = true;
+    processes[0]!.emit("exit");
+    const opening = yield* runner
+      .open(input)
+      .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+    yield* TestClock.adjust("11 seconds");
+    assert.isTrue(Exit.isFailure(yield* Fiber.join(closing)));
+    assert.isTrue(Exit.isFailure(yield* Fiber.join(opening)));
+    assert.lengthOf(spawnSpy.mock.calls, 1);
 
-      processes[0]!.exited = true;
-      processes[0]!.emit("exit");
-      const replacement = yield* runner.open(input);
-      assert.lengthOf(spawnSpy.mock.calls, 2);
-      processes[1]!.exited = true;
-      processes[1]!.emit("exit");
-      yield* replacement.close;
-    }).pipe(
-      Effect.provide(
-        realQueryRunner.pipe(
-          Layer.provide(Layer.succeed(HostProcess.Platform, "win32")),
-          Layer.provide(
-            Layer.succeed(ResourceMonitorBinary, {
-              resolve: Effect.succeed("t3-resource-monitor.exe"),
-            }),
-          ),
+    receipts[0]!.resolve();
+    const replacement = yield* runner.open(input);
+    assert.lengthOf(spawnSpy.mock.calls, 2);
+    processes[1]!.exited = true;
+    processes[1]!.emit("exit");
+    receipts[1]!.resolve();
+    yield* replacement.close;
+  }).pipe(
+    Effect.provide(
+      realQueryRunner.pipe(
+        Layer.provide(Layer.succeed(HostProcess.Platform, "win32")),
+        Layer.provide(
+          Layer.succeed(ResourceMonitorBinary, {
+            resolve: Effect.succeed("t3-resource-monitor.exe"),
+          }),
         ),
       ),
     ),
+  ),
 );
 
 it.effect("resumes a session whose history exceeds the status-probe output limit", () =>

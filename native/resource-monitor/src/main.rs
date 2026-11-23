@@ -833,11 +833,13 @@ fn main() -> io::Result<()> {
     #[cfg(windows)]
     {
         let mut args = std::env::args_os().skip(1);
-        if args
-            .next()
-            .is_some_and(|argument| argument == "--run-in-job")
-        {
-            return windows_job::run(args);
+        if let Some(argument) = args.next() {
+            if argument == "--run-in-job" {
+                return windows_job::run(args);
+            }
+            if argument == "--run-in-job-child" {
+                return windows_job::run_child(args);
+            }
         }
     }
     let mut writer = BufWriter::new(io::stdout().lock());
