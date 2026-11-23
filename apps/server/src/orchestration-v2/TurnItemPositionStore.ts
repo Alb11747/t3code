@@ -68,9 +68,9 @@ export const layer: Layer.Layer<TurnItemPositionStoreV2, never, SqlClient.SqlCli
           runOrdinal: suppliedRunOrdinal,
           placement = "append",
           keepExisting = false,
-          moveToRun = false,
+          replaceExisting = false,
         }: Parameters<TurnItemPositionStoreV2Shape["allocate"]>[0] & {
-          readonly moveToRun?: boolean | "always";
+          readonly replaceExisting?: boolean;
         }) {
           const existing = yield* sql<{ readonly ordinal: number }>`
           SELECT ordinal
@@ -94,7 +94,7 @@ export const layer: Layer.Layer<TurnItemPositionStoreV2, never, SqlClient.SqlCli
             if (
               keepExisting ||
               runOrdinal === null ||
-              (moveToRun !== "always" &&
+              (!replaceExisting &&
                 existing[0].ordinal >= lowerBound &&
                 existing[0].ordinal <= upperBound)
             ) {
@@ -110,7 +110,7 @@ export const layer: Layer.Layer<TurnItemPositionStoreV2, never, SqlClient.SqlCli
               AND ordinal <= ${upperBound}
           )
           WHERE thread_id = ${threadId} AND turn_item_id = ${turnItemId}
-            AND (${moveToRun === "always" ? 1 : 0} = 1 OR ordinal < ${lowerBound} OR ordinal > ${upperBound})
+            AND (${replaceExisting ? 1 : 0} = 1 OR ordinal < ${lowerBound} OR ordinal > ${upperBound})
         `;
           } else {
             yield* sql`
@@ -177,7 +177,7 @@ export const layer: Layer.Layer<TurnItemPositionStoreV2, never, SqlClient.SqlCli
           if (reserved.length > 0) return;
           // The invisible token distinguishes a retry in the same run from a duplicate receipt.
           yield* allocate({ ...input, turnItemId: tokenId });
-          yield* allocate({ ...input, moveToRun: "always" });
+          yield* allocate({ ...input, replaceExisting: true });
         },
         (effect, { threadId, turnItemId }) =>
           effect.pipe(
@@ -198,8 +198,6 @@ export const layer: Layer.Layer<TurnItemPositionStoreV2, never, SqlClient.SqlCli
           // Queued steers keep their submission order until their run starts (see Orchestrator).
           keepExisting: item.status === "pending",
           ...(runOrdinal === undefined ? {} : { runOrdinal }),
-          // Explicit retry replaces the old boundary reservation with the committed run's position.
-          moveToRun: item.type === "user_message" && item.status !== "pending",
         }).pipe(Effect.map((ordinal) => (item.ordinal === ordinal ? item : { ...item, ordinal })));
       }),
     });
