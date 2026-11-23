@@ -3,6 +3,7 @@ import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
+  type OrchestrationV2AppThread,
   CommandId,
   type ThreadAccountChoice,
   threadAccountChoiceFor,
@@ -112,6 +113,7 @@ export interface ThreadLaunchInput {
   readonly workspaceStrategy: ThreadLaunchWorkspaceStrategy;
   readonly accountChoice?: ThreadAccountChoice;
   /** Fork: tokens at which the new thread auto-compacts. */
+  readonly compactAfterIdle?: OrchestrationV2AppThread["compactAfterIdle"];
   readonly autoCompactLimit?: number;
   readonly initialMessage?: ThreadLaunchInitialMessage;
   readonly importedNativeThread?: {
@@ -1497,6 +1499,9 @@ const make = Effect.gen(function* () {
                 commandId: input.commandId,
                 threadId: candidateThreadId,
                 expectedEmpty: true,
+                ...(input.compactAfterIdle === undefined
+                  ? {}
+                  : { compactAfterIdle: input.compactAfterIdle }),
                 ...(input.autoCompactLimit === undefined
                   ? {}
                   : { autoCompactLimit: input.autoCompactLimit }),
@@ -1511,6 +1516,9 @@ const make = Effect.gen(function* () {
                 runtimeMode: input.runtimeMode,
                 interactionMode: input.interactionMode,
                 ...(launchAccountChoice === null ? {} : { accountChoice: launchAccountChoice }),
+                ...(input.compactAfterIdle === undefined
+                  ? {}
+                  : { compactAfterIdle: input.compactAfterIdle }),
                 ...(input.autoCompactLimit === undefined
                   ? {}
                   : { autoCompactLimit: input.autoCompactLimit }),

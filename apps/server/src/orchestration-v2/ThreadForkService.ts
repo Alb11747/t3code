@@ -152,6 +152,7 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
         issueWatches: [],
         contextNote: null,
         compactBeforeCacheExpires: null,
+        compactAfterIdle: null,
         compactOnceRequestedAt: null,
         createdBy: input.createdBy,
         creationSource: input.creationSource,

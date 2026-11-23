@@ -2769,6 +2769,9 @@ const make = Effect.gen(function* () {
             interactionMode,
             ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
             ...(accountChoice === undefined ? {} : { accountChoice }),
+            ...(input.target?.compactAfterIdle === undefined
+              ? {}
+              : { compactAfterIdle: input.target.compactAfterIdle }),
             ...(input.target?.autoCompactLimit === undefined
               ? {}
               : { autoCompactLimit: input.target.autoCompactLimit }),
@@ -3819,6 +3822,9 @@ const make = Effect.gen(function* () {
                   modelSelection: target.modelSelection,
                   runtimeMode,
                   interactionMode,
+                  ...(request.target?.compactAfterIdle === undefined
+                    ? {}
+                    : { compactAfterIdle: request.target.compactAfterIdle }),
                   ...(request.target?.autoCompactLimit === undefined
                     ? {}
                     : { autoCompactLimit: request.target.autoCompactLimit }),

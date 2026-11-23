@@ -118,7 +118,12 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ProjectStore from "./ProjectStore.ts";
-import { hasBlockingIdleCompactionWork } from "./IdleCompaction.ts";
+import {
+  codexIdleCompactionPolicy,
+  codexIdleCompactionWindow,
+  hasBlockingIdleCompactionWork,
+  idleCompactionMessageId,
+} from "./IdleCompaction.ts";
 import * as TaskFolderStore from "../workspace/TaskFolderStore.ts";
 import {
   isCheckpointRestoreIsolated,
@@ -4458,6 +4463,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       runtimeMode: command.runtimeMode,
       interactionMode: command.interactionMode,
       ...(command.accountChoice === undefined ? {} : { accountChoice: command.accountChoice }),
+      ...(command.compactAfterIdle === undefined
+        ? {}
+        : { compactAfterIdle: command.compactAfterIdle }),
       ...(command.autoCompactLimit === undefined
         ? {}
         : { autoCompactLimit: command.autoCompactLimit }),
@@ -5554,6 +5562,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     compactBeforeCacheExpires: command.compactBeforeCacheExpires,
                     compactOnceRequestedAt: null,
                   }),
+            ...(command.compactAfterIdle === undefined
+              ? {}
+              : { compactAfterIdle: command.compactAfterIdle }),
             ...(command.autoCompactLimit === undefined
               ? {}
               : { autoCompactLimit: command.autoCompactLimit }),
@@ -7919,7 +7930,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
 
     // Recheck eligibility under the dispatch lock, before creating a visible message or run.
-    if (command.idleCompaction === "beforeCacheExpires") {
+    if (command.idleCompaction === "beforeCacheExpires" || command.idleCompaction === "afterIdle") {
       const eligible = yield* Effect.gen(function* () {
         if (
           hasBlockingIdleCompactionWork(projection) ||
@@ -7933,6 +7944,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           )
         )
           return false;
+        if (command.idleCompaction === "afterIdle") {
+          if (
+            command.creationSource !== "server" ||
+            command.modelSelection !== undefined ||
+            command.freshContext === true ||
+            command.dispatchMode.type !== "start_immediately" ||
+            !isCompactionCommandMessage({ role: "user", ...command })
+          )
+            return false;
+          const current = yield* serverSettings.getSettings;
+          const policy = codexIdleCompactionPolicy(current, projection.thread);
+          if (policy === null || command.idleSinceMs === undefined) return false;
+          const window = codexIdleCompactionWindow(projection, policy);
+          return (
+            window !== null &&
+            !window.blocked &&
+            command.messageId === idleCompactionMessageId(command.threadId, window.runId) &&
+            Math.max(window.completedAtMs, command.idleSinceMs) + policy.delayMs <=
+              DateTime.toEpochMillis(yield* DateTime.now)
+          );
+        }
         const modelSelection = command.modelSelection ?? projection.thread.modelSelection;
         const adapter = yield* providerAdapters.get(modelSelection.instanceId);
         if (adapter.canStartIdleCompaction === undefined) return true;
@@ -7954,6 +7986,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
         return;
       }
+    }
+
+    if (command.idleCompaction === "afterIdle" && projection.thread.compactAfterIdle === "once") {
+      const now = yield* DateTime.now;
+      const event = yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.metadata-updated",
+        threadId: command.threadId,
+        occurredAt: now,
+        payload: { ...projection.thread, compactAfterIdle: null, updatedAt: now },
+      });
+      projection = applyToProjection(projection, event);
     }
 
     if (projection.thread.lastVisitedAt === null && !isNativeMaintenanceCommand(command)) {
@@ -7986,7 +8032,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     // Fork: idle compaction of a settled thread keeps it settled.
     const serverIdleCompaction =
-      command.creationSource === "server" && command.idleCompaction === "beforeCacheExpires";
+      command.creationSource === "server" &&
+      (command.idleCompaction === "beforeCacheExpires" || command.idleCompaction === "afterIdle");
     if (projection.thread.settledOverride !== null && !serverIdleCompaction) {
       const now = yield* DateTime.now;
       const thread: OrchestrationV2AppThread = {
@@ -10950,6 +10997,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         interactionMode: command.interactionMode,
         ...(command.workspaceStrategy === undefined ? {} : { branch: null, worktreePath: null }),
         ...(command.accountChoice === undefined ? {} : { accountChoice: command.accountChoice }),
+        ...(command.compactAfterIdle === undefined
+          ? {}
+          : { compactAfterIdle: command.compactAfterIdle }),
         ...(command.autoCompactLimit === undefined
           ? {}
           : { autoCompactLimit: command.autoCompactLimit }),

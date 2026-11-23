@@ -44,6 +44,7 @@ import {
 } from "../observability/Metrics.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { ServerConfig } from "../config.ts";
+import { idleCompactionMessageId } from "./IdleCompaction.ts";
 import * as IssueWatchService from "../issueWatch/IssueWatchService.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -858,6 +859,156 @@ it.effect("an unverified endpoint skips idle compaction before creating a messag
   }).pipe(
     Effect.provide(testLayer({ ...adapter, canStartIdleCompaction: () => Effect.succeed(false) })),
   ),
+);
+
+it.effect("Codex idle compaction only consumes its one-time override when admitted", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:codex-idle-compaction");
+    const providerThreadId = ProviderThreadId.make("provider-thread:codex-idle-compaction");
+    const now = yield* DateTime.now;
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-codex-idle-compaction"),
+      threadId,
+      projectId: ProjectId.make("project:codex-idle-compaction"),
+      title: "Watch thread",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "agent",
+      creationSource: "mcp",
+      compactAfterIdle: "once",
+    });
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("dispatch-watch"),
+      messageId: MessageId.make("message:watch"),
+      threadId,
+      text: "Wait for the next event.",
+      attachments: [],
+      dispatchMode: { type: "defer_start" },
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    const run = (yield* projections.getThreadRecords(threadId, ["runs"])).runs[0]!;
+    const scope = { threadId, occurredAt: now };
+    yield* projections.apply({
+      ...scope,
+      id: EventId.make("completed-watch"),
+      type: "run.updated",
+      runId: run.id,
+      payload: { ...run, providerThreadId, status: "completed", startedAt: now, completedAt: now },
+    });
+    yield* projections.apply({
+      ...scope,
+      id: EventId.make("codex-idle-session"),
+      type: "provider-thread.updated",
+      payload: {
+        id: providerThreadId,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        driver: adapter.driver,
+        providerInstanceId: instanceId,
+        providerSessionId: null,
+        nativeThreadRef: { driver: adapter.driver, nativeId: "watch", strength: "strong" },
+        nativeConversationHeadRef: null,
+        status: "idle",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    const thread = yield* projections.getThread(threadId);
+    yield* projections.apply({
+      ...scope,
+      id: EventId.make("codex-idle-bind"),
+      type: "thread.metadata-updated",
+      payload: { ...thread, activeProviderThreadId: providerThreadId },
+    });
+    yield* projections.apply({
+      ...scope,
+      id: EventId.make("codex-idle-usage"),
+      type: "provider-turn.updated",
+      runId: run.id,
+      payload: {
+        id: ProviderTurnId.make("codex-idle-usage"),
+        providerThreadId,
+        nodeId: run.rootNodeId!,
+        runAttemptId: run.activeAttemptId,
+        nativeTurnRef: null,
+        ordinal: 1,
+        status: "completed",
+        startedAt: now,
+        completedAt: now,
+        tokenUsage: { usedTokens: 140_000, updatedAt: DateTime.formatIso(now) },
+      },
+    });
+    yield* TestClock.adjust("20 minutes");
+
+    const question = {
+      id: RuntimeRequestId.make("codex-idle-question"),
+      nodeId: run.rootNodeId!,
+      providerTurnId: null,
+      nativeRequestRef: null,
+      kind: "user_input",
+      status: "pending",
+      responseCapability: { type: "message" },
+      createdAt: now,
+      resolvedAt: null,
+    } as const;
+    yield* projections.apply({
+      ...scope,
+      id: EventId.make("codex-idle-question"),
+      type: "runtime-request.updated",
+      runId: run.id,
+      payload: question,
+    });
+    const compact = (name: string, sourceRunId = run.id) =>
+      orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(name),
+        messageId: idleCompactionMessageId(threadId, sourceRunId),
+        threadId,
+        text: "/compact",
+        attachments: [],
+        creationSource: "server",
+        createdBy: "agent",
+        dispatchMode: { type: "start_immediately" },
+        idleCompaction: "afterIdle",
+        idleSinceMs: DateTime.toEpochMillis(now),
+      });
+
+    yield* compact("skip-pending-question");
+    yield* projections.apply({
+      ...scope,
+      id: EventId.make("codex-idle-answer"),
+      type: "runtime-request.updated",
+      runId: run.id,
+      payload: { ...question, status: "resolved", resolvedAt: yield* DateTime.now },
+    });
+    yield* compact("skip-stale-timer", RunId.make("earlier-run"));
+    const blocked = yield* projections.getThreadRecords(threadId, ["messages"]);
+    assert.equal(blocked.thread.compactAfterIdle, "once");
+    assert.deepEqual(
+      blocked.messages.map((message) => message.text),
+      ["Wait for the next event."],
+    );
+
+    yield* compact("admit-idle-compaction");
+    const admitted = yield* projections.getThreadRecords(threadId, ["messages"]);
+    assert.isNull(admitted.thread.compactAfterIdle);
+    assert.deepEqual(
+      admitted.messages.map((message) => message.text),
+      ["Wait for the next event.", "/compact"],
+    );
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("stores an agent's auto-compact limit on the thread", () =>

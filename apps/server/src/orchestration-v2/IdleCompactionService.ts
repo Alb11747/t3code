@@ -21,12 +21,16 @@ import { forkParked } from "../serverActivation.ts";
 import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
+  codexIdleCompactionPolicy,
+  codexIdleCompactionWindow,
   compactOnceApplies,
   EARLY_IDLE_COMPACTION_MESSAGE_PREFIX,
   idleCompactionCompacts,
+  idleCompactionMessageId,
   idleCompactionScope,
   idleCompactionWindow,
   isPendingMessageUserInput,
+  lastStartedOrPendingRun,
 } from "./IdleCompaction.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -46,17 +50,43 @@ function canAddIdleWake(event: OrchestrationV2DomainEvent): boolean {
   }
 }
 
+function canChangeCodexIdleWork(event: OrchestrationV2DomainEvent): boolean {
+  switch (event.type) {
+    case "provider-thread.updated":
+    case "runtime-request.updated":
+    case "subagent.updated":
+    case "context-transfer.updated":
+    case "thread.pull-request-link-updated":
+    case "thread.pull-request-synced":
+      return true;
+    case "run.created":
+    case "run.updated":
+      return event.payload.status !== "completed";
+    case "turn-item.updated":
+      return (
+        event.payload.type === "command_execution" ||
+        event.payload.type === "dynamic_tool" ||
+        event.payload.type === "subagent"
+      );
+    default:
+      return false;
+  }
+}
+
 /**
- * Beta: when a run completes on a Claude instance set to compact before the
- * cache expires (or a thread set to), waits until shortly before its prompt cache
- * expires and sends `/compact` as a visible T3 Code turn. Timers live in
- * memory, so a server restart skips compactions that were still waiting.
+ * Schedules a visible `/compact` turn by Claude cache expiry or elapsed Codex idle time.
+ * Timers live in memory and are rearmed by thread events.
  */
 export const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const settings = yield* ServerSettings.ServerSettingsService;
   const scheduledTasks = yield* ScheduledTaskService;
+  // A null clock keeps a blocked candidate subscribed until its pending work changes.
+  const codexClocks = new Map<
+    ThreadId,
+    { readonly runId: RunId; readonly sinceMs: number } | null
+  >();
 
   const compactWhenDue = Effect.fn("IdleCompactionService.compactWhenDue")(
     // Without a run, takes the latest completed run.
@@ -78,18 +108,22 @@ export const make = Effect.gen(function* () {
           );
         // Staleness needs the runs, so any mark passes this pre-filter.
         const likelyScope = scopeOf(thread, thread.compactOnceRequestedAt != null);
+        const codexPolicy = codexIdleCompactionPolicy(current, thread);
         if (
-          !claudeInstance ||
-          likelyScope === null ||
-          (likelyScope === "tiers" &&
-            !Object.values(idleCompactionTiersOf(current)).some((tier) => tier.enabled)) ||
-          !resolveProjectProviderInstanceEnabled(
-            current,
-            thread.projectId,
-            thread.providerInstanceId,
-          )
-        )
+          codexPolicy === null &&
+          (!claudeInstance ||
+            likelyScope === null ||
+            (likelyScope === "tiers" &&
+              !Object.values(idleCompactionTiersOf(current)).some((tier) => tier.enabled)) ||
+            !resolveProjectProviderInstanceEnabled(
+              current,
+              thread.projectId,
+              thread.providerInstanceId,
+            ))
+        ) {
+          codexClocks.delete(threadId);
           return;
+        }
         const activeProviderThreadIds =
           thread.activeProviderThreadId === null ? [] : [thread.activeProviderThreadId];
         const records = yield* projections.getThreadRecords(
@@ -126,19 +160,52 @@ export const make = Effect.gen(function* () {
           )
         )
           return;
-        const latestRun = records.runs
-          .filter((run) => run.status !== "cancelled" || run.startedAt !== null)
-          .reduce<(typeof records.runs)[number] | undefined>(
-            (latest, run) => (latest === undefined || run.ordinal > latest.ordinal ? run : latest),
-            undefined,
-          );
+        const latestRun = lastStartedOrPendingRun(records.runs);
         // A late update for an earlier run replaced the latest run's timer, so take it over.
-        if (latestRun?.status !== "completed" || latestRun.completedAt === null) return;
+        if (latestRun?.status !== "completed" || latestRun.completedAt === null) {
+          if (codexClocks.has(threadId)) codexClocks.set(threadId, null);
+          return;
+        }
         if (latestRun.id !== runId) {
           runId = latestRun.id;
           continue;
         }
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+        if (codexPolicy !== null) {
+          const policy = codexIdleCompactionPolicy(current, records.thread);
+          const window = policy === null ? null : codexIdleCompactionWindow(records, policy);
+          if (window === null || policy === null) {
+            codexClocks.delete(threadId);
+            return;
+          }
+          if (window.blocked) {
+            codexClocks.set(threadId, null);
+            return;
+          }
+          const clock = codexClocks.get(threadId);
+          const idleSinceMs = clock?.runId === runId ? clock.sinceMs : nowMs;
+          codexClocks.set(threadId, { runId, sinceMs: idleSinceMs });
+          const startMs = idleSinceMs + policy.delayMs;
+          if (nowMs < startMs) {
+            yield* Effect.sleep(Duration.millis(startMs - nowMs));
+            continue;
+          }
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`server:idle-compact:${threadId}:${runId}:${idleSinceMs}`),
+            messageId: idleCompactionMessageId(threadId, runId),
+            threadId,
+            text: IDLE_COMPACTION_TEXT,
+            attachments: [],
+            createdBy: "agent",
+            creationSource: "server",
+            idleCompaction: "afterIdle",
+            idleSinceMs,
+            dispatchMode: { type: "start_immediately" },
+          });
+          codexClocks.delete(threadId);
+          return;
+        }
         const { tasks } = yield* scheduledTasks.list();
         const wakes = tasks.filter(
           (task) =>
@@ -242,7 +309,10 @@ export const make = Effect.gen(function* () {
     },
     (effect, threadId) =>
       effect.pipe(
-        Effect.catch((cause) => Effect.logWarning("idle compaction skipped", { threadId, cause })),
+        Effect.catch((cause) => {
+          codexClocks.delete(threadId);
+          return Effect.logWarning("idle compaction skipped", { threadId, cause });
+        }),
       ),
   );
 
@@ -255,6 +325,10 @@ export const make = Effect.gen(function* () {
       FiberMap.run(timers, threadId, compactWhenDue(threadId, undefined));
     yield* forkParked(
       Stream.runForEach(orchestrator.streamDomainEvents, (event) => {
+        if (codexClocks.has(event.threadId) && canChangeCodexIdleWork(event)) {
+          codexClocks.set(event.threadId, null);
+          return recheck(event.threadId);
+        }
         if (event.type === "run.updated" && event.payload.status === "completed")
           return FiberMap.run(
             timers,

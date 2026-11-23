@@ -223,6 +223,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     (input) =>
       input.modelSelection === undefined &&
       input.compactBeforeCacheExpires === undefined &&
+      input.compactAfterIdle === undefined &&
       input.autoCompactLimit === undefined &&
       input.account === undefined,
     McpToolAccess.reads((input) =>
@@ -250,6 +251,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           compactBeforeCacheExpires: shell.compactOnce
             ? ("once" as const)
             : (thread.compactBeforeCacheExpires ?? null),
+          compactAfterIdle: thread.compactAfterIdle ?? null,
           autoCompactLimit: thread.autoCompactLimit ?? null,
           ...(accounts === null
             ? {}
@@ -287,7 +289,11 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
             ? yield* resolveAdvertisedModelSelection(requested, thread.worktreePath ?? undefined)
             : requested;
         let sequence: number | undefined;
-        if (input.compactBeforeCacheExpires !== undefined || input.autoCompactLimit !== undefined) {
+        if (
+          input.compactBeforeCacheExpires !== undefined ||
+          input.compactAfterIdle !== undefined ||
+          input.autoCompactLimit !== undefined
+        ) {
           const result = yield* threads
             .dispatch({
               type: "thread.metadata.update",
@@ -296,6 +302,9 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
               ...(input.compactBeforeCacheExpires === undefined
                 ? {}
                 : { compactBeforeCacheExpires: input.compactBeforeCacheExpires }),
+              ...(input.compactAfterIdle === undefined
+                ? {}
+                : { compactAfterIdle: input.compactAfterIdle }),
               ...(input.autoCompactLimit === undefined
                 ? {}
                 : { autoCompactLimit: input.autoCompactLimit }),
@@ -327,7 +336,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         return {
           sequence: yield* required(
             sequence,
-            "modelSelection`, `compactBeforeCacheExpires`, `autoCompactLimit` or `account",
+            "modelSelection`, `compactBeforeCacheExpires`, `compactAfterIdle`, `autoCompactLimit` or `account",
           ),
         };
       }),

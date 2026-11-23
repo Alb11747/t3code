@@ -29,6 +29,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
+import * as Queue from "effect/Queue";
 import * as Tracer from "effect/Tracer";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -180,6 +181,31 @@ function records(
     turnItems: [],
     contextTransfers: [],
   };
+}
+
+const codexInstanceId = ProviderInstanceId.make("codex");
+const codexDriver = ProviderDriverKind.make("codex");
+const codexSelection = { instanceId: codexInstanceId, model: "gpt-5.1-codex" };
+
+function codexRecords() {
+  const data = records({ usedTokens: 140_000 });
+  data.thread = {
+    ...data.thread,
+    providerInstanceId: codexInstanceId,
+    modelSelection: codexSelection,
+  };
+  data.runs = [
+    { ...data.runs[0]!, providerInstanceId: codexInstanceId, modelSelection: codexSelection },
+  ];
+  data.providerThreads = [
+    {
+      ...data.providerThreads[0]!,
+      driver: codexDriver,
+      providerInstanceId: codexInstanceId,
+      nativeThreadRef: { driver: codexDriver, nativeId: "native-thread", strength: "strong" },
+    },
+  ];
+  return data;
 }
 
 describe("idleCompactionWindow", () => {
@@ -652,6 +678,96 @@ describe("IdleCompactionService", () => {
         }),
       );
     },
+  );
+
+  it.effect("starts the Codex idle period only after pending work ends", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW_MS);
+        const data = codexRecords();
+        data.thread = { ...data.thread, compactAfterIdle: "once" };
+        data.providerThreads = [
+          {
+            ...data.providerThreads[0]!,
+            pendingBackgroundTasks: [{ taskId: "child-task", kind: "subagent" }],
+          },
+        ];
+        const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
+        yield* Queue.offer(events, {
+          id: EventId.make("codex-completed"),
+          type: "run.updated",
+          threadId,
+          runId,
+          occurredAt: at(),
+          payload: data.runs[0]!,
+        });
+        const commands: Array<{
+          readonly text: string;
+          readonly idleCompaction?: string | undefined;
+        }> = [];
+        const dependencies = Layer.mergeAll(
+          noScheduledTasks,
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            streamDomainEvents: Stream.fromQueue(events),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                if (command.type === "message.dispatch") commands.push(command);
+                return { sequence: 1, storedEvents: [] };
+              }),
+          }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThread: () => Effect.succeed(data.thread),
+            getThreadRecords: () =>
+              Effect.succeed({
+                ...data,
+                attempts: [],
+                nodes: [],
+                subagents: [],
+                providerSessions: [],
+                plans: [],
+                checkpointScopes: [],
+                checkpoints: [],
+                contextHandoffs: [],
+                visibleTurnItems: [],
+                updatedAt: at(),
+              }),
+          }),
+          Layer.mock(ServerSettings.ServerSettingsService)({
+            getSettings: Effect.succeed({
+              ...DEFAULT_SERVER_SETTINGS,
+              providerInstances: {
+                [codexInstanceId]: {
+                  driver: codexDriver,
+                  config: {
+                    idleCompactionEnabled: false,
+                    idleCompactionMinutes: 12,
+                    idleCompactionMinTokens: 130_000,
+                  },
+                },
+              },
+            }),
+          }),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* IdleCompactionService.make;
+          yield* service.start();
+          yield* TestClock.adjust(Duration.minutes(30));
+          expect(commands).toEqual([]);
+          data.providerThreads = [{ ...data.providerThreads[0]!, pendingBackgroundTasks: [] }];
+          yield* Queue.offer(events, {
+            id: EventId.make("codex-work-completed"),
+            type: "provider-thread.updated",
+            threadId,
+            occurredAt: at(30 * MINUTE_MS),
+            payload: data.providerThreads[0]!,
+          });
+          yield* TestClock.adjust(Duration.minutes(11));
+          expect(commands).toEqual([]);
+          yield* TestClock.adjust(Duration.minutes(1));
+          expect(commands).toMatchObject([{ text: "/compact", idleCompaction: "afterIdle" }]);
+        }).pipe(Effect.provide(dependencies));
+      }),
+    ),
   );
 
   // Returns what the service dispatched once the compaction window opens.

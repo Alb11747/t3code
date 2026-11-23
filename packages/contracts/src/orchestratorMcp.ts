@@ -46,6 +46,7 @@ import {
   OrchestrationV2RunStatus,
   OrchestrationV2TaskBackgroundWork,
   OrchestrationV2TurnItemStatus,
+  CodexIdleCompactionOverride,
 } from "./orchestrationV2.ts";
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
 import { ModelSelection } from "./modelSelection.ts";
@@ -127,6 +128,13 @@ export const OrchestratorMcpAutoCompactLimit = Schema.optional(
   }),
 );
 
+export const OrchestratorMcpCompactAfterIdle = Schema.optional(
+  CodexIdleCompactionOverride.annotate({
+    description:
+      'Codex idle compaction: "once" compacts once after a full idle period with no pending work, then follows the instance. true keeps it enabled, false disables it, and null follows the provider instance.',
+  }),
+);
+
 export const OrchestratorMcpTarget = Schema.Struct({
   providerInstanceId: Schema.optional(
     ProviderInstanceId.annotate({
@@ -159,6 +167,7 @@ export const OrchestratorMcpTarget = Schema.Struct({
   ),
   ...OrchestratorMcpLaunchAccountFields,
   autoCompactLimit: OrchestratorMcpAutoCompactLimit,
+  compactAfterIdle: OrchestratorMcpCompactAfterIdle,
   account: Schema.optional(
     Schema.NullOr(TrimmedNonEmptyString).annotate({
       description:

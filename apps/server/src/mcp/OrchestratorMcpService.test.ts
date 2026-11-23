@@ -3417,7 +3417,12 @@ describe("OrchestratorMcpService provider resolution", () => {
 
         yield* service.delegateTask(scope, {
           task: "Summarize the diff.",
-          target: { account: "spare@example.com", waitWhenOut: true, autoCompactLimit: 250_000 },
+          target: {
+            account: "spare@example.com",
+            waitWhenOut: true,
+            autoCompactLimit: 250_000,
+            compactAfterIdle: "once",
+          },
           clientRequestId: "delegate-account",
         });
         yield* service.delegateTask(scope, {
@@ -3427,10 +3432,13 @@ describe("OrchestratorMcpService provider resolution", () => {
         const [explicit, omitted] = (yield* Ref.get(dispatched)) as ReadonlyArray<{
           readonly accountChoice?: unknown;
           readonly autoCompactLimit?: number;
+          readonly compactAfterIdle?: boolean | "once" | null;
         }>;
         // The child gets its own limit only when asked; it never inherits the parent's.
         assert.equal(explicit?.autoCompactLimit, 250_000);
         assert.notProperty(omitted, "autoCompactLimit");
+        assert.equal(explicit?.compactAfterIdle, "once");
+        assert.notProperty(omitted, "compactAfterIdle");
         assert.deepEqual(explicit?.accountChoice, {
           sourceId: "hub",
           account: "account-2222222222222222",

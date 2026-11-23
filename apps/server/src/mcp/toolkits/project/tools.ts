@@ -19,6 +19,7 @@ import {
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
   OrchestratorMcpAutoCompactLimit,
+  OrchestratorMcpCompactAfterIdle,
   OrchestratorMcpLaunchAccountFields,
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
@@ -149,6 +150,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     modelSelection: Schema.optional(ModelSelection),
     ...OrchestratorMcpLaunchAccountFields,
     autoCompactLimit: OrchestratorMcpAutoCompactLimit,
+    compactAfterIdle: OrchestratorMcpCompactAfterIdle,
     runtimeMode: Schema.optional(RuntimeMode),
     interactionMode: Schema.optional(ProviderInteractionMode),
     workspaceStrategy: Schema.optional(

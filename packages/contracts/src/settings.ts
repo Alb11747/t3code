@@ -779,9 +779,22 @@ export const CodexSettings = makeProviderSettingsSchema(
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     autoCompactLimits: AutoCompactLimits,
+    idleCompactionEnabled: Schema.optionalKey(Schema.Boolean).pipe(
+      Schema.annotateKey({
+        title: "Compact idle threads",
+        description: "Compact Codex threads after the configured idle period.",
+        providerSettingsForm: { control: "switch", clearWhenEmpty: "omit" },
+      }),
+    ),
+    idleCompactionMinutes: Schema.optionalKey(PositiveInt).pipe(
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    idleCompactionMinTokens: Schema.optionalKey(PositiveInt).pipe(
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
   },
   {
-    order: ["binaryPath", "homePath", "shadowHomePath", "launchArgs"],
+    order: ["binaryPath", "homePath", "shadowHomePath", "launchArgs", "idleCompactionEnabled"],
   },
 );
 export type CodexSettings = typeof CodexSettings.Type;

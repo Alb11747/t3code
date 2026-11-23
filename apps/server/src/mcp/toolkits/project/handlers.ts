@@ -446,6 +446,9 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           interactionMode,
           workspaceStrategy: strategy ?? { type: "root" },
           ...(accountChoice === undefined ? {} : { accountChoice }),
+          ...(input.compactAfterIdle === undefined
+            ? {}
+            : { compactAfterIdle: input.compactAfterIdle }),
           ...(input.autoCompactLimit === undefined
             ? {}
             : { autoCompactLimit: input.autoCompactLimit }),

@@ -1,6 +1,13 @@
 import {
+  CodexSettings,
+  isCompactionCommandMessage,
   isListedThreadLineage,
+  MessageId,
   pendingGuestMessageCount,
+  resolveProjectProviderInstanceEnabled,
+  type RunId,
+  type ServerSettings,
+  type ThreadId,
   type IdleCompactionMode,
   type IdleCompactionTier,
   type IdleCompactionTierName,
@@ -14,6 +21,8 @@ import {
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { isActiveRun } from "./CommandPolicy.ts";
 
 // Start this long before the cache expires: enough for the session to resume
@@ -218,5 +227,100 @@ export function idleCompactionWindow(
       runtimeRequests.some(isPendingMessageUserInput) ||
       backgroundWorkHoldsCompletion(backgroundWork) ||
       backgroundWork.some(isPullRequestWatchTask),
+  };
+}
+
+const decodeCodexSettings = Schema.decodeUnknownOption(CodexSettings);
+
+export function codexIdleCompactionPolicy(
+  settings: ServerSettings,
+  thread: IdleCompactionRecords["thread"],
+) {
+  const instanceId = thread.providerInstanceId;
+  const instance = Object.hasOwn(settings.providerInstances, instanceId)
+    ? settings.providerInstances[instanceId]
+    : undefined;
+  if (
+    (instance?.driver ?? instanceId) !== "codex" ||
+    !resolveProjectProviderInstanceEnabled(settings, thread.projectId, instanceId)
+  )
+    return null;
+  const config = Option.getOrUndefined(decodeCodexSettings(instance?.config ?? {}));
+  if (config === undefined) return null;
+  const enabled = thread.compactAfterIdle ?? config.idleCompactionEnabled ?? false;
+  return enabled
+    ? {
+        delayMs: (config.idleCompactionMinutes ?? 20) * 60_000,
+        minTokens: config.idleCompactionMinTokens ?? 120_000,
+      }
+    : null;
+}
+
+export const idleCompactionMessageId = (threadId: ThreadId, runId: RunId) =>
+  MessageId.make(`idle-compact:${threadId}:${runId}`);
+
+export const lastStartedOrPendingRun = (runs: IdleCompactionRecords["runs"]) =>
+  runs.reduce<(typeof runs)[number] | undefined>(
+    (latest, run) =>
+      (run.status !== "cancelled" || run.startedAt !== null) &&
+      (latest === undefined || run.ordinal > latest.ordinal)
+        ? run
+        : latest,
+    undefined,
+  );
+
+export function codexIdleCompactionWindow(
+  records: IdleCompactionRecords,
+  policy: NonNullable<ReturnType<typeof codexIdleCompactionPolicy>>,
+) {
+  const { thread, runs, messages, providerThreads, providerTurns, turnItems } = records;
+  if (thread.archivedAt !== null || thread.deletedAt !== null || thread.lineage.sideChat === true)
+    return null;
+
+  const run = lastStartedOrPendingRun(runs);
+  if (run?.status !== "completed" || run.completedAt === null || run.startedAt === null)
+    return null;
+  const message = messages.find((candidate) => candidate.id === run.userMessageId);
+  if (message === undefined || isCompactionCommandMessage(message)) return null;
+
+  const session = providerThreads.find(
+    (candidate) => candidate.id === thread.activeProviderThreadId,
+  );
+  if (
+    session?.driver !== "codex" ||
+    session.nativeThreadRef?.nativeId == null ||
+    session.id !== run.providerThreadId ||
+    session.providerInstanceId !== thread.providerInstanceId ||
+    run.providerInstanceId !== thread.providerInstanceId
+  )
+    return null;
+
+  const pending = derivePendingBackgroundWork({
+    latestRun: run,
+    runs,
+    providerThreads,
+    turnItems,
+    activeProviderThreadId: session.id,
+    pullRequests: thread.pullRequests,
+    issueWatches: thread.issueWatches,
+  });
+  const usage = providerTurns
+    .filter((turn) => turn.providerThreadId === session.id && turn.tokenUsage !== undefined)
+    .map((turn) => turn.tokenUsage!)
+    .toSorted((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
+  if (
+    usage === undefined ||
+    usage.usedTokens < policy.minTokens ||
+    Date.parse(usage.updatedAt) < DateTime.toEpochMillis(run.startedAt)
+  )
+    return null;
+
+  return {
+    runId: run.id,
+    completedAtMs: DateTime.toEpochMillis(run.completedAt),
+    blocked:
+      pending.length > 0 ||
+      hasBlockingIdleCompactionWork(records) ||
+      records.runtimeRequests.some(isPendingMessageUserInput),
   };
 }

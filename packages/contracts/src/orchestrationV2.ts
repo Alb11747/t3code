@@ -486,6 +486,10 @@ const OrchestrationV2LastTitleRegeneration = Schema.Struct({
   completedAt: Schema.DateTimeUtc,
 });
 
+export const CodexIdleCompactionOverride = Schema.NullOr(
+  Schema.Union([Schema.Boolean, Schema.Literal("once")]),
+);
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -501,6 +505,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   accountChoice: Schema.optional(Schema.NullOr(ThreadAccountChoice)),
   /** Fork: an owned conversation moved accounts; turns drop its old thinking until it compacts. */
   accountMovedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  compactAfterIdle: Schema.optional(CodexIdleCompactionOverride),
   /** Fork: tokens to auto-compact at, set by agents; null follows the model's default. */
   autoCompactLimit: Schema.optional(Schema.NullOr(PositiveInt)),
   modelSelection: ModelSelection,
@@ -1537,7 +1542,11 @@ export const OrchestrationV2Notification = Schema.Struct({
 export type OrchestrationV2Notification = typeof OrchestrationV2Notification.Type;
 
 /** Why T3 Code compacted a thread on its own, on the `/compact` it sent. */
-export const OrchestrationV2IdleCompaction = Schema.Literals(["beforeCacheExpires", "onReturn"]);
+export const OrchestrationV2IdleCompaction = Schema.Literals([
+  "beforeCacheExpires",
+  "onReturn",
+  "afterIdle",
+]);
 export type OrchestrationV2IdleCompaction = typeof OrchestrationV2IdleCompaction.Type;
 
 export const OrchestrationV2ConversationMessage = Schema.Struct({
@@ -3339,6 +3348,7 @@ export const OrchestrationV2Command = Schema.Union([
     runtimeMode: RuntimeMode,
     interactionMode: ProviderInteractionMode,
     accountChoice: Schema.optional(Schema.NullOr(ThreadAccountChoice)),
+    compactAfterIdle: Schema.optional(CodexIdleCompactionOverride),
     autoCompactLimit: Schema.optional(PositiveInt),
     branch: Schema.NullOr(TrimmedNonEmptyString),
     worktreePath: Schema.NullOr(TrimmedNonEmptyString),
@@ -3499,6 +3509,7 @@ export const OrchestrationV2Command = Schema.Union([
     compactBeforeCacheExpires: Schema.optional(
       Schema.NullOr(Schema.Union([Schema.Boolean, Schema.Literal("once")])),
     ),
+    compactAfterIdle: Schema.optional(CodexIdleCompactionOverride),
     /** Fork: null returns the thread to its model's default. */
     autoCompactLimit: Schema.optional(Schema.NullOr(PositiveInt)),
     regenerateTitle: Schema.optional(Schema.Boolean),
@@ -3635,6 +3646,8 @@ export const OrchestrationV2Command = Schema.Union([
     senderThreadId: Schema.optional(ThreadId),
     linkedSender: Schema.optional(OrchestrationV2LinkedSender),
     idleCompaction: Schema.optional(OrchestrationV2IdleCompaction),
+    /** When the server observed the thread become idle for timed compaction. */
+    idleSinceMs: Schema.optional(NonNegativeInt),
     /** Start a new provider session without the thread's earlier context. Never steers. */
     freshContext: Schema.optional(Schema.Boolean),
     /** Asks the run for a result as data matching this JSON Schema. Never steers. */
@@ -3848,6 +3861,7 @@ export const OrchestrationV2Command = Schema.Union([
     workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
     /** Fork: the child's own account choice, which its first turn pins; null routes automatically. */
     accountChoice: Schema.optional(Schema.NullOr(ThreadAccountChoice)),
+    compactAfterIdle: Schema.optional(CodexIdleCompactionOverride),
     autoCompactLimit: Schema.optional(PositiveInt),
     // Defaults to settled_only; fire-and-forget wakes require always.
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
