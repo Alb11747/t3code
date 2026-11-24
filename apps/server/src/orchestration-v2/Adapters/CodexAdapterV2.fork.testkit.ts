@@ -16,6 +16,7 @@ import type * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import type * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -1017,106 +1018,127 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
       ),
     );
 
-    it.effect("fails the run when the retry start goes unanswered and stops its late turn", () =>
-      Effect.gen(function* () {
-        const lateId = "late-capacity-retry";
-        const preamble = codexReplayPreamble({ nativeThreadId, nativeTurnId: "turn-1", prompt });
-        const startEntry = preamble.at(-3)!;
-        if (startEntry.type !== "expect_outbound") return yield* Effect.die("expected turn/start");
-        const transcript = makeCodexReplayTranscript({
-          scenario: "silent-overload-retry",
-          entries: [
-            ...preamble,
-            turnCompleted("turn-1", "failed"),
-            {
-              type: "expect_outbound",
-              frame: {
-                ...(startEntry.frame as { params: object }),
-                id: 4,
-                params: { ...(startEntry.frame as { params: object }).params, input: [] },
-              },
-            },
-            {
-              type: "emit_inbound",
-              afterMs: 121_000,
-              frame: {
-                method: "turn/started",
-                params: {
-                  threadId: nativeThreadId,
-                  turn: makeCodexReplayTurn({ id: lateId, status: "inProgress" }),
+    it.effect.each(["late answer", "no answer"] as const)(
+      "settles a timed-out overload retry with %s",
+      (reply) =>
+        Effect.gen(function* () {
+          const lateId = "late-capacity-retry";
+          const preamble = codexReplayPreamble({ nativeThreadId, nativeTurnId: "turn-1", prompt });
+          const startEntry = preamble.at(-3)!;
+          if (startEntry.type !== "expect_outbound")
+            return yield* Effect.die("expected turn/start");
+          const transcript = makeCodexReplayTranscript({
+            scenario: "silent-overload-retry",
+            entries: [
+              ...preamble,
+              turnCompleted("turn-1", "failed"),
+              {
+                type: "expect_outbound",
+                frame: {
+                  ...(startEntry.frame as { params: object }),
+                  id: 4,
+                  params: { ...(startEntry.frame as { params: object }).params, input: [] },
                 },
               },
-            },
-            {
-              type: "expect_outbound",
-              frame: {
-                id: 5,
-                method: "turn/interrupt",
-                params: { threadId: nativeThreadId, turnId: lateId },
-              },
-            },
-            { type: "emit_inbound", frame: { id: 5, result: {} } },
-          ],
-        });
-        const scheduled = yield* Deferred.make<void>();
-        const submitted = yield* Deferred.make<void>();
-        const interrupted = yield* Deferred.make<void>();
-        const registered = new Set<string>();
-        let starts = 0;
-        const harness = yield* makeCodexReplayHarness(
-          transcript,
-          (event) =>
-            Effect.gen(function* () {
-              if (event.type === "provider_turn.updated") {
-                const id = event.providerTurn.nativeTurnRef?.nativeId;
-                if (id != null) registered.add(id);
-              }
-              if (
-                event.type === "turn_item.updated" &&
-                event.turnItem.type === "error" &&
-                event.turnItem.retry?.retryDelayMs === 10_000
-              )
-                yield* Deferred.succeed(scheduled, undefined);
-            }),
-          (method) =>
-            Effect.gen(function* () {
-              if (method === "turn/start" && ++starts === 2)
-                yield* Deferred.succeed(submitted, undefined);
-              if (method === "turn/interrupt") yield* Deferred.succeed(interrupted, undefined);
-            }),
-        );
-        yield* harness.runtime.startTurn(yield* runInput(harness));
-        yield* Deferred.await(scheduled);
-        yield* TestClock.adjust("10 seconds");
-        yield* Deferred.await(submitted);
-        yield* TestClock.adjust("119 seconds");
-        assert.lengthOf(harness.terminalEvents(), 0);
-        yield* TestClock.adjust("1 second");
-        yield* harness.firstTerminal;
-        const [terminal] = harness.terminalEvents();
-        assert.equal(terminal?.providerTurnId, yield* providerTurnId("turn-1"));
-        assert.equal(
-          terminal?.status === "failed" ? terminal.failure.code : null,
-          "serverOverloaded",
-        );
-        assert.deepEqual(retryRows(harness.events).at(-1)?.slice(0, 2), ["failed", 1]);
+              ...(reply === "late answer"
+                ? ([
+                    {
+                      type: "emit_inbound",
+                      afterMs: 121_000,
+                      frame: {
+                        method: "turn/started",
+                        params: {
+                          threadId: nativeThreadId,
+                          turn: makeCodexReplayTurn({ id: lateId, status: "inProgress" }),
+                        },
+                      },
+                    },
+                    {
+                      type: "expect_outbound",
+                      frame: {
+                        id: 5,
+                        method: "turn/interrupt",
+                        params: { threadId: nativeThreadId, turnId: lateId },
+                      },
+                    },
+                    { type: "emit_inbound", frame: { id: 5, result: {} } },
+                  ] satisfies Array<ReplayEntry>)
+                : []),
+            ],
+          });
+          const scheduled = yield* Deferred.make<void>();
+          const submitted = yield* Deferred.make<void>();
+          const interrupted = yield* Deferred.make<void>();
+          const registered = new Set<string>();
+          let starts = 0;
+          const harness = yield* makeCodexReplayHarness(
+            transcript,
+            (event) =>
+              Effect.gen(function* () {
+                if (event.type === "provider_turn.updated") {
+                  const id = event.providerTurn.nativeTurnRef?.nativeId;
+                  if (id != null) registered.add(id);
+                }
+                if (
+                  event.type === "turn_item.updated" &&
+                  event.turnItem.type === "error" &&
+                  event.turnItem.retry?.retryDelayMs === 10_000
+                )
+                  yield* Deferred.succeed(scheduled, undefined);
+              }),
+            (method) =>
+              Effect.gen(function* () {
+                if (method === "turn/start" && ++starts === 2)
+                  yield* Deferred.succeed(submitted, undefined);
+                if (method === "turn/interrupt") yield* Deferred.succeed(interrupted, undefined);
+              }),
+          );
+          yield* harness.runtime.startTurn(yield* runInput(harness));
+          yield* Deferred.await(scheduled);
+          yield* TestClock.adjust("10 seconds");
+          yield* Deferred.await(submitted);
+          yield* TestClock.adjust("119 seconds");
+          assert.lengthOf(harness.terminalEvents(), 0);
+          yield* TestClock.adjust("1 second");
+          yield* harness.firstTerminal;
+          const [terminal] = harness.terminalEvents();
+          assert.equal(terminal?.providerTurnId, yield* providerTurnId("turn-1"));
+          assert.equal(
+            terminal?.status === "failed" ? terminal.failure.code : null,
+            "serverOverloaded",
+          );
+          assert.deepEqual(retryRows(harness.events).at(-1)?.slice(0, 2), ["failed", 1]);
 
-        yield* TestClock.adjust("1 second");
-        yield* Deferred.await(interrupted);
-        assert.deepEqual([...registered], ["turn-1"]);
-        assert.lengthOf(harness.terminalEvents(), 1);
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
-            fullRetryDelays,
+          if (reply === "no answer") {
+            const nextInput = yield* runInput(harness);
+            const next = yield* harness.runtime
+              .startTurn({ ...nextInput, attemptId: RunAttemptId.make("after-silent-retry") })
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            yield* TestClock.adjust("2 minutes");
+            const result = next.pollUnsafe();
+            assert.isTrue(result !== undefined && Exit.isFailure(result));
+            assert.equal(starts, 2);
+            assert.isFalse(
+              yield* harness.runtime.hasPendingBackgroundWorkForThread!(harness.providerThread),
+            );
+            return;
+          }
+          yield* TestClock.adjust("1 second");
+          yield* Deferred.await(interrupted);
+          assert.deepEqual([...registered], ["turn-1"]);
+          assert.lengthOf(harness.terminalEvents(), 1);
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+              fullRetryDelays,
+            ),
           ),
         ),
-      ),
     );
 
     it.effect("keeps retrying past an hour and restarts the backoff after progress", () =>

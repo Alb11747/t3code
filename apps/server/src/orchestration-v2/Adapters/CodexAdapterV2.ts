@@ -2413,6 +2413,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const acceptanceLock = yield* KeyedLock.make<string>();
         type NativeTurnAcceptanceError =
           | CodexAppServerUnresponsiveError
+          | CodexAppServerRetiredError
           | CodexErrors.CodexAppServerError
           | ProviderAdapter.ProviderAdapterProtocolError
           | Schema.SchemaError;
@@ -3068,6 +3069,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 .withLock(
                   threadId,
                   Effect.gen(function* () {
+                    yield* rejectIfRetired;
                     if (hold !== undefined && goalHolds.get(threadId) !== hold) {
                       yield* Deferred.succeed(acceptance.accepted, undefined);
                       return;
@@ -3101,10 +3103,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       Effect.forkIn(scope),
                     );
                     const accepted = Deferred.await(acceptance.accepted);
-                    // Continuation timeouts keep the lane open so a late native retry can be stopped.
+                    // A private retry keeps its lane for one more request deadline after abandonment.
                     yield* hold === undefined
                       ? accepted.pipe(withAppServerDeadline(method))
-                      : accepted;
+                      : Effect.raceFirst(
+                          accepted,
+                          Deferred.await(acceptance.callerDone).pipe(
+                            Effect.andThen(accepted.pipe(withAppServerDeadline(method))),
+                          ),
+                        );
                     yield* Deferred.await(acceptance.callerDone);
                     // Interrupt RPC acknowledgement is not proof that Codex's
                     // native task has stopped; a later start could steer that task.
