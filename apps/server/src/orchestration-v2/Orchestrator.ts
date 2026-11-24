@@ -13059,7 +13059,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // the compaction when startup, a tool boundary, or queue drain picks it up later.
     const queuedRun =
       sendNow && storedQueuedRun.afterCompactionMessageId !== undefined
-        ? { ...storedQueuedRun, afterCompactionMessageId: undefined, queueHeld: false }
+        ? {
+            ...storedQueuedRun,
+            afterCompactionMessageId: undefined,
+            keepFullHistory: true as const,
+            queueHeld: false,
+          }
         : storedQueuedRun;
     const queuedRootNode =
       queuedRun.rootNodeId === null
@@ -17910,8 +17915,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               queueHeld: false,
               ...(command.type === "queued-run.start" &&
               command.requestedBy !== "agent" &&
-              run.id === selectedRunId
-                ? { afterCompactionMessageId: undefined }
+              run.id === selectedRunId &&
+              run.afterCompactionMessageId !== undefined
+                ? { afterCompactionMessageId: undefined, keepFullHistory: true as const }
                 : {}),
             },
           });

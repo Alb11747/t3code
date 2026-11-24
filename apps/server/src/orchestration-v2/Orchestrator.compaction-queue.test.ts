@@ -373,6 +373,7 @@ it.effect.each([
         const started = sent.runs.find((run) => run.id === next.id)!;
         expect(started.status).toBe("starting");
         expect(started.afterCompactionMessageId).toBeUndefined();
+        expect(started.keepFullHistory).toBe(true);
         expect(sent.messages.filter((message) => message.id === messageId)).toEqual(
           current.messages.filter((message) => message.id === messageId),
         );
