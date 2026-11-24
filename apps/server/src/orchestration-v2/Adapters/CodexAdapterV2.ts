@@ -3103,19 +3103,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       Effect.forkIn(scope),
                     );
                     const accepted = Deferred.await(acceptance.accepted);
-                    // A private retry keeps its lane for one more request deadline after abandonment.
-                    yield* hold === undefined
-                      ? accepted.pipe(withAppServerDeadline(method))
-                      : Effect.raceFirst(
-                          accepted,
-                          Deferred.await(acceptance.callerDone).pipe(
-                            Effect.andThen(accepted.pipe(withAppServerDeadline(method))),
-                          ),
+                    const startResponse =
+                      hold === undefined ? accepted.pipe(withAppServerDeadline(method)) : accepted;
+                    yield* Effect.raceFirst(
+                      startResponse.pipe(Effect.andThen(Effect.never)),
+                      Effect.gen(function* () {
+                        yield* Deferred.await(acceptance.callerDone);
+                        if (!acceptance.abandoned) return;
+                        // A late start or interrupt acknowledgement doesn't prove the turn stopped.
+                        yield* accepted.pipe(
+                          Effect.andThen(Deferred.await(acceptance.completed)),
+                          withAppServerDeadline("turn/completed"),
                         );
-                    yield* Deferred.await(acceptance.callerDone);
-                    // Interrupt RPC acknowledgement is not proof that Codex's
-                    // native task has stopped; a later start could steer that task.
-                    if (acceptance.abandoned) yield* Deferred.await(acceptance.completed);
+                      }),
+                    );
                   }).pipe(
                     Effect.ensuring(
                       Effect.sync(() => {

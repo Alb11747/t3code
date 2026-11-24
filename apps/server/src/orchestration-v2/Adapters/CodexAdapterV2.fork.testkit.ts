@@ -1109,24 +1109,23 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
           );
           assert.deepEqual(retryRows(harness.events).at(-1)?.slice(0, 2), ["failed", 1]);
 
-          if (reply === "no answer") {
-            const nextInput = yield* runInput(harness);
-            const next = yield* harness.runtime
-              .startTurn({ ...nextInput, attemptId: RunAttemptId.make("after-silent-retry") })
-              .pipe(Effect.forkChild({ startImmediately: true }));
-            yield* TestClock.adjust("2 minutes");
-            const result = next.pollUnsafe();
-            assert.isTrue(result !== undefined && Exit.isFailure(result));
-            assert.equal(starts, 2);
-            assert.isFalse(
-              yield* harness.runtime.hasPendingBackgroundWorkForThread!(harness.providerThread),
-            );
-            return;
-          }
+          const nextInput = yield* runInput(harness);
+          const next = yield* harness.runtime
+            .startTurn({ ...nextInput, attemptId: RunAttemptId.make("after-silent-retry") })
+            .pipe(Effect.forkChild({ startImmediately: true }));
           yield* TestClock.adjust("1 second");
-          yield* Deferred.await(interrupted);
+          if (reply === "late answer") yield* Deferred.await(interrupted);
+          assert.isUndefined(next.pollUnsafe());
           assert.deepEqual([...registered], ["turn-1"]);
           assert.lengthOf(harness.terminalEvents(), 1);
+
+          yield* TestClock.adjust("119 seconds");
+          const result = next.pollUnsafe();
+          assert.isTrue(result !== undefined && Exit.isFailure(result));
+          assert.equal(starts, 2);
+          assert.isFalse(
+            yield* harness.runtime.hasPendingBackgroundWorkForThread!(harness.providerThread),
+          );
         }).pipe(
           Effect.scoped,
           Effect.provide(
