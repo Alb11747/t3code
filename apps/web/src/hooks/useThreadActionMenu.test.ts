@@ -220,12 +220,12 @@ describe("thread menu permissions", () => {
     const newer = deferred<ReadonlyArray<ReadonlyArray<unknown>>>();
     state.usageResetOptions.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
     createMenu().openMenu(position);
-    createMenu().openMenu({ x: 30, y: 40 });
+    createMenu().openMenu({ x: 30, y: 40 }, "keyboard");
     newer.resolve([]);
     await vi.waitFor(() => expect(state.show).toHaveBeenCalledOnce());
     older.resolve([]);
     await older.promise;
     await Promise.resolve();
-    expect(state.show.mock.calls).toEqual([[expect.anything(), { x: 30, y: 40 }]]);
+    expect(state.show.mock.calls).toEqual([[expect.anything(), { x: 30, y: 40 }, "keyboard"]]);
   });
 });

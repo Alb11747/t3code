@@ -72,6 +72,7 @@ const descriptor = {
     sideChats: true,
     freshContext: true,
     compactFirst: true,
+    fileAttachments: { maxUploadBytes: 10_000_000 },
   },
 };
 const auth = {

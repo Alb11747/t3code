@@ -18,7 +18,6 @@ import {
 import { type ReactNode, useRef, useState } from "react";
 import type {
   EnvironmentId,
-  ModelSelection,
   ProjectId,
   ScheduledTask,
   ScheduledTaskId,
@@ -54,9 +53,8 @@ import { msg, T, useGT, useLocale, useMessages, Var } from "gt-react";
 import { m, type MessageResolver } from "../../i18n/messages";
 
 import { formatRelativeTime } from "../../timestampFormat";
-import { useEnvironmentSettings } from "../../hooks/useSettings";
-import { createModelSelection } from "@t3tools/shared/model";
-import { getCustomModelOptionsByInstance } from "../../modelSelection";
+import { useClientSettings, useEnvironmentSettings } from "../../hooks/useSettings";
+import { getCustomModelOptionsByInstance, selectsPlanAgent } from "../../modelSelection";
 import { providerInstanceEntriesFor } from "../../providerInstances";
 import { usePrimaryCloudLinkState } from "../../cloud/cloudLinkState";
 import { requestConfirmDialog } from "../../confirmDialog";
@@ -131,6 +129,7 @@ import { ToggleGroup, Toggle } from "../ui/toggle-group";
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from "../ui/empty";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
+import { createModelSelection } from "@t3tools/shared/model";
 import { Badge } from "../ui/badge";
 import { Checkbox } from "../ui/checkbox";
 import { Button } from "../ui/button";
@@ -214,10 +213,9 @@ const EMPTY_DRAFT: DraftState = {
   baseRef: "",
   startFromOrigin: true,
   existingWorktreePath: "",
-  modelKey: "",
+  modelSelection: null,
   runtimeMode: "full-access",
   interactionMode: "default",
-  baseModelSelection: null,
   followLatestModel: false,
   signatureEnabled: false,
   ...WEBHOOK_SIGNATURE_DEFAULTS,
@@ -355,15 +353,6 @@ function Field({
       {children}
     </div>
   );
-}
-
-function splitModelKey(value: string): ModelSelection | null {
-  const index = value.indexOf(":");
-  if (index <= 0 || index === value.length - 1) return null;
-  return {
-    instanceId: ProviderInstanceId.make(value.slice(0, index)),
-    model: value.slice(index + 1),
-  };
 }
 
 /** formatRelativeTime handles only the past; upcoming runs need future labels. */
@@ -810,6 +799,7 @@ function ScheduledTaskRow({
   const canOperate = useAtomValue(
     serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
   );
+  const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
   const [busy, setBusy] = useState(false);
   const [deliveriesOpen, setDeliveriesOpen] = useState(false);
   const isWebhook = task.schedule.type === "webhook";
@@ -856,7 +846,15 @@ function ScheduledTaskRow({
       status={
         <div className="flex flex-wrap items-center gap-2">
           <span>
-            {scheduleLabel(task.schedule, timeZone, task.nextRunAt, messages, locale)} ·{" "}
+            {scheduleLabel(
+              task.schedule,
+              timestampFormat,
+              timeZone,
+              task.nextRunAt,
+              messages,
+              locale,
+            )}{" "}
+            ·{" "}
             {task.blockedByPolicy !== undefined ? (
               task.blockedByPolicy
             ) : !task.enabled ? (
@@ -1281,6 +1279,8 @@ function ScheduledTaskEditorDialog({
   return (
     <Dialog
       open
+      // A stray click outside would discard the unsaved draft; Escape and Cancel still close it.
+      disablePointerDismissal
       onOpenChange={(open) => {
         if (!open && !saving) onClose();
       }}
@@ -1585,7 +1585,7 @@ function ScheduledTaskEditorForm({
   );
 
   const firstInstance = instanceEntries[0];
-  const draftSelection = draft.modelKey ? splitModelKey(draft.modelKey) : null;
+  const draftSelection = draft.modelSelection;
   const activeSelection =
     draftSelection &&
     instanceEntries.some((entry) => entry.instanceId === draftSelection.instanceId && entry.enabled)
@@ -1594,15 +1594,6 @@ function ScheduledTaskEditorForm({
   const activeInstanceId =
     activeSelection?.instanceId ?? firstInstance?.instanceId ?? ("" as ProviderInstanceId);
   const activeModel = activeSelection?.model ?? "";
-  // The saved selection keeps its options while its model stays picked.
-  const modelSelection =
-    activeSelection !== null &&
-    draft.baseModelSelection !== null &&
-    draft.baseModelSelection.instanceId === activeSelection.instanceId &&
-    draft.baseModelSelection.model === activeSelection.model
-      ? draft.baseModelSelection
-      : activeSelection;
-  const activeEntry = instanceEntries.find((entry) => entry.instanceId === activeInstanceId);
   const activeModelFamily = modelFamilyName(activeModel);
   const boundThread = useScheduledTaskThread(
     environmentId,
@@ -1614,6 +1605,7 @@ function ScheduledTaskEditorForm({
     : { instanceId: activeInstanceId, model: activeModel };
   const shownInstanceId = shownSelection?.instanceId ?? activeInstanceId;
   const shownModel = shownSelection?.model ?? "";
+  const activeEntry = instanceEntries.find((entry) => entry.instanceId === activeInstanceId);
   const modelOptionsByInstance = getCustomModelOptionsByInstance(
     settings,
     providers,
@@ -1643,7 +1635,7 @@ function ScheduledTaskEditorForm({
       automaticBaseRefLoading
     )
       return;
-    const selection = modelSelection;
+    const selection = activeSelection;
     if (
       !draft.title.trim() ||
       !draft.prompt.trim() ||
@@ -1793,8 +1785,7 @@ function ScheduledTaskEditorForm({
                 setDraft((current) => ({
                   ...unbindDraftFromThread(current),
                   projectId: scheduledTaskDefaultProjectId(nextChoices, scope, noProject),
-                  modelKey: "",
-                  baseModelSelection: null,
+                  modelSelection: null,
                   baseRef: "",
                   startFromOrigin: true,
                   existingWorktreePath: "",
@@ -2022,28 +2013,29 @@ function ScheduledTaskEditorForm({
                 modelOptionsByInstance={modelOptionsByInstance}
                 isComposerOwned={false}
                 triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                onInstanceModelChange={(instanceId, model) =>
-                  setDraft((current) => ({ ...current, modelKey: `${instanceId}:${model}` }))
-                }
+                onInstanceModelChange={(instanceId, model) => {
+                  if (instanceId === activeSelection?.instanceId && model === activeSelection.model)
+                    return;
+                  setDraft((current) => ({
+                    ...current,
+                    modelSelection: createModelSelection(instanceId, model),
+                  }));
+                }}
               />
-              {activeEntry && modelSelection ? (
+              {!draft.threadId && activeSelection && activeEntry ? (
                 <TraitsPicker
                   provider={activeEntry.driverKind}
                   models={activeEntry.models}
-                  model={modelSelection.model}
-                  modelOptions={modelSelection.options ?? []}
+                  model={activeModel}
+                  modelOptions={activeSelection.options ?? []}
                   allowPromptInjectedEffort={false}
+                  includePlanAgent={selectsPlanAgent(activeSelection.options)}
                   disabled={saving || !connected}
                   triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                   onModelOptionsChange={(options) =>
                     setDraft((current) => ({
                       ...current,
-                      modelKey: `${modelSelection.instanceId}:${modelSelection.model}`,
-                      baseModelSelection: createModelSelection(
-                        modelSelection.instanceId,
-                        modelSelection.model,
-                        options,
-                      ),
+                      modelSelection: createModelSelection(activeInstanceId, activeModel, options),
                     }))
                   }
                 />
@@ -2460,7 +2452,7 @@ function ScheduledTaskEditorForm({
               prompt: draft.prompt,
               projectId: (selectedProject?.id ?? null) as ProjectId | null,
               threadId: draft.threadId ? (draft.threadId as ThreadId) : null,
-              modelSelection,
+              modelSelection: activeSelection,
             }}
             disabled={saving}
           />

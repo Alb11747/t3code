@@ -2582,9 +2582,10 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
             }),
           );
           yield* harness.offerAndWait(failure(index !== 0));
-          yield* harness.until(
-            () => retryItems(harness.events).at(-1)?.retry?.retryDelayMs === delay,
-          );
+          yield* harness.until(() => {
+            const retry = retryItems(harness.events).at(-1)?.retry;
+            return retry?.attempt === index + 1 && retry.retryDelayMs === delay;
+          });
           assert.deepEqual(retryItems(harness.events).at(-1)?.retry, {
             attempt: index + 1,
             maxAttempts: null,

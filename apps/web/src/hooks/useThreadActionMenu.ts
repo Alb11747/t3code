@@ -14,6 +14,7 @@ import {
   AuthOrchestrationOperateScope,
   type ScopedThreadRef,
   type ThreadId,
+  type ContextMenuSource,
 } from "@t3tools/contracts";
 import { useRouter } from "@tanstack/react-router";
 import { useEffect } from "react";
@@ -129,7 +130,7 @@ export function useThreadActionMenu(input: {
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- leaving a thread drops its menu still waiting for options
   useEffect(() => (threadKey === null ? undefined : cancelPendingMenuOpen), [threadKey]);
 
-  const openMenu = (position: { x: number; y: number }) => {
+  const openMenu = (position: { x: number; y: number }, source?: ContextMenuSource) => {
     if (threadRef === null) return;
     const pending = startMenuOpen();
     void (async () => {
@@ -177,13 +178,14 @@ export function useThreadActionMenu(input: {
         canSnoozeNow,
         isRegeneratingTitle,
         isRunning: !threadRuntimeCanArchive(thread.runtime),
+        hasCompletedRun: thread.latestRun?.completedAt != null,
         supports,
         snoozePresets,
         usageResetSnoozeOptions: usageResetOptions,
         canShareWithGuest,
         canTurnIntoProject: canTurnThreadIntoProject(threadRef),
       });
-      const clicked = await settlePromise(() => api.contextMenu.show(items, position));
+      const clicked = await settlePromise(() => api.contextMenu.show(items, position, source));
       if (clicked._tag === "Failure" || clicked.value === null) return;
       const action: ThreadActionMenuId = clicked.value;
       if (

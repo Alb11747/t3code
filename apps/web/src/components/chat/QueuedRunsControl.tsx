@@ -8,16 +8,19 @@ import {
   orderThreadQueueForDisplay,
 } from "@t3tools/client-runtime/state/thread-workflows";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
+import { isSlashCommand } from "@t3tools/shared/composerTrigger";
 import {
   isAttachmentOnlyBootstrapPrompt,
   replaceComposerContextReferences,
 } from "@t3tools/shared/composerContextReferences";
-import type {
-  ChatAttachment as ContractChatAttachment,
-  EnvironmentId,
-  MessageId,
-  RunId,
-  ThreadId,
+import { composerFileLinksToPlainText } from "@t3tools/shared/composerInlineTokens";
+import {
+  parseGoalCommand,
+  type ChatAttachment as ContractChatAttachment,
+  type EnvironmentId,
+  type MessageId,
+  type RunId,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import { Link } from "@tanstack/react-router";
@@ -312,18 +315,27 @@ export function QueuedRunsControl({
           const previewText = isAttachmentOnlyBootstrapPrompt(item.text)
             ? ""
             : assistantCitationsToPlainText(
-                replaceComposerContextReferences(item.text, (reference) => reference.label),
+                composerFileLinksToPlainText(
+                  replaceComposerContextReferences(item.text, (reference) => reference.label),
+                ),
               ).trim();
           const isEditing = item.runId !== null && item.runId === props.editingRunId;
+          // The server decides on the agent's text, and a goal command can stop the turn.
+          const sentText = { text: item.message?.text ?? item.text, attachments: item.attachments };
+          const movesCommandFirst = isSlashCommand(sentText) && parseGoalCommand(sentText) === null;
           const deliveryLabel = item.deliveryLabel;
           const sendShortcut = item.serverIndex === 0 ? props.steerShortcutLabel : null;
           const sendDescription = workflow?.canSendNow
             ? gt("Start a turn with this message")
             : workflow?.promoteSkipsCompaction
               ? gt("Skip compaction and send this message")
-              : workflow?.sendNowInterruptsTools
-                ? gt("Send into the current turn now. Claude may cancel running tools to read it.")
-                : gt("Send into the current turn");
+              : movesCommandFirst
+                ? gt("Move this command to the front of the queue")
+                : workflow?.sendNowInterruptsTools
+                  ? gt(
+                      "Send into the current turn now. Claude may cancel running tools to read it.",
+                    )
+                  : gt("Send into the current turn");
           return (
             <li
               key={item.key}

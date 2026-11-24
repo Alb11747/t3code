@@ -79,17 +79,6 @@ export class RuntimePolicyV2 extends Context.Service<RuntimePolicyV2, RuntimePol
   "t3/orchestration-v2/RuntimePolicy/RuntimePolicyV2",
 ) {}
 
-export const layer: Layer.Layer<RuntimePolicyV2> = Layer.succeed(RuntimePolicyV2, {
-  resolve: Effect.fn("RuntimePolicyV2.resolve")(function (input) {
-    return Effect.succeed({
-      runtimeMode: input.thread.runtimeMode,
-      interactionMode: input.thread.interactionMode,
-      cwd: input.thread.worktreePath,
-      ...threadAutoCompactLimit(input.thread),
-    });
-  }),
-});
-
 // Fork: every provider start, resume and fork resolves this policy, so the limit reaches them all.
 const threadAutoCompactLimit = (thread: OrchestrationV2AppThread) =>
   thread.autoCompactLimit == null ? {} : { autoCompactLimit: thread.autoCompactLimit };
