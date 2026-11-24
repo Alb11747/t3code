@@ -125,7 +125,13 @@ describe("McpProviderSessions tool results", () => {
         { providerSessionId: "session-1" },
       );
       assert.strictEqual(
-        yield* sessions.takeToolResult(threadId, "send_to_user", { message: "Old" }),
+        yield* sessions.takeToolResult(
+          threadId,
+          "send_to_user",
+          { message: "Old" },
+          undefined,
+          "session-2",
+        ),
         undefined,
       );
 
@@ -136,10 +142,17 @@ describe("McpProviderSessions tool results", () => {
         { sentMessage: "Current" },
         { providerSessionId: "session-2" },
       );
-      const turn1Epoch = yield* sessions.toolResultEpoch(threadId);
-      yield* sessions.clearToolResults(threadId);
+      const turn1Epoch = yield* sessions.toolResultEpoch(threadId, "session-2");
+      yield* sessions.clearToolResults(threadId, "session-2");
+      yield* sessions.toolResultEpoch(threadId, "session-2");
       assert.strictEqual(
-        yield* sessions.takeToolResult(threadId, "send_to_user", { message: "Current" }),
+        yield* sessions.takeToolResult(
+          threadId,
+          "send_to_user",
+          { message: "Current" },
+          undefined,
+          "session-2",
+        ),
         undefined,
       );
 
@@ -153,7 +166,13 @@ describe("McpProviderSessions tool results", () => {
         { providerSessionId: "session-2", epoch: turn1Epoch },
       );
       assert.strictEqual(
-        yield* sessions.takeToolResult(threadId, "send_to_user", { message: "Late from turn 1" }),
+        yield* sessions.takeToolResult(
+          threadId,
+          "send_to_user",
+          { message: "Late from turn 1" },
+          undefined,
+          "session-2",
+        ),
         undefined,
       );
     }).pipe(Effect.provide(McpProviderSessions.layer)),
@@ -174,17 +193,39 @@ const page = { html: "<p>Report</p>", title: "Report", height: 240 };
 const reference = { attachmentId: "report-html", title: page.title, height: page.height };
 
 describe("provider HTML references", () => {
-  it.effect.each(["attach", "replace", "clear"] as const)(
-    "preserves another provider's pending result when a provider is changed: %s",
+  it.effect.each(["attach", "replace", "clear", "finish turn"] as const)(
+    "preserves another provider's pending results when a provider is changed: %s",
     (change) =>
       Effect.gen(function* () {
         const sessions = yield* McpProviderSessions.McpProviderSessions;
         yield* sessions.set(session("previous"));
         yield* sessions.set(session("active"));
         yield* sessions.recordHtmlRender(threadId, page, reference);
+        const input = { task: "Audit" };
+        const previousResult = { taskId: "previous-task" };
+        const activeResult = { taskId: "active-task" };
+        const previousEpoch = yield* sessions.toolResultEpoch(threadId, "previous");
+        const activeEpoch = yield* sessions.toolResultEpoch(threadId, "active");
+        yield* sessions.recordToolResult(threadId, "delegate_task", input, previousResult, {
+          providerSessionId: "previous",
+          epoch: previousEpoch,
+        });
         if (change === "attach") yield* sessions.set(session("third"));
         if (change === "replace") yield* sessions.set(session("previous", "replacement"));
         if (change === "clear") yield* sessions.clear(threadId, "previous");
+        if (change === "finish turn") yield* sessions.clearToolResults(threadId, "previous");
+        yield* sessions.recordToolResult(threadId, "delegate_task", input, activeResult, {
+          providerSessionId: "active",
+          epoch: activeEpoch,
+        });
+        assert.deepEqual(
+          yield* sessions.takeToolResult(threadId, "delegate_task", input, undefined, "active"),
+          activeResult,
+        );
+        assert.deepEqual(
+          yield* sessions.takeToolResult(threadId, "delegate_task", input, undefined, "previous"),
+          change === "attach" ? previousResult : undefined,
+        );
         assert.deepEqual(yield* sessions.takeHtmlRender(threadId, page), reference);
         assert.equal(
           (yield* sessions.read(threadId, ProviderInstanceId.make("active")))?.providerSessionId,

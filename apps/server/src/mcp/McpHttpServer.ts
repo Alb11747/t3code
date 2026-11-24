@@ -1260,7 +1260,7 @@ const withToolResultCapture = Effect.fn("McpHttpServer.withToolResultCapture")(f
           const epoch =
             thread === undefined
               ? undefined
-              : yield* mcpSessions.value.toolResultEpoch(thread.threadId);
+              : yield* mcpSessions.value.toolResultEpoch(thread.threadId, thread.providerSessionId);
           return yield* options.handle(payload).pipe(
             Effect.onExit((exit) => {
               if (thread === undefined) return Effect.void;

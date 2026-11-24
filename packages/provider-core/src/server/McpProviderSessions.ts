@@ -37,10 +37,12 @@ interface KeptToolResult {
   readonly output: Record<string, unknown>;
 }
 
-interface ToolResultState {
-  readonly entries: ReadonlyMap<ThreadId, ReadonlyArray<KeptToolResult>>;
-  readonly epochs: ReadonlyMap<ThreadId, number>;
+interface ToolResultScope {
+  readonly entries: ReadonlyArray<KeptToolResult>;
+  readonly epoch: number;
 }
+
+type ToolResultState = ReadonlyMap<ThreadId, ReadonlyMap<string | undefined, ToolResultScope>>;
 
 const hashText = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
 
@@ -75,7 +77,10 @@ export class McpProviderSessions extends Context.Service<
       input: PageInput,
       reported?: HtmlRenderReference,
     ) => Effect.Effect<HtmlRenderReference | undefined>;
-    readonly toolResultEpoch: (threadId: ThreadId) => Effect.Effect<number>;
+    readonly toolResultEpoch: (
+      threadId: ThreadId,
+      providerSessionId?: string,
+    ) => Effect.Effect<number>;
     readonly recordToolResult: (
       threadId: ThreadId,
       toolName: string,
@@ -93,8 +98,12 @@ export class McpProviderSessions extends Context.Service<
       toolName: string,
       input: unknown,
       reported?: Record<string, unknown>,
+      providerSessionId?: string,
     ) => Effect.Effect<Record<string, unknown> | undefined>;
-    readonly clearToolResults: (threadId: ThreadId) => Effect.Effect<void>;
+    readonly clearToolResults: (
+      threadId: ThreadId,
+      providerSessionId?: string,
+    ) => Effect.Effect<void>;
   }
 >()("@t3tools/provider-core/server/McpProviderSessions") {}
 
@@ -174,12 +183,19 @@ const matchingToolResultIndex = (
   return matches.every((index) => kept[index]!.outputJson === firstOutput) ? matches[0]! : -1;
 };
 
-const clearThreadToolResults = (state: ToolResultState, threadId: ThreadId): ToolResultState => {
-  const entries = new Map(state.entries);
-  entries.delete(threadId);
-  const epochs = new Map(state.epochs);
-  epochs.set(threadId, (state.epochs.get(threadId) ?? 0) + 1);
-  return { entries, epochs };
+const updateToolResultScope = (
+  state: ToolResultState,
+  threadId: ThreadId,
+  providerSessionId: string | undefined,
+  scope: ToolResultScope | undefined,
+): ToolResultState => {
+  const bySession = new Map(state.get(threadId));
+  if (scope === undefined) bySession.delete(providerSessionId);
+  else bySession.set(providerSessionId, scope);
+  const next = new Map(state);
+  if (bySession.size === 0) next.delete(threadId);
+  else next.set(threadId, bySession);
+  return next;
 };
 
 const make = Effect.gen(function* () {
@@ -187,17 +203,17 @@ const make = Effect.gen(function* () {
     new Map<ThreadId, ReadonlyMap<ProviderInstanceId, McpProviderSessionConfig>>(),
   );
   const htmlRenders = yield* Ref.make(new Map<ThreadId, ReadonlyArray<KeptHtmlRender>>());
-  const toolResultState = yield* Ref.make<ToolResultState>({
-    entries: new Map(),
-    epochs: new Map(),
-  });
+  const toolResultState = yield* Ref.make<ToolResultState>(new Map());
+  // Epochs remain unique after a credential or turn clears its bucket.
+  let nextToolResultEpoch = 0;
   return McpProviderSessions.of({
     set: Effect.fn("McpProviderSessions.set")(function* (config) {
       const current = yield* Ref.get(sessions);
       const byInstance = current.get(config.threadId);
+      const previous = byInstance?.get(config.providerInstanceId);
+      const credentialChanged = previous?.providerSessionId !== config.providerSessionId;
       if (
-        byInstance?.get(config.providerInstanceId)?.providerSessionId !==
-          config.providerSessionId &&
+        credentialChanged &&
         (byInstance === undefined ||
           (byInstance.size === 1 && byInstance.has(config.providerInstanceId)))
       ) {
@@ -206,8 +222,10 @@ const make = Effect.gen(function* () {
           next.delete(config.threadId);
           return next;
         });
+      }
+      if (credentialChanged) {
         yield* Ref.update(toolResultState, (state) =>
-          clearThreadToolResults(state, config.threadId),
+          updateToolResultScope(state, config.threadId, previous?.providerSessionId, undefined),
         );
       }
       yield* Ref.update(sessions, (current) =>
@@ -242,15 +260,22 @@ const make = Effect.gen(function* () {
       }).pipe(
         Effect.flatMap((remaining) =>
           remaining.has(threadId)
-            ? Effect.void
+            ? Ref.update(toolResultState, (state) =>
+                updateToolResultScope(state, threadId, providerSessionId, undefined),
+              )
             : Ref.update(htmlRenders, (current) => {
                 const next = new Map(current);
                 next.delete(threadId);
                 return next;
-              }),
-        ),
-        Effect.andThen(
-          Ref.update(toolResultState, (state) => clearThreadToolResults(state, threadId)),
+              }).pipe(
+                Effect.andThen(
+                  Ref.update(toolResultState, (state) => {
+                    const next = new Map(state);
+                    next.delete(threadId);
+                    return next;
+                  }),
+                ),
+              ),
         ),
       );
     }),
@@ -300,18 +325,30 @@ const make = Effect.gen(function* () {
         });
       },
     ),
-    toolResultEpoch: Effect.fn("McpProviderSessions.toolResultEpoch")(function (threadId) {
-      return Ref.get(toolResultState).pipe(Effect.map((state) => state.epochs.get(threadId) ?? 0));
-    }),
+    toolResultEpoch: Effect.fn("McpProviderSessions.toolResultEpoch")(
+      function (threadId, providerSessionId) {
+        return Ref.modify(toolResultState, (state) => {
+          const scope = state.get(threadId)?.get(providerSessionId);
+          if (scope !== undefined) return [scope.epoch, state];
+          const epoch = nextToolResultEpoch++;
+          return [
+            epoch,
+            updateToolResultScope(state, threadId, providerSessionId, { epoch, entries: [] }),
+          ];
+        });
+      },
+    ),
     recordToolResult: Effect.fn("McpProviderSessions.recordToolResult")(
       function* (threadId, toolName, input, output, options) {
         const providerSessionId = options?.providerSessionId;
         if (providerSessionId !== undefined) {
-          const activeSession = (yield* Ref.get(sessions)).get(threadId);
+          const activeSessions = (yield* Ref.get(sessions)).get(threadId);
           // A handler finishing after session replacement must not populate the new session.
           if (
-            activeSession !== undefined &&
-            activeSession.providerSessionId !== providerSessionId
+            activeSessions !== undefined &&
+            !Array.from(activeSessions.values()).some(
+              (session) => session.providerSessionId === providerSessionId,
+            )
           ) {
             return;
           }
@@ -325,42 +362,39 @@ const make = Effect.gen(function* () {
         };
         const expectedEpoch = options?.epoch;
         yield* Ref.update(toolResultState, (state) => {
+          const scope = state.get(threadId)?.get(providerSessionId);
           // A handler finishing after its turn closed must not populate the next turn.
-          if (expectedEpoch !== undefined && (state.epochs.get(threadId) ?? 0) !== expectedEpoch) {
-            return state;
-          }
-          const entries = new Map(state.entries);
-          entries.set(
-            threadId,
-            [...(entries.get(threadId) ?? []), entry].slice(-MAX_KEPT_TOOL_RESULTS),
-          );
-          return { ...state, entries };
+          if (expectedEpoch !== undefined && scope?.epoch !== expectedEpoch) return state;
+          return updateToolResultScope(state, threadId, providerSessionId, {
+            epoch: scope?.epoch ?? nextToolResultEpoch++,
+            entries: [...(scope?.entries ?? []), entry].slice(-MAX_KEPT_TOOL_RESULTS),
+          });
         });
       },
     ),
     takeToolResult: Effect.fn("McpProviderSessions.takeToolResult")(
-      function (threadId, toolName, input, reported) {
+      function (threadId, toolName, input, reported, providerSessionId) {
         const canonicalTool = resolveT3McpToolId(toolName) ?? toolName;
         return Ref.modify(toolResultState, (state) => {
-          const kept = state.entries.get(threadId) ?? [];
-          const index = matchingToolResultIndex(kept, canonicalTool, input, reported);
-          if (index === -1) {
-            return [undefined, state];
-          }
-          const rest = kept.filter((_, keptIndex) => keptIndex !== index);
-          const entries = new Map(state.entries);
-          if (rest.length === 0) {
-            entries.delete(threadId);
-          } else {
-            entries.set(threadId, rest);
-          }
-          return [kept[index]!.output, { ...state, entries }];
+          const scope = state.get(threadId)?.get(providerSessionId);
+          if (scope === undefined) return [undefined, state];
+          const index = matchingToolResultIndex(scope.entries, canonicalTool, input, reported);
+          if (index === -1) return [undefined, state];
+          const entries = scope.entries.filter((_, keptIndex) => keptIndex !== index);
+          return [
+            scope.entries[index]!.output,
+            updateToolResultScope(state, threadId, providerSessionId, { ...scope, entries }),
+          ];
         });
       },
     ),
-    clearToolResults: Effect.fn("McpProviderSessions.clearToolResults")(function (threadId) {
-      return Ref.update(toolResultState, (state) => clearThreadToolResults(state, threadId));
-    }),
+    clearToolResults: Effect.fn("McpProviderSessions.clearToolResults")(
+      function (threadId, providerSessionId) {
+        return Ref.update(toolResultState, (state) =>
+          updateToolResultScope(state, threadId, providerSessionId, undefined),
+        );
+      },
+    ),
   });
 });
 

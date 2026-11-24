@@ -432,12 +432,24 @@ it.effect("captures send_to_user results for providers that drop MCP outputs", (
         Effect.provideService(McpSchema.McpServerClient, client),
       );
     expect(result.isError).not.toBe(true);
-    expect(yield* mcpSessions.takeToolResult(threadId, "send_to_user", { message: draft })).toEqual(
-      { sentMessage: draft },
-    );
-    expect(yield* mcpSessions.takeToolResult(threadId, "send_to_user", { message: draft })).toBe(
-      undefined,
-    );
+    expect(
+      yield* mcpSessions.takeToolResult(
+        threadId,
+        "send_to_user",
+        { message: draft },
+        undefined,
+        scope.thread?.providerSessionId,
+      ),
+    ).toEqual({ sentMessage: draft });
+    expect(
+      yield* mcpSessions.takeToolResult(
+        threadId,
+        "send_to_user",
+        { message: draft },
+        undefined,
+        scope.thread?.providerSessionId,
+      ),
+    ).toBe(undefined);
 
     const invalid = yield* server
       .callTool({ name: "send_to_user", arguments: { message: "" } })
@@ -447,7 +459,15 @@ it.effect("captures send_to_user results for providers that drop MCP outputs", (
         Effect.flip,
       );
     expect(invalid).toMatchObject({ _tag: "InvalidParams" });
-    expect(yield* mcpSessions.takeToolResult(threadId, "send_to_user", { message: "" })).toEqual({
+    expect(
+      yield* mcpSessions.takeToolResult(
+        threadId,
+        "send_to_user",
+        { message: "" },
+        undefined,
+        scope.thread?.providerSessionId,
+      ),
+    ).toEqual({
       isError: true,
     });
   }).pipe(

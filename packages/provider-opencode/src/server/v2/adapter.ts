@@ -395,7 +395,12 @@ interface ThreadState {
   /** Prompts other clients queued while no T3 turn ran, shown once delivered; `leads` the next wake if no report preceded it. */
   readonly externalPrompts: Map<string, { readonly text: string; leads: boolean }>;
   mcp:
-    | { readonly name: string; readonly directory: string; readonly credential: string }
+    | {
+        readonly name: string;
+        readonly directory: string;
+        readonly credential: string;
+        readonly credentialId: string;
+      }
     | undefined;
   instructions: string | undefined;
 }
@@ -1488,7 +1493,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           ? "failed"
           : status;
       yield* emitNode(state, turn, nativeId, "tool_call", settled, startedAt, completedAt);
-      const mcpOwnerThreadId = rootOf(state).providerThread.appThreadId ?? turn.input.threadId;
+      const mcpOwner = rootOf(state);
+      const mcpOwnerThreadId = mcpOwner.providerThread.appThreadId ?? turn.input.threadId;
       const mcpServerName =
         status === "running" ? undefined : yield* mcpServerNameFor(mcpOwnerThreadId);
       const nestedSentMessages: Array<{
@@ -1515,6 +1521,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             mcpOwnerThreadId,
             SEND_TO_USER_TOOL_NAME,
             input,
+            undefined,
+            mcpOwner.mcp?.credentialId,
           );
           const sentMessage = sentMessageFromToolItem({
             toolName: SEND_TO_USER_TOOL_NAME,
@@ -4452,7 +4460,12 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       const wanted =
         mcpSession === undefined || connection.external
           ? undefined
-          : { name, directory, credential: mcpSession.authorizationHeader };
+          : {
+              name,
+              directory,
+              credential: mcpSession.authorizationHeader,
+              credentialId: mcpSession.providerSessionId,
+            };
       if (
         state.mcp !== undefined &&
         (wanted === undefined ||

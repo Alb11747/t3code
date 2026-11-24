@@ -1702,6 +1702,7 @@ interface AcpNativeBuildConfiguration {
 
 interface ActiveAcpTurn {
   readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
+  readonly mcpCredentialId: string | undefined;
   readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
   readonly nativeThreadId: string;
   readonly nativeTurnId: string;
@@ -4884,6 +4885,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     resolvedT3Tool,
                     input,
                     reportedError,
+                    context.mcpCredentialId,
                   );
                   if (drained !== undefined) {
                     context.drainedToolResultKeys.add(callInputKey);
@@ -4928,6 +4930,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     resolvedT3Tool,
                     input,
                     reportedOutput,
+                    context.mcpCredentialId,
                   );
                   if (drained !== undefined) {
                     context.drainedToolResultKeys.add(callInputKey);
@@ -4947,6 +4950,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     resolvedT3Tool,
                     input,
                     undefined,
+                    context.mcpCredentialId,
                   );
                   if (recoveredOutput !== undefined) {
                     context.drainedToolResultKeys.add(callInputKey);
@@ -8844,7 +8848,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               terminalizeSubagents: directStopQuarantine,
             });
           }
-          yield* mcpSessions.clearToolResults(context.input.threadId);
+          yield* mcpSessions.clearToolResults(context.input.threadId, context.mcpCredentialId);
           yield* closeTextStreams(context);
           // Ingestion may stop at turn.terminal, before a delayed flush would run.
           yield* textEmissionPermit.withPermit(
@@ -9251,8 +9255,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const resolvePromptParts = Effect.fnUntraced(function* (
           turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
           sessionId: string,
+          mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
         ) {
-          const mcpSession = yield* mcpSessions.read(turnInput.threadId, options.instanceId);
           const instructionState = {
             interactionMode: turnInput.runtimePolicy.interactionMode,
             hasT3Mcp: mcpSession !== undefined,
@@ -9784,9 +9788,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 return wasRequested;
               }),
             );
+            const mcpSession = yield* mcpSessions.read(turnInput.threadId, options.instanceId);
             const promptParts = isContinuationTurn
               ? null
-              : yield* resolvePromptParts(turnInput, requestedSessionId);
+              : yield* resolvePromptParts(turnInput, requestedSessionId, mcpSession);
             const startedAt = yield* DateTime.now;
             const nativeTurnId = `${requestedSessionId}:turn:${turnInput.providerTurnOrdinal}`;
             const providerTurnId = deriveProviderTurnId(nativeTurnId);
@@ -9814,6 +9819,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             }
             const context: ActiveAcpTurn = {
               input: turnInput,
+              mcpCredentialId: mcpSession?.providerSessionId,
               providerTurnId,
               nativeThreadId: requestedSessionId,
               nativeTurnId,
