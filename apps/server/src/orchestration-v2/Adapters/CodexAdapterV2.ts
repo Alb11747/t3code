@@ -3100,7 +3100,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       Effect.interruptible,
                       Effect.forkIn(scope),
                     );
-                    yield* Deferred.await(acceptance.accepted).pipe(withAppServerDeadline(method));
+                    const accepted = Deferred.await(acceptance.accepted);
+                    // Continuation timeouts keep the lane open so a late native retry can be stopped.
+                    yield* hold === undefined
+                      ? accepted.pipe(withAppServerDeadline(method))
+                      : accepted;
                     yield* Deferred.await(acceptance.callerDone);
                     // Interrupt RPC acknowledgement is not proof that Codex's
                     // native task has stopped; a later start could steer that task.
