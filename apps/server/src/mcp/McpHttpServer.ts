@@ -40,6 +40,7 @@ import * as MilestoneEvents from "../milestones/MilestoneEvents.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as MessageSearch from "../orchestration-v2/MessageSearch.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as PullRequestWatchService from "../pullRequest/PullRequestWatchService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -96,6 +97,8 @@ import * as IssueWatchesHandlers from "./toolkits/issueWatches/handlers.ts";
 import { IssueWatchesToolkit } from "./toolkits/issueWatches/tools.ts";
 import * as StallHandlers from "./toolkits/stall/handlers.ts";
 import { StallToolkit } from "./toolkits/stall/tools.ts";
+import * as MessageSearchHandlers from "./toolkits/messageSearch/handlers.ts";
+import { MessageSearchToolkit } from "./toolkits/messageSearch/tools.ts";
 import * as UsageHandlers from "./toolkits/usage/handlers.ts";
 import { UsageToolkit } from "./toolkits/usage/tools.ts";
 import * as PullRequestsHandlers from "./toolkits/pullRequests/handlers.ts";
@@ -1531,6 +1534,9 @@ export const layerTools = Layer.mergeAll(
   toolkitRegistration(IssueWatchesToolkit, IssueWatchesHandlers.layer),
   toolkitRegistration(StallToolkit, StallHandlers.layer),
   toolkitRegistration(UsageToolkit, UsageHandlers.layer),
+  toolkitRegistration(MessageSearchToolkit, MessageSearchHandlers.layer).pipe(
+    Layer.provide(MessageSearch.layer),
+  ),
   layerDeviceToolkit,
   layerHtmlToolkit,
   layerMessageToolkit,
