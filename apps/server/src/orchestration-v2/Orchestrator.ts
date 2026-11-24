@@ -3337,10 +3337,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ))
           ? "explicit-queue"
           : "automatic-queue";
-      const reportBatch =
-        options?.queuedRunId === undefined
-          ? queuedAgentReportBatch(projection, storedQueuedRun, queuedMessage)
-          : [];
+      const reportBatch = queuedAgentReportBatch(projection, storedQueuedRun, queuedMessage);
       const startingRun: OrchestrationV2Run = {
         ...queuedRun,
         providerThreadId: queuedProviderThread.id,
@@ -12978,10 +12975,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ): Effect.fn.Return<
-    | Pick<
+    | (Pick<
         Parameters<typeof eventSink.commitCommand>[0],
         "cancelUnsettledEffects" | "updateDelegatedCompletionOnlyRunId"
-      >
+      > & { readonly startQueuedRunId?: RunId })
     | undefined,
     OrchestratorV2Error
   > {
@@ -13002,14 +12999,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // User messages measure a restart's model switch. Steering reads root and live nodes only.
       { turnItemTypes: ["user_message"], messageRoles: ["user"], omitSettledLeafNodes: true },
     );
-    const queuedRun = projection.runs.find((candidate) => candidate.id === command.queuedRunId);
+    const storedQueuedRun = projection.runs.find(
+      (candidate) => candidate.id === command.queuedRunId,
+    );
     // Offer ids are never reused, so a receipt for an offer that was cancelled or sent again is
     // stale: it changes nothing and cannot resurrect the message.
     if (
       (command.boundaryOffer?.step === "receipt" || command.boundaryOffer?.step === "withdraw") &&
-      (queuedRun?.status !== "queued" ||
-        queuedRun.boundaryOffer?.id !== command.boundaryOffer.id ||
-        queuedRun.boundaryOffer.targetRunId !== command.targetRunId)
+      (storedQueuedRun?.status !== "queued" ||
+        storedQueuedRun.boundaryOffer?.id !== command.boundaryOffer.id ||
+        storedQueuedRun.boundaryOffer.targetRunId !== command.targetRunId)
     ) {
       // This dispatch path requires an event even for an idempotent stale receipt.
       yield* emit(
@@ -13030,28 +13029,38 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Thread ${command.threadId} is not active.`,
       });
     }
-    if (queuedRun === undefined || queuedRun.status !== "queued") {
+    if (storedQueuedRun === undefined || storedQueuedRun.status !== "queued") {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
         cause: `Queued run ${command.queuedRunId} is not queued.`,
       });
     }
+    const sendNow =
+      command.interrupt === true &&
+      command.requestedBy !== "agent" &&
+      command.boundaryOffer === undefined;
     if (
-      queuedRun.afterCompactionMessageId !== undefined &&
+      !sendNow &&
+      storedQueuedRun.afterCompactionMessageId !== undefined &&
       !(yield* compactionSucceeded(
         command.threadId,
-        queuedRun.afterCompactionMessageId,
+        storedQueuedRun.afterCompactionMessageId,
         projection.runs,
       ))
     ) {
       return yield* new OrchestratorCommandRejectedError({
         commandId: command.commandId,
         commandType: command.type,
-        cause:
-          'This message requires successful compaction. Cancel it and resend with contextPolicy:"keep" to retain the full history.',
+        cause: "This message requires successful compaction unless a person chooses Send now.",
       });
     }
+    // Keep the original run and message. A deferred promotion must also stay independent of
+    // the compaction when startup, a tool boundary, or queue drain picks it up later.
+    const queuedRun =
+      sendNow && storedQueuedRun.afterCompactionMessageId !== undefined
+        ? { ...storedQueuedRun, afterCompactionMessageId: undefined, queueHeld: false }
+        : storedQueuedRun;
     const queuedRootNode =
       queuedRun.rootNodeId === null
         ? undefined
@@ -13217,6 +13226,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (goalCommand !== null) {
         yield* ensureGoalCommandSupported(command, queuedMessage, modelSelection.instanceId);
       }
+      // The compaction can end between the click and dispatch, after its queue drain ran.
+      const startsNow = queuedRun !== storedQueuedRun && !projection.runs.some(isActiveRun);
+      if (startsNow && worktreeSetupPending(projection)) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Retry worktree setup or choose a workspace before resuming the queue.",
+        });
+      }
       yield* emitEvent({
         type: "run.updated",
         threadId: command.threadId,
@@ -13238,6 +13256,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         reason: "Skipped compaction to send a queued message",
         now,
       });
+      if (startsNow) return { startQueuedRunId: queuedRun.id };
       return cancelUnsettledEffects === undefined ? undefined : { cancelUnsettledEffects };
     }
     if (queuedRun.freshContext === true) {
@@ -13389,17 +13408,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         waitsForToolBoundary &&
         // A person's Send now interrupts Claude; an agent's promotion waits in boundary mode.
-        !(
-          command.interrupt === true &&
-          command.requestedBy !== "agent" &&
-          targetProviderThread?.driver === "claudeAgent"
-        ) &&
+        !(sendNow && claudeTarget) &&
         !(
           targetProviderThread?.driver === "cursor" &&
           queuedMessage.createdBy === "user" &&
           command.requestedBy !== "agent"
         )
       ) {
+        if (queuedRun !== storedQueuedRun) {
+          yield* emitEvent({
+            type: "run.updated",
+            threadId: command.threadId,
+            runId: queuedRun.id,
+            nodeId: queuedRootNode.id,
+            providerInstanceId: queuedRun.providerInstanceId,
+            occurredAt: now,
+            payload: queuedRun,
+          });
+        }
         yield* emitEvent({
           type: "message.updated",
           threadId: command.threadId,
@@ -17219,6 +17245,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         readonly reason: string;
       };
       readonly updateDelegatedCompletionOnlyRunId?: RunId;
+      readonly startQueuedRunId?: RunId;
     },
     OrchestratorV2Error
   > {
@@ -17237,6 +17264,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
       | undefined;
     let updateDelegatedCompletionOnlyRunId: RunId | undefined;
+    let startQueuedRunId: RunId | undefined;
     switch (command.type) {
       case "thread.create": {
         yield* dispatchThreadCreate(command, events);
@@ -17802,6 +17830,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const promotion = yield* dispatchQueuedMessagePromoteToSteer(command, events, effects);
         cancelUnsettledEffects = promotion?.cancelUnsettledEffects;
         updateDelegatedCompletionOnlyRunId = promotion?.updateDelegatedCompletionOnlyRunId;
+        startQueuedRunId = promotion?.startQueuedRunId;
         break;
       }
       case "queued-run.start":
@@ -17876,7 +17905,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             runId: run.id,
             providerInstanceId: run.providerInstanceId,
             occurredAt: now,
-            payload: { ...run, queueHeld: false },
+            payload: {
+              ...run,
+              queueHeld: false,
+              ...(command.type === "queued-run.start" &&
+              command.requestedBy !== "agent" &&
+              run.id === selectedRunId
+                ? { afterCompactionMessageId: undefined }
+                : {}),
+            },
           });
         }
         if (queued.length === 0) {
@@ -17970,6 +18007,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...(updateDelegatedCompletionOnlyRunId === undefined
         ? {}
         : { updateDelegatedCompletionOnlyRunId }),
+      ...(startQueuedRunId === undefined ? {} : { startQueuedRunId }),
     };
   });
 
@@ -18259,9 +18297,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandThreadId: commandThreadId(command),
       });
     }
+    const queuedRunId = command.type === "queued-run.start" ? command.runId : plan.startQueuedRunId;
     if (
       command.type === "queue.resume" ||
-      command.type === "queued-run.start" ||
+      queuedRunId !== undefined ||
       // A `/compact` that joined a held compaction released the queue without adding a run.
       (command.type === "message.dispatch" &&
         committed.storedEvents.some(
@@ -18275,12 +18314,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (command.type === "thread.runtime-mode.set" && runtimeModeCeiling !== undefined)
     ) {
       yield* mapDispatchError(command)(
-        startNextQueuedRun(command.threadId, {
+        startNextQueuedRun(commandThreadId(command), {
           userStarted:
             command.type !== "thread.runtime-mode.set" &&
             command.type !== "boundary-offers.withdraw",
           ...(command.type === "boundary-offers.withdraw" ? { latestRunEnded: true } : {}),
-          ...(command.type === "queued-run.start" ? { queuedRunId: command.runId } : {}),
+          ...(queuedRunId === undefined ? {} : { queuedRunId }),
         }),
       );
     }

@@ -336,6 +336,7 @@ it.effect.each([
           threadId,
           runId: next.id,
           commandId: CommandId.make("force:start-after-compact"),
+          requestedBy: "agent",
         });
         expect(
           (yield* orchestrator.getThreadRecords(threadId, ["runs"])).runs.find(
@@ -349,9 +350,53 @@ it.effect.each([
             threadId,
             queuedRunId: next.id,
             targetRunId: compactRun.id,
+            requestedBy: "agent",
           })
           .pipe(Effect.result);
         expect(promotion._tag).toBe("Failure");
+        const sendNow = {
+          threadId,
+          commandId: CommandId.make("send-now:after-compact"),
+          ...(outcome === "failed"
+            ? {
+                type: "queued-message.promote-to-steer" as const,
+                queuedRunId: next.id,
+                targetRunId: compactRun.id,
+                interrupt: true as const,
+              }
+            : { type: "queued-run.start" as const, runId: next.id }),
+        } as const;
+        yield* orchestrator.dispatch(sendNow);
+        yield* orchestrator.dispatch(sendNow);
+        yield* orchestrator.dispatch(send);
+        const sent = yield* orchestrator.getThreadRecords(threadId, ["runs", "messages"]);
+        const started = sent.runs.find((run) => run.id === next.id)!;
+        expect(started.status).toBe("starting");
+        expect(started.afterCompactionMessageId).toBeUndefined();
+        expect(sent.messages.filter((message) => message.id === messageId)).toEqual(
+          current.messages.filter((message) => message.id === messageId),
+        );
+        if (beforeSend && outcome === "failed") {
+          yield* endCompaction(threadId, compactRun, true);
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("event:send-now-ended"),
+                type: "run.updated",
+                threadId,
+                runId: next.id,
+                occurredAt: now,
+                payload: { ...started, status: "completed", startedAt: now, completedAt: now },
+              },
+            ],
+          });
+          yield* orchestrator.resumeQueuedRuns;
+          yield* orchestrator.dispatch(sendNow);
+          const after = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+          expect(after.runs.filter((run) => run.userMessageId === messageId)).toMatchObject([
+            { id: next.id, status: "completed" },
+          ]);
+        }
       }
     }).pipe(Effect.provide(layerTest)),
 );
