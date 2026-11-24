@@ -5,11 +5,17 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
+  ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { act, render } from "../../../test/render";
 import { makeThreadFixture } from "../../test-fixtures";
+import { composerTargetKey } from "../../composerDraftStore";
 import type { ChatComposerHandle } from "./ChatComposer";
+import {
+  addPreparingComposerImages,
+  removePreparingComposerImages,
+} from "./preparingComposerImages";
 import { useComposerSend } from "./useComposerSend";
 
 const mocks = await vi.hoisted(async () => {
@@ -22,6 +28,7 @@ const mocks = await vi.hoisted(async () => {
     usageUpdatedAt: null as string | null,
     startTurn: vi.fn(),
     refreshUploads: vi.fn(),
+    confirmAccount: vi.fn(),
     config: Atom.make(new Map()).pipe(Atom.keepAlive),
     presentations: Atom.make(new Map()).pipe(Atom.keepAlive),
   };
@@ -44,6 +51,7 @@ vi.mock(import("../../state/session"), async (original) => ({
   readEnvironmentScope: () => true,
 }));
 vi.mock("./useMultipleModelSend", () => ({ useMultipleModelSend: () => vi.fn() }));
+vi.mock("./threadAccountSendGuard", () => ({ confirmAccountForSend: mocks.confirmAccount }));
 vi.mock("./useProposedPlanSend", () => ({ usePlanFollowUpSend: () => vi.fn() }));
 vi.mock("../../state/server", async (original) => ({
   ...(await original<typeof import("../../state/server")>()),
@@ -133,6 +141,7 @@ function setup(
   mocks.usageUpdatedAt = null;
   mocks.startTurn.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
   mocks.refreshUploads.mockReset().mockResolvedValue(undefined);
+  mocks.confirmAccount.mockReset().mockResolvedValue(true);
   const environmentId = EnvironmentId.make("compaction-send-test");
   const instanceId = ProviderInstanceId.make(provider);
   const sourceInstanceId = ProviderInstanceId.make("claudeAgent");
@@ -148,6 +157,7 @@ function setup(
   });
   const target = scopeThreadRef(environmentId, thread.id);
   const key = scopedThreadKey(target);
+  const currentRouteThreadKeyRef = { current: key };
   const image = {
     type: "image" as const,
     id: "local-image",
@@ -193,7 +203,7 @@ function setup(
   const input: SendInput = {
     environmentId,
     routeThreadKey: key,
-    currentRouteThreadKeyRef: { current: key },
+    currentRouteThreadKeyRef,
     optimisticBlobPreviews: { track: vi.fn(), release: vi.fn() },
     draftId: null,
     draftThread: null,
@@ -299,8 +309,50 @@ function setup(
       .fn()
       .mockResolvedValue({ _tag: "Success", value: undefined }),
   };
-  return { input, sender: { current: null } as { current: Sender | null } };
+  return {
+    input,
+    currentRouteThreadKeyRef,
+    sender: { current: null } as { current: Sender | null },
+  };
 }
+
+it.each(["original", "destination"] as const)(
+  "checks preparing attachments in the %s draft after navigating during account confirmation",
+  async (owner) => {
+    const { input, currentRouteThreadKeyRef, sender } = setup();
+    const checking = Promise.withResolvers<void>();
+    const confirmation = Promise.withResolvers<boolean>();
+    mocks.confirmAccount.mockImplementationOnce(() => {
+      checking.resolve();
+      return confirmation.promise;
+    });
+    await using _screen = await render(<Harness input={input} sender={sender} />);
+
+    const send = sender.current!.onSend();
+    await checking.promise;
+    const destinationKey = scopedThreadKey(
+      scopeThreadRef(input.environmentId, ThreadId.make("attachment-destination")),
+    );
+    const targetKey =
+      owner === "original" ? composerTargetKey(input.composerDraftTarget) : destinationKey;
+    const image = {
+      id: "pending-paste",
+      name: "pasted.png",
+      file: new File(["image"], "pasted.png"),
+      hidden: false,
+    };
+    addPreparingComposerImages(targetKey, [image]);
+    using _image = {
+      [Symbol.dispose]: () => removePreparingComposerImages(targetKey, new Set([image.id])),
+    };
+    currentRouteThreadKeyRef.current = destinationKey;
+    await act(async () => {
+      confirmation.resolve(true);
+      await send;
+    });
+    expect(mocks.startTurn).toHaveBeenCalledTimes(owner === "original" ? 0 : 1);
+  },
+);
 
 describe("resume compaction dispatch", () => {
   it("sends once to live Codex despite stale parent Claude eligibility", async () => {

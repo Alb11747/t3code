@@ -128,6 +128,7 @@ import {
 } from "../../lib/attachmentUploadQueue";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { countPreparingComposerImages, holdComposerSend } from "./preparingComposerImages";
+import { pendingDraftWork } from "./pendingDraftWork";
 import { fileAttachmentCapabilityBlockReason } from "./composerAttachmentFiles";
 import { useLinkedEnvironments } from "../../state/peerLinks";
 import { readEnvironmentScope } from "../../state/session";
@@ -1129,9 +1130,11 @@ export function useComposerSend(input: ComposerSendInput) {
     const draftBeforePreparation = useComposerDraftStore
       .getState()
       .getComposerDraft(composerDraftTarget);
+    const draftKey = composerTargetKey(composerDraftTarget);
+    const draftHasPendingAttachments = () =>
+      countPreparingComposerImages(draftKey) > 0 || pendingDraftWork.has(draftKey);
     const draftChangedDuringPreparation = () => {
-      if (isCurrentRouteThread() && composerRef.current?.hasPendingAttachments() === true)
-        return true;
+      if (draftHasPendingAttachments()) return true;
       const draft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
       return composerDraftContentChanged(draftBeforePreparation, draft);
     };
@@ -1272,7 +1275,7 @@ export function useComposerSend(input: ComposerSendInput) {
       const draftChangedSinceSend = () => {
         const liveDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
         const onCurrentThread = isCurrentRouteThread();
-        if (onCurrentThread && composerRef.current?.hasPendingAttachments() === true) return true;
+        if (draftHasPendingAttachments()) return true;
         const sendContext = onCurrentThread ? composerRef.current?.getSendContext() : undefined;
         const attachmentIds = sendContext
           ? [...sendContext.images, ...sendContext.files].map((attachment) => attachment.id)
