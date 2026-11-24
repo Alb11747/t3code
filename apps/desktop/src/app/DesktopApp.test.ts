@@ -79,6 +79,7 @@ import * as AppleSpeech from "../speech/AppleSpeech.ts";
 
 interface StubbedDesktop {
   readonly localEnvironmentEnabled: boolean;
+  readonly wslOnly?: boolean;
   readonly environment: Partial<DesktopEnvironment.DesktopEnvironment["Service"]>;
   readonly fileSystem: Layer.Layer<FileSystem.FileSystem>;
   readonly record: (event: string) => Effect.Effect<void>;
@@ -131,6 +132,8 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
           load: Effect.void,
           get: Effect.succeed({
             localEnvironmentEnabled: stub.localEnvironmentEnabled,
+            wslOnly: stub.wslOnly ?? false,
+            wslBackendEnabled: stub.wslOnly ?? false,
             serverExposureMode: "local-only",
           }),
         } as unknown as DesktopAppSettings.DesktopAppSettings["Service"]),
@@ -177,6 +180,7 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
           createMainIfBackendReady: stub
             .record("window")
             .pipe(Effect.andThen(Deferred.succeed(stub.windowStarted, undefined))),
+          showConnectingSplash: stub.record("connecting splash"),
         } as unknown as DesktopWindow.DesktopWindow["Service"]),
         Effect.provideService(DesktopBackendPool.DesktopBackendPool, {
           primary: Effect.succeed({
@@ -228,7 +232,7 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
           Layer.mock(DesktopSshEnvironment.DesktopSshEnvironment, {}),
           Layer.mock(DesktopSshPasswordPrompts.DesktopSshPasswordPrompts, {}),
           Layer.mock(DesktopTelemetryPublisher.DesktopTelemetryPublisher, {}),
-          Layer.mock(DesktopTray.DesktopTray, { initialize: Effect.void }),
+          Layer.mock(DesktopTray.DesktopTray, { initialize: stub.record("tray") }),
           Layer.mock(DesktopWebLinks.DesktopWebLinks, {}),
           Layer.mock(DesktopWslEnvironment.DesktopWslEnvironment, {}),
           Layer.mock(ElectronMenu.ElectronMenu, {}),
@@ -330,6 +334,29 @@ it.effect.each([false, true])(
       assert.isTrue(yield* shutdown.isComplete);
       assert.isTrue(yield* Deferred.isDone(registrationStopped));
     }).pipe(Effect.provide(DesktopShutdown.layer)),
+);
+
+it.effect("restores the tray before the WSL splash checks window visibility", () =>
+  Effect.gen(function* () {
+    const windowStarted = yield* Deferred.make<void>();
+    const events: string[] = [];
+    const app = yield* runStubbedDesktop({
+      localEnvironmentEnabled: true,
+      wslOnly: true,
+      environment: { platform: "win32" },
+      fileSystem: FileSystem.layerNoop({}),
+      record: (event) => Effect.sync(() => void events.push(event)),
+      windowStarted,
+      registerLinuxUrlHandler: Effect.void,
+    });
+    yield* Deferred.await(windowStarted);
+    assert.deepEqual(
+      events.filter((event) => ["tray", "connecting splash", "backend"].includes(event)),
+      ["tray", "connecting splash", "backend"],
+    );
+    yield* (yield* DesktopShutdown.DesktopShutdown).request;
+    yield* Fiber.join(app);
+  }).pipe(Effect.provide(DesktopShutdown.layer)),
 );
 
 it.effect(
