@@ -8704,6 +8704,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             payload: { ...sourcePlan, status: "completed" },
           });
 
+    const mayParkSteer = !(yield* limitForbidsParkedSteer);
     let steerWhenReadyRunId: RunId | undefined;
     if (dispatchMode.type === "steer_active") {
       const targetRunId = dispatchMode.targetRunId;
@@ -8717,7 +8718,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ))) &&
         !(yield* stopReachedRun(command, command.threadId, target.id))
       ) {
-        if (!(yield* limitForbidsParkedSteer)) {
+        if (mayParkSteer) {
           const adapter = yield* providerAdapters
             .get(target.providerInstanceId)
             .pipe(mapDispatchError(command));
@@ -8927,7 +8928,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? command.deliveryIntent === "auto"
           ? "auto"
           : "steer"
-        : activeRun !== undefined &&
+        : mayParkSteer &&
+            activeRun !== undefined &&
             !freshContext &&
             outputSchema === undefined &&
             (command.deliveryIntent === "auto" || command.deliveryIntent === "steer") &&
@@ -8982,7 +8984,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         goalCommand === null &&
         !isSlashCommand(command) &&
         command.scheduledTaskId === undefined &&
-        !(yield* limitForbidsParkedSteer) &&
+        mayParkSteer &&
         (atToolBoundary ||
           command.deliveryIntent === "auto" ||
           command.deliveryIntent === "steer" ||
@@ -14232,17 +14234,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.modelSelection === undefined
         ? queuedRun
         : { ...queuedRun, modelSelection, providerInstanceId: modelSelection.instanceId };
-    if (
-      updatedRun.steerWhenReadyRunId !== undefined &&
+    const { steerWhenReadyRunId, deliveryIntent, startupSteerAtToolBoundary, ...plainRun } =
+      updatedRun;
+    const { atToolBoundary, ...plainMessage } = queuedMessage;
+    const parked =
+      steerWhenReadyRunId !== undefined ||
+      deliveryIntent !== undefined ||
+      startupSteerAtToolBoundary !== undefined;
+    const clearsSteer =
+      (parked || atToolBoundary === true) &&
       (isSlashCommand({
         text: command.text,
         attachments: command.attachments ?? queuedMessage.attachments,
       }) ||
-        (yield* limitForbidsParkedSteer))
-    ) {
-      const { steerWhenReadyRunId: _, ...queued } = updatedRun;
-      updatedRun = queued;
-    }
+        (yield* limitForbidsParkedSteer));
+    if (clearsSteer && parked) updatedRun = plainRun;
     if (updatedRun !== queuedRun) {
       yield* emitEvent({
         type: "run.updated",
@@ -14256,7 +14262,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const editedAttachments =
       command.attachments === undefined ? {} : { attachments: command.attachments };
-    const { followsThreadSelection: _followsThreadSelection, ...pinnedMessage } = queuedMessage;
+    const editedMessage = clearsSteer ? plainMessage : queuedMessage;
+    const { followsThreadSelection: _followsThreadSelection, ...pinnedMessage } = editedMessage;
     yield* emitEvent({
       type: "message.updated",
       threadId: command.threadId,
@@ -14265,7 +14272,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       providerInstanceId: queuedRun.providerInstanceId,
       occurredAt: now,
       payload: withoutGuestAttribution({
-        ...(command.modelSelection === undefined ? queuedMessage : pinnedMessage),
+        ...(command.modelSelection === undefined ? editedMessage : pinnedMessage),
         text: command.text,
         ...editedAttachments,
         ...(command.context ? { context: command.context } : {}),

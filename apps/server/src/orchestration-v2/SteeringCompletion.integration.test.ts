@@ -2327,7 +2327,8 @@ it.effect(
 
 it.effect("queues a limited caller's steer into a turn that is not running yet", () =>
   Effect.gen(function* () {
-    const { started, layer, startFirstTurn } = yield* nextTurnSelectionHarness("steer-not-ready");
+    const { events, started, steered, layer, startFirstTurn } =
+      yield* nextTurnSelectionHarness("steer-not-ready");
     yield* Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const threadId = yield* startFirstTurn;
@@ -2349,7 +2350,7 @@ it.effect("queues a limited caller's steer into a turn that is not running yet",
           commandId: CommandId.make(name),
           threadId,
           messageId: MessageId.make(`message:${name}`),
-          text: "follow up",
+          text: name,
           attachments: [],
           dispatchMode: { type: "steer_active", targetRunId: started[0]!.runId },
           createdBy: "agent",
@@ -2386,10 +2387,12 @@ it.effect("queues a limited caller's steer into a turn that is not running yet",
           text: "rewritten",
         })
         .pipe(Effect.provideService(DispatchModeLimit, supervised));
-      assert.isUndefined((yield* queuedBy("parked")).steerWhenReadyRunId);
+      const edited = yield* queuedBy("parked");
+      assert.isUndefined(edited.steerWhenReadyRunId);
+      assert.isUndefined(edited.deliveryIntent);
 
       yield* orchestrator
-        .dispatch(steer("steer"))
+        .dispatch({ ...steer("steer"), deliveryIntent: "auto" })
         .pipe(Effect.provideService(DispatchModeLimit, supervised));
       const queued = yield* queuedBy("steer");
       assert.isUndefined(queued.steerWhenReadyRunId);
@@ -2408,6 +2411,35 @@ it.effect("queues a limited caller's steer into a turn that is not running yet",
       )!;
       assert.equal(kept.status, "queued");
       assert.isUndefined(kept.steerWhenReadyRunId);
+      assert.isUndefined(kept.deliveryIntent);
+
+      yield* orchestrator.dispatch(steer("control")).pipe(
+        Effect.provideService(DispatchModeLimit, {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        }),
+      );
+      const control = yield* queuedBy("control");
+      assert.equal(control.steerWhenReadyRunId, started[0]!.runId);
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const promoted = yield* orchestrator.streamDomainEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "run.updated" &&
+            event.payload.id === control.id &&
+            event.payload.status === "cancelled",
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.forkScoped,
+      );
+      yield* Queue.offer(events, { type: "provider_turn.updated", driver, providerTurn: turn });
+      yield* Fiber.join(promoted);
+      yield* worker.drain();
+      assert.lengthOf(steered, 1);
+      assert.match(steered[0]!, /\bcontrol$/u);
+      assert.equal((yield* queuedBy("parked")).status, "queued");
+      assert.equal((yield* queuedBy("steer")).status, "queued");
     }).pipe(Effect.provide(layer));
   }),
 );
