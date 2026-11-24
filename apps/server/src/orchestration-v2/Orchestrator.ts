@@ -19135,19 +19135,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   queued.deliveryIntent,
                 ),
               }))
-              .find(
-                ({ queued, mode }) =>
-                  mode.type === "steer_active" &&
-                  // A message for another model starts its own turn instead of restarting this one.
-                  projection.runs.some(
-                    (run) =>
-                      run.id === mode.targetRunId &&
-                      modelSelectionsEqual(
-                        queuedRunModelSelection(projection, queued),
-                        run.modelSelection,
-                      ),
-                  ),
-              );
+              .find(({ queued, mode }) => {
+                if (mode.type !== "steer_active") return false;
+                const target = projection.runs.find((run) => run.id === mode.targetRunId);
+                if (target === undefined) return false;
+                const message = projection.messages.find((row) => row.id === queued.userMessageId);
+                // An unnamed pick can change models on the same provider while it waits.
+                return followsCurrentConversation(message)
+                  ? projection.thread.modelSelection.instanceId === target.providerInstanceId
+                  : modelSelectionsEqual(queued.modelSelection, target.modelSelection);
+              });
             if (next?.mode.type !== "steer_active") return;
             attempted.add(next.queued.id);
             yield* dispatchWithReceiptEffect({
