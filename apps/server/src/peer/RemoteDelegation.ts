@@ -1064,11 +1064,12 @@ const make = Effect.gen(function* () {
           stored.event.payload.id !== task.id &&
           stored.event.payload.remoteChild?.runId === latest,
       )?.event.nodeId ??
-      // A replayed record made the follow-up the first time.
+      // The explicit send may already have recorded this run.
       (yield* threads.getThreadRecords(parentThreadId, ["subagents"])).subagents.find(
         (candidate) =>
           candidate.id !== task.id &&
-          candidate.remoteChild?.threadId === remote.threadId &&
+          candidate.remoteChild?.environmentId === remote.environmentId &&
+          candidate.remoteChild.threadId === remote.threadId &&
           candidate.remoteChild.runId === latest,
       )?.id;
     if (followup != null) {

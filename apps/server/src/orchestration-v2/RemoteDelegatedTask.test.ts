@@ -353,6 +353,129 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
     }),
   );
 
+  it.effect.each(["explicit", "follower", "follower with a newer parent run"] as const)(
+    "records one remote follow-up when the %s records it first",
+    (first) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const parent = yield* seedLiveParent(`followup-overlap-${first}`);
+        const request = {
+          type: "delegated_task.remote.request" as const,
+          parentThreadId: parent.threadId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.rootNodeId,
+          driver,
+          modelSelection,
+        };
+        const projection = orchestrator.getThreadProjection(parent.threadId);
+        yield* orchestrator.dispatch({
+          ...request,
+          commandId: CommandId.make(`command:original:${first}`),
+          task: "Start a check.",
+          remoteChild,
+          completionWake: "settled_only",
+        });
+        const source = (yield* projection).subagents[0]!;
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.complete",
+          commandId: CommandId.make(`command:initial-result:${first}`),
+          parentThreadId: parent.threadId,
+          taskId: source.id,
+          status: "completed",
+          result: "The check is running.",
+          backgroundWork: [{ kind: "command", description: "vp run check:changed" }],
+        });
+
+        const runId = RunId.make("run:on-the-box-later");
+        const explicit = orchestrator.dispatch({
+          ...request,
+          commandId: CommandId.make(`command:explicit:${first}`),
+          task: "Summarize the check.",
+          remoteChild: { ...remoteChild, runId },
+          completionWake: "always",
+        });
+        const follower = orchestrator.dispatch({
+          type: "delegated_task.remote.followup",
+          commandId: CommandId.make(`command:follower:${first}`),
+          parentThreadId: parent.threadId,
+          taskId: source.id,
+          remoteRunId: runId,
+        });
+        if (first === "follower with a newer parent run") {
+          const sink = yield* EventSink.EventSinkV2;
+          const before = yield* projection;
+          const owner = before.runs.find((run) => run.id === parent.runId)!;
+          const root = before.nodes.find((node) => node.id === parent.rootNodeId)!;
+          const now = yield* DateTime.now;
+          const newRunId = RunId.make("run:next-owner");
+          const newRootId = NodeId.make("node:next-owner");
+          yield* sink.write({
+            commandId: CommandId.make("command:next-owner"),
+            events: [
+              {
+                id: EventId.make("event:next-owner-node"),
+                type: "node.updated",
+                threadId: parent.threadId,
+                runId: newRunId,
+                nodeId: newRootId,
+                occurredAt: now,
+                payload: { ...root, id: newRootId, rootNodeId: newRootId, runId: newRunId },
+              },
+              {
+                id: EventId.make("event:next-owner-run"),
+                type: "run.updated",
+                threadId: parent.threadId,
+                runId: newRunId,
+                nodeId: newRootId,
+                occurredAt: now,
+                payload: {
+                  ...owner,
+                  id: newRunId,
+                  ordinal: owner.ordinal + 1,
+                  rootNodeId: newRootId,
+                  userMessageId: MessageId.make("message:next-owner"),
+                },
+              },
+            ],
+          });
+        }
+        yield* first === "explicit" ? explicit : follower;
+        const recorded = (yield* projection).subagents.find((task) => task.id !== source.id)!;
+        const complete = orchestrator.dispatch({
+          type: "delegated_task.remote.complete",
+          commandId: CommandId.make(`command:followup-result:${first}`),
+          parentThreadId: parent.threadId,
+          taskId: recorded.id,
+          status: "completed",
+          result: "The check passed.",
+          stoppedThere: "ran-out",
+        });
+        if (first !== "explicit") yield* complete;
+        yield* first === "explicit" ? follower : explicit;
+        if (first === "explicit") yield* complete;
+
+        const final = yield* projection;
+        assert.lengthOf(final.subagents, 2);
+        assert.equal(
+          final.subagents.find((task) => task.id === source.id)?.remoteChild?.stoppedThere,
+          true,
+        );
+        const later = final.subagents.find((task) => task.id === recorded.id);
+        assert.equal(later?.remoteChild?.runId, runId);
+        assert.equal(later?.prompt, "Summarize the check.");
+        assert.equal(later?.result, "The check passed.");
+        assert.deepEqual(
+          final.runs.find((run) => run.id === recorded.runId)?.delegatedCompletion?.delivery
+            ?.taskIds,
+          [recorded.id],
+        );
+        const item = final.turnItems.find(
+          (item) => item.type === "subagent" && item.subagentId === recorded.id,
+        );
+        assert.equal(item?.type === "subagent" ? item.prompt : undefined, later?.prompt);
+      }),
+  );
+
   it.effect("owes a stop there for a Stop here that loses the race to its result", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
