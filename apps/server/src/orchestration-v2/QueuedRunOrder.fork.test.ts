@@ -7,6 +7,12 @@ import { queuedAgentReportBatch, queuedRunsInDeliveryOrder } from "./QueuedRunOr
 
 it.each([
   { label: "follows the reordered queue", text: "Earlier report", expected: ["earlier"] },
+  {
+    label: "stops before a report that follows a different model policy",
+    text: "Earlier report",
+    followsThreadSelection: true,
+    expected: [],
+  },
   { label: "stops before inline skills", text: "Please $review the diff", expected: [] },
   {
     label: "stops before quotes make the batch too long",
@@ -25,9 +31,9 @@ it.each([
       }),
     expected: [],
   },
-])("$label when batching queued reports", ({ text, expected }) => {
+])("$label when batching queued reports", ({ text, expected, followsThreadSelection }) => {
   const messages = [
-    { id: "earlier", text },
+    { id: "earlier", text, followsThreadSelection },
     { id: "later", text: "y".repeat(65_000) },
   ].map((message) => ({
     ...message,

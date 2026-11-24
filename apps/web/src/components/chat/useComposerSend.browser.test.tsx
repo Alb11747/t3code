@@ -30,7 +30,10 @@ const mocks = await vi.hoisted(async () => {
 vi.mock("../../state/use-orchestration-command", () => ({
   useOrchestrationCommand: () => mocks.startTurn,
 }));
-vi.mock("../../hooks/useHandleNewThread", () => ({ useNewThreadHandler: () => vi.fn() }));
+vi.mock("../../hooks/useHandleNewThread", () => ({
+  readPendingWorkspaceDefault: () => null,
+  useNewThreadHandler: () => vi.fn(),
+}));
 vi.mock("../../hooks/useSettings", async (original) => ({
   ...(await original<typeof import("../../hooks/useSettings")>()),
   useClientSettingsHydrated: () => true,

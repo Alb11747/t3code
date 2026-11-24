@@ -135,15 +135,21 @@ export function queuedAgentReportBatch(
       !modelSelectionsEqual(run.modelSelection, first.modelSelection)
     )
       break;
-    const message = messages.get(run.userMessageId);
-    const report = queuedAgentReportText(run, message);
-    if (message === undefined || report === undefined) break;
+    const member = messages.get(run.userMessageId);
+    const report = queuedAgentReportText(run, member);
+    // A pinned report can diverge from one that follows a later model change.
+    if (
+      member === undefined ||
+      report === undefined ||
+      (member.followsThreadSelection === true) !== (message.followsThreadSelection === true)
+    )
+      break;
     const candidate = `${prompt}\n\n${report}`;
     if (candidate.length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) break;
     const expanded = projectComposerContextForProvider({ text: candidate, records: [] });
     if (expanded.length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS || hasClaudeSkillMention(expanded))
       break;
-    members.push({ run, message });
+    members.push({ run, message: member });
     prompt = candidate;
   }
   return members;
@@ -163,7 +169,6 @@ function queuedAgentReportText(
     message.notification !== undefined ||
     message.scheduledTaskId !== undefined ||
     message.idleCompaction !== undefined ||
-    message.followsThreadSelection === true ||
     run.queueHeld === true ||
     run.boundaryOffer !== undefined ||
     run.afterCompactionMessageId !== undefined ||

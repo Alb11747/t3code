@@ -1083,6 +1083,7 @@ describe("VcsStatusBroadcaster", () => {
                 localReads += 1;
                 return local;
               }),
+            readLocalStatusRefSnapshot: () => Effect.succeed(null),
             readRefSnapshot: () => Effect.succeed(null),
             currentBranch: () => Effect.sync(() => local.refName),
             remoteStatus: () => Effect.succeed({ ...baseRemoteStatus, behindCount: 2 }),
@@ -1166,6 +1167,7 @@ describe("VcsStatusBroadcaster", () => {
                   : Effect.succeed({ ...baseLocalStatus, isDefaultRef: true, refName: "main" }),
               ),
             currentBranch: () => Effect.succeed("main"),
+            readLocalStatusRefSnapshot: () => Effect.succeed("refs"),
             readRefSnapshot: () => Effect.succeed("refs"),
             remoteStatus: () => Effect.sync(() => remote),
             invalidateLocalStatus: () => Effect.void,
@@ -1386,7 +1388,9 @@ describe("VcsStatusBroadcaster", () => {
       const cached = yield* broadcaster.getStatus({ cwd: "/repo" });
 
       assert.deepStrictEqual(initial, { ...baseLocalStatus, ...baseRemoteStatus });
-      assert.deepStrictEqual(refreshed, {
+      const { refsDigest, ...refreshedStatus } = refreshed;
+      assert.isString(refsDigest);
+      assert.deepStrictEqual(refreshedStatus, {
         ...state.currentLocalStatus,
         ...state.currentRemoteStatus,
       });

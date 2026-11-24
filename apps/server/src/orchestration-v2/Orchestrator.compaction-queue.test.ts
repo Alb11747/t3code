@@ -919,6 +919,7 @@ it.effect("startup holds a queue behind a run whose worktree setup failed before
       (run) => ({
         ...run,
         status: "failed",
+        startedAt: null,
         workspacePreparation: { type: "worktree", baseRef: "main", startFromOrigin: false },
       }),
       false,
