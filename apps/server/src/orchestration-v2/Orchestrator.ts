@@ -8954,6 +8954,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.afterCompactionMessageId === undefined
           ? {}
           : { afterCompactionMessageId: command.afterCompactionMessageId }),
+        ...(command.keepFullHistory === true ? { keepFullHistory: true } : {}),
         ...(steerWhenReadyRunId === undefined ? {} : { steerWhenReadyRunId }),
         ...(startupClaudeSteer ? { startupSteerAtToolBoundary: deliverAtToolBoundary } : {}),
         // A restart cancels its run; nobody knows whether the provider read the steer, so a person decides.

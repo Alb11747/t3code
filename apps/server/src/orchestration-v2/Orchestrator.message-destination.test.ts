@@ -29,6 +29,7 @@ import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import { queuedAgentReportBatch } from "./QueuedRunOrder.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
@@ -126,6 +127,7 @@ const scenarios = [
   "missing-active",
   "busy-queue",
   "busy-self-compact",
+  "queued-context-policies",
   "warm",
   "small",
   "human",
@@ -146,7 +148,9 @@ const scenarios = [
 
 it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, providerDriver }) =>
   Effect.gen(function* () {
-    const busyQueue = scenario === "busy-queue" || scenario === "busy-self-compact";
+    const queuedContextPolicies = scenario === "queued-context-policies";
+    const busyQueue =
+      scenario === "busy-queue" || scenario === "busy-self-compact" || queuedContextPolicies;
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const messages = yield* ThreadManagement.ThreadManagementService;
     const sink = yield* EventSink.EventSinkV2;
@@ -163,7 +167,11 @@ it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, prov
     const retained = providerThread(
       "native:retained",
       targetInstanceId,
-      scenario === "small" ? 199_999 : scenario === "busy-preparing" ? 1_000 : 500_000,
+      scenario === "small"
+        ? 199_999
+        : scenario === "busy-preparing" || queuedContextPolicies
+          ? 1_000
+          : 500_000,
       20,
       epoch,
       providerDriver,
@@ -311,6 +319,54 @@ it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, prov
       const stored = yield* orchestrator.getThreadRecords(threadId, ["messages"]);
       expect(stored.messages.filter((message) => message.text === "/compact")).toHaveLength(1);
       expect(stored.messages.filter((message) => message.id === input.messageId)).toHaveLength(1);
+      return;
+    }
+    if (queuedContextPolicies) {
+      const senderThreadId = ThreadId.make("thread:agent-report-sender");
+      const send = (
+        label: string,
+        overrides: Partial<ThreadManagement.ThreadManagementSendInput> = {},
+      ) =>
+        messages.sendToThread({
+          ...input,
+          commandId: CommandId.make("send:" + label),
+          messageId: MessageId.make("message:" + label),
+          text: label,
+          senderThreadId,
+          ...overrides,
+        });
+      const firstReport = yield* send("first report");
+      const secondReport = yield* send("second report");
+      const keep = yield* send("retain full history", { contextPolicy: "keep", mode: "auto" });
+      const later = yield* send("later report");
+      const compact = yield* send("resume after compaction", {
+        contextPolicy: "compact",
+        senderThreadId: threadId,
+      });
+      const fresh = yield* send("new context", { freshContext: true });
+      const outputSchema = { type: "object", properties: {} };
+      const structured = yield* send("structured output", { outputSchema });
+      expect(keep.delivery).toBe("queued");
+      expect(keep.run.deliveryIntent).toBeUndefined();
+      expect(keep.message.atToolBoundary).toBeUndefined();
+      expect(compact.delivery).toBe("queued");
+      expect(compact.run.afterCompactionMessageId).toBe(
+        MessageId.make("message:resume after compaction:compact"),
+      );
+      expect(fresh.run.freshContext).toBe(true);
+      expect(structured.run.outputSchema).toEqual(outputSchema);
+
+      const persisted = yield* orchestrator.getThreadRecords(threadId, ["runs", "messages"]);
+      const batch = queuedAgentReportBatch(persisted, firstReport.run, firstReport.message);
+      expect(batch.map(({ run }) => run.id)).toEqual([secondReport.run.id]);
+      const suffix = {
+        ...persisted,
+        runs: persisted.runs.filter((run) => run.id === later.run.id),
+      };
+      for (const policy of [keep, compact, fresh, structured]) {
+        const lead = { ...policy.run, status: "running" as const };
+        expect(queuedAgentReportBatch(suffix, lead, policy.message)).toEqual([]);
+      }
       return;
     }
     if (scenario === "busy-self-compact") {

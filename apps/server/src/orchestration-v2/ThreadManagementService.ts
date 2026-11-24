@@ -978,6 +978,7 @@ const make = Effect.gen(function* () {
     // Automatic sends to a router-held turn must stay out of the provider's input queue.
     const mode =
       queuesForRouterHold ||
+      input.contextPolicy === "keep" ||
       input.outputSchema !== undefined ||
       (input.freshContext && (input.mode === "steer" || input.mode === "restart"))
         ? "queue"

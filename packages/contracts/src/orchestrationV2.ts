@@ -852,6 +852,7 @@ export const OrchestrationV2Run = Schema.Struct({
   ),
   /** This message cannot run until the referenced compaction succeeds. */
   afterCompactionMessageId: Schema.optional(MessageId),
+  keepFullHistory: Schema.optional(Schema.Literal(true)),
   steerWhenReadyRunId: Schema.optional(RunId),
   startupSteerAtToolBoundary: Schema.optionalKey(Schema.Boolean),
   requestedAt: Schema.DateTimeUtc,

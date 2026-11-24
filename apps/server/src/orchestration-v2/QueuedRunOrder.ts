@@ -167,6 +167,7 @@ function queuedAgentReportText(
     run.queueHeld === true ||
     run.boundaryOffer !== undefined ||
     run.afterCompactionMessageId !== undefined ||
+    run.keepFullHistory === true ||
     run.freshContext === true ||
     run.outputSchema !== undefined ||
     run.delegatedTaskId !== undefined ||
