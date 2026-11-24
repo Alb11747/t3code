@@ -42,6 +42,7 @@ import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import { groupAgentReportOffers } from "./AgentMessageBatch.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
@@ -4470,48 +4471,66 @@ it.effect.each(["no blocker", "foreground subagent", "live question"] as const)(
 );
 
 it.effect.each([
-  { steerDelivery: "toolBoundary", differentModel: false },
-  { steerDelivery: "upstream", differentModel: false },
-  { steerDelivery: "toolBoundary", differentModel: true },
+  { steerDelivery: "toolBoundary", differentModel: false, compactFirst: false },
+  { steerDelivery: "upstream", differentModel: false, compactFirst: false },
+  { steerDelivery: "toolBoundary", differentModel: true, compactFirst: false },
+  { steerDelivery: "toolBoundary", differentModel: false, compactFirst: true },
 ] as const)(
-  "keeps Claude startup delivery in its chosen mode and model ($steerDelivery, differentModel=$differentModel)",
-  ({ steerDelivery, differentModel }) =>
+  "keeps Claude startup delivery in its chosen mode and model ($steerDelivery, differentModel=$differentModel, compactFirst=$compactFirst)",
+  ({ steerDelivery, differentModel, compactFirst }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const queuedId = MessageId.make("message:queued");
+        const startupMessages = [
+          { id: queuedId, text: "queued" },
+          ...(compactFirst
+            ? [
+                { id: MessageId.make("message:report-first"), text: "First report" },
+                { id: MessageId.make("message:report-second"), text: "Second report" },
+              ]
+            : []),
+        ];
         const providerDriver = ProviderDriverKind.make("claudeAgent");
         const nextMode = steerDelivery === "toolBoundary" ? "upstream" : "toolBoundary";
         const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
-          `send-now-while-starting-${steerDelivery}-${differentModel}`,
+          `send-now-while-starting-${steerDelivery}-${differentModel}-${compactFirst}`,
           {
             providerDriver,
             settingsLayer: claudeSteerSettings(steerDelivery),
             beforeFirstTurnStarts: (threadId) =>
               Effect.gen(function* () {
                 const orchestrator = yield* Orchestrator.OrchestratorV2;
-                yield* orchestrator.dispatch({
-                  type: "message.dispatch",
-                  commandId: CommandId.make("queued"),
-                  threadId,
-                  messageId: queuedId,
-                  text: "queued",
-                  attachments: [],
-                  ...(differentModel
-                    ? { modelSelection: { ...runSelection, model: "other" } }
-                    : {}),
-                  dispatchMode: { type: "queue_after_active" },
-                  createdBy: "user",
-                  creationSource: "web",
-                });
-                const { runs } = yield* orchestrator.getThreadProjection(threadId);
-                yield* orchestrator.dispatch({
-                  type: "queued-message.promote-to-steer",
-                  commandId: CommandId.make("promote"),
-                  threadId,
-                  queuedRunId: runs.find((run) => run.status === "queued")!.id,
-                  targetRunId: runs.find((run) => run.status !== "queued")!.id,
-                  interrupt: true,
-                });
+                for (const { id, text } of startupMessages) {
+                  yield* orchestrator.dispatch({
+                    type: "message.dispatch",
+                    commandId: CommandId.make(`queue:${id}`),
+                    threadId,
+                    messageId: id,
+                    text,
+                    attachments: [],
+                    ...(differentModel
+                      ? { modelSelection: { ...runSelection, model: "other" } }
+                      : {}),
+                    dispatchMode: { type: "queue_after_active" },
+                    ...(compactFirst
+                      ? {
+                          createdBy: "agent",
+                          creationSource: "mcp",
+                          senderThreadId: ThreadId.make(`sender:${id}`),
+                          ...(id === queuedId ? { compactFirst: true } : {}),
+                        }
+                      : { createdBy: "user", creationSource: "web" }),
+                  });
+                  const { runs } = yield* orchestrator.getThreadProjection(threadId);
+                  yield* orchestrator.dispatch({
+                    type: "queued-message.promote-to-steer",
+                    commandId: CommandId.make(`promote:${id}`),
+                    threadId,
+                    queuedRunId: runs.find((run) => run.userMessageId === id)!.id,
+                    targetRunId: runs.find((run) => run.status === "starting")!.id,
+                    interrupt: true,
+                  });
+                }
                 const settings = yield* ServerSettings.ServerSettingsService;
                 yield* settings
                   .updateProviderInstance({
@@ -4543,13 +4562,13 @@ it.effect.each([
             Stream.filter(
               (event) =>
                 (event.type === "run.updated" &&
-                  event.payload.userMessageId === queuedId &&
+                  startupMessages.some(({ id }) => event.payload.userMessageId === id) &&
                   event.payload.status === "cancelled") ||
                 (event.type === "message.updated" &&
-                  event.payload.id === queuedId &&
+                  startupMessages.some(({ id }) => event.payload.id === id) &&
                   event.payload.atToolBoundary === true),
             ),
-            Stream.take(1),
+            Stream.take(startupMessages.length),
             Stream.runDrain,
             Effect.forkScoped,
           );
@@ -4565,6 +4584,17 @@ it.effect.each([
           );
           if (atToolBoundary) {
             const running = projection.runs.find((run) => run.id === started[0]!.runId)!;
+            if (compactFirst) {
+              const selected = projection.runs.find((run) => run.userMessageId === queuedId);
+              assert.isTrue(selected?.keepFullHistory === true);
+              assert.isUndefined(selected?.afterCompactionMessageId);
+              const offers = yield* offerAtToolBoundary(threadId, running.id);
+              assert.deepEqual(
+                groupAgentReportOffers(offers).map(({ offers }) => offers.map(({ text }) => text)),
+                [["queued"], ["First report", "Second report"]],
+              );
+              return;
+            }
             const sink = yield* EventSink.EventSinkV2;
             yield* sink.write({
               events: [

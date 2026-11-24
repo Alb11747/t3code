@@ -362,7 +362,9 @@ export const layer = Layer.effectDiscard(
                 ...(committed.linkedSender === undefined
                   ? {}
                   : { linkedSender: committed.linkedSender }),
-                ...(committed.context === undefined &&
+                ...(run.keepFullHistory !== true &&
+                run.afterCompactionMessageId === undefined &&
+                committed.context === undefined &&
                 text === committed.text &&
                 (committed.senderThreadId !== undefined || committed.linkedSender !== undefined)
                   ? { batchable: true as const }

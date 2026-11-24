@@ -27,6 +27,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import { groupAgentReportOffers } from "./AgentMessageBatch.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderContinuationService from "./ProviderContinuationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
@@ -627,6 +628,65 @@ describe("ProviderContinuationService", () => {
       );
     });
   });
+  it.effect("delivers boundary reports with a context policy in separate inputs", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Queue.unbounded<unknown>();
+      const reports = [
+        { text: "After compaction", run: { afterCompactionMessageId: MessageId.make("compact") } },
+        { text: "First report" },
+        { text: "Second report" },
+        { text: "Keep full history", run: { keepFullHistory: true } },
+        { text: "Final report" },
+      ];
+      const runs = reports.map((report, index) => ({
+        id: RunId.make(`run-boundary-${index}`),
+        status: "queued",
+        ordinal: index,
+        queuePosition: index + 1,
+        userMessageId: MessageId.make(`message-boundary-${index}`),
+        ...report.run,
+      }));
+      const messages = runs.map((run, index) => ({
+        id: run.userMessageId,
+        text: reports[index]!.text,
+        atToolBoundary: true,
+        attachments: [],
+        createdBy: "agent",
+        creationSource: "mcp",
+        senderThreadId: ThreadId.make(`sender-${index}`),
+      }));
+      yield* Effect.gen(function* () {
+        const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+        const offers = yield* requests.claimAgentMessages!({
+          threadId,
+          runId: parentRunId,
+          providerTurnId: ProviderTurnId.make("active-turn"),
+        });
+        assert.deepEqual(
+          groupAgentReportOffers(offers).map(({ offers }) => offers.map(({ text }) => text)),
+          [
+            ["After compaction"],
+            ["First report", "Second report"],
+            ["Keep full history"],
+            ["Final report"],
+          ],
+        );
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            dispatched,
+            getThreadRecords: () =>
+              Effect.succeed({
+                ...projection,
+                runs,
+                messages,
+              } as unknown as OrchestrationV2ThreadProjection),
+          }),
+        ),
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("an aborted boundary hook commits no further promotions", () =>
     Effect.gen(function* () {
       // Three queued agent updates. The fake dispatch stands in for the SQLite
