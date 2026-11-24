@@ -18,6 +18,7 @@ import {
   ThreadId,
   RunId,
   NonNegativeInt,
+  NodeId,
   ProjectId,
   RouterAccountAlias,
   ThreadAccountError,
@@ -220,9 +221,9 @@ const ThreadConfigureTool = Tool.make("t3_thread_configure", {
 const ThreadTransferTool = Tool.make("t3_thread_transfer", {
   ...commandTool,
   description:
-    "Move context between threads. Omit `threadId` for this thread. fork: copy it from `sourcePoint` (default latest stable run) into a new thread with the same setup; no turn runs yet. merge_back: merge it from `sourcePoint` into a related `targetThreadId` in the same project. status: its context transfers.",
+    "Move context between threads. Omit `threadId` for this thread. fork: copy it from `sourcePoint` (default latest stable run) into a new thread with the same setup; no turn runs yet. merge_back: merge it from `sourcePoint` into a related `targetThreadId` in the same project. status: its context transfers. reparent: move a delegated child `threadId` and its tasks under `targetThreadId` (default this thread); its later results, questions and follow-ups go there.",
   parameters: Schema.Struct({
-    action: Schema.Literals(["fork", "merge_back", "status"]),
+    action: Schema.Literals(["fork", "merge_back", "status", "reparent"]),
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
     sourcePoint: Schema.optional(OrchestrationV2ThreadForkSourcePoint),
@@ -231,6 +232,11 @@ const ThreadTransferTool = Tool.make("t3_thread_transfer", {
   }),
   success: Schema.Union([
     Schema.Struct({ sequence: NonNegativeInt, targetThreadId: ThreadId }),
+    Schema.Struct({
+      previousParentThreadId: ThreadId,
+      targetThreadId: ThreadId,
+      taskIds: Schema.Array(NodeId),
+    }),
     Schema.Struct({
       transfers: Schema.Array(
         Schema.Struct({

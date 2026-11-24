@@ -67,6 +67,7 @@ import {
   verifyHeldFollowUpWakesOwner,
   verifySettledFollowUpSaysUnread,
 } from "./DelegatedTaskHold.fork.testkit.ts";
+import { verifyReparentedChildReportsToNewParent } from "./SubagentReparent.fork.testkit.ts";
 
 const layerPlatformTest = Layer.merge(
   Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
@@ -2509,6 +2510,9 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
     );
     it.effect("a follow-up settled unread says it never ran", () =>
       verifySettledFollowUpSaysUnread(seedFinishedChild),
+    );
+    it.effect("a reparented child reports to its new parent", () =>
+      verifyReparentedChildReportsToNewParent(seedFinishedChild),
     );
 
     it.effect("checkpoint retry releases a pending sibling after its wake offer failed", () =>

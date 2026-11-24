@@ -508,6 +508,8 @@ export interface ThreadManagementServiceShape {
   readonly sendToThread: (
     input: ThreadManagementSendInput,
   ) => Effect.Effect<ThreadManagementSendResult, ThreadManagementFailure>;
+  /** Fork: moves a delegated task's child thread, with its tasks, under another parent. */
+  readonly reparentSubagent: Orchestrator.OrchestratorV2Shape["reparentSubagent"];
   /** Stores what the thread's running turn returns, once it fits the schema that turn declared. */
   readonly submitRunOutput: (input: {
     readonly threadId: ThreadId;
@@ -1996,6 +1998,9 @@ const make = Effect.gen(function* () {
       if (stoppedChildThreadIds.has(threadId)) continue;
       stoppedChildThreadIds.add(threadId);
       yield* Effect.gen(function* () {
+        // Fork: a child reparented since the tasks were read belongs to its new parent.
+        const { thread: current } = yield* orchestrator.getThreadRecords(threadId, []);
+        if (current.lineage.parentThreadId !== input.threadId) return;
         let shouldStop = activeChildThreadIds.has(threadId);
         let hasAppOwnedChildren = true;
         if (!shouldStop) {
@@ -2129,6 +2134,7 @@ const make = Effect.gen(function* () {
     listProjectThreads,
     sendToThread,
     submitRunOutput,
+    reparentSubagent: orchestrator.reparentSubagent,
     assertProviderInstanceEnabled,
     isProviderInstanceEnabledForProject,
     hasReceipt,

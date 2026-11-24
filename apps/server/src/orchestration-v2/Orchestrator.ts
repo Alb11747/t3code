@@ -173,6 +173,12 @@ import {
 } from "./NotificationMailbox.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import {
+  makeSubagentReparent,
+  type SubagentReparentError,
+  type SubagentReparentInput,
+  type SubagentReparentResult,
+} from "./SubagentReparent.ts";
+import {
   decideGuestMessageSend,
   guestShareAfterCancelledSend,
   releasedGuestAttachmentIds,
@@ -460,6 +466,10 @@ export interface OrchestratorV2Shape {
     childThreadId: ThreadId,
     taskId?: NodeId,
   ) => Effect.Effect<boolean, OrchestratorProjectionError>;
+  /** Fork: moves a delegated task's child thread, with its tasks, under another parent. */
+  readonly reparentSubagent: (
+    input: SubagentReparentInput,
+  ) => Effect.Effect<SubagentReparentResult, SubagentReparentError>;
   readonly restartContinuationPending: (run: OrchestrationV2Run) => Effect.Effect<boolean>;
   /** Declined continuations emit no thread event; this still wakes waiters. */
   readonly awaitRestartContinuation: (run: OrchestrationV2Run) => Effect.Effect<void>;
@@ -16714,8 +16724,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   );
 
   /**
-   * Thread lineage and fork origin are immutable, so this
-   * is safe to read without holding either thread's dispatch lock.
+   * Fork origin is immutable, but a subagent's parent can change (reparentSubagent), so a caller
+   * that locks the parent it read uses withAppOwnedParentLock, which reads it again once locked.
    */
   const appOwnedSubagentParentThreadId = Effect.fn("Orchestrator.appOwnedSubagentParentThreadId")(
     function* (childThreadId: ThreadId) {
@@ -16728,6 +16738,41 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : undefined;
     },
   );
+
+  const withAppOwnedParentLock = <A, E, R>(
+    childThreadId: ThreadId,
+    use: (parentThreadId: ThreadId | undefined) => Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E | OrchestratorProjectionError, R> => {
+    const read = appOwnedSubagentParentThreadId(childThreadId).pipe(
+      Effect.mapError(
+        (cause) => new OrchestratorProjectionError({ threadId: childThreadId, cause }),
+      ),
+    );
+    return read.pipe(
+      Effect.flatMap((parentThreadId) =>
+        parentThreadId === undefined
+          ? use(undefined)
+          : threadDispatch
+              .withLock(
+                parentThreadId,
+                read.pipe(
+                  Effect.flatMap((current) =>
+                    current === parentThreadId
+                      ? Effect.asSome(use(parentThreadId))
+                      : Effect.succeed(Option.none<A>()),
+                  ),
+                ),
+              )
+              .pipe(
+                Effect.flatMap((result) =>
+                  Option.isSome(result)
+                    ? Effect.succeed(result.value)
+                    : withAppOwnedParentLock(childThreadId, use),
+                ),
+              ),
+      ),
+    );
+  };
 
   const awaitsRestartContinuation = (run: OrchestrationV2Run) =>
     effectOutbox
@@ -18852,12 +18897,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   // Follow-up intake and Stop serialize on the parent before taking the child lock.
   const withSubagentParentLock = <A, E, R>(threadId: ThreadId, dispatch: Effect.Effect<A, E, R>) =>
-    appOwnedSubagentParentThreadId(threadId).pipe(
-      Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })),
-      Effect.flatMap((parentThreadId) =>
-        parentThreadId === undefined ? dispatch : threadDispatch.withLock(parentThreadId, dispatch),
-      ),
-    );
+    withAppOwnedParentLock(threadId, () => dispatch);
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
   const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
@@ -18980,18 +19020,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     childThreadId: ThreadId,
     options: { readonly syncRunId: RunId | undefined; readonly retry: boolean },
   ) {
-    const parentThreadId = yield* appOwnedSubagentParentThreadId(childThreadId);
-    if (parentThreadId === undefined) return;
     const finalize = finalizeAppOwnedSubagent(
       childThreadId,
       options.syncRunId === undefined ? undefined : { syncRunId: options.syncRunId },
     );
-    yield* threadDispatch.withLock(
-      parentThreadId,
-      // A failed attempt may have committed the result before offering its wake.
-      options.retry
-        ? offerChildTaskDeliveries(parentThreadId, childThreadId).pipe(Effect.andThen(finalize))
-        : finalize,
+    yield* withAppOwnedParentLock(childThreadId, (parentThreadId) =>
+      parentThreadId === undefined
+        ? Effect.void
+        : // A failed attempt may have committed the result before offering its wake.
+          options.retry
+          ? offerChildTaskDeliveries(parentThreadId, childThreadId).pipe(Effect.andThen(finalize))
+          : finalize,
     );
   });
   // Only these reactions tell a parent about its child before a restart; a dropped one leaves its task running.
@@ -19470,23 +19509,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
       }
       const sourceRunId = options?.sourceRunId;
-      const parentThreadId = yield* appOwnedSubagentParentThreadId(threadId);
-      if (parentThreadId === undefined) return;
+      if ((yield* appOwnedSubagentParentThreadId(threadId)) === undefined) return;
       if (
         sourceRunId === undefined &&
         !(yield* projectionStore.hasPendingDelegatedCompletion(threadId))
       )
         return;
-      yield* threadDispatch.withLock(
-        parentThreadId,
-        offerChildTaskDeliveries(parentThreadId, threadId).pipe(
-          Effect.andThen(
-            finalizeAppOwnedSubagent(
-              threadId,
-              sourceRunId === undefined ? undefined : { settledContinuationOf: sourceRunId },
+      yield* withAppOwnedParentLock(threadId, (parentThreadId) =>
+        parentThreadId === undefined
+          ? Effect.void
+          : offerChildTaskDeliveries(parentThreadId, threadId).pipe(
+              Effect.andThen(
+                finalizeAppOwnedSubagent(
+                  threadId,
+                  sourceRunId === undefined ? undefined : { settledContinuationOf: sourceRunId },
+                ),
+              ),
             ),
-          ),
-        ),
       );
     },
     (effect, threadId, _options) =>
@@ -19517,6 +19556,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             { messageRoles: ["user"] },
           )
           .pipe(mapDispatchError(command));
+        // Fork: reparentSubagent may have moved the child after the caller read its task.
+        if (child.thread.lineage.parentThreadId !== input.parentThreadId) {
+          return yield* new OrchestratorCommandRejectedError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "The subagent moved to another parent thread, which now owns its tasks.",
+          });
+        }
         const followUpRun = child.runs
           .filter((run) => run.delegatedTaskId === input.taskId)
           .toSorted((a, b) => b.ordinal - a.ordinal)[0];
@@ -19580,6 +19627,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     recoverDelegatedTask,
     cancelDelegatedTask,
     delegatedTaskResultPending,
+    reparentSubagent: makeSubagentReparent({
+      projections: projectionStore,
+      eventSink,
+      idAllocator,
+      threadDispatch,
+      afterMove: (previousParentThreadId) => updateDelegatedParentTask(previousParentThreadId),
+    }),
     restartContinuationPending: Effect.fn("OrchestratorV2.restartContinuationPending")(
       function (run) {
         return awaitsRestartContinuation(run).pipe(Effect.orElseSucceed(() => false));

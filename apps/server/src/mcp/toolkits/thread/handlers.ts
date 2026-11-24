@@ -184,7 +184,31 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       (input) =>
         Effect.gen(function* () {
           const sourcePoint = input.sourcePoint ?? { type: "latest_stable" as const };
-          const { threads, projection } = yield* readThread(input.threadId);
+          const { threads, projection, caller } = yield* readThread(input.threadId);
+          if (input.action === "reparent") {
+            const target =
+              input.targetThreadId === undefined
+                ? caller?.id
+                : (yield* readThread(input.targetThreadId)).projection.thread.id;
+            if (target === undefined) return yield* required(undefined, "targetThreadId");
+            const moved = yield* threads
+              .reparentSubagent({
+                childThreadId: projection.thread.id,
+                parentThreadId: target,
+                callerThreadId: caller?.id,
+              })
+              .pipe(
+                Effect.mapError((error) =>
+                  error.reason === "invalid"
+                    ? new OrchestratorMcpFailure({
+                        code: "invalid_request",
+                        message: error.message,
+                      })
+                    : unavailable(),
+                ),
+              );
+            return { ...moved, targetThreadId: target };
+          }
           const commandId = yield* newCommandId();
           if (input.action === "merge_back") {
             const targetThreadId = yield* required(input.targetThreadId, "targetThreadId");
