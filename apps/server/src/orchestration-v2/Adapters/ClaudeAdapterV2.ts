@@ -6460,41 +6460,33 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
       Effect.provideService(Path.Path, path),
     );
 
-  const resolveIdleCompactionEndpoint = Effect.fn("ClaudeAdapterV2.resolveIdleCompactionEndpoint")(
-    function* (cwd: string | null) {
-      const { flags } = parseCliArgs(
-        adapterOptions.settings.launchArgs,
-        claudeLaunchArgParseOptions,
-      );
-      const launchArgSettings = yield* readClaudeLaunchArgSettings({
-        settings: adapterOptions.settings,
-        cwd,
-        fileSystem,
-        path,
-      });
-      const settingsEnv = yield* recoverySettingsEnvironment(
-        cwd,
-        flags["setting-sources"],
-        launchArgSettings,
-      );
-      const configuredUrl = settingsEnv.ANTHROPIC_BASE_URL;
-      const baseUrl =
-        typeof configuredUrl === "string"
-          ? configuredUrl
-          : adapterOptions.environment.ANTHROPIC_BASE_URL;
-      return baseUrl !== undefined && customClaudeApiEndpointHost(baseUrl) !== undefined
-        ? baseUrl
-        : undefined;
-    },
-  );
-
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CLAUDE_PROVIDER,
     canStartIdleCompaction: Effect.fn("ClaudeAdapterV2.canStartIdleCompaction")(
       function* ({ cwd, messageId }) {
-        const baseUrl = yield* resolveIdleCompactionEndpoint(cwd);
-        if (baseUrl === undefined) return true;
+        const { flags } = parseCliArgs(
+          adapterOptions.settings.launchArgs,
+          claudeLaunchArgParseOptions,
+        );
+        const launchArgSettings = yield* readClaudeLaunchArgSettings({
+          settings: adapterOptions.settings,
+          cwd,
+          fileSystem,
+          path,
+        });
+        const settingsEnv = yield* recoverySettingsEnvironment(
+          cwd,
+          flags["setting-sources"],
+          launchArgSettings,
+        );
+        const configuredUrl = settingsEnv.ANTHROPIC_BASE_URL;
+        const baseUrl =
+          typeof configuredUrl === "string"
+            ? configuredUrl
+            : adapterOptions.environment.ANTHROPIC_BASE_URL;
+        if (baseUrl === undefined || customClaudeApiEndpointHost(baseUrl) === undefined)
+          return true;
         if (!(yield* supportsIdleCompaction(baseUrl))) return false;
         const origin = URL.parse(baseUrl.trim())?.origin;
         if (origin === undefined) return false;
@@ -6512,15 +6504,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             detail: `Could not resolve the Claude endpoint for idle compaction (${cause._tag}).`,
           }),
       ),
-    ),
-    shouldExpediteIdleCompaction: Effect.fn("ClaudeAdapterV2.shouldExpediteIdleCompaction")(
-      function* ({ cwd, session, model, normalAt }) {
-        const check = keepWarm.shouldExpediteIdleCompaction;
-        if (check === undefined) return false;
-        const endpoint = yield* resolveIdleCompactionEndpoint(cwd);
-        return endpoint === undefined ? false : yield* check(endpoint, session, model, normalAt);
-      },
-      Effect.orElseSucceed(() => false),
     ),
     getCapabilities: Effect.fn("ClaudeAdapterV2.getCapabilities")(function () {
       return Effect.succeed(ClaudeProviderCapabilitiesV2);

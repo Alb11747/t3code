@@ -29,7 +29,6 @@ import { isActiveRun } from "./CommandPolicy.ts";
 // Start this long before the cache expires: enough for the session to resume
 // and send the compaction while the cache is still warm.
 const LEAD_MS = 2 * 60_000;
-export const EARLY_IDLE_COMPACTION_MESSAGE_PREFIX = "idle-compact-early:";
 
 export type IdleCompactionRecords = Pick<
   OrchestrationV2ThreadProjection,
@@ -173,14 +172,8 @@ export function idleCompactionWindow(
     );
   if (latestRun?.status !== "completed" || latestRun.completedAt === null) return null;
   const message = messages.find((candidate) => candidate.id === latestRun.userMessageId);
-  if (message === undefined) return null;
-  const retryingEarlySkip =
-    message.id.startsWith(EARLY_IDLE_COMPACTION_MESSAGE_PREFIX) &&
-    turnItems.some(
-      (item) => item.runId === latestRun.id && item.type === "compaction" && item.skipped === true,
-    );
-  // An early router decline still leaves the normal maintenance window available.
-  if (message.text.trim().toLowerCase() === "/compact" && !retryingEarlySkip) return null;
+  // Never compact a compaction, so one idle spell compacts at most once.
+  if (message === undefined || message.text.trim().toLowerCase() === "/compact") return null;
   if (hasBlockingIdleCompactionWork(records)) return null;
   const providerThread = providerThreads.find(
     (candidate) => candidate.id === thread.activeProviderThreadId,
@@ -217,7 +210,6 @@ export function idleCompactionWindow(
   });
   return {
     runId: latestRun.id,
-    retryingEarlySkip,
     startMs: endMs - LEAD_MS,
     endMs,
     usedTokens,

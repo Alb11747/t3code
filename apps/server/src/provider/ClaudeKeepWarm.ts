@@ -94,13 +94,6 @@ export class ClaudeKeepWarm extends Context.Reference<{
   readonly forget: Effect.Effect<void>;
   /** Whether the actual inference endpoint advertises warm-only idle compaction. */
   readonly supportsIdleCompaction?: (baseUrl: string) => Effect.Effect<boolean>;
-  /** Whether the warm account is close to losing weekly headroom for an idle compaction. */
-  readonly shouldExpediteIdleCompaction?: (
-    baseUrl: string,
-    session: string,
-    model: string,
-    normalAt: string,
-  ) => Effect.Effect<boolean>;
   /** Reads the router's proof for the exact response, if this launch uses a configured hub. */
   readonly readCacheExpiry?: (
     baseUrl: string,
@@ -358,23 +351,6 @@ export const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => false),
     );
 
-  const shouldExpediteIdleCompaction = Effect.fn("ClaudeKeepWarm.shouldExpediteIdleCompaction")(
-    function* (baseUrl: string, session: string, model: string, normalAt: string) {
-      const config = yield* hubForEndpoint(baseUrl);
-      if (config === null) return false;
-      const pick = yield* api.nextPick(config, {
-        provider: "claude",
-        session,
-        model,
-        kind: "idle_compaction",
-        normalAt,
-      });
-      return pick?.kind === "idle_compaction" && pick.basis === "warm_weekly_pressure";
-    },
-    Effect.timeout("3 seconds"),
-    Effect.orElseSucceed(() => false),
-  );
-
   const readCacheExpiry = Effect.fn("ClaudeKeepWarm.readCacheExpiry")(function* (
     baseUrl: string,
     session: string,
@@ -390,7 +366,6 @@ export const make = Effect.gen(function* () {
     forget,
     release,
     supportsIdleCompaction,
-    shouldExpediteIdleCompaction,
     readCacheExpiry,
   } satisfies (typeof ClaudeKeepWarm)["Service"];
 });
