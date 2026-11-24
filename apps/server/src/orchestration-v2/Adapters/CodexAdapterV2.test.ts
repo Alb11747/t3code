@@ -4659,89 +4659,130 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect("compacts Codex with the native RPC and completes the compaction turn", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const nativeThreadId = "compact-thread";
-        const nativeTurnId = "compact-turn";
-        const item = { type: "contextCompaction", id: "compact-item" };
-        const transcript = makeCodexReplayTranscript({
-          scenario: "native-compaction",
-          entries: [
-            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "unused" }).slice(0, 5),
-            {
-              type: "expect_outbound",
-              label: "compact",
-              frame: {
-                id: 3,
-                method: "thread/compact/start",
-                params: { threadId: nativeThreadId },
+  it.effect.each(["fresh estimate", "resumed estimate", "no estimate"] as const)(
+    "compacts Codex with the native RPC (%s)",
+    (sample) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const nativeThreadId = "compact-thread";
+          const nativeTurnId = "compact-turn";
+          const item = { type: "contextCompaction", id: "compact-item" };
+          const usage = {
+            inputTokens: 139_000,
+            cachedInputTokens: 100_000,
+            outputTokens: 1_000,
+            reasoningOutputTokens: 800,
+            totalTokens: 140_000,
+          };
+          const estimate = {
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 19_000,
+          };
+          const usageFrame = (last: typeof usage) => ({
+            type: "emit_inbound" as const,
+            label: "token usage",
+            frame: {
+              method: "thread/tokenUsage/updated",
+              params: {
+                threadId: nativeThreadId,
+                turnId: nativeTurnId,
+                tokenUsage: { total: usage, last, modelContextWindow: 200_000 },
               },
             },
-            { type: "emit_inbound", label: "compact", frame: { id: 3, result: {} } },
-            {
-              type: "emit_inbound",
-              label: "start",
-              frame: {
-                method: "turn/started",
-                params: {
-                  threadId: nativeThreadId,
-                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }),
+          });
+          const itemFrame = (method: "item/started" | "item/completed") => ({
+            type: "emit_inbound" as const,
+            label: method,
+            frame: { method, params: { threadId: nativeThreadId, turnId: nativeTurnId, item } },
+          });
+          const transcript = makeCodexReplayTranscript({
+            scenario: "native-compaction",
+            entries: [
+              ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "unused" }).slice(
+                0,
+                5,
+              ),
+              {
+                type: "expect_outbound",
+                label: "compact",
+                frame: {
+                  id: 3,
+                  method: "thread/compact/start",
+                  params: { threadId: nativeThreadId },
                 },
               },
-            },
-            ...(["item/started", "item/completed"] as const).map((method) => ({
-              type: "emit_inbound" as const,
-              label: method,
-              frame: { method, params: { threadId: nativeThreadId, turnId: nativeTurnId, item } },
-            })),
-            {
-              type: "emit_inbound",
-              label: "complete",
-              frame: {
-                method: "turn/completed",
-                params: {
-                  threadId: nativeThreadId,
-                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+              { type: "emit_inbound", label: "compact", frame: { id: 3, result: {} } },
+              {
+                type: "emit_inbound",
+                label: "start",
+                frame: {
+                  method: "turn/started",
+                  params: {
+                    threadId: nativeThreadId,
+                    turn: makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }),
+                  },
                 },
               },
-            },
-          ],
-        });
-        const harness = yield* makeCodexReplayHarness(transcript);
-        assert.isDefined(harness.runtime.compactThread);
-        yield* harness.runtime.compactThread!(
-          makeCodexTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now: yield* DateTime.now,
-            attemptId: RunAttemptId.make("compact-attempt"),
-            text: "/compact",
-          }),
-        );
-        yield* harness.firstTerminal;
-        const items = harness.events.flatMap((event) =>
-          event.type === "turn_item.updated" && event.turnItem.type === "compaction"
-            ? [event.turnItem]
-            : [],
-        );
-        assert.deepEqual(
-          items.map((entry) => entry.status),
-          ["running", "completed"],
-        );
-        assert.equal(items[0]?.id, items[1]?.id);
-        assert.equal(harness.terminalEvents()[0]?.status, "completed");
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
+              ...(sample === "fresh estimate" ? [usageFrame(usage)] : []),
+              itemFrame("item/started"),
+              usageFrame(sample === "no estimate" ? usage : estimate),
+              itemFrame("item/completed"),
+              {
+                type: "emit_inbound",
+                label: "complete",
+                frame: {
+                  method: "turn/completed",
+                  params: {
+                    threadId: nativeThreadId,
+                    turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                  },
+                },
+              },
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(transcript);
+          assert.isDefined(harness.runtime.compactThread);
+          yield* harness.runtime.compactThread!(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: { ...harness.providerThread, contextUsage: { usedTokens: 135_000 } },
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("compact-attempt"),
+              text: "/compact",
+            }),
+          );
+          yield* harness.firstTerminal;
+          const items = harness.events.flatMap((event) =>
+            event.type === "turn_item.updated" && event.turnItem.type === "compaction"
+              ? [event.turnItem]
+              : [],
+          );
+          assert.deepEqual(
+            items.map((entry) => entry.status),
+            ["running", "completed"],
+          );
+          assert.equal(items[0]?.id, items[1]?.id);
+          assert.deepEqual(
+            [items[1]?.beforeTokenCount, items[1]?.afterTokenCount],
+            sample === "no estimate"
+              ? [undefined, undefined]
+              : [sample === "fresh estimate" ? 140_000 : 135_000, 19_000],
+          );
+          assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
           ),
         ),
       ),
-    ),
   );
 
   it.effect.each([

@@ -1344,7 +1344,11 @@ interface ActiveCodexTurnContext {
   readonly rootNodeId: OrchestrationV2ExecutionNode["id"];
   readonly subagent: CodexSubagentThreadContext | null;
   readonly startedAt: DateTime.Utc;
-  readonly runningCompactionItemIds: Set<string>;
+  latestContextTokenCount?: number;
+  readonly runningCompactions: Map<
+    string,
+    { readonly beforeTokenCount: number | undefined; afterTokenCount?: number }
+  >;
   readonly assistantMessagePhases: Map<
     string,
     "commentary" | "partial_answer" | "pending_final_answer" | "final_answer"
@@ -2712,7 +2716,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             assistantMessagePhases: new Map(),
             fileChangeKindsByItem: new Map(),
             messagePhases: new Map(),
-            runningCompactionItemIds: new Set(),
+            runningCompactions: new Map(),
             runningWebSearchItems: new Map(),
           };
           if (isAbandoned()) return context;
@@ -3564,7 +3568,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               assistantMessagePhases: new Map(),
               fileChangeKindsByItem: new Map(),
               messagePhases: new Map(),
-              runningCompactionItemIds: new Set(),
+              runningCompactions: new Map(),
               runningWebSearchItems: new Map(),
             };
             beginTurnTokenUsage(activeContext);
@@ -5524,6 +5528,28 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return;
             }
             const now = yield* DateTime.now;
+            const tokenUsage = codexProviderTurnTokenUsage(
+              payload.tokenUsage,
+              DateTime.formatIso(now),
+            );
+            context.latestContextTokenCount = tokenUsage.usedTokens;
+            const compaction =
+              context.runningCompactions.size === 1
+                ? context.runningCompactions.values().next().value
+                : undefined;
+            const { last } = payload.tokenUsage;
+            // Codex's post-compaction estimate carries a total without billed token categories.
+            if (
+              compaction !== undefined &&
+              last.totalTokens > 0 &&
+              last.inputTokens === 0 &&
+              last.cachedInputTokens === 0 &&
+              (last.cacheWriteInputTokens ?? 0) === 0 &&
+              last.outputTokens === 0 &&
+              last.reasoningOutputTokens === 0
+            ) {
+              compaction.afterTokenCount = last.totalTokens;
+            }
             yield* emitProviderEvent({
               type: "provider_turn.updated",
               driver: CODEX_PROVIDER,
@@ -5542,10 +5568,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 status: "running",
                 startedAt: context.startedAt,
                 completedAt: null,
-                tokenUsage: codexProviderTurnTokenUsage(
-                  payload.tokenUsage,
-                  DateTime.formatIso(now),
-                ),
+                tokenUsage,
               },
             });
           }).pipe(Effect.orDie),
@@ -5828,8 +5851,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             nativeItemId,
             updatedAt,
           );
-          if (status === "running") context.runningCompactionItemIds.add(nativeItemId);
-          else context.runningCompactionItemIds.delete(nativeItemId);
+          const counts = context.runningCompactions.get(nativeItemId);
+          if (status !== "running") {
+            context.runningCompactions.delete(nativeItemId);
+          } else if (counts === undefined) {
+            context.runningCompactions.set(nativeItemId, {
+              beforeTokenCount:
+                context.latestContextTokenCount ?? context.providerThread.contextUsage?.usedTokens,
+            });
+          }
           yield* emitProviderEvent({
             type: "turn_item.updated",
             driver: CODEX_PROVIDER,
@@ -5860,6 +5890,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               startedAt,
               completedAt: status === "running" ? null : updatedAt,
               updatedAt,
+              ...(status === "completed" &&
+              counts?.beforeTokenCount !== undefined &&
+              counts.afterTokenCount !== undefined
+                ? {
+                    beforeTokenCount: counts.beforeTokenCount,
+                    afterTokenCount: counts.afterTokenCount,
+                  }
+                : {}),
             },
           });
         });
@@ -7489,7 +7527,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 if (part.turnId === input.nativeTurnId) reasoningParts.delete(key);
               }
               // Failed compaction can end the turn without item/completed.
-              for (const nativeItemId of input.context.runningCompactionItemIds) {
+              for (const nativeItemId of input.context.runningCompactions.keys()) {
                 yield* emitCompactionItem(
                   input.context,
                   nativeItemId,
@@ -7932,7 +7970,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             assistantMessagePhases: new Map(),
             fileChangeKindsByItem: new Map(),
             messagePhases: new Map(),
-            runningCompactionItemIds: new Set(),
+            runningCompactions: new Map(),
             runningWebSearchItems: new Map(),
           };
           const providerTurn = {
