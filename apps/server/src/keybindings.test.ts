@@ -529,18 +529,13 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
     }).pipe(Effect.provide(layerKeybindings())),
   );
 
-  const defaultBindings = SharedKeybindings.DEFAULT_RESOLVED_KEYBINDINGS;
-  const firstChatNewIndex = defaultBindings.findIndex((rule) => rule.command === "chat.new");
-  const fillerCountAtFirstChatNew =
-    MAX_KEYBINDINGS_COUNT - (defaultBindings.length - firstChatNewIndex);
-
   it.effect("preserves sibling shortcuts only if visible within the binding limit", () =>
     Effect.gen(function* () {
       const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
       const keybindings = yield* Keybindings.Keybindings;
       yield* writeKeybindingsConfig(
         keybindingsConfigPath,
-        Array.from({ length: fillerCountAtFirstChatNew + 1 }, (_, index) => ({
+        Array.from({ length: 210 }, (_, index) => ({
           key: "mod+alt+f1",
           command: `script.filler-${index}.run` as const,
         })),
@@ -573,7 +568,7 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
         const keybindings = yield* Keybindings.Keybindings;
         yield* writeKeybindingsConfig(
           keybindingsConfigPath,
-          Array.from({ length: fillerCountAtFirstChatNew }, (_, index) => ({
+          Array.from({ length: 209 }, (_, index) => ({
             key: "mod+alt+f1",
             command: `script.filler-${index}.run` as const,
           })),
