@@ -85,6 +85,7 @@ import { constantTimeEquals, verifyWebhookSignature } from "./webhookVerificatio
 import * as TaskScripts from "./ScheduledTaskScript.ts";
 import * as LatestModel from "./latestModel.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { withLocalTracing } from "@t3tools/shared/relayTracing";
 
 export const WEBHOOK_ROUTE_PREFIX = "/api/hooks";
 
@@ -2865,6 +2866,9 @@ export const layer = Layer.effect(
           yield* runWebhookDelivery(task, deliveryId, rendered.prompt, request).pipe(
             permit.withPermits(1),
             Effect.ensuring(release),
+            // A relay-delivered webhook is traced to the relay; the run it starts is local work
+            // whose spans carry workspace paths.
+            withLocalTracing,
             Effect.forkIn(serviceScope),
           );
           // Dispatch owns the accepted delivery now; retries must keep its claim.

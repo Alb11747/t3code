@@ -1,6 +1,7 @@
 import {
   CommandId,
   MessageId,
+  type ModelSelection,
   ThreadId,
   OrchestratorMcpFailure,
   type OrchestrationV2ThreadLaunchWorkspaceStrategy,
@@ -333,6 +334,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           explicitModel = yield* OrchestrationMcp.resolveAdvertisedModelSelection(
             input.modelSelection,
             cwd,
+            OrchestrationMcp.validateModelOptions,
           );
         }
         const projectSettings =

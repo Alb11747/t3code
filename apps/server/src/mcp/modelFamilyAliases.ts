@@ -28,16 +28,32 @@ export const makeResolveAdvertisedModelSelection = (
   Effect.fn("mcp.resolveAdvertisedModelSelection")(function* (
     selection: ModelSelection,
     cwd?: string,
+    validateOptions?: (
+      provider: ServerProvider,
+      model: string,
+      options: ModelSelection["options"],
+    ) => Effect.Effect<ModelSelection["options"], OrchestratorMcpFailure>,
   ) {
     const registry = yield* ProviderRegistry.ProviderRegistry;
     const { instanceId, model } = selection;
     const resolve = (
       providers: ReadonlyArray<ServerProvider>,
-    ): Effect.Effect<string, OrchestratorMcpFailure> => {
+    ): Effect.Effect<ModelSelection, OrchestratorMcpFailure> => {
       const provider = withWorkspaceModels(providers, cwd).find(
         (candidate) => candidate.instanceId === instanceId,
       );
-      if (provider !== undefined) return requireAdvertisedModel(provider, model);
+      if (provider !== undefined) {
+        return Effect.gen(function* () {
+          const resolved = yield* requireAdvertisedModel(provider, model);
+          const options =
+            validateOptions === undefined
+              ? selection.options
+              : yield* validateOptions(provider, resolved, selection.options);
+          return resolved === model && options === selection.options
+            ? selection
+            : { ...selection, model: resolved, ...(options === undefined ? {} : { options }) };
+        });
+      }
       return isModelFamilyAlias(model)
         ? Effect.fail(
             new OrchestratorMcpFailure({
@@ -45,10 +61,10 @@ export const makeResolveAdvertisedModelSelection = (
               message: `Provider instance ${instanceId} is not registered.`,
             }),
           )
-        : Effect.succeed(model);
+        : Effect.succeed(selection);
     };
     const initial = resolve(yield* registry.getProviders);
-    const resolved = yield* cwd === undefined
+    return yield* cwd === undefined
       ? initial
       : initial.pipe(
           Effect.catchIf(
@@ -63,7 +79,6 @@ export const makeResolveAdvertisedModelSelection = (
               ),
           ),
         );
-    return resolved === model ? selection : { ...selection, model: resolved };
   });
 
 export const usesScheduledFamilyAlias = (selection: ModelSelection | null | undefined) =>
