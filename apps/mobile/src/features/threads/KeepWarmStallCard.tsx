@@ -30,8 +30,8 @@ import type { ExistingThreadSettingsRouteParams } from "./ThreadSettingsSheet";
 const formatTime = (iso: string) => DateTime.toDateUtc(DateTime.makeUnsafe(iso)).toLocaleString();
 
 /**
- * Fork: the quota router holds this Claude turn's requests, to keep its prompt cache warm or
- * because the thread's pin waits for its account.
+ * Fork: the quota router holds this Claude turn's requests, to keep its prompt cache warm,
+ * because the thread's pin waits for its account, or because its account hit a short-session cap.
  */
 export function KeepWarmStallCard({
   thread,
@@ -129,21 +129,33 @@ export function KeepWarmStallCard({
     </Text>
   ) : null;
 
-  // Fork: a pin that waits for its account. Changing the pin moves the held request at once.
+  // Fork: a pin that waits for its account, or a short-session cap. Changing the pin moves the
+  // held request at once.
   if (hold.kind === "pin") {
     const pinned = hold.account ?? gt("the chosen account");
+    // The cap holds a thread whether or not its pin waits, so stopping cannot end it.
+    const capped = hold.reason === "short_cap";
     return (
       <View className="mx-3 mb-2 gap-2 rounded-xl border border-warning-foreground/25 bg-screen p-3">
         <Text className="text-sm text-warning-foreground">
-          {hold.resetUnknown
+          {capped
             ? gt(
-                "Waiting for {pinned} (this thread is set to wait for it). The hub cannot use it right now. It checks again at {releaseAt}.",
-                { pinned, releaseAt: formatTime(hold.releaseAt) },
+                "{account} reached its short-session cap. The rest of its 5-hour limit, which resets at {resetAt}, is kept for long-running threads. It checks again at {releaseAt}.",
+                {
+                  account: hold.account ?? gt("This account"),
+                  resetAt: formatTime(hold.resetAt),
+                  releaseAt: formatTime(hold.releaseAt),
+                },
               )
-            : gt(
-                "Waiting for {pinned} to reset at {resetAt} (this thread is set to wait for it).",
-                { pinned, resetAt: formatTime(hold.resetAt) },
-              )}
+            : hold.resetUnknown
+              ? gt(
+                  "Waiting for {pinned} (this thread is set to wait for it). The hub cannot use it right now. It checks again at {releaseAt}.",
+                  { pinned, releaseAt: formatTime(hold.releaseAt) },
+                )
+              : gt(
+                  "Waiting for {pinned} to reset at {resetAt} (this thread is set to wait for it).",
+                  { pinned, resetAt: formatTime(hold.resetAt) },
+                )}
         </Text>
         <View className="flex-row flex-wrap gap-2">
           <Button
@@ -152,12 +164,14 @@ export function KeepWarmStallCard({
             disabled={disabled}
             onPress={chooseAccount}
           />
-          <Button
-            label={gt("Stop waiting")}
-            tone="secondary"
-            disabled={disabled}
-            onPress={() => void act("stop_waiting")}
-          />
+          {capped ? null : (
+            <Button
+              label={gt("Stop waiting")}
+              tone="secondary"
+              disabled={disabled}
+              onPress={() => void act("stop_waiting")}
+            />
+          )}
           {hold.resetUnknown ? null : showMore ? (
             <>
               <Button
@@ -177,12 +191,14 @@ export function KeepWarmStallCard({
             <Button label={gt("More")} tone="secondary" onPress={() => setShowMore(true)} />
           )}
         </View>
-        <Text className="text-xs text-foreground-muted">
-          <T>
-            Stop waiting keeps this account but lets the request go to another one now, writing the
-            context to its cache once (cold cache write).
-          </T>
-        </Text>
+        {capped ? null : (
+          <Text className="text-xs text-foreground-muted">
+            <T>
+              Stop waiting keeps this account but lets the request go to another one now, writing
+              the context to its cache once (cold cache write).
+            </T>
+          </Text>
+        )}
         {failure}
       </View>
     );

@@ -37,8 +37,8 @@ type StallProps = {
 };
 
 /**
- * Fork: the quota router holds this Claude turn's requests, to keep its prompt cache warm or
- * because the thread's pin waits for its account.
+ * Fork: the quota router holds this Claude turn's requests, to keep its prompt cache warm,
+ * because the thread's pin waits for its account, or because its account hit a short-session cap.
  */
 export function keepWarmStallBannerItem(
   props: StallProps,
@@ -47,6 +47,25 @@ export function keepWarmStallBannerItem(
   const { hold, timestampFormat } = props;
   const reset = formatUpcomingTimestamp(hold.resetAt, timestampFormat);
   const id = `keep-warm-stall:${props.threadId}`;
+  if (hold.reason === "short_cap") {
+    const capped = hold.account ?? resolve(msg("This account"));
+    return {
+      id,
+      variant: "warning",
+      icon: <HourglassIcon />,
+      title: resolve(msg("{account} reached its short-session cap", { account: capped })),
+      description: resolve(
+        msg(
+          "The rest of its 5-hour limit, which resets {resetAt}, is kept for long-running threads. It checks again {releaseAt}.",
+          {
+            resetAt: reset,
+            releaseAt: formatUpcomingTimestamp(hold.releaseAt, timestampFormat),
+          },
+        ),
+      ),
+      actions: <StallActions key={hold.resetAt} {...props} />,
+    };
+  }
   if (hold.kind === "pin") {
     const pinned = hold.account ?? resolve(msg("the chosen account"));
     return {
@@ -187,33 +206,37 @@ function StallActions({ environmentId, threadId, hold, snoozedUntil }: StallProp
   }
 
   const disabled = pending || !permitted;
-  // Fork: a pin that waits for its account. Changing the pin moves the held request at once.
+  // Fork: a pin that waits for its account, or a short-session cap. Changing the pin moves the
+  // held request at once.
   if (hold.kind === "pin") {
     return (
       <>
         <Button size="xs" variant="ghost" disabled={disabled} onClick={chooseAccount}>
           <T>Switch account…</T>
         </Button>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                size="xs"
-                variant="ghost"
-                disabled={disabled}
-                onClick={() => void act("stop_waiting")}
-              >
-                <T>Stop waiting</T>
-              </Button>
-            }
-          />
-          <TooltipPopup side="top">
-            <T>
-              Keeps this account but turns off Wait when it runs out, so the request goes to another
-              account now (cold cache write).
-            </T>
-          </TooltipPopup>
-        </Tooltip>
+        {/* The cap holds a thread whether or not its pin waits, so stopping cannot end it. */}
+        {hold.reason === "short_cap" ? null : (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  disabled={disabled}
+                  onClick={() => void act("stop_waiting")}
+                >
+                  <T>Stop waiting</T>
+                </Button>
+              }
+            />
+            <TooltipPopup side="top">
+              <T>
+                Keeps this account but turns off Wait when it runs out, so the request goes to
+                another account now (cold cache write).
+              </T>
+            </TooltipPopup>
+          </Tooltip>
+        )}
         {hold.resetUnknown ? null : (
           <Menu>
             <MenuTrigger

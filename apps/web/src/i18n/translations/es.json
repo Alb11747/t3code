@@ -13219,5 +13219,9 @@
   "f6a91589456cca50": "Aprobado",
   "c92657bb7f2293ff": "Necesita aprobación",
   "f1e5c1be1ac92361": "Aprobar",
-  "fcb5f3c4d4753326": "Esta conexión no puede aprobar comandos. Usa un cliente que pueda usar el terminal."
+  "fcb5f3c4d4753326": "Esta conexión no puede aprobar comandos. Usa un cliente que pueda usar el terminal.",
+  "da69607e036f3dfa": "Esta cuenta",
+  "ec84b6b01a94e3cf": "{account} alcanzó su límite para sesiones cortas",
+  "68d7952d67cd912e": "El resto de su límite de 5 horas, que se restablece {resetAt}, se reserva para los hilos de larga duración. Vuelve a comprobarlo {releaseAt}.",
+  "e4974b202388b884": "En espera mientras {account} está en su límite para sesiones cortas."
 }

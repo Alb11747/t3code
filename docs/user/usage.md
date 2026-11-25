@@ -224,6 +224,8 @@ This also appears when another tool set the wait, and the actions then change th
 choice in T3 Code. With a quota router older than 0.27.0, switching or stopping the wait
 restarts the thread's current step.
 
+A hub can also cap how much of an account's 5-hour limit shorter threads use, keeping the rest for long-running ones. A thread held by that short-session cap, chosen account or not, shows the same banner naming the cap. **Switch account…** moves it; there is no **Stop waiting**, because the cap holds any shorter thread on that account.
+
 Switching an existing thread re-sends its context to the new account as a cold cache write.
 Some conversations stay bound to the account they started on; moving one asks first, because its
 earlier thinking is dropped (messages, tool results and files stay). The thread then drops that

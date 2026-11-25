@@ -257,6 +257,47 @@ it.effect("shows a stall pin's hold as a pin hold, ahead of the session's keep-w
   }).pipe(Effect.provide(layer), Effect.scoped);
 });
 
+it.effect("shows a short-session cap hold on an unpinned thread as the cap, not its pin", () => {
+  const { layer } = fixture({
+    status: 200,
+    body: {
+      plugin: { version: "0.43.1" },
+      pins: [],
+      held: [
+        {
+          session: "root",
+          account: "account-d35f1b129b54c235",
+          since: "2026-11-03T13:00:00Z",
+          release_at: "2026-11-03T13:05:00Z",
+          window: "5h",
+          reset_at: "2026-11-03T15:00:00Z",
+          kind: "pin",
+          reason: "short_cap",
+          root_request: true,
+        },
+      ],
+    },
+  });
+  return Effect.gen(function* () {
+    const keepWarm = yield* ClaudeKeepWarm.ClaudeKeepWarm;
+    const capped = fakeSession("root", 1);
+    yield* keepWarm.register(capped.session);
+    yield* TestClock.adjust("30 seconds");
+    const shown = {
+      kind: "pin",
+      reason: "short_cap",
+      account: WARM,
+      releaseAt: "2026-11-03T13:05:00.000Z",
+      resetAt: "2026-11-03T15:00:00.000Z",
+      quotaWaitSince: "2026-11-03T13:00:00.000Z",
+    } as const;
+    assert.deepEqual(capped.shown, [shown]);
+    const notice = ClaudeKeepWarm.describeKeepWarmHold(shown);
+    assert.include(notice, "short-session cap");
+    assert.notInclude(notice, "set to wait");
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
 it.effect("trusts an older router's unmarked hold only where it lists a stall pin", () => {
   const { layer } = fixture({
     status: 200,
@@ -483,7 +524,18 @@ it.effect.each([
   { action: "switch", error: "Choose the account to switch to" },
   { action: "compact", error: "a compaction would wait too" },
   { action: "pause", resetUnknown: true, error: "does not know when this account resets" },
-] as const)("maps $action on a pin hold", (row) => {
+  // The cap holds the thread whether or not it waits for the account, so nothing is re-pinned.
+  { action: "stop_waiting", shortCap: true, error: "short-session cap" },
+  { action: "release", shortCap: true, error: "short-session cap" },
+  { action: "compact", shortCap: true, error: "short-session cap" },
+  { action: "pause", shortCap: true, paused: true },
+  {
+    action: "pause",
+    shortCap: true,
+    resetUnknown: true,
+    error: "You can switch accounts.",
+  },
+] as const)("maps $action on a pin hold (short cap: $shortCap)", (row) => {
   const { requests, layer } = fixture({
     status: 200,
     body: {
@@ -493,6 +545,7 @@ it.effect.each([
           session: "root",
           account: "account-d35f1b129b54c235",
           kind: "pin",
+          ...("shortCap" in row ? { reason: "short_cap" } : {}),
           release_at: hold.releaseAt,
           ...("resetUnknown" in row ? {} : { reset_at: hold.resetAt }),
         },

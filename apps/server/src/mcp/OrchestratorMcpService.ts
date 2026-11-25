@@ -1036,6 +1036,7 @@ function threadStall(
     return {
       stalled: null,
       accountHold: {
+        ...(hold.reason === undefined ? {} : { reason: hold.reason }),
         ...(hold.account === undefined ? {} : { account: hold.account }),
         resetAt: hold.resetUnknown ? null : hold.resetAt,
         releaseAt: hold.releaseAt,

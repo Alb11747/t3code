@@ -10465,6 +10465,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             shown?.releaseAt === hold.releaseAt &&
             shown.resetAt === hold.resetAt &&
             shown.kind === hold.kind &&
+            shown.reason === hold.reason &&
             shown.account === hold.account &&
             shown.quotaWaitSince === hold.quotaWaitSince
           ) {
@@ -10478,12 +10479,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           context.routerHoldIsPin = hold.kind === "pin";
           // Clients read the newest notice, so the older one's mark needs no rewrite.
           state.released = null;
-          // A keep-warm hold turning into a pin hold is a new wait, so its duration starts again.
+          // A hold of another kind or reason is a new wait, so its duration starts again.
           state.notice = {
             nativeItemId:
               notice?.nativeItemId ?? `keep-warm:${context.providerTurnId}:${hold.releaseAt}`,
             startedAt:
-              notice !== null && notice.hold.kind === hold.kind
+              notice !== null &&
+              notice.hold.kind === hold.kind &&
+              notice.hold.reason === hold.reason
                 ? notice.startedAt
                 : yield* DateTime.now,
             hold,
@@ -10518,9 +10521,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               class: "usage_limit",
               code: "keep_warm_paused",
               message:
-                hold.kind === "pin"
-                  ? `Paused until ${hold.account ?? "the chosen account"} has quota again.`
-                  : "Paused to keep Claude's prompt cache warm until its 5-hour limit resets.",
+                hold.reason === "short_cap"
+                  ? `Paused until ${hold.account ?? "the account"}'s 5-hour limit resets.`
+                  : hold.kind === "pin"
+                    ? `Paused until ${hold.account ?? "the chosen account"} has quota again.`
+                    : "Paused to keep Claude's prompt cache warm until its 5-hour limit resets.",
               retryable: true,
               resetAt: hold.resetAt,
             }),

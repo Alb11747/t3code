@@ -12,8 +12,8 @@ import * as ThreadAccountService from "../usage/ThreadAccountService.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 
 /**
- * Fork: the composer actions for a turn the quota router holds, to keep Claude's cache warm or
- * because the thread's pin waits for its account.
+ * Fork: the composer actions for a turn the quota router holds, to keep Claude's cache warm,
+ * because the thread's pin waits for its account, or because its account hit a short-session cap.
  */
 export const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -128,9 +128,17 @@ export const make = Effect.gen(function* () {
     const { session, turn } = stalled;
     const refuse = (detail: string) =>
       Effect.fail(new ClaudeKeepWarmActionError({ threadId, detail }));
+    // The router holds any standard thread on a capped account, pinned or not.
+    const capped = turn.hold.reason === "short_cap";
+    const heldAccount = turn.hold.account ?? "This account";
     switch (input.action) {
       case "release":
       case "stop_waiting": {
+        if (capped) {
+          return yield* refuse(
+            `${heldAccount} reached its short-session cap, which holds this thread whether or not it waits for the account. Switch accounts or pause until it resets instead.`,
+          );
+        }
         // Keeps the held account, so the thread still prefers it; for a pin T3 did not set, T3
         // now stores that account as its own thread's choice.
         const stored =
@@ -163,7 +171,9 @@ export const make = Effect.gen(function* () {
       case "pause":
         if (turn.hold.resetUnknown === true) {
           return yield* refuse(
-            "The router does not know when this account resets. Switch accounts or stop waiting instead.",
+            capped
+              ? "The router does not know when this account resets. You can switch accounts."
+              : "The router does not know when this account resets. Switch accounts or stop waiting instead.",
           );
         }
         yield* session.pause(turn, turn.hold).pipe(Effect.mapError(failWith));
@@ -173,10 +183,16 @@ export const make = Effect.gen(function* () {
           "Choose the account to switch to: pick one in the account picker, or pass `account`.",
         );
       case "restore":
-        return yield* refuse("This thread waits for its chosen account; it was not released.");
+        return yield* refuse(
+          capped
+            ? "This thread's hold was not released."
+            : "This thread waits for its chosen account; it was not released.",
+        );
       case "compact":
         return yield* refuse(
-          "This thread waits for its chosen account, which is out, so a compaction would wait too. Switch accounts or stop waiting instead.",
+          capped
+            ? `${heldAccount} reached its short-session cap, so a compaction would wait too. Switch accounts or pause until it resets instead.`
+            : "This thread waits for its chosen account, which is out, so a compaction would wait too. Switch accounts or stop waiting instead.",
         );
     }
   });

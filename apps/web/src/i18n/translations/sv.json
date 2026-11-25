@@ -13231,5 +13231,9 @@
   "f6a91589456cca50": "Godkänt",
   "c92657bb7f2293ff": "Behöver godkännande",
   "f1e5c1be1ac92361": "Godkänn",
-  "fcb5f3c4d4753326": "Den här anslutningen kan inte godkänna kommandon. Använd en klient som får använda terminalen."
+  "fcb5f3c4d4753326": "Den här anslutningen kan inte godkänna kommandon. Använd en klient som får använda terminalen.",
+  "da69607e036f3dfa": "Det här kontot",
+  "ec84b6b01a94e3cf": "{account} har nått sin gräns för korta sessioner",
+  "68d7952d67cd912e": "Resten av femtimmarsgränsen, som återställs {resetAt}, sparas åt långvariga trådar. Kontrollerar igen {releaseAt}.",
+  "e4974b202388b884": "Pausad medan {account} är vid sin gräns för korta sessioner."
 }

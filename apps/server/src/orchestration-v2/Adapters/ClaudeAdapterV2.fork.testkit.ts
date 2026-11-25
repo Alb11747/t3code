@@ -371,8 +371,14 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
             uuid: uuid(),
             session_id: WAKE_NATIVE_SESSION,
           }),
+          // Claude Code 2.1.331 also repeats the router's skip as the result text.
           claudeSdkFrame({
-            ...makeResultFrame({ uuid: uuid(), result: "", numTurns: 0, terminalReason: null }),
+            ...makeResultFrame({
+              uuid: uuid(),
+              result: skipped || manualSkipError ? idleCompactionSkipError : "",
+              numTurns: 0,
+              terminalReason: null,
+            }),
             local_command: "compact",
           }),
         ]);
@@ -389,6 +395,7 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
           lastCompaction.turnItem.type === "compaction"
         ) {
           assert.equal(lastCompaction.turnItem.skipped, skipped ? true : undefined);
+          if (skipped) assert.equal(lastCompaction.turnItem.title, "Idle compaction skipped");
         }
         assert.equal(terminal.status, blocked ? "failed" : "completed");
         if (terminal.status === "failed") {

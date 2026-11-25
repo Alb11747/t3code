@@ -403,6 +403,9 @@ function formatWait(ms: number): string {
 
 // Timeline text stays true while the hold lasts; the banner shows its times.
 export function describeKeepWarmHold(hold: ClaudeKeepWarmHold): string {
+  if (hold.reason === "short_cap") {
+    return `${hold.account ?? "This account"} reached its short-session cap, which keeps the rest of its 5-hour limit for long-running threads. Waiting until the cap allows this thread again.`;
+  }
   if (hold.kind === "pin") {
     return `Waiting for ${hold.account ?? "the chosen account"} to reset (this thread is set to wait for it).`;
   }
@@ -415,6 +418,8 @@ export function describeKeepWarmHoldEnd(
   nowMs: number,
 ): string {
   const waited = formatWait(nowMs - startedAtMs);
+  if (hold.reason === "short_cap")
+    return `Waited ${waited} for ${hold.account ?? "the account"}'s short-session cap.`;
   if (hold.kind === "pin") return `Waited ${waited} for ${hold.account ?? "the chosen account"}.`;
   return `Held Claude's requests for ${waited} to keep the prompt cache warm.`;
 }

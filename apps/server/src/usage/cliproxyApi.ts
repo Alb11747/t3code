@@ -135,6 +135,7 @@ const CreditList = Schema.Struct({
 /** A held request from `GET control`; pin holds without a known reset repeat `releaseAt`. */
 interface RouterHold {
   readonly kind?: "pin";
+  readonly reason?: "short_cap";
   readonly session: string;
   readonly account: string | undefined;
   readonly releaseAt: string;
@@ -864,7 +865,8 @@ export const makeCliproxyApi = Effect.gen(function* () {
   });
   // Quota-router control: keep-warm holds, and stall-pin holds (kind "pin", or no kind from older
   // routers; a pin's hold reports the session of the pin it follows, a parent's for a subagent).
-  // Stall-steer holds are left out. `listing` comes from the same read, to name the accounts.
+  // Short-cap holds (0.40.0) also use kind "pin" but need no pin. Stall-steer holds are left out.
+  // `listing` comes from the same read, to name the accounts.
   const keepWarmHolds = Effect.fn("CliproxyApi.keepWarmHolds")(function* (config: CliproxyHub) {
     const control = yield* management(config, "control").pipe(Effect.flatMap(decodeControl));
     // Go writes RFC3339 with nanoseconds or offsets; clients compare ISO strings.
@@ -905,6 +907,7 @@ export const makeCliproxyApi = Effect.gen(function* () {
       return [
         {
           kind: "pin" as const,
+          ...(held.reason === "short_cap" ? { reason: "short_cap" as const } : {}),
           session: held.session,
           account: held.account,
           releaseAt,

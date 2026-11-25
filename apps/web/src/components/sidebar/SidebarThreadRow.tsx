@@ -331,13 +331,17 @@ function SidebarThreadTooltip({
       >
         {thread.keepWarmHold?.kind === "pin" ? (
           <div className="text-warning-foreground">
-            {thread.keepWarmHold.resetUnknown
-              ? gt("Waiting for {account}, which the hub cannot use right now.", {
-                  account: thread.keepWarmHold.account ?? "its chosen account",
+            {thread.keepWarmHold.reason === "short_cap"
+              ? gt("Held while {account} is at its short-session cap.", {
+                  account: thread.keepWarmHold.account ?? "its account",
                 })
-              : gt("Waiting for {account} until its usage resets.", {
-                  account: thread.keepWarmHold.account ?? "its chosen account",
-                })}
+              : thread.keepWarmHold.resetUnknown
+                ? gt("Waiting for {account}, which the hub cannot use right now.", {
+                    account: thread.keepWarmHold.account ?? "its chosen account",
+                  })
+                : gt("Waiting for {account} until its usage resets.", {
+                    account: thread.keepWarmHold.account ?? "its chosen account",
+                  })}
           </div>
         ) : thread.keepWarmStalled ? (
           <div className="text-warning-foreground">

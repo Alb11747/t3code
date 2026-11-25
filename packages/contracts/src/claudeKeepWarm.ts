@@ -9,6 +9,11 @@ import { IsoDateTime, ThreadId } from "./baseSchemas.ts";
  */
 export const ClaudeKeepWarmHold = Schema.Struct({
   kind: Schema.optionalKey(Schema.Literal("pin")),
+  /**
+   * With `kind: "pin"`: the account reached its short-session cap, which the router enforces on
+   * pinned and unpinned threads alike, so stopping a pin's wait cannot end it.
+   */
+  reason: Schema.optionalKey(Schema.Literal("short_cap")),
   /** When the account's blocking window resets; a pin hold with no known reset repeats `releaseAt`. */
   resetAt: IsoDateTime,
   /** Set when the router knows no reset, such as for an account the hub cannot use right now. */
@@ -44,10 +49,12 @@ export const OrchestratorMcpThreadStall = Schema.Struct({
 });
 
 /**
- * What MCP thread summaries report while a running thread waits for the account its pin names: a
- * sibling of `stalled`, so linked environments on older versions still decode the summary.
+ * What MCP thread summaries report while a running thread waits for the account its pin names, or
+ * (`reason: "short_cap"`) for an account at its short-session cap: a sibling of `stalled`, so
+ * linked environments on older versions still decode the summary.
  */
 export const OrchestratorMcpThreadAccountHold = Schema.Struct({
+  reason: Schema.optional(Schema.Literal("short_cap")),
   /** The account's email, or its alias when the email is unknown; absent when the router omits it. */
   account: Schema.optional(Schema.String),
   /** When the account gets quota back; null when the router does not know. */
@@ -60,7 +67,7 @@ export const OrchestratorMcpThreadAccountHold = Schema.Struct({
  * Keep-warm: `release` stops holding until the reset (`restore` undoes it), `switch` moves to
  * another account, `compact` compacts on the warm account and continues, `pause` ends the turn as
  * a usage limit. Pin hold: `stop_waiting` (or `release`, from older clients) keeps the account but
- * stops waiting for it.
+ * stops waiting for it. Short-cap holds support `pause` and explicit account switches.
  */
 export const ClaudeKeepWarmAction = Schema.Literals([
   "release",
