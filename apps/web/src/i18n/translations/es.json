@@ -925,7 +925,6 @@
   "4bed196a655ab14f": "{live} de {total} agentes trabajando",
   "ba1727ddc7a0a0b6": "{count, plural, one {{count} agente terminado} other {{count} agentes terminados}}",
   "d53a6ef7ee924239": "Enviando",
-  "353b08f4363dbb2c": "Pendiente",
   "2a1419da20c2bb27": "En cola",
   "e3cf8428ecbc1eb0": "Este mensaje se está entregando al agente",
   "4dd09c829329a994": "Mensaje en cola",

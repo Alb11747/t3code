@@ -21,6 +21,17 @@ type Catalog = Record<string, unknown>;
 const readJson = (file: string) => JSON.parse(NodeFS.readFileSync(file, "utf8"));
 const missingFrom = (from: Catalog, catalog: Catalog) =>
   Object.keys(from).filter((key) => !Object.hasOwn(catalog, key));
+// JSON.parse keeps the last of a repeated key, so scan the text: merges that append the same
+// key on both sides leave two entries, and the one that wins can be the stale translation.
+const repeatedKeys = (file: string) => {
+  const seen = new Set<string>();
+  const repeated = new Set<string>();
+  for (const [, key = ""] of NodeFS.readFileSync(file, "utf8").matchAll(/^ {2}"([^"]+)":/gm)) {
+    if (seen.has(key)) repeated.add(key);
+    seen.add(key);
+  }
+  return [...repeated];
+};
 
 const root = NodePath.resolve(import.meta.dirname, "..");
 const problems: string[] = [];
@@ -64,6 +75,11 @@ for (const [app, [command, ...args]] of Object.entries(GENERATE)) {
     NodeFS.rmSync(tmp, { recursive: true, force: true });
   }
 
+  for (const locale of [config.defaultLocale, ...config.locales]) {
+    for (const key of repeatedKeys(NodePath.join(catalogDir, `${locale}.json`))) {
+      problems.push(`${app}: ${locale}.json has ${key} more than once; keep one entry`);
+    }
+  }
   for (const locale of config.locales) {
     const catalog: Catalog = readJson(NodePath.join(catalogDir, `${locale}.json`));
     for (const key of missingFrom(source, catalog)) {

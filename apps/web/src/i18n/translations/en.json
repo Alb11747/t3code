@@ -925,7 +925,6 @@
   "4bed196a655ab14f": "{live} of {total} agents working",
   "ba1727ddc7a0a0b6": "{count, plural, one {{count} agent done} other {{count} agents done}}",
   "d53a6ef7ee924239": "Delivering",
-  "353b08f4363dbb2c": "Pending",
   "2a1419da20c2bb27": "Queued",
   "e3cf8428ecbc1eb0": "This message is being delivered to the agent",
   "4dd09c829329a994": "Queued message",

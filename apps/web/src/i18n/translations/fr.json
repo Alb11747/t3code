@@ -925,7 +925,6 @@
   "4bed196a655ab14f": "{live} agents sur {total} en cours",
   "ba1727ddc7a0a0b6": "{count, plural, one {{count} agent terminé} other {{count} agents terminés}}",
   "d53a6ef7ee924239": "En cours de remise",
-  "353b08f4363dbb2c": "En attente",
   "2a1419da20c2bb27": "En file d’attente",
   "e3cf8428ecbc1eb0": "Ce message est en cours de remise à l’agent",
   "4dd09c829329a994": "Message en file d’attente",

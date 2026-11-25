@@ -925,7 +925,6 @@
   "4bed196a655ab14f": "{live} von {total} Agenten arbeiten",
   "ba1727ddc7a0a0b6": "{count, plural, one {{count} Agent fertig} other {{count} Agenten fertig}}",
   "d53a6ef7ee924239": "Wird zugestellt",
-  "353b08f4363dbb2c": "Ausstehend",
   "2a1419da20c2bb27": "In Warteschlange",
   "e3cf8428ecbc1eb0": "Diese Nachricht wird gerade an den Agenten zugestellt",
   "4dd09c829329a994": "Eingereihte Nachricht",
