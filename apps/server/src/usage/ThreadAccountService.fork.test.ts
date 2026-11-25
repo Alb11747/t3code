@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
   type OrchestrationV2ServerCommand,
+  ProviderThreadId,
   type ServerProvider,
   UsageLimitSourceError,
   type UsageLimitSourceSnapshot,
@@ -207,6 +208,7 @@ function testLayer(input: {
         } as never),
       resolveMessageProviderThread: (id) =>
         Effect.succeed({
+          id: ProviderThreadId.make("provider-thread:routed"),
           nativeThreadRef: { nativeId: input.nativeIds?.[id] ?? "native-session" },
         } as never),
       dispatch: (command) =>
@@ -326,7 +328,11 @@ describe("ThreadAccountService.set", () => {
         {
           type: "thread.account-choice.set",
           accountChoice: { sourceId: "hub", account: OTHER, stall: true, instanceId: "claude" },
-          accountMovedAt: "2026-11-14T12:00:00.000Z",
+          accountMove: {
+            providerThreadId: "provider-thread:routed",
+            nativeThreadId: "native-session",
+            movedAt: "2026-11-14T12:00:00.000Z",
+          },
         },
       ]);
     }),
@@ -336,7 +342,7 @@ describe("ThreadAccountService.set", () => {
     Effect.gen(function* () {
       const { pins, commands } = yield* setAccount({ owner: null, heldRunId: "run-7" });
       expect(pins).toMatchObject([{ account: OTHER, move: false }]);
-      expect(commands[0]).not.toHaveProperty("accountMovedAt");
+      expect(commands[0]).not.toHaveProperty("accountMove");
       expect(commands.map((command) => command.type)).toEqual(["thread.account-choice.set"]);
       for (const account of [OTHER, null]) {
         const moves = yield* setAccount({
@@ -369,7 +375,10 @@ describe("ThreadAccountService.set", () => {
         });
         expect(Result.isSuccess(result)).toBe(true);
         expect(commands).toMatchObject([
-          { type: "thread.account-choice.set", accountMovedAt: "2026-11-14T12:00:00.000Z" },
+          {
+            type: "thread.account-choice.set",
+            accountMove: { movedAt: "2026-11-14T12:00:00.000Z" },
+          },
           { type: "message.dispatch", text: "Continue where you left off." },
           { type: "run.interrupt", runId: "run-7" },
         ]);

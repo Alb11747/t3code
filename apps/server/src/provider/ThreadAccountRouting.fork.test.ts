@@ -2,7 +2,9 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import {
   type OrchestrationV2TurnItem,
+  ProviderInstanceId,
   ProviderThreadId,
+  ThreadId,
   UsageLimitSourceError,
   UsageLimitSourceId,
 } from "@t3tools/contracts";
@@ -23,6 +25,8 @@ import * as UsageLimitSources from "../usage/UsageLimitSources.ts";
 import * as ThreadAccountRouting from "./ThreadAccountRouting.ts";
 
 const PROVIDER_THREAD = ProviderThreadId.make("provider-thread-claude");
+const OTHER_PROVIDER_THREAD = ProviderThreadId.make("provider-thread-other");
+const MOVED_AT = "2026-11-14T11:00:00.000Z";
 const compaction = (
   completedAt: string,
   status = "completed",
@@ -71,7 +75,10 @@ const CHOICE = { sourceId: "hub", account: "account-0123456789abcdef", stall: tr
 
 function prepareTurn(input: {
   readonly accountChoice?: object;
-  readonly accountMovedAt?: string;
+  readonly accountMovedAtByProviderThread?: Readonly<
+    Record<string, Readonly<Record<string, string>>>
+  >;
+  readonly nativeThreadId?: string;
   readonly instanceId?: string;
   readonly driver?: "claudeAgent" | "codex";
   readonly pin?: Effect.Effect<undefined, UsageLimitSourceError>;
@@ -85,12 +92,13 @@ function prepareTurn(input: {
         appThread: {
           id: "thread-1",
           accountChoice: input.accountChoice,
-          accountMovedAt: input.accountMovedAt,
+          accountMovedAtByProviderThread: input.accountMovedAtByProviderThread,
         } as never,
         providerThread: {
+          id: PROVIDER_THREAD,
           driver: input.driver ?? "claudeAgent",
           providerInstanceId: input.instanceId ?? "claude",
-          nativeThreadRef: { nativeId: "native" },
+          nativeThreadRef: { nativeId: input.nativeThreadId ?? "native" },
         } as never,
         loadCompactions: Effect.succeed([]),
       })
@@ -139,7 +147,10 @@ describe("ThreadAccountRouting.prepareTurn", () => {
     },
     {
       name: "keeps the move on the re-pin while moved thinking is still dropped",
-      input: { accountChoice: CHOICE, accountMovedAt: "2026-11-14T11:00:00.000Z" },
+      input: {
+        accountChoice: { ...CHOICE, instanceId: "claude" },
+        accountMovedAtByProviderThread: { [PROVIDER_THREAD]: { native: MOVED_AT } },
+      },
       pins: [expect.objectContaining({ account: CHOICE.account, move: true })],
       drops: true,
     },
@@ -155,9 +166,47 @@ describe("ThreadAccountRouting.prepareTurn", () => {
       drops: false,
     },
     {
-      name: "skips a choice made for another provider instance",
-      input: { accountChoice: { ...CHOICE, instanceId: "claude-work" } },
+      name: "ignores a move on a different conversation",
+      input: {
+        accountChoice: { ...CHOICE, instanceId: "claude-work" },
+        accountMovedAtByProviderThread: { [OTHER_PROVIDER_THREAD]: { native: MOVED_AT } },
+      },
       pins: [],
+      drops: false,
+    },
+    {
+      name: "keeps dropping moved thinking after going back to automatic routing",
+      input: { accountMovedAtByProviderThread: { [PROVIDER_THREAD]: { native: MOVED_AT } } },
+      pins: [],
+      drops: true,
+    },
+    {
+      name: "carries recovery when a compatible instance resumes the moved conversation",
+      input: {
+        accountChoice: { ...CHOICE, instanceId: "claude" },
+        instanceId: "claude-work",
+        accountMovedAtByProviderThread: { [PROVIDER_THREAD]: { native: MOVED_AT } },
+      },
+      pins: [],
+      drops: true,
+    },
+    {
+      name: "leaves a replacement native session alone even when it uses the same provider row",
+      input: {
+        accountChoice: CHOICE,
+        nativeThreadId: "replacement",
+        accountMovedAtByProviderThread: { [PROVIDER_THREAD]: { native: MOVED_AT } },
+      },
+      pins: [expect.objectContaining({ sessions: ["replacement"], move: false })],
+      drops: false,
+    },
+    {
+      name: "leaves another conversation's thinking intact even when it has its own pin",
+      input: {
+        accountChoice: { ...CHOICE, instanceId: "claude" },
+        accountMovedAtByProviderThread: { [OTHER_PROVIDER_THREAD]: { native: MOVED_AT } },
+      },
+      pins: [expect.objectContaining({ account: CHOICE.account, move: false })],
       drops: false,
     },
     {
@@ -183,7 +232,7 @@ describe("ThreadAccountRouting.prepareTurn", () => {
       name: "starts the turn when the hub does not answer",
       input: {
         accountChoice: CHOICE,
-        accountMovedAt: "2026-11-14T11:00:00.000Z",
+        accountMovedAtByProviderThread: { [PROVIDER_THREAD]: { native: MOVED_AT } },
         pin: Effect.never,
       },
       pins: [expect.objectContaining({ account: CHOICE.account })],
@@ -199,6 +248,67 @@ describe("ThreadAccountRouting.prepareTurn", () => {
     }),
   );
 });
+
+it.effect.each([
+  { currentChoice: null, compatibleSwitch: false },
+  { currentChoice: "claude-work", compatibleSwitch: false },
+  { currentChoice: "claude-work", compatibleSwitch: true },
+])(
+  "loads the older move after a pin change ($currentChoice, compatible switch $compatibleSwitch)",
+  ({ currentChoice, compatibleSwitch }) =>
+    Effect.gen(function* () {
+      const thread = {
+        id: ThreadId.make("thread:legacy-move"),
+        accountMovedAt: MOVED_AT,
+        accountChoice: currentChoice === null ? null : { ...CHOICE, instanceId: currentChoice },
+      };
+      const instance = ProviderInstanceId.make("claude");
+      const other = ProviderInstanceId.make("claude-work");
+      const attempts = [
+        {
+          providerThreadId: PROVIDER_THREAD,
+          providerInstanceId: instance,
+          nativeThreadId: "native",
+          startedAt: DateTime.makeUnsafe("2026-11-14T10:00:00.000Z"),
+        },
+        {
+          providerThreadId: OTHER_PROVIDER_THREAD,
+          providerInstanceId: other,
+          nativeThreadId: "other",
+          startedAt: DateTime.makeUnsafe(
+            compatibleSwitch ? "2026-11-14T11:30:00.000Z" : "2026-11-14T10:30:00.000Z",
+          ),
+        },
+      ];
+      const read: Parameters<typeof ThreadAccountRouting.readLegacyAccountMove>[3] = ({
+        commandId,
+      }) => {
+        expect(commandId).toBe(`thread-account:${thread.id}:${Date.parse(MOVED_AT)}`);
+        return Stream.make({
+          event: {
+            type: "thread.metadata-updated",
+            threadId: thread.id,
+            payload: {
+              accountMovedAt: MOVED_AT,
+              activeProviderThreadId: PROVIDER_THREAD,
+              accountChoice: { ...CHOICE, instanceId: compatibleSwitch ? other : instance },
+            },
+          },
+        } as never);
+      };
+      const readMove = (id: ProviderThreadId, nativeId: string, reader = read) =>
+        ThreadAccountRouting.readLegacyAccountMove(
+          thread,
+          { id, nativeThreadRef: { nativeId } as never },
+          attempts,
+          reader,
+        );
+      expect(yield* readMove(PROVIDER_THREAD, "native")).toBe(MOVED_AT);
+      expect(yield* readMove(PROVIDER_THREAD, "replacement")).toBeUndefined();
+      expect(yield* readMove(OTHER_PROVIDER_THREAD, "other")).toBeUndefined();
+      expect(yield* readMove(PROVIDER_THREAD, "native", () => Stream.empty)).toBeUndefined();
+    }),
+);
 
 // HMAC-SHA256("management-secret", '["claude","7"]'): the slot's alias before quota router 0.28.0.
 const LEGACY = "account-de21b724378312e0";

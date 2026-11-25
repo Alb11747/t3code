@@ -528,8 +528,12 @@ export const OrchestrationV2AppThread = Schema.Struct({
   compactOnceRequestedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** Fork: the quota-router account the thread's requests go to; null routes automatically. */
   accountChoice: Schema.optional(Schema.NullOr(ThreadAccountChoice)),
-  /** Fork: an owned conversation moved accounts; turns drop its old thinking until it compacts. */
+  /** Legacy timestamp kept to decode existing account moves. */
   accountMovedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** A moved provider conversation drops old thinking until it compacts. */
+  accountMovedAtByProviderThread: Schema.optional(
+    Schema.Record(ProviderThreadId, Schema.Record(TrimmedNonEmptyString, IsoDateTime)),
+  ),
   compactAfterIdle: Schema.optional(CodexIdleCompactionOverride),
   /** Fork: tokens to auto-compact at, set by agents; null follows the model's default. */
   autoCompactLimit: Schema.optional(Schema.NullOr(PositiveInt)),
@@ -4028,6 +4032,13 @@ const OrchestrationV2InternalCommand = Schema.Union([
     threadId: ThreadId,
     accountChoice: Schema.NullOr(ThreadAccountChoice),
     accountMovedAt: Schema.optional(IsoDateTime),
+    accountMove: Schema.optional(
+      Schema.Struct({
+        providerThreadId: ProviderThreadId,
+        nativeThreadId: TrimmedNonEmptyString,
+        movedAt: IsoDateTime,
+      }),
+    ),
   }),
   // The server issues this after checking the value against the run's declared schema.
   Schema.Struct({

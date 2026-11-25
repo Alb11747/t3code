@@ -2165,6 +2165,71 @@ it.effect.each([undefined, "shared", "worktree"] as const)(
     }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("stores each conversation's account move through a return to automatic routing", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:scoped-account-moves");
+    const firstConversation = ProviderThreadId.make("provider-thread:first-move");
+    const secondConversation = ProviderThreadId.make("provider-thread:second-move");
+    const choice = {
+      sourceId: UsageLimitSourceId.make("hub"),
+      account: RouterAccountAlias.make("account-1111111111111111"),
+      stall: false,
+    };
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-scoped-account-moves"),
+      threadId,
+      projectId: ProjectId.make("project:account"),
+      title: "Separate account moves",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const firstAt = "2026-11-14T00:00:00.000Z";
+    const secondAt = "2026-11-15T00:00:00.000Z";
+    yield* orchestrator.dispatch({
+      type: "thread.account-choice.set",
+      commandId: CommandId.make("move-first-account"),
+      threadId,
+      accountChoice: { ...choice, instanceId },
+      accountMove: {
+        providerThreadId: firstConversation,
+        nativeThreadId: "first",
+        movedAt: firstAt,
+      },
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.account-choice.set",
+      commandId: CommandId.make("move-second-account"),
+      threadId,
+      accountChoice: { ...choice, instanceId },
+      accountMove: {
+        providerThreadId: secondConversation,
+        nativeThreadId: "second",
+        movedAt: secondAt,
+      },
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.account-choice.set",
+      commandId: CommandId.make("clear-moved-account"),
+      threadId,
+      accountChoice: null,
+    });
+    const thread = yield* projections.getThread(threadId);
+    assert.isNull(thread.accountChoice);
+    assert.deepEqual(thread.accountMovedAtByProviderThread, {
+      [firstConversation]: { first: firstAt },
+      [secondConversation]: { second: secondAt },
+    });
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("gives a delegated child its own account, never the parent's wait or move", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -2208,7 +2273,19 @@ it.effect("gives a delegated child its own account, never the parent's wait or m
       createdBy: "user",
       creationSource: "web",
     });
-    const parentRun = (yield* projections.getThreadProjection(parentThreadId)).runs[0]!;
+    const { runs, thread } = yield* projections.getThreadProjection(parentThreadId);
+    const parentRun = runs[0]!;
+    yield* orchestrator.dispatch({
+      type: "thread.account-choice.set",
+      commandId: CommandId.make("account-parent-scoped-move"),
+      threadId: parentThreadId,
+      accountChoice: waiting,
+      accountMove: {
+        providerThreadId: thread.activeProviderThreadId!,
+        nativeThreadId: "parent",
+        movedAt: "2026-11-15T00:00:00.000Z",
+      },
+    });
     const own = { ...waiting, account: RouterAccountAlias.make("account-2222222222222222") };
     const cases = [
       { name: "none", expected: { ...waiting, stall: false } },
@@ -2238,6 +2315,7 @@ it.effect("gives a delegated child its own account, never the parent's wait or m
       // Stored with the child's creation, so its first turn pins it before any request.
       assert.deepEqual(child.thread.accountChoice ?? null, entry.expected, entry.name);
       assert.isNull(child.thread.accountMovedAt ?? null, entry.name);
+      assert.isUndefined(child.thread.accountMovedAtByProviderThread, entry.name);
     }
   }).pipe(Effect.provide(layerTest)),
 );

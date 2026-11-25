@@ -52,7 +52,7 @@ import { isTerminalRunStatus } from "../orchestration-v2/ThreadManagementService
 import * as ClaudeKeepWarm from "../provider/ClaudeKeepWarm.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
-import { controlExpiry } from "../provider/ThreadAccountRouting.ts";
+import { accountMoveCommandId, controlExpiry } from "../provider/ThreadAccountRouting.ts";
 import * as Settings from "../serverSettings.ts";
 import { routerProviderOf } from "./cliproxyApi.ts";
 import * as UsageLimitSources from "./UsageLimitSources.ts";
@@ -317,10 +317,13 @@ export const make = Effect.gen(function* () {
     return { ...found, alias: found.account.routerAlias as RouterAccountAlias, hub };
   });
 
+  const providerThreadOf = (threadId: ThreadId, modelSelection: ModelSelection) =>
+    orchestrator
+      .resolveMessageProviderThread(threadId, modelSelection)
+      .pipe(Effect.orElseSucceed(() => undefined));
   const sessionOf = (threadId: ThreadId, modelSelection: ModelSelection) =>
-    orchestrator.resolveMessageProviderThread(threadId, modelSelection).pipe(
+    providerThreadOf(threadId, modelSelection).pipe(
       Effect.map((providerThread) => providerThread?.nativeThreadRef?.nativeId ?? undefined),
-      Effect.orElseSucceed(() => undefined),
     );
 
   type Target = NonNullable<Effect.Success<ReturnType<typeof resolveTarget>>>;
@@ -525,14 +528,13 @@ export const make = Effect.gen(function* () {
   const set = Effect.fn("ThreadAccounts.set")(function* (input: ThreadAccountSetInput) {
     const thread = yield* threadOf(input.threadId);
     const target = yield* resolveTarget(thread.modelSelection.instanceId);
-    const session = yield* sessionOf(input.threadId, thread.modelSelection);
+    const providerThread = yield* providerThreadOf(input.threadId, thread.modelSelection);
+    const session = providerThread?.nativeThreadRef?.nativeId ?? undefined;
     const storedChoice = thread.accountChoice;
     const storedSourceId = storedChoice?.sourceId;
     const previousSourceId = storedSourceId === target?.source.id ? undefined : storedSourceId;
     const now = yield* DateTime.now;
-    const commandId = CommandId.make(
-      `thread-account:${input.threadId}:${DateTime.toEpochMillis(now)}`,
-    );
+    const commandId = accountMoveCommandId(input.threadId, DateTime.toEpochMillis(now));
     if (input.account === null) {
       if (target === null && storedSourceId === undefined) return yield* fail(NOT_ROUTED);
       const sessions = yield* threadSessions(input.threadId, session);
@@ -640,7 +642,15 @@ export const make = Effect.gen(function* () {
         stall,
         instanceId: target.instanceId,
       },
-      ...(moved ? { accountMovedAt: DateTime.formatIso(now) } : {}),
+      ...(moved && session !== undefined && providerThread !== undefined
+        ? {
+            accountMove: {
+              movedAt: DateTime.formatIso(now),
+              providerThreadId: providerThread.id,
+              nativeThreadId: session,
+            },
+          }
+        : {}),
     });
     if (held && held.turn.hold.released !== true) {
       yield* restartHeldForMove(input.threadId, held.turn.runId);

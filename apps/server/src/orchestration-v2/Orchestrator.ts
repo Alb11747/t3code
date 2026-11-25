@@ -18052,6 +18052,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
             ),
           );
+        const move = command.accountMove;
+        const previousMoves = thread.accountMovedAtByProviderThread;
         yield* emit(
           events,
           command,
@@ -18066,6 +18068,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...(command.accountMovedAt === undefined
               ? {}
               : { accountMovedAt: command.accountMovedAt }),
+            ...(move === undefined
+              ? {}
+              : {
+                  accountMovedAtByProviderThread: {
+                    ...previousMoves,
+                    [move.providerThreadId]: {
+                      ...previousMoves?.[move.providerThreadId],
+                      [move.nativeThreadId]: move.movedAt,
+                    },
+                  },
+                }),
           },
         });
         break;

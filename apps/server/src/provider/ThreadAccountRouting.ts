@@ -1,7 +1,9 @@
 import {
+  CommandId,
   threadAccountChoiceFor,
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2RunAttempt,
   type OrchestrationV2TurnItem,
   type ProviderThreadId,
   type ThreadId,
@@ -11,8 +13,10 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
+import type { EventSinkV2Shape } from "../orchestration-v2/EventSink.ts";
 import * as Settings from "../serverSettings.ts";
 import { routerProviderOf } from "../usage/cliproxyApi.ts";
 import * as UsageLimitSources from "../usage/UsageLimitSources.ts";
@@ -49,9 +53,71 @@ export function accountMoveDropsThinking(
   );
 }
 
+export const accountMoveCommandId = (threadId: ThreadId, movedAt: number) =>
+  CommandId.make(`thread-account:${threadId}:${movedAt}`);
+
+export const readLegacyAccountMove = (
+  thread: Pick<OrchestrationV2AppThread, "id" | "accountMovedAt">,
+  providerThread: Pick<OrchestrationV2ProviderThread, "id" | "nativeThreadRef">,
+  attempts: ReadonlyArray<
+    Pick<
+      OrchestrationV2RunAttempt,
+      "providerThreadId" | "providerInstanceId" | "nativeThreadId" | "startedAt"
+    >
+  >,
+  readByCommandId: EventSinkV2Shape["readByCommandId"],
+): Effect.Effect<string | undefined> => {
+  const movedAt = thread.accountMovedAt;
+  const nativeId = providerThread.nativeThreadRef?.nativeId;
+  if (movedAt == null || nativeId == null) return Effect.undefined;
+  const timestamp = Date.parse(movedAt);
+  const historical = attempts.flatMap((attempt) => {
+    if (attempt.startedAt === null) return [];
+    const startedAt = DateTime.toEpochMillis(attempt.startedAt);
+    return startedAt <= timestamp ? [{ ...attempt, startedAt }] : [];
+  });
+  const latest = historical.reduce<(typeof historical)[number] | undefined>((latest, attempt) => {
+    if (attempt.providerThreadId !== providerThread.id) return latest;
+    return latest === undefined || attempt.startedAt > latest.startedAt ? attempt : latest;
+  }, undefined);
+  if (latest?.nativeThreadId !== nativeId) return Effect.undefined;
+  // An older event has no native ID. Use the then-active session only when the attempt history
+  // confirms it and the selected instance did not also have a separate conversation to pin.
+  return readByCommandId({ commandId: accountMoveCommandId(thread.id, timestamp) }).pipe(
+    Stream.filter(({ event }) => {
+      if (
+        event.type !== "thread.metadata-updated" ||
+        event.threadId !== thread.id ||
+        event.payload.accountMovedAt !== movedAt ||
+        event.payload.activeProviderThreadId !== providerThread.id
+      )
+        return false;
+      const instance = event.payload.accountChoice?.instanceId;
+      return (
+        instance !== undefined &&
+        (instance === latest.providerInstanceId ||
+          !historical.some(
+            (attempt) =>
+              attempt.providerInstanceId === instance &&
+              attempt.providerThreadId !== providerThread.id,
+          ))
+      );
+    }),
+    Stream.runHead,
+    Effect.map((event) => (Option.isSome(event) ? movedAt : undefined)),
+    Effect.catch((cause) =>
+      Effect.logWarning("Could not read a legacy account move.", {
+        threadId: thread.id,
+        cause,
+      }).pipe(Effect.as(undefined)),
+    ),
+  );
+};
+
 interface PrepareTurnInput<E> {
   readonly appThread: OrchestrationV2AppThread;
   readonly providerThread: OrchestrationV2ProviderThread;
+  readonly loadLegacyAccountMove?: Effect.Effect<string | undefined>;
   readonly loadCompactions: Effect.Effect<ReadonlyArray<OrchestrationV2TurnItem>, E>;
 }
 
@@ -78,19 +144,27 @@ export const make = Effect.gen(function* () {
   const prepareTurn = Effect.fn("ThreadAccountRouting.prepareTurn")(function* <E>(
     input: PrepareTurnInput<E>,
   ) {
-    const drops =
-      !!input.appThread.accountMovedAt &&
-      accountMoveDropsThinking(
-        input.appThread.accountMovedAt,
-        // An unreadable history keeps dropping: it only removes thinking the new account cannot use.
-        yield* input.loadCompactions.pipe(Effect.orElseSucceed(() => [])),
-        input.providerThread.id,
-      );
     const choice = threadAccountChoiceFor(
       input.appThread.accountChoice,
       input.providerThread.providerInstanceId,
     );
     const session = input.providerThread.nativeThreadRef?.nativeId;
+    const moves = input.appThread.accountMovedAtByProviderThread;
+    const conversation = input.providerThread.id;
+    const sessionMoves =
+      moves !== undefined && Object.hasOwn(moves, conversation) ? moves[conversation] : undefined;
+    const movedAt =
+      session != null && sessionMoves !== undefined && Object.hasOwn(sessionMoves, session)
+        ? sessionMoves[session]
+        : yield* input.loadLegacyAccountMove ?? Effect.undefined;
+    const drops =
+      movedAt != null &&
+      accountMoveDropsThinking(
+        movedAt,
+        // An unreadable history keeps dropping: it only removes thinking the new account cannot use.
+        yield* input.loadCompactions.pipe(Effect.orElseSucceed(() => [])),
+        input.providerThread.id,
+      );
     const routerProvider = routerProviderOf(input.providerThread.driver);
     if (!choice || !session || !routerProvider) {
       failedWaitingPins.delete(input.appThread.id);
