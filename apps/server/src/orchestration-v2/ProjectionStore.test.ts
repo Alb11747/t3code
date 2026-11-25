@@ -820,17 +820,36 @@ it.effect("idle compaction filters keep the latest run, live work and the newest
       });
     }
 
-    const records = yield* store.getThreadRecords(
-      threadId,
-      ["runs", "providerTurns", "runtimeRequests", "contextTransfers"],
-      {
-        runStatuses: ["preparing", "starting", "running", "rolled_back"],
-        includeLatestRun: true,
-        providerTurnThreadIds: [selected],
-        latestProviderTurnUsageOnly: true,
-        runtimeRequestStatuses: ["pending"],
-        contextTransferStatuses: ["pending"],
-      },
+    const activeWork = traceSqlStatements();
+    const records = yield* store
+      .getThreadRecords(
+        threadId,
+        ["runs", "providerTurns", "runtimeRequests", "contextTransfers", "turnItems"],
+        {
+          runStatuses: ["preparing", "starting", "running", "rolled_back"],
+          includeLatestRun: true,
+          providerTurnThreadIds: [selected],
+          latestProviderTurnUsageOnly: true,
+          runtimeRequestStatuses: ["pending"],
+          contextTransferStatuses: ["pending"],
+          turnItemStatuses: ["pending", "running", "waiting"],
+        },
+      )
+      .pipe(Effect.withTracer(activeWork.tracer));
+    assert.deepEqual(
+      records.turnItems.map((item) => item.id),
+      ["item:idle-compaction:rolled-back"],
+    );
+    const activeWorkQuery = activeWork.statements.find((statement) =>
+      statement.includes("FROM orchestration_v2_projection_turn_items"),
+    );
+    assert.isDefined(activeWorkQuery);
+    const activeWorkPlan = yield* (yield* SqlClient.SqlClient).unsafe<{ readonly detail: string }>(
+      `EXPLAIN QUERY PLAN ${activeWorkQuery}`,
+    );
+    assert.include(
+      activeWorkPlan.map((row) => row.detail).join("\n"),
+      "USING INDEX orchestration_v2_projection_turn_items_active_ordinal_idx",
     );
     // The failed latest run stays, so a completed earlier run is not mistaken for the latest,
     // and a cancelled queued run never counts as the latest.

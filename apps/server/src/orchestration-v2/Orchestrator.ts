@@ -19718,6 +19718,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ),
     resolveMessageProviderThread: Effect.fn("OrchestratorV2.resolveMessageProviderThread")(
       function* (threadId, modelSelection) {
+        const current = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
+        const active = current.providerThreads.find(
+          (candidate) => candidate.id === current.thread.activeProviderThreadId,
+        );
+        if (active === undefined || active.providerInstanceId === modelSelection.instanceId) {
+          return active;
+        }
+        // Switching can need the full snapshot to respect a fresh-context boundary.
         const projection = yield* projectionStore.getThreadRecords(threadId, [
           "providerThreads",
           "providerSessions",

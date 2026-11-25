@@ -22,6 +22,7 @@ import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import { traceSqlRouting } from "../persistence/testkit/SqliteRouting.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -221,6 +222,27 @@ it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, prov
         },
       ],
     });
+    if (scenario === "same-instance-active" || scenario === "missing-active") {
+      const trace = traceSqlRouting();
+      const preview = yield* trace.trace(
+        orchestrator.resolveMessageProviderThread(threadId, modelSelection),
+      );
+      expect(preview?.id).toBe(scenario === "same-instance-active" ? retained.id : undefined);
+      expect(
+        trace.queries.some(({ query }) =>
+          query.includes("FROM orchestration_v2_projection_provider_threads"),
+        ),
+      ).toBe(true);
+      expect(
+        trace.queries.some(({ query }) =>
+          /FROM orchestration_v2_projection_(runs|turn_items|provider_sessions)\b/.test(query),
+        ),
+      ).toBe(false);
+    }
+    if (scenario === "compatible-account" || scenario === "retained-order") {
+      const preview = yield* orchestrator.resolveMessageProviderThread(threadId, modelSelection);
+      expect(preview?.id).toBe(scenario === "compatible-account" ? first.id : retained.id);
+    }
     if (busyQueue || scenario === "busy-preparing") {
       yield* orchestrator.dispatch({
         type: "message.dispatch",
