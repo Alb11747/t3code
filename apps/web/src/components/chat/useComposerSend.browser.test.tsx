@@ -52,7 +52,6 @@ vi.mock(import("../../state/session"), async (original) => ({
 }));
 vi.mock("./useMultipleModelSend", () => ({ useMultipleModelSend: () => vi.fn() }));
 vi.mock("./threadAccountSendGuard", () => ({ confirmAccountForSend: mocks.confirmAccount }));
-vi.mock("./useProposedPlanSend", () => ({ usePlanFollowUpSend: () => vi.fn() }));
 vi.mock("../../state/server", async (original) => ({
   ...(await original<typeof import("../../state/server")>()),
   environmentServerConfigsAtom: mocks.config,
