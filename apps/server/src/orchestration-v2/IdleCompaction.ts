@@ -1,7 +1,6 @@
 import {
   CodexSettings,
   isCompactionCommandMessage,
-  isListedThreadLineage,
   MessageId,
   pendingGuestMessageCount,
   resolveProjectProviderInstanceEnabled,
@@ -162,7 +161,10 @@ export function idleCompactionWindow(
     thread.snoozedUntil == null ? null : DateTime.toEpochMillis(thread.snoozedUntil);
   const snoozed = snoozeEndMs !== null && snoozeEndMs > nowMs;
   if (snoozed && !policy.compactSnoozed) return null;
-  if (!isListedThreadLineage(thread.lineage)) return null;
+  // Fork: delegated tasks are subagents with their own Claude session and are resumed later, so
+  // they compact like listed threads. A native subagent has no session of its own and is skipped
+  // by the session check below.
+  if (thread.lineage.sideChat === true || thread.lineage.workflowStep === true) return null;
   // A removed or steered queued message leaves a cancelled run that never started.
   const latestRun = runs
     .filter((run) => run.status !== "cancelled" || run.startedAt !== null)

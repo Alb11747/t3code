@@ -255,6 +255,26 @@ describe("idleCompactionWindow", () => {
       lineage: { ...sideChat.thread.lineage, relationshipToParent: "fork", sideChat: true },
     };
     expect(idleCompactionWindow(sideChat, NOW_MS)).toBeNull();
+    const workflowStep = records(cache);
+    workflowStep.thread = {
+      ...workflowStep.thread,
+      lineage: { ...workflowStep.thread.lineage, workflowStep: true },
+    };
+    expect(idleCompactionWindow(workflowStep, NOW_MS)).toBeNull();
+    // A delegated task is a subagent with its own Claude session, resumed by later messages.
+    const delegated = records(cache);
+    delegated.thread = {
+      ...delegated.thread,
+      lineage: {
+        rootThreadId: ThreadId.make("parent"),
+        parentThreadId: ThreadId.make("parent"),
+        relationshipToParent: "subagent",
+      },
+    };
+    expect(idleCompactionWindow(delegated, NOW_MS)?.runId).toBe(runId);
+    // A native subagent has no session of its own to compact.
+    delegated.thread = { ...delegated.thread, activeProviderThreadId: null };
+    expect(idleCompactionWindow(delegated, NOW_MS)).toBeNull();
   });
 
   it("resolves the scope from the mode and the thread's own setting", () => {
