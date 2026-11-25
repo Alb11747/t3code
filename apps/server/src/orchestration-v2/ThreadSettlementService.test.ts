@@ -744,12 +744,12 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
           ),
         ),
       ...options.projections,
-      getSettlementCandidates: (threadId) =>
+      getSettlementCandidates: (threadId, readOptions) =>
         Ref.update(candidateReads, (reads) => [...reads, threadId]).pipe(
           Effect.andThen(Ref.updateAndGet(snapshotReadCount, (count) => count + 1)),
           Effect.tap((count) => Queue.offer(snapshotReads, count)),
           Effect.andThen(
-            options.projections?.getSettlementCandidates(threadId) ??
+            options.projections?.getSettlementCandidates(threadId, readOptions) ??
               Ref.get(snapshots).pipe(
                 Effect.map((snapshot) =>
                   threadId === undefined
@@ -1442,9 +1442,9 @@ describe("ThreadSettlementServiceV2 worker", () => {
           },
           projections: {
             ...store,
-            getSettlementCandidates: (threadId) =>
+            getSettlementCandidates: (threadId, readOptions) =>
               Effect.gen(function* () {
-                const candidates = yield* store.getSettlementCandidates(threadId);
+                const candidates = yield* store.getSettlementCandidates(threadId, readOptions);
                 if (blockNextSweep) {
                   blockNextSweep = false;
                   yield* Deferred.succeed(sweepStarted, undefined);

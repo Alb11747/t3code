@@ -9126,7 +9126,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               AND json_extract(t.payload_json, '$.archivedAt') IS NULL
               AND json_extract(t.payload_json, '$.settledOverride') IS NULL
               AND json_extract(t.payload_json, '$.pinnedAt') IS NULL
-              AND json_extract(t.payload_json, '$.autoSettleDisabledAt') IS NULL${options?.alwaysOnly === true ? sql` AND (json_extract(t.payload_json, '$.autoSettleAlwaysAt') IS NOT NULL OR json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent')` : sql``}
+              AND json_extract(t.payload_json, '$.autoSettleDisabledAt') IS NULL${
+                options?.alwaysOnly === true
+                  ? sql` AND (
+                json_extract(t.payload_json, '$.autoSettleAlwaysAt') IS NOT NULL
+                OR json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                OR json_extract(t.payload_json, '$.delegatedFrom') IS NOT NULL
+              )`
+                  : sql``
+              }
               AND (
                 json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subagent'
                 OR NOT EXISTS (
