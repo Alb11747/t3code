@@ -1,7 +1,6 @@
 import {
   CommandId,
   MessageId,
-  type ModelSelection,
   ThreadId,
   OrchestratorMcpFailure,
   type OrchestrationV2ThreadLaunchWorkspaceStrategy,
