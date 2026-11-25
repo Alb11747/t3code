@@ -508,6 +508,14 @@ const withWorkspaceModels = (
 
 const withV = (version: string) => (version.startsWith("v") ? version : `v${version}`);
 
+// Fork: lets a delegating agent name only a model that one other provider offers.
+const offersModel = (provider: ServerProvider, model: string) =>
+  isModelFamilyAlias(model)
+    ? resolveFamilyAlias(model, provider.models) !== null
+    : advertisedModel(provider, model) !== undefined ||
+      antigravitySuffixedModel(provider, model) !== undefined ||
+      provider.updateRequiredModels?.some((candidate) => candidate.slug === model) === true;
+
 /** A provider that lists no models accepts literal slugs. */
 const requireAdvertisedModel = Effect.fn("mcp.requireAdvertisedModel")(function* (
   provider: ServerProvider,
@@ -1839,6 +1847,54 @@ const make = Effect.gen(function* () {
     );
   };
 
+  // Fork: a model the caller's provider lacks picks the one other usable provider offering it.
+  const inferInstanceForModel = Effect.fn("OrchestratorMcpService.inferInstanceForModel")(
+    function* (input: {
+      readonly model: string;
+      readonly inheritedInstanceId: ProviderInstanceId;
+      readonly projectId: ProjectId;
+      readonly providers: ReadonlyArray<ServerProvider>;
+      readonly orchestrationCapableInstanceIds: ReadonlySet<ProviderInstanceId>;
+      readonly skipProjectEnablementFilter: boolean;
+    }) {
+      const inherited = input.providers.find(
+        (provider) => provider.instanceId === input.inheritedInstanceId,
+      );
+      if (
+        inherited === undefined ||
+        inherited.models.length === 0 ||
+        offersModel(inherited, input.model)
+      ) {
+        return undefined;
+      }
+      const matches: Array<ProviderInstanceId> = [];
+      for (const candidate of input.providers) {
+        if (
+          candidate === inherited ||
+          !input.orchestrationCapableInstanceIds.has(candidate.instanceId) ||
+          providerConstraints(candidate, true).length > 0 ||
+          !offersModel(candidate, input.model)
+        ) {
+          continue;
+        }
+        const enabledForProject =
+          input.skipProjectEnablementFilter ||
+          (yield* threadManagement.isProviderInstanceEnabledForProject({
+            projectId: input.projectId,
+            instanceId: candidate.instanceId,
+          }));
+        if (enabledForProject) matches.push(candidate.instanceId);
+      }
+      if (matches.length > 1) {
+        return yield* failure(
+          "invalid_request",
+          `Model ${input.model} is offered by providers ${matches.join(", ")}. Pass target.providerInstanceId.`,
+        );
+      }
+      return matches[0];
+    },
+  );
+
   const resolveTarget = Effect.fn("OrchestratorMcpService.resolveTarget")(function* (input: {
     readonly parent: {
       readonly thread: Pick<
@@ -1901,6 +1957,16 @@ const make = Effect.gen(function* () {
             : `No instance of driver ${requestedDriver} is enabled for this project.`,
         );
       }
+    }
+    if (instanceId === undefined && input.target?.model !== undefined) {
+      instanceId = yield* inferInstanceForModel({
+        model: input.target.model,
+        inheritedInstanceId: input.parent.thread.modelSelection.instanceId,
+        projectId: input.projectId ?? input.parent.thread.projectId,
+        providers: input.providers,
+        orchestrationCapableInstanceIds,
+        skipProjectEnablementFilter: input.skipProjectEnablementFilter === true,
+      });
     }
     instanceId ??= input.parent.thread.modelSelection.instanceId;
 

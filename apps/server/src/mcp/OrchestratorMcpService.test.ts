@@ -3268,6 +3268,130 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
   );
 
+  it.effect.each([
+    { name: "picks the only other provider offering it", alsoOnParent: false, twoClaudes: false },
+    {
+      name: "keeps the parent's provider when it offers it",
+      alsoOnParent: true,
+      twoClaudes: false,
+    },
+    { name: "refuses when several providers offer it", alsoOnParent: false, twoClaudes: true },
+  ])("a model named without a provider $name", ({ alsoOnParent, twoClaudes }) =>
+    Effect.gen(function* () {
+      const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
+      const otherClaudeInstanceId = ProviderInstanceId.make("claude_work");
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      const task = {
+        id: taskId,
+        threadId: parentThreadId,
+        runId: parentRunId,
+        parentNodeId,
+        origin: "app_owned",
+        createdBy: "agent",
+        driver: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: claudeInstanceId,
+        providerThreadId: null,
+        childThreadId,
+        nativeTaskRef: null,
+        prompt: "Summarize the diff.",
+        title: null,
+        model: "claude-opus-5-5",
+        status: "running",
+        result: null,
+        startedAt: null,
+        completedAt: null,
+      };
+      const claude = (instanceId: ProviderInstanceId) =>
+        providerSnapshot({
+          instanceId,
+          driver: ProviderDriverKind.make("claudeAgent"),
+          model: "claude-opus-5-5",
+        });
+      const codex = providerSnapshot({
+        instanceId: codexInstanceId,
+        driver: ProviderDriverKind.make("codex"),
+        model: "gpt-5.4",
+      });
+      const claudes = twoClaudes
+        ? [claude(claudeInstanceId), claude(otherClaudeInstanceId)]
+        : [claude(claudeInstanceId)];
+      const layerDependencies = Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
+          assertProviderInstanceEnabled: () => Effect.void,
+          isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+          getThreadRecords: (threadId) =>
+            threadId === parentThreadId
+              ? Ref.get(dispatched).pipe(
+                  Effect.map((commands) => parentProjection(commands.length > 0 ? [task] : [])),
+                )
+              : Effect.succeed(childProjection),
+          dispatch: (command) =>
+            Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+              Effect.as({
+                sequence: 1,
+                storedEvents: [
+                  {
+                    sequence: 1,
+                    commandId: null,
+                    event: { type: "subagent.updated", payload: task },
+                  },
+                ],
+              } as never),
+            ),
+        }),
+        ServerSettings.layerTest(),
+        providerRegistryLayer([
+          alsoOnParent
+            ? {
+                ...codex,
+                models: [
+                  ...codex.models,
+                  { slug: "claude-opus-5-5", name: "Opus", isCustom: false, capabilities: null },
+                ],
+              }
+            : codex,
+          ...claudes,
+        ]),
+        adapterRegistryLayer([codexInstanceId, ...claudes.map((p) => p.instanceId)]),
+        Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const delegate = service.delegateTask(scope, {
+          task: "Summarize the diff.",
+          target: { model: "claude-opus-5-5" },
+          mode: "async",
+          clientRequestId: "delegate-model-only",
+        });
+        if (twoClaudes) {
+          const error = yield* delegate.pipe(Effect.flip);
+          assert.equal(error.code, "invalid_request");
+          assert.include(error.message, "claudeAgent, claude_work");
+          assert.lengthOf(yield* Ref.get(dispatched), 0);
+          return;
+        }
+        yield* delegate;
+        const commands = yield* Ref.get(dispatched);
+        assert.equal(commands.length, 1);
+        const request = commands[0] as Extract<
+          OrchestrationV2ServerCommand,
+          { type: "delegated_task.request" }
+        >;
+        assert.deepEqual(request.modelSelection, {
+          instanceId: alsoOnParent ? codexInstanceId : claudeInstanceId,
+          model: "claude-opus-5-5",
+        });
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+    }),
+  );
+
   it.effect("an unadvertised model refusal names advertised slugs to retry with", () =>
     Effect.gen(function* () {
       const codex = providerSnapshot({
