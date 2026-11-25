@@ -19,7 +19,10 @@ export const ClaudeKeepWarmHold = Schema.Struct({
   staysOnPinChange: Schema.optionalKey(Schema.Boolean),
   /** When the proxy forwards the held request, or for a pin hold checks the account again. */
   releaseAt: IsoDateTime,
-  /** Start of a direct root request that the router reports as held on this pin. */
+  /**
+   * Start of the held request: for a pin hold, a direct root request on this pin; for a keep-warm
+   * hold, any request of the session (a subagent's reports its root session).
+   */
   quotaWaitSince: Schema.optionalKey(IsoDateTime),
   /** The held account: its email, or the proxy's alias for it when the email is unknown. */
   account: Schema.optionalKey(Schema.String),

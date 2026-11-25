@@ -5723,7 +5723,12 @@ interface ActiveClaudeTurnContext {
   // Set when the prompt starts or a request goes out; cleared by the turn's next frame.
   unansweredRequestSince?: DateTime.Utc | undefined;
   /** Router evidence retained across the brief gap between SDK requests. */
-  quotaPinRetryUntil?: number | undefined;
+  routerHoldRetryUntil?: number | undefined;
+  /**
+   * Whether that evidence is a verified root pin hold. Only those also make a closed or failed
+   * request restart: a keep-warm hold may be a subagent's, so it only defers the watchdogs.
+   */
+  routerHoldIsPin?: boolean | undefined;
   // Interrupted once the silence clears, so the session scope stops holding this context.
   unansweredRequestWatch?: Fiber.Fiber<unknown> | undefined;
   readonly queryPolicy: ClaudeRuntimeQueryPolicy;
@@ -7413,20 +7418,25 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           );
         });
 
-        const waitForQuotaPin = Effect.fnUntraced(function* (
+        const waitForRouterHold = Effect.fnUntraced(function* (
           context: ActiveClaudeTurnContext,
           stillWaiting: Effect.Effect<boolean>,
         ) {
           let held = false;
           while (yield* stillWaiting) {
             const now = yield* Clock.currentTimeMillis;
-            if ((context.quotaPinRetryUntil ?? 0) > now) {
+            const until = context.routerHoldRetryUntil ?? 0;
+            if (until > now) {
               held = true;
               // A new pick can extend the wait. A pin change or a response can end it earlier.
               yield* Effect.sleep("30 seconds");
             } else if (held) {
               held = false;
               yield* Effect.sleep(PROVIDER_RETRY_BUDGET_MS);
+            } else if (now < until + PROVIDER_RETRY_BUDGET_MS) {
+              // The hold ended (no response clears this) while the watchdog slept: the provider
+              // still gets a whole budget after the release.
+              yield* Effect.sleep(until + PROVIDER_RETRY_BUDGET_MS - now);
             } else {
               return true;
             }
@@ -7444,7 +7454,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ? retry
                 : undefined;
             });
-            if (!(yield* waitForQuotaPin(context, Effect.map(isCurrentRetry, Boolean)))) return;
+            if (!(yield* waitForRouterHold(context, Effect.map(isCurrentRetry, Boolean)))) return;
             const retry = yield* isCurrentRetry;
             if (retry === undefined) return;
             yield* failStalledTurn(
@@ -7465,7 +7475,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             Ref.get(activeTurn),
             (active) => active === context && context.unansweredRequestSince === since,
           );
-          if (!(yield* waitForQuotaPin(context, isUnanswered))) return;
+          if (!(yield* waitForRouterHold(context, isUnanswered))) return;
           yield* failStalledTurn(
             context,
             makeProviderFailure({
@@ -10423,10 +10433,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           // The control poll can see an empty list between the old pick and its retry.
           const retryGraceMs = ClaudeKeepWarm.QUOTA_PIN_HOLD_GRACE_MS;
           if (hold === null || hold.released) {
-            if (hold !== null) context.quotaPinRetryUntil = undefined;
-            else if (notice !== null && context.quotaPinRetryUntil !== undefined) {
-              context.quotaPinRetryUntil = Math.min(
-                context.quotaPinRetryUntil,
+            if (hold !== null) context.routerHoldRetryUntil = undefined;
+            else if (notice !== null && context.routerHoldRetryUntil !== undefined) {
+              context.routerHoldRetryUntil = Math.min(
+                context.routerHoldRetryUntil,
                 nowMs + retryGraceMs,
               );
             }
@@ -10455,11 +10465,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           ) {
             return;
           }
-          const deadline = ClaudeKeepWarm.quotaPinHoldDeadline(
+          const deadline = ClaudeKeepWarm.routerHoldDeadline(
             hold,
             DateTime.toEpochMillis(context.startedAt),
           );
-          context.quotaPinRetryUntil = deadline === null ? undefined : deadline + retryGraceMs;
+          context.routerHoldRetryUntil = deadline === null ? undefined : deadline + retryGraceMs;
+          context.routerHoldIsPin = hold.kind === "pin";
           // Clients read the newest notice, so the older one's mark needs no rewrite.
           state.released = null;
           // A keep-warm hold turning into a pin hold is a new wait, so its duration starts again.
@@ -11293,7 +11304,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                         ? false
                         : queryFailure.retryable,
                   };
-            const quotaRetry = (context.quotaPinRetryUntil ?? 0) > (yield* Clock.currentTimeMillis);
+            const quotaRetry =
+              context.routerHoldIsPin === true &&
+              (context.routerHoldRetryUntil ?? 0) > (yield* Clock.currentTimeMillis);
             const retryFailure =
               cause === undefined ||
               (context.overloadRetry !== null && Cause.hasInterruptsOnly(cause))
@@ -12846,7 +12859,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               message.error === undefined &&
               message.message.model !== "<synthetic>"
             ) {
-              context.quotaPinRetryUntil = undefined;
+              context.routerHoldRetryUntil = undefined;
               yield* completeProviderRetry(context, now);
               if (context.keepWarm?.notice) yield* showKeepWarmHold(context, null);
             }
@@ -13700,7 +13713,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   }
                 : resultFailure;
             const quotaRetry =
-              (context.quotaPinRetryUntil ?? 0) > DateTime.toEpochMillis(completedAt);
+              context.routerHoldIsPin === true &&
+              (context.routerHoldRetryUntil ?? 0) > DateTime.toEpochMillis(completedAt);
             if (
               !interrupted &&
               terminalStatusFromResult(message, failureHint) === "failed" &&
@@ -14040,7 +14054,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             message.parent_tool_use_id === null &&
             message.event.type === "message_start"
           ) {
-            context.quotaPinRetryUntil = undefined;
+            context.routerHoldRetryUntil = undefined;
             yield* completeProviderRetry(context, yield* DateTime.now);
           }
           if (

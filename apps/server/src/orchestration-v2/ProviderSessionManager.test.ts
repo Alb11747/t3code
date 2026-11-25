@@ -2633,6 +2633,7 @@ it.effect("ProviderSessionManagerV2 drains subscribers when the provider stops",
 const retryStallScenarios = [
   "codex",
   "matching Claude hold",
+  "matching keep-warm hold",
   "other Claude turn",
   "older Claude hold",
 ] as const;
@@ -2709,7 +2710,7 @@ it.effect.each(retryStallScenarios)("retry watchdog respects its own quota hold 
           session: "native-thread",
           startedAt: DateTime.toEpochMillis(now),
           hold: {
-            kind: "pin" as const,
+            ...(scenario === "matching keep-warm hold" ? {} : { kind: "pin" as const }),
             quotaWaitSince: DateTime.formatIso(
               scenario === "older Claude hold" ? DateTime.subtract(now, { seconds: 1 }) : now,
             ),
@@ -2792,7 +2793,7 @@ it.effect.each(retryStallScenarios)("retry watchdog respects its own quota hold 
       yield* TestClock.adjust("15 minutes");
       assert.equal((yield* Ref.get(state)).interruptCount, 0);
       yield* TestClock.adjust("1 minute");
-      if (scenario === "matching Claude hold") {
+      if (scenario === "matching Claude hold" || scenario === "matching keep-warm hold") {
         // The silent retry crosses its normal deadline at minute 32, with a hold until minute 35.
         yield* TestClock.adjust(3 * 60_000 + QUOTA_PIN_HOLD_GRACE_MS - 1_000);
         assert.equal((yield* Ref.get(state)).interruptCount, 0);

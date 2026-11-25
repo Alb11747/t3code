@@ -880,9 +880,18 @@ export const makeCliproxyApi = Effect.gen(function* () {
       const resetAt = iso(held.reset_at);
       if (releaseAt === null) return [];
       if (held.kind === "keep_warm") {
+        const since = iso(held.since);
         return resetAt === null
           ? []
-          : [{ session: held.session, account: held.account, releaseAt, resetAt }];
+          : [
+              {
+                session: held.session,
+                account: held.account,
+                releaseAt,
+                resetAt,
+                ...(since === null ? {} : { quotaWaitSince: since }),
+              },
+            ];
       }
       if (held.control === "steer" || (held.kind !== undefined && held.kind !== "pin")) return [];
       // Routers before 0.27.0 do not mark stall-steer holds, so only a listed stall pin counts.

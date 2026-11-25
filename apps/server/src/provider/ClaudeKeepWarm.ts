@@ -30,7 +30,7 @@ export const QUOTA_PIN_HOLD_GRACE_MS = 45_000;
 const SWITCH_SETTLE = "1 second";
 
 /** End of the current request's known quota wait, rather than the whole quota window. */
-export function quotaPinHoldDeadline(
+function quotaPinHoldDeadline(
   hold: ClaudeKeepWarmHold | null | undefined,
   turnStartedAt: number | undefined,
 ): number | null {
@@ -45,6 +45,23 @@ export function quotaPinHoldDeadline(
     return null;
   const release = Date.parse(hold.releaseAt);
   return Number.isFinite(release) && Number.isFinite(Date.parse(hold.resetAt)) ? release : null;
+}
+
+/**
+ * When the router next forwards a held request of this turn: a valid pin hold's deadline, or a
+ * keep-warm hold's `releaseAt`. Retry and stall watchdogs wait for it, since no response can come
+ * sooner. A keep-warm hold that began before the turn is an earlier turn's background request.
+ */
+export function routerHoldDeadline(
+  hold: ClaudeKeepWarmHold | null | undefined,
+  turnStartedAt: number | undefined,
+): number | null {
+  if (hold?.kind === "pin") return quotaPinHoldDeadline(hold, turnStartedAt);
+  if (hold == null || hold.released || hold.quotaWaitSince === undefined) return null;
+  if (turnStartedAt === undefined || !(Date.parse(hold.quotaWaitSince) >= turnStartedAt))
+    return null;
+  const release = Date.parse(hold.releaseAt);
+  return Number.isFinite(release) ? release : null;
 }
 
 export function keepWarmClaudeEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

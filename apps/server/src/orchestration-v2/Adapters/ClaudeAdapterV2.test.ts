@@ -14696,6 +14696,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
   it.effect.each([
     "native retry",
+    // An SSE drop 33 minutes into a keep-warm hold re-armed the retry budget (2026-11-25).
+    "keep-warm native retry",
     "exhausted SDK retries",
     "unanswered request",
     "closed SDK stream",
@@ -14726,12 +14728,20 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           attachments: [],
         }),
       );
-      const quotaHold = {
-        kind: "pin" as const,
-        quotaWaitSince: DateTime.formatIso(yield* DateTime.now),
-        releaseAt: DateTime.formatIso(DateTime.add(now, { minutes: 22 })),
-        resetAt: DateTime.formatIso(DateTime.add(now, { minutes: 22 })),
-      };
+      const releaseAt = DateTime.formatIso(DateTime.add(now, { minutes: 22 }));
+      const quotaHold =
+        mode === "keep-warm native retry"
+          ? {
+              quotaWaitSince: DateTime.formatIso(yield* DateTime.now),
+              releaseAt,
+              resetAt: DateTime.formatIso(DateTime.add(now, { hours: 2 })),
+            }
+          : {
+              kind: "pin" as const,
+              quotaWaitSince: DateTime.formatIso(yield* DateTime.now),
+              releaseAt,
+              resetAt: releaseAt,
+            };
       const session = sessions[0]!;
       const turn = yield* session.turn;
       assert.isNotNull(turn);

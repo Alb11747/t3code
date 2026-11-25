@@ -54,7 +54,7 @@ import {
 import {
   ClaudeKeepWarm,
   QUOTA_PIN_HOLD_GRACE_MS,
-  quotaPinHoldDeadline,
+  routerHoldDeadline,
 } from "../provider/ClaudeKeepWarm.ts";
 import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
 import * as ProviderInstallationGate from "../provider/ProviderInstallationGate.ts";
@@ -3063,7 +3063,7 @@ export const layerWithOptions = (
                 }
                 const deadline =
                   held?.turn.providerTurnId === item.providerTurnId
-                    ? quotaPinHoldDeadline(held.turn.hold, held.turn.startedAt)
+                    ? routerHoldDeadline(held.turn.hold, held.turn.startedAt)
                     : null;
                 const remaining =
                   deadline === null
