@@ -114,10 +114,13 @@ it.effect("publishes validated HTTP quotas as display-only accounts", () => {
   const accounts = [
     { id: "account", label: "External plan", providerInstanceId: "work-codex", windows: [window] },
   ];
+  const sourceId = UsageLimitSourceId.make("quota");
+  const requests = new Set<string>();
   let usedPercent = 35;
   let oversized = false;
   const client = HttpClient.make((request, url) =>
     Effect.sync(() => {
+      requests.add(`${request.method} ${url.href}`);
       expect(url.href).toBe("https://quota.test/v1");
       expect(request.headers.authorization).toBe("Bearer test-token");
       return HttpClientResponse.fromWeb(
@@ -147,6 +150,9 @@ it.effect("publishes validated HTTP quotas as display-only accounts", () => {
     const [snapshot] = yield* sources.current;
     expect(snapshot).toMatchObject({ kind: "http", accounts: [], quotaAccounts: accounts });
     expect(snapshot?.origin).toBeUndefined();
+    yield* sources.refreshModelAliases;
+    expect([...requests]).toEqual(["GET https://quota.test/v1"]);
+    expect(yield* sources.hub(sourceId)).toBeNull();
     usedPercent = 101;
     yield* sources.refresh;
     const [failed] = yield* sources.current;
@@ -168,7 +174,7 @@ it.effect("publishes validated HTTP quotas as display-only accounts", () => {
       }),
       ServerSettings.layerTest({
         usageLimitSources: {
-          [UsageLimitSourceId.make("quota")]: {
+          [sourceId]: {
             kind: "http",
             url: "https://quota.test/v1",
             managementKey: "test-token",

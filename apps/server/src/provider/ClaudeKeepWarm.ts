@@ -156,7 +156,9 @@ export const make = Effect.gen(function* () {
 
   const sources = settingsService.getSettings.pipe(
     Effect.map((settings) =>
-      Object.values(settings.usageLimitSources).filter((config) => config.enabled),
+      Object.values(settings.usageLimitSources).filter(
+        (config) => config.enabled && config.kind === "cliproxy",
+      ),
     ),
     Effect.orElseSucceed(() => []),
     Effect.flatMap((configs) =>
@@ -285,7 +287,7 @@ export const make = Effect.gen(function* () {
     return null;
   });
 
-  // The session's account is unknown here, so every source records the release.
+  // The session's account is unknown here, so each hub records the release.
   const release = Effect.fn("ClaudeKeepWarm.release")(function* (
     session: string,
     until: string | null,

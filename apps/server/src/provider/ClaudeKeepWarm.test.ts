@@ -51,6 +51,7 @@ function fixture(
   const requests: Array<{ method: string; path: string; body: unknown }> = [];
   const http = HttpClient.make((request) =>
     Effect.sync(() => {
+      assert.equal(new URL(request.url).origin, "https://hub.test");
       assert.equal(request.headers.authorization, "Bearer key");
       const body =
         request.body._tag === "Uint8Array"
@@ -79,6 +80,12 @@ function fixture(
             kind: "cliproxy",
             url: "https://hub.test",
             managementKey,
+            enabled: true,
+          },
+          [UsageLimitSourceId.make("http-quota")]: {
+            kind: "http",
+            url: "https://quota.test/v1",
+            managementKey: "quota-token",
             enabled: true,
           },
         },

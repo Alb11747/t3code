@@ -367,7 +367,7 @@ export const make = Effect.gen(function* () {
       (source) =>
         Effect.gen(function* () {
           const config = settings?.usageLimitSources[source.id];
-          if (!config?.enabled) return source;
+          if (!config?.enabled || config.kind !== "cliproxy") return source;
           const managementKey = yield* readManagementKey(config).pipe(
             Effect.orElseSucceed(() => ""),
           );
@@ -388,7 +388,7 @@ export const make = Effect.gen(function* () {
       Effect.orElseSucceed((): ServerSettings | null => null),
     );
     const config = settings?.usageLimitSources[sourceId];
-    if (!config?.enabled) return null;
+    if (!config?.enabled || config.kind !== "cliproxy") return null;
     const managementKey = yield* readManagementKey(config).pipe(Effect.orElseSucceed(() => ""));
     if (managementKey.length === 0) return null;
     return { url: config.url, managementKey };
