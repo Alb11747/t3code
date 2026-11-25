@@ -51,14 +51,15 @@ function fixture(
   const requests: Array<{ method: string; path: string; body: unknown }> = [];
   const http = HttpClient.make((request) =>
     Effect.sync(() => {
-      assert.equal(new URL(request.url).origin, "https://hub.test");
-      assert.equal(request.headers.authorization, "Bearer key");
+      const url = new URL(request.url);
       const body =
         request.body._tag === "Uint8Array"
           ? JSON.parse(new TextDecoder().decode(request.body.body))
           : undefined;
-      const path = new URL(request.url).pathname;
+      const path = url.pathname;
       requests.push({ method: request.method, path, body });
+      assert.equal(url.origin, "https://hub.test");
+      assert.equal(request.headers.authorization, "Bearer key");
       const accounts = { files: [{ id: "a", auth_index: "7", provider: "claude", email: WARM }] };
       return HttpClientResponse.fromWeb(
         request,
@@ -186,6 +187,7 @@ it.effect("shows the session's earliest keep-warm hold, with one control read pe
     const found = yield* keepWarm.find(ThreadId.make(`${threadId}-1`));
     assert.deepEqual(found?.turn.hold, { ...hold, account: WARM });
     yield* keepWarm.release("root", hold.resetAt);
+    assert.lengthOf(requests, 3);
     assert.deepInclude(requests.at(-1), {
       method: "POST",
       path: "/v0/management/control/keep-warm",
