@@ -4,7 +4,7 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { AuthMcpClientAccess } from "./auth.ts";
 import { OrchestratorMcpThreadAccountHold, OrchestratorMcpThreadStall } from "./claudeKeepWarm.ts";
-import { RouterAccountAlias } from "./providerUsageLimits.ts";
+import { AccountName } from "./threadAccount.ts";
 import {
   ContextTransferId,
   EnvironmentId,
@@ -623,8 +623,7 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
   account: Schema.optional(
     Schema.NullOr(
       Schema.Struct({
-        account: RouterAccountAlias,
-        email: Schema.optional(Schema.String),
+        account: AccountName,
         waitWhenOut: Schema.Boolean,
         pinned: Schema.optional(
           Schema.Literal(false).annotate({

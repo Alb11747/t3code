@@ -240,9 +240,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           thread.accountChoice,
           thread.modelSelection.instanceId,
         );
-        const chosenAccount = chosen
-          ? (yield* threadAccounts.describeChoice(chosen)).account
-          : null;
+        const chosenAccount = chosen ? (yield* threadAccounts.describeChoice(chosen)).name : null;
         return {
           threadId: thread.id,
           modelSelection: thread.modelSelection,
@@ -265,9 +263,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
                     ? []
                     : [
                         {
-                          account: account.routerAlias,
-                          ...(account.email ? { email: account.email } : {}),
-                          ...(account.plan ? { plan: account.plan } : {}),
+                          account: ThreadAccountService.accountName(account) ?? account.routerAlias,
                           ...(accounts.next === account.routerAlias ? { next: true } : {}),
                           ...(accounts.owner === account.routerAlias ? { owner: true } : {}),
                         },

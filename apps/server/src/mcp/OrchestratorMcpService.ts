@@ -1051,16 +1051,13 @@ function threadStall(
 // Fork: a choice made for another provider instance no longer applies.
 function accountOf(
   thread: OrchestrationV2ThreadProjection["thread"],
-  described:
-    | { readonly account: string; readonly email?: string; readonly pinned?: false }
-    | undefined,
+  described: { readonly name: string; readonly pinned?: false } | undefined,
 ) {
   const choice = threadAccountChoiceFor(thread.accountChoice, thread.modelSelection.instanceId);
   return choice
     ? {
         account: {
-          account: described?.account ?? choice.account,
-          ...(described?.email === undefined ? {} : { email: described.email }),
+          account: described?.name ?? choice.account,
           waitWhenOut: choice.stall,
           ...(described?.pinned === false ? { pinned: false as const } : {}),
         },
@@ -1186,7 +1183,7 @@ function threadDetail(
   shell: OrchestrationV2ThreadShell,
   nowMs: number,
   firstPage: boolean,
-  account: { readonly account: string; readonly email?: string } | undefined,
+  account: { readonly name: string; readonly pinned?: false } | undefined,
 ): OrchestratorMcpThreadDetail {
   const latest = ThreadManagementService.latestRun(projection);
   const active = ThreadManagementService.latestActiveRun(projection);
@@ -4296,7 +4293,7 @@ const make = Effect.gen(function* () {
           (input.beforePosition === undefined || input.beforePosition >= timeline.totalItems),
         target.thread.accountChoice
           ? {
-              ...(yield* threadAccounts.describeChoice(target.thread.accountChoice)),
+              name: (yield* threadAccounts.describeChoice(target.thread.accountChoice)).name,
               ...((yield* threadAccountRouting.pinFailed(target.thread.id))
                 ? { pinned: false as const }
                 : {}),

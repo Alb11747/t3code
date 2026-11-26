@@ -137,58 +137,58 @@ const RoutedThread = Schema.NullOr(Schema.Struct({ id: ThreadId, title: Schema.S
  * expired pin that the thread's next turn re-applies. `thread` is null for a session T3 does not
  * know, which `session` (a native session id prefix) names. Null when the hub is disabled or keyless.
  */
-export const ThreadAccountRouting = Schema.NullOr(
-  Schema.Struct({
-    steers: Schema.Array(
-      Schema.Struct({
-        provider: RouterProvider,
-        account: RouterAccountAlias,
-        active: Schema.Boolean,
-        expiresAt: Schema.optional(IsoDateTime),
-      }),
-    ),
-    pins: Schema.Array(
-      Schema.Struct({
-        account: RouterAccountAlias,
-        stall: Schema.Boolean,
-        active: Schema.Boolean,
-        /** Absent on a stored choice the router does not list. */
-        expiresAt: Schema.optional(IsoDateTime),
-        thread: RoutedThread,
-        session: Schema.NullOr(Schema.String),
-      }),
-    ),
-    /** Requests the router is holding now: `pin` for a stall pin, `keep_warm` for a warm cache. */
-    held: Schema.optional(
-      Schema.Array(
+const routingNaming = <Account extends Schema.Top>(account: Account) =>
+  Schema.NullOr(
+    Schema.Struct({
+      steers: Schema.Array(
         Schema.Struct({
-          account: Schema.NullOr(RouterAccountAlias),
-          kind: Schema.String,
-          releaseAt: IsoDateTime,
-          resetAt: Schema.NullOr(IsoDateTime),
+          provider: RouterProvider,
+          account,
+          active: Schema.Boolean,
+          expiresAt: Schema.optional(IsoDateTime),
+        }),
+      ),
+      pins: Schema.Array(
+        Schema.Struct({
+          account,
+          stall: Schema.Boolean,
+          active: Schema.Boolean,
+          /** Absent on a stored choice the router does not list. */
+          expiresAt: Schema.optional(IsoDateTime),
           thread: RoutedThread,
           session: Schema.NullOr(Schema.String),
         }),
       ),
-    ),
-    /** Timed safety-margin overrides: `headroomScale` 0 drops the router's spare headroom. */
-    margins: Schema.optional(
-      Schema.Array(
-        Schema.Struct({
-          headroomScale: Schema.Number,
-          expiresAt: IsoDateTime,
-          actor: Schema.NullOr(Schema.String),
-          thread: RoutedThread,
-          session: Schema.NullOr(Schema.String),
-        }),
+      /** Requests the router is holding now: `pin` for a stall pin, `keep_warm` for a warm cache. */
+      held: Schema.optional(
+        Schema.Array(
+          Schema.Struct({
+            account: Schema.NullOr(account),
+            kind: Schema.String,
+            releaseAt: IsoDateTime,
+            resetAt: Schema.NullOr(IsoDateTime),
+            thread: RoutedThread,
+            session: Schema.NullOr(Schema.String),
+          }),
+        ),
       ),
-    ),
-    /** Declared subscription ends; they stay until removed, also once passed. */
-    ends: Schema.optional(
-      Schema.Array(Schema.Struct({ account: RouterAccountAlias, endsAt: IsoDateTime })),
-    ),
-  }),
-);
+      /** Timed safety-margin overrides: `headroomScale` 0 drops the router's spare headroom. */
+      margins: Schema.optional(
+        Schema.Array(
+          Schema.Struct({
+            headroomScale: Schema.Number,
+            expiresAt: IsoDateTime,
+            actor: Schema.NullOr(Schema.String),
+            thread: RoutedThread,
+            session: Schema.NullOr(Schema.String),
+          }),
+        ),
+      ),
+      /** Declared subscription ends; they stay until removed, also once passed. */
+      ends: Schema.optional(Schema.Array(Schema.Struct({ account, endsAt: IsoDateTime }))),
+    }),
+  );
+export const ThreadAccountRouting = routingNaming(RouterAccountAlias);
 export type ThreadAccountRouting = typeof ThreadAccountRouting.Type;
 
 /** `headroomScale: null` clears the thread's override; `until` defaults to one hour from now. */
@@ -212,11 +212,17 @@ const UsageWindowSummary = Schema.Struct({
   resetsAt: Schema.optional(IsoDateTime),
 });
 
+/**
+ * An account as agents read it: its email and plan, such as `a@example.com (Max 5x)`. Only an
+ * account without an email shows its router alias. Inputs accept this name, the email or the alias.
+ */
+export const AccountName = Schema.String;
+
 /** One account's quota as the server last read it, without credential details. */
 export const AccountUsageSummary = Schema.Struct({
   driver: ProviderDriverKind,
-  /** The router alias for a hub account, which pins, steers and ends name. */
-  account: Schema.optional(RouterAccountAlias),
+  /** A hub account's name, which pins, steers and ends use; it stands in for `email` and `plan`. */
+  account: Schema.optional(AccountName),
   email: Schema.optional(Schema.String),
   plan: Schema.optional(Schema.String),
   subscriptionEndsAt: Schema.optional(IsoDateTime),
@@ -256,21 +262,24 @@ export const ThreadAccountUsage = Schema.Struct({
       error: Schema.optional(Schema.String),
       accounts: Schema.Array(AccountUsageSummary),
       /** Null when the hub has no quota router to read. */
-      routing: ThreadAccountRouting,
+      routing: routingNaming(AccountName),
     }),
   ),
   thread: Schema.optional(
     Schema.Struct({
       threadId: ThreadId,
+      /** The account its prompt cache is warm on, which served its recent requests; null once cold. */
+      current: Schema.NullOr(AccountName),
       /** The account the router would send the thread's next request to. */
-      next: Schema.NullOr(RouterAccountAlias),
+      next: Schema.NullOr(AccountName),
+      /** Why the router picks `next`, such as `pinned`, `warm`, `steered` or `placed`. */
+      basis: Schema.NullOr(Schema.String),
       /** The account it would continue on after a compaction; absent when the router cannot tell. */
-      afterCompaction: Schema.optional(RouterAccountAlias),
+      afterCompaction: Schema.optional(AccountName),
       /** The account an account-bound conversation is tied to. */
-      owner: Schema.NullOr(RouterAccountAlias),
-      chosen: Schema.NullOr(
-        Schema.Struct({ account: RouterAccountAlias, waitWhenOut: Schema.Boolean }),
-      ),
+      owner: Schema.NullOr(AccountName),
+      /** The account the thread is pinned to; null for automatic routing. */
+      chosen: Schema.NullOr(Schema.Struct({ account: AccountName, waitWhenOut: Schema.Boolean })),
     }),
   ),
 });

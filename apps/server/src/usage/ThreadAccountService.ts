@@ -84,8 +84,47 @@ export type ThreadAccountRedeemInput = (
   | { readonly account: RouterAccountAlias }
 ) & { readonly creditId?: string };
 
-// Agents name an account by router alias, email (any case) or the part before the `@` when only
-// one account has it; the router itself only ever sees the alias.
+/**
+ * What agents and users read for a hub account: its email and plan. Router aliases are internal
+ * ids that tell a reader nothing, so one shows only for an account without an email.
+ */
+export const accountName = (
+  account: Pick<UsageLimitSourceAccount, "email" | "plan" | "routerAlias">,
+): string | undefined =>
+  account.email === undefined
+    ? account.routerAlias
+    : account.plan === undefined
+      ? account.email
+      : `${account.email} (${account.plan})`;
+
+// An alias the listing does not know stays as it is: nothing better names it.
+const namer =
+  (accounts: ReadonlyArray<UsageLimitSourceAccount>) =>
+  (alias: string): string => {
+    const account = accounts.find((entry) => entry.routerAlias === alias);
+    return (account && accountName(account)) ?? alias;
+  };
+
+const namedRouting = (
+  routes: NonNullable<ThreadAccountRouting>,
+  name: (alias: string) => string,
+): NonNullable<ThreadAccountUsage["hubs"][number]["routing"]> => ({
+  steers: routes.steers.map((steer) => ({ ...steer, account: name(steer.account) })),
+  pins: routes.pins.map((pin) => ({ ...pin, account: name(pin.account) })),
+  ...(routes.held && {
+    held: routes.held.map((hold) => ({
+      ...hold,
+      account: hold.account === null ? null : name(hold.account),
+    })),
+  }),
+  ...(routes.margins && { margins: routes.margins }),
+  ...(routes.ends && {
+    ends: routes.ends.map((end) => ({ ...end, account: name(end.account) })),
+  }),
+});
+
+// Agents name an account by its name, router alias, email (any case) or the part before the `@`
+// when only one account has it; the router itself only ever sees the alias.
 const named = <T>(
   candidates: ReadonlyArray<T>,
   name: string,
@@ -93,7 +132,11 @@ const named = <T>(
   where: string,
 ): Effect.Effect<T, ThreadAccountError> => {
   const lower = name.toLowerCase();
-  const exact = candidates.filter((candidate) => accountOf(candidate).routerAlias === name);
+  const exact = candidates.filter(
+    (candidate) =>
+      accountOf(candidate).routerAlias === name ||
+      accountName(accountOf(candidate))?.toLowerCase() === lower,
+  );
   const byEmail = candidates.filter(
     (candidate) => accountOf(candidate).email?.toLowerCase() === lower,
   );
@@ -106,17 +149,21 @@ const named = <T>(
             (candidate) => accountOf(candidate).email?.toLowerCase().split("@")[0] === lower,
           );
   if (matches.length === 1) return Effect.succeed(matches[0]!);
-  const list = (entries: ReadonlyArray<T>) =>
-    entries
-      .map((entry) => {
-        const account = accountOf(entry);
-        return account.email ? `${account.email} (${account.routerAlias})` : account.routerAlias;
-      })
+  const list = (entries: ReadonlyArray<T>) => {
+    const names = entries.map((entry) => accountName(accountOf(entry)));
+    // Only names two accounts share fall back to the alias, the one way left to tell them apart.
+    return entries
+      .map((entry, index) =>
+        names.indexOf(names[index]) === names.lastIndexOf(names[index])
+          ? names[index]
+          : accountOf(entry).routerAlias,
+      )
       .join(", ");
+  };
   return Effect.fail(
     matches.length === 0
       ? fail(`No account ${where} is named "${name}". Choose one of: ${list(candidates)}.`)
-      : fail(`"${name}" matches several accounts: ${list(matches)}. Use the email or alias.`),
+      : fail(`"${name}" matches several accounts: ${list(matches)}. Use one of those names.`),
   );
 };
 
@@ -209,10 +256,10 @@ export class ThreadAccounts extends Context.Reference<{
   readonly usageResetAt: (
     threadId: ThreadId,
   ) => Effect.Effect<{ readonly resetsAt: string }, ThreadAccountError>;
-  /** A stored choice's account as its hub's router names it now, with its email, for agents. */
+  /** A stored choice's account as its hub's router names it now, with its name for agents. */
   readonly describeChoice: (
     choice: ThreadAccountChoice,
-  ) => Effect.Effect<{ readonly account: RouterAccountAlias; readonly email?: string }>;
+  ) => Effect.Effect<{ readonly account: RouterAccountAlias; readonly name: string }>;
 }>("t3/usage/ThreadAccounts", {
   defaultValue: () => ({
     state: () => Effect.succeed(null),
@@ -228,7 +275,7 @@ export class ThreadAccounts extends Context.Reference<{
       Effect.fail(new UsageLimitSourceError({ detail: "Reset credits are unavailable." })),
     redeem: () => Effect.fail(fail("Reset credits are unavailable.")),
     usageResetAt: () => Effect.fail(fail("Usage resets are unavailable.")),
-    describeChoice: (choice) => Effect.succeed({ account: choice.account }),
+    describeChoice: (choice) => Effect.succeed({ account: choice.account, name: choice.account }),
   }),
 }) {}
 
@@ -914,6 +961,16 @@ export const make = Effect.gen(function* () {
     Effect.mapError(() => fail("Could not read settings.")),
   );
 
+  const describeChoice = Effect.fn("ThreadAccounts.describeChoice")(function* (
+    choice: ThreadAccountChoice,
+  ) {
+    const account = (yield* sources.routerAlias(choice.sourceId))(
+      choice.account,
+    ) as RouterAccountAlias;
+    const source = (yield* sources.current).find((entry) => entry.id === choice.sourceId);
+    return { account, name: namer(source ? yield* accountsOf(source) : [])(account) };
+  });
+
   const usage = Effect.fn("ThreadAccounts.usage")(function* (input: ThreadAccountUsageInput) {
     const [providerList, snapshots, agentsCanRedeemResetCredits] = yield* Effect.all([
       providers.getProviders,
@@ -948,48 +1005,43 @@ export const make = Effect.gen(function* () {
             ...(source.error ? { error: source.error } : {}),
             accounts: accounts.map((account): AccountUsageSummary => ({
               driver: account.driver,
-              ...(account.routerAlias ? { account: account.routerAlias } : {}),
-              ...(account.email ? { email: account.email } : {}),
-              ...(account.plan ? { plan: account.plan } : {}),
+              ...(accountName(account) === undefined ? {} : { account: accountName(account) }),
               ...(account.subscriptionEndsAt
                 ? { subscriptionEndsAt: account.subscriptionEndsAt }
                 : {}),
               ...usageSummary(account.usageLimits),
             })),
-            routing: routes,
+            routing: routes && namedRouting(routes, namer(accounts)),
           })),
         ),
       { concurrency: "unbounded" },
     );
     if (input.threadId === undefined) return { agentsCanRedeemResetCredits, native, hubs };
     const thread = yield* threadOf(input.threadId);
-    const picked = yield* state({ threadId: thread.id, modelSelection: thread.modelSelection });
-    const afterCompaction = picked
-      ? yield* preview({
-          threadId: thread.id,
-          modelSelection: thread.modelSelection,
-          kind: "compaction",
-        })
-      : null;
+    const ask = { threadId: thread.id, modelSelection: thread.modelSelection };
+    const picked = yield* state(ask);
+    // Reuses the state's router read; adds the warm account and the pick's basis.
+    const next = picked ? yield* preview({ ...ask, kind: "next" }) : null;
+    const afterCompaction = picked ? yield* preview({ ...ask, kind: "compaction" }) : null;
     const chosen = threadAccountChoiceFor(thread.accountChoice, thread.modelSelection.instanceId);
+    const name = namer(picked?.accounts ?? []);
+    const afterCompactionName =
+      afterCompaction?.account && !afterCompaction.approximate
+        ? name(afterCompaction.account)
+        : null;
     return {
       agentsCanRedeemResetCredits,
       native,
       hubs,
       thread: {
         threadId: thread.id,
-        next: picked?.next ?? null,
-        ...(afterCompaction?.account && !afterCompaction.approximate
-          ? { afterCompaction: afterCompaction.account }
-          : {}),
-        owner: picked?.owner ?? null,
+        current: next?.current ? name(next.current) : null,
+        next: picked?.next ? name(picked.next) : null,
+        basis: next?.basis ?? null,
+        ...(afterCompactionName ? { afterCompaction: afterCompactionName } : {}),
+        owner: picked?.owner ? name(picked.owner) : null,
         chosen: chosen
-          ? {
-              account: (yield* sources.routerAlias(chosen.sourceId))(
-                chosen.account,
-              ) as RouterAccountAlias,
-              waitWhenOut: chosen.stall,
-            }
+          ? { account: (yield* describeChoice(chosen)).name, waitWhenOut: chosen.stall }
           : null,
       },
     };
@@ -1194,18 +1246,7 @@ export const make = Effect.gen(function* () {
     consumeResetCredit,
     redeem: (input: ThreadAccountRedeemInput) => asThreadAccountError(redeem(input)),
     usageResetAt: (threadId: ThreadId) => asThreadAccountError(usageResetAt(threadId)),
-    describeChoice: Effect.fn("ThreadAccounts.describeChoice")(function* (
-      choice: ThreadAccountChoice,
-    ) {
-      const account = (yield* sources.routerAlias(choice.sourceId))(
-        choice.account,
-      ) as RouterAccountAlias;
-      const source = (yield* sources.current).find((entry) => entry.id === choice.sourceId);
-      const email = source
-        ? (yield* accountsOf(source)).find((entry) => entry.routerAlias === account)?.email
-        : undefined;
-      return email === undefined ? { account } : { account, email };
-    }),
+    describeChoice,
   } satisfies (typeof ThreadAccounts)["Service"];
 });
 

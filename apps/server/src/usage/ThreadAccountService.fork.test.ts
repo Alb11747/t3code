@@ -57,7 +57,7 @@ const snapshots = [
     checkedAt: "2026-11-14T12:00:00.000Z",
     accounts: [
       hubAccount(OWNER, "work@example.com"),
-      hubAccount(OTHER, "spare@example.com"),
+      { ...hubAccount(OTHER, "spare@example.com"), plan: "Pro" },
       hubAccount(ELSEWHERE, "work@elsewhere.test"),
     ],
   },
@@ -434,18 +434,19 @@ describe("ThreadAccountService.set", () => {
     { name: "an alias the router renamed", account: LEGACY_OTHER, pinned: OTHER },
     { name: "an email in any case", account: "Spare@Example.COM", pinned: OTHER },
     { name: "a unique local part", account: "spare", pinned: OTHER },
+    { name: "the name t3_usage shows", account: "spare@example.com (pro)", pinned: OTHER },
     { name: "a full email whose local part is shared", account: "work@example.com", pinned: OWNER },
     {
       name: "a shared local part",
       account: "work",
       error:
-        '"work" matches several accounts: work@example.com (account-1111111111111111), work@elsewhere.test (account-3333333333333333). Use the email or alias.',
+        '"work" matches several accounts: work@example.com, work@elsewhere.test. Use one of those names.',
     },
     {
       name: "an unknown name",
       account: "nobody",
       error:
-        'No account on this thread\'s CLI Proxy hub is named "nobody". Choose one of: work@example.com (account-1111111111111111), spare@example.com (account-2222222222222222), work@elsewhere.test (account-3333333333333333).',
+        'No account on this thread\'s CLI Proxy hub is named "nobody". Choose one of: work@example.com, spare@example.com (Pro), work@elsewhere.test.',
     },
   ])("resolves $name to an account", ({ account, pinned, error }) =>
     Effect.gen(function* () {
@@ -643,7 +644,7 @@ describe("ThreadAccountService.launchChoice", () => {
       instanceId: "claude",
       account: "someone@other-hub.test",
       error:
-        'No account on the CLI Proxy hub of claude is named "someone@other-hub.test". Choose one of: work@example.com (account-1111111111111111), spare@example.com (account-2222222222222222), work@elsewhere.test (account-3333333333333333).',
+        'No account on the CLI Proxy hub of claude is named "someone@other-hub.test". Choose one of: work@example.com, spare@example.com (Pro), work@elsewhere.test.',
     },
     {
       name: "refuses an instance that does not route through a hub",
@@ -820,7 +821,7 @@ describe("ThreadAccountService stored aliases", () => {
       // Agents reading a choice the rename has not reached yet see the current alias.
       expect(yield* service.describeChoice(legacyChoice as never)).toEqual({
         account: OWNER,
-        email: "work@example.com",
+        name: "work@example.com",
       });
       yield* Deferred.await(dispatched);
       // A choice under neither alias may name an account that returns, so it stays, and a pick
@@ -1003,7 +1004,19 @@ describe("ThreadAccountService.preview", () => {
       });
       expect(compaction).toMatchObject({ account: OTHER, approximate: false });
       const usage = yield* service.usage({ threadId });
-      expect(usage.thread).toMatchObject({ next: OWNER, afterCompaction: OTHER });
+      expect(usage.thread).toMatchObject({
+        current: "work@example.com",
+        next: "work@example.com",
+        basis: "warm",
+        afterCompaction: "spare@example.com (Pro)",
+      });
+      expect(usage.hubs[0]?.accounts.map((account) => account.account)).toEqual([
+        "work@example.com",
+        "spare@example.com (Pro)",
+        "work@elsewhere.test",
+      ]);
+      // Router aliases are internal ids; agents read emails and plans.
+      expect(JSON.stringify(usage)).not.toMatch(/account-[0-9a-f]{16}/);
     }).pipe(Effect.provide(testLayer({ picks })));
   });
 

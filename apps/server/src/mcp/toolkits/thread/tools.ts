@@ -19,7 +19,7 @@ import {
   RunId,
   NonNegativeInt,
   ProjectId,
-  RouterAccountAlias,
+  AccountName,
   ThreadAccountError,
   clampedPositiveInt,
   PositiveInt,
@@ -168,14 +168,12 @@ const threadConfiguration = Schema.Struct({
   autoCompactLimit: Schema.optional(Schema.NullOr(PositiveInt)),
   // Fork: CLI Proxy quota-router accounts, present when the provider routes through one.
   account: Schema.optional(
-    Schema.NullOr(Schema.Struct({ account: RouterAccountAlias, waitWhenOut: Schema.Boolean })),
+    Schema.NullOr(Schema.Struct({ account: AccountName, waitWhenOut: Schema.Boolean })),
   ),
   accounts: Schema.optional(
     Schema.Array(
       Schema.Struct({
-        account: RouterAccountAlias,
-        email: Schema.optional(Schema.String),
-        plan: Schema.optional(Schema.String),
+        account: AccountName,
         next: Schema.optional(Schema.Boolean),
         owner: Schema.optional(Schema.Boolean),
       }),
