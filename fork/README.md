@@ -201,6 +201,8 @@ attempt at the previous one.
 
 ## Adding a change
 
+Authorized fork work (features, bug fixes, and workflow fixes) includes pushing the finished, validated commits to `main` so the automated release can run; do not ask for separate confirmation just to push unless asked to stop at a local commit or the scope or release target is unclear.
+
 1. Before an app or workflow feat or fix, it's best to fetch `origin` and
    resolve any pending sync review or failed sync first, following _Syncing
    with upstream_. If blocked by a sync request that someone is working on,
@@ -289,41 +291,13 @@ attempt at the previous one.
    fork-specific differences locally and record a receipt for the resulting
    commit; an upstream pass alone does not validate a different fork commit.
 
-6. Right before pushing an app change, run
-   `fork/scripts/check-sync-request.sh`. Pushes do not sync with upstream
-   first: the release builds on whatever nightly main already has, and the
-   watchdog syncs about every three days (_Syncing with upstream_). Do not
-   dispatch **Fork sync** to get a newer upstream for your change; each
-   conflicting sync starts a model-driven resolver. Exit 3 means a sync
-   request is open: when someone is working on it, watch that issue and
-   resume automatically (_Waiting for a sync_); when it is stuck, resolve it
-   yourself (_A stuck sync_). Then run the script again. Then fetch `origin` and rebase the
-   task branch's own commits onto current `origin/main` (they are not on
-   `main` yet, so this rewrites nothing published); rerun focused checks if
-   the rebase touched the change's files. When finished (_Release
-   lineage_), push from the task
-   worktree with `git push origin HEAD:main` (a plain push: it must fast-forward).
-   **Fork release**
-   waits 2 hours (the `fork-release-delay` environment's wait timer), runs
-   the validation gate, then builds and publishes. It skips hosted checks when a
-   local receipt or matching hosted pass exists on the exact release commit.
-   Record the receipt after any rebase and before the main push; otherwise
-   the release falls back to the hosted matrix. Both the normal release and
-   Labs fallback use this gate. The wait batches fork changes: a newer push
-   cancels the older run at any stage and restarts the wait, so every change
-   pushed within two hours of the previous one ships in one release. There's
-   no need to hold a finished change for other threads' work; push it and let
-   the wait collect them. To ship sooner, approve the waiting deployment in
-   the run's page (repository admins can bypass the timer). Do that for an
-   important change (a fix for lost work, duplicated agents, broken delegation
-   or a similar user-facing failure) once no other agent is building or about
-   to push T3 Code changes on any connected machine: check the T3 thread lists
-   and AgentBridge agents on every linked and reachable environment for active
-   t3code work, and ask those agents when unsure. Otherwise let the timer run.
-   If the push is rejected because another thread pushed first,
-   `git fetch origin`, rebase onto `origin/main`, and push again. After the
-   wait, Fork release compares files with the newest published release and
-   skips the rest when only workflows, actions or `fork/` differ.
+6. Push to `main` once the change is finished (_Release lineage_), without asking for separate confirmation unless told to stop at commit:
+
+   - **Check sync status:** Run `fork/scripts/check-sync-request.sh`. Pushes do not sync with upstream first: the release builds on whatever nightly main already has, and the watchdog syncs about every three days (_Syncing with upstream_). Do not dispatch **Fork sync** to get a newer upstream for your change; each conflicting sync starts a model-driven resolver. Exit 3 means a sync request is open: when someone is working on it, watch that issue and resume automatically (_Waiting for a sync_); when it is stuck, resolve it yourself (_A stuck sync_). Then run the script again.
+   - **Rebase and record validation:** Fetch `origin` and rebase the task branch's own commits onto current `origin/main` (they are not on `main` yet, so this rewrites nothing published); rerun focused checks if the rebase touched the change's files. Record the local validation receipt (step 5) after any rebase and before pushing to `main`; otherwise the release falls back to the hosted matrix.
+   - **Push:** From the task worktree, run `git push origin HEAD:main` (a plain push: it must fast-forward). If the push is rejected because another thread pushed first, `git fetch origin`, rebase onto `origin/main`, re-record the receipt if needed, and push again.
+   - **Release wait and batching:** **Fork release** waits 2 hours (the `fork-release-delay` environment's wait timer), runs the validation gate, then builds and publishes. It skips hosted checks when a local receipt or matching hosted pass exists on the exact release commit (both the normal release and Labs fallback use this gate). The wait batches fork changes: a newer push cancels the older run at any stage and restarts the wait, so every change pushed within two hours of the previous one ships in one release. There's no need to hold a finished change for other threads' work; push it and let the wait collect them. After the wait, Fork release compares files with the newest published release and skips the rest when only workflows, actions or `fork/` differ.
+   - **Shipping sooner:** Approve the waiting deployment in the run's page (repository admins can bypass the timer). Do that for an important change (a fix for lost work, duplicated agents, broken delegation or a similar user-facing failure) once no other agent is building or about to push T3 Code changes on any connected machine: check the T3 thread lists and AgentBridge agents on every linked and reachable environment for active t3code work, and ask those agents when unsure. Otherwise let the timer run.
 
    For a CI-only push, fetch current `origin/main`, confirm no open `fork-sync`
    issue (unless the push is the fix for that sync, _A stuck sync_), rebase
