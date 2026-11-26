@@ -20,6 +20,18 @@ _Adding a change_, step 1. Upstream often fixes a bug within days of the
 fork's base, so it pays to check fetched `upstream/main` before writing code.
 If a fetch fails, it's best to stop and report it rather than work from stale refs.
 
+## Prompt-cache hit rate
+
+No change may lower the prompt-cache hit rate. Cache misses spend real subscription quota: rewriting a large context cold costs many times what a cached turn uses. Any change that can affect cache reuse requires measuring the hit rate before and after, like any other regression.
+
+When designing or reviewing a change, list every place where the prompt cache could be missed and explain why each case is safe:
+
+- **Prompt prefix, runtime instructions, and MCP tool lists:** keep `systemPrompt.append`, `buildRuntimeInstructions`, `T3_CODE_*_INSTRUCTIONS`, `mcpServers`, `claudeToolSearchOverride`, and `MCP_CONNECTION_NONBLOCKING: "0"` on resume (`apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts`), as well as Codex developer instructions, MCP servers, and post-compaction context restoration (`apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts`), stable across turns; reordering, per-turn mutations, or an early resumed request firing before MCP servers connect invalidates the prefix.
+- **Process restarts and live option updates:** check `canApplyClaudeSelectionLive` (`alwaysThinkingEnabled`, clearing `effort`, `pinnedAlias`, `autoCompactLimit`), `CLAUDE_CODE_PROMPT_CACHE_TTL` / `subagentPromptCacheTtl`, and Codex `thread/resume`, `effort`, and `serviceTier` transitions; unnecessary restarts or option changes can force a cold fill.
+- **Account affinity, pins, and thinking drops:** keep `ThreadAccountRouting.ts` (`prepareTurn` pin renewal, `accountChoice`, `accountMoveDropsThinking`) and the `ThreadAccountService.ts` / `control/next` pre-send guard consistent; a missed pin renewal, stale router alias, or unguarded account switch rewrites the entire context on another account and drops earlier signed thinking blocks.
+- **Idle gaps, keep-warm holds, and question waits:** preserve `ClaudeKeepWarm.ts` (`X-T3-Keep-Warm: 1`, `CLAUDE_STREAM_IDLE_TIMEOUT_MS`, `routerHoldDeadline`, and stall actions) and `ClaudeQuestionWait.ts` (keeping `AskUserQuestion` waits under the reported cache TTL); letting a retry/stall watchdog abort a held request or waiting past cache expiry turns a cheap keep-warm read into a cold rewrite.
+- **Compaction and cold-context guards:** keep `IdleCompaction.ts` / `IdleCompactionService.ts` (`LEAD_MS`, reuse tiers, warm-only idle compaction, `compactBeforeCacheExpires`, `compactAfterIdle`), `ClaudePromptCaching.ts` (`DISABLE_PROMPT_CACHING=1` and `X-CPA-Prompt-Cache-Mode: explicit` for uncached cold compaction), and the cold-Claude `contextPolicy` (`compact` vs `keep`) guard intact; compacting after expiry with caching enabled or letting queued/scheduled messages slip ahead of a prerequisite compaction wastes cache writes.
+
 ## User-requested issues and pull requests
 
 File requested bug reports and open requested PRs in
