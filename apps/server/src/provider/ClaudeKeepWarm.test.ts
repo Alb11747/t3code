@@ -638,3 +638,17 @@ it.effect.each([
     Effect.scoped,
   );
 });
+
+it("counts a hold the router stamped slightly before the turn as the turn's own", () => {
+  const turnStartedAt = Date.parse("2026-11-03T13:00:05.000Z");
+  const held: ClaudeKeepWarmHold = { ...hold, quotaWaitSince: "2026-11-03T13:00:02.000Z" };
+  // The router's clock can trail this host's by seconds.
+  assert.equal(ClaudeKeepWarm.routerHoldDeadline(held, turnStartedAt), Date.parse(hold.releaseAt));
+  // A hold from well before the turn is an earlier turn's background request.
+  assert.isNull(
+    ClaudeKeepWarm.routerHoldDeadline(
+      { ...held, quotaWaitSince: "2026-11-03T12:59:00.000Z" },
+      turnStartedAt,
+    ),
+  );
+});

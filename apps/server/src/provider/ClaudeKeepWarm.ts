@@ -29,6 +29,10 @@ export const QUOTA_PIN_HOLD_GRACE_MS = 45_000;
 // The router re-places a switched conversation's held requests within milliseconds of the command.
 const SWITCH_SETTLE = "1 second";
 
+// Fork: `quotaWaitSince` comes from the router host's clock and the turn start from this one's;
+// a T3 on another machine can run seconds ahead, which made a turn's own first hold look older.
+const ROUTER_CLOCK_SKEW_MS = 10_000;
+
 /** End of the current request's known quota wait, rather than the whole quota window. */
 function quotaPinHoldDeadline(
   hold: ClaudeKeepWarmHold | null | undefined,
@@ -41,7 +45,10 @@ function quotaPinHoldDeadline(
     hold.quotaWaitSince === undefined
   )
     return null;
-  if (turnStartedAt === undefined || !(Date.parse(hold.quotaWaitSince) >= turnStartedAt))
+  if (
+    turnStartedAt === undefined ||
+    !(Date.parse(hold.quotaWaitSince) >= turnStartedAt - ROUTER_CLOCK_SKEW_MS)
+  )
     return null;
   const release = Date.parse(hold.releaseAt);
   return Number.isFinite(release) && Number.isFinite(Date.parse(hold.resetAt)) ? release : null;
@@ -58,7 +65,10 @@ export function routerHoldDeadline(
 ): number | null {
   if (hold?.kind === "pin") return quotaPinHoldDeadline(hold, turnStartedAt);
   if (hold == null || hold.released || hold.quotaWaitSince === undefined) return null;
-  if (turnStartedAt === undefined || !(Date.parse(hold.quotaWaitSince) >= turnStartedAt))
+  if (
+    turnStartedAt === undefined ||
+    !(Date.parse(hold.quotaWaitSince) >= turnStartedAt - ROUTER_CLOCK_SKEW_MS)
+  )
     return null;
   const release = Date.parse(hold.releaseAt);
   return Number.isFinite(release) ? release : null;
