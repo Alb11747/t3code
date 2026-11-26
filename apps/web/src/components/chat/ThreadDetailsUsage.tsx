@@ -45,6 +45,8 @@ export interface ThreadDetailsUsageInput {
   readonly providers: readonly ServerProvider[];
   readonly sources: UsageLimitSourceSnapshots;
   readonly contextWindow: ContextWindowSnapshot | null;
+  /** Fork: tokens this thread auto-compacts at, set by an agent; null follows the model. */
+  readonly autoCompactLimit?: number | null;
 }
 
 type UsageTone = "error" | "warning" | null;
@@ -61,7 +63,7 @@ export function ThreadDetailsUsage({
   model,
   providers,
   sources,
-}: Omit<ThreadDetailsUsageInput, "contextWindow">) {
+}: Omit<ThreadDetailsUsageInput, "contextWindow" | "autoCompactLimit">) {
   const gt = useGT();
   const nowMinute = useNowMinute();
   const now = Date.parse(`${nowMinute}:00Z`);
@@ -116,13 +118,19 @@ function InstanceRows({
 }
 
 /** The thread's context window. The bar fills as context is used; the tick marks auto-compaction. */
-export function ThreadDetailsContext({ usage }: { readonly usage: ContextWindowSnapshot }) {
+export function ThreadDetailsContext({
+  usage,
+  autoCompactLimit = null,
+}: {
+  readonly usage: ContextWindowSnapshot;
+  readonly autoCompactLimit?: number | null;
+}) {
   const maxTokens = usage.maxTokens != null && usage.maxTokens > 0 ? usage.maxTokens : null;
   const used =
     maxTokens !== null && usage.usedPercentage !== null
       ? Math.round(Math.max(0, Math.min(100, usage.usedPercentage)))
       : null;
-  const threshold = usage.autoCompactThreshold ?? null;
+  const threshold = autoCompactLimit ?? usage.autoCompactThreshold ?? null;
   const tick =
     maxTokens !== null && threshold !== null && threshold > 0 && threshold < maxTokens
       ? (threshold / maxTokens) * 100
@@ -177,6 +185,21 @@ export function ThreadDetailsContext({ usage }: { readonly usage: ContextWindowS
             </>
           }
         />
+        {autoCompactLimit !== null ? (
+          <UsageRow
+            label={gt("Auto-compact", { $context: "context window row label" })}
+            fill={null}
+            tone={null}
+            value={gt("at {tokens}", { tokens: formatContextWindowTokens(autoCompactLimit) })}
+            tooltip={
+              <span className="text-foreground">
+                {gt("This thread compacts at {tokens} tokens, a limit set for it.", {
+                  tokens: autoCompactLimit.toLocaleString(locale),
+                })}
+              </span>
+            }
+          />
+        ) : null}
       </div>
     </ThreadDetailsSection>
   );

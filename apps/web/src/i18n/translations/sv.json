@@ -13234,5 +13234,8 @@
   "da69607e036f3dfa": "Det här kontot",
   "ec84b6b01a94e3cf": "{account} har nått sin gräns för korta sessioner",
   "68d7952d67cd912e": "Resten av femtimmarsgränsen, som återställs {resetAt}, sparas åt långvariga trådar. Kontrollerar igen {releaseAt}.",
-  "e4974b202388b884": "Pausad medan {account} är vid sin gräns för korta sessioner."
+  "e4974b202388b884": "Pausad medan {account} är vid sin gräns för korta sessioner.",
+  "dbc06b7c545a097d": "Automatisk komprimering",
+  "5b49b60b53bc5c52": "vid {tokens}",
+  "2aa8fd91d348be6a": "Den här tråden komprimeras vid {tokens} tokens, en gräns som satts för den."
 }

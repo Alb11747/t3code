@@ -13227,5 +13227,8 @@
   "da69607e036f3dfa": "Dieses Konto",
   "ec84b6b01a94e3cf": "{account} hat sein Limit für kurze Sitzungen erreicht",
   "68d7952d67cd912e": "Der Rest des 5-Stunden-Limits, das {resetAt} zurückgesetzt wird, bleibt lang laufenden Threads vorbehalten. Erneute Prüfung {releaseAt}.",
-  "e4974b202388b884": "Angehalten, solange {account} sein Limit für kurze Sitzungen erreicht hat."
+  "e4974b202388b884": "Angehalten, solange {account} sein Limit für kurze Sitzungen erreicht hat.",
+  "dbc06b7c545a097d": "Auto-Komprimierung",
+  "5b49b60b53bc5c52": "bei {tokens}",
+  "2aa8fd91d348be6a": "Dieser Thread wird bei {tokens} Tokens komprimiert, einem für ihn gesetzten Limit."
 }
