@@ -74,6 +74,7 @@ import { T3Wordmark } from "../../components/T3Wordmark";
 import { BrowserAppIcon } from "./BrowserAppIcon";
 import { useAppActive, useReduceMotionEnabled } from "../../lib/appState";
 import { cn } from "../../lib/cn";
+import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { THREAD_WORK_ROW_MIN_HEIGHT, type deriveThreadWorkLogSizing } from "../../lib/layout";
 import {
   formatItemFullDetail,
@@ -938,7 +939,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
         ? gt("Usage limit reached. Retry after {resetTime}.", { resetTime })
         : gt("Usage limit reached.")
       : row.summary;
-    return (
+    const errorRow = (
       <WorkLogPressable
         accessibilityLabel={
           warning
@@ -1009,6 +1010,22 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
           ) : null}
         </View>
       </WorkLogPressable>
+    );
+    const verificationUrl = failureItem.failure.verificationUrl;
+    return verificationUrl === undefined ? (
+      errorRow
+    ) : (
+      <View>
+        {errorRow}
+        <View className="ml-7 mt-1.5 pb-1">
+          <Button
+            label={gt("Verify Google account")}
+            size="compact"
+            tone="secondary"
+            onPress={() => void tryOpenExternalUrl(verificationUrl, "provider-auth")}
+          />
+        </View>
+      </View>
     );
   }
   const notifiedSubagentThreadId =

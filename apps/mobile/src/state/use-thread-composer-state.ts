@@ -10,7 +10,10 @@ import {
   compactBeforeSendTokens,
 } from "@t3tools/client-runtime/state/context-window";
 import { threadRuntimeIsActive } from "@t3tools/client-runtime/state/shell";
-import { threadSteersDuringCompaction } from "@t3tools/client-runtime/state/thread-workflows";
+import {
+  runStopRequested,
+  threadSteersDuringCompaction,
+} from "@t3tools/client-runtime/state/thread-workflows";
 import { resolvePendingHandoff } from "@t3tools/client-runtime/handoff";
 import {
   announcedRun,
@@ -436,7 +439,9 @@ export function useThreadComposerState(input: {
     messages: selectedThreadMessages,
   });
   const canSteerActiveTurn =
-    (queueWorkflow?.canPromoteToSteer === true || turnPending) && !compactionBlocksSteer;
+    (queueWorkflow?.canPromoteToSteer === true || turnPending) &&
+    !compactionBlocksSteer &&
+    !runStopRequested(selectedThreadProjection?.projection, activeRunId);
   // A stop or a restart holds the queue, completion wakes included, until it
   // is resumed; the queue sheet lists only the user's own messages.
   const queueHeld = queueWorkflow?.isHeld === true;

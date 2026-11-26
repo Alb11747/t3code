@@ -1,5 +1,9 @@
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import {
+  usageResetSnoozeOptions,
+  type UsageResetSnoozeOption,
+} from "@t3tools/client-runtime/usage-reset-snooze";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
 import { openGuestShareDialog } from "../components/chat/guestShareDialogState";
 import { openContextNoteDialog } from "../components/chat/contextNoteDialogState";
@@ -75,7 +79,8 @@ function failureToast(title: string, error: unknown) {
 export function useThreadActionMenu(input: {
   readonly threadRef: ScopedThreadRef | null;
   readonly projectCwd: string | null;
-  readonly onStartRename: () => void;
+  /** Omitted where no inline title editor is rendered; the rename item is then disabled. */
+  readonly onStartRename?: (() => void) | undefined;
   readonly onFind?: ((threadRef: ScopedThreadRef) => void) | undefined;
   readonly canShareWithGuest: boolean;
 }) {
@@ -131,65 +136,57 @@ export function useThreadActionMenu(input: {
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- leaving a thread drops its menu still waiting for options
   useEffect(() => (threadKey === null ? undefined : cancelPendingMenuOpen), [threadKey]);
 
-  const openMenu = (position: { x: number; y: number }, source?: ContextMenuSource) => {
-    if (threadRef === null) return;
-    const pending = startMenuOpen();
-    void (async () => {
+  /** The thread's menu as of now, and a runner for its actions. Null until the thread loads. */
+  const readMenu = (
+    usageResetOptions: ReadonlyArray<UsageResetSnoozeOption> = usageResetSnoozeOptions(
+      undefined,
+      m,
+    ),
+  ) => {
+    if (threadRef === null) return null;
+    const thread = readThreadShell(threadRef);
+    if (!thread) return null;
+    const now = new Date();
+    const configLoaded = readEnvironmentServerConfigLoaded(threadRef.environmentId);
+    const supports = {
+      settlement: configLoaded,
+      autoSettleOptOut: readEnvironmentSupportsAutoSettleOptOut(threadRef.environmentId),
+      snooze: configLoaded,
+      pinning: configLoaded,
+      titleRegeneration: configLoaded,
+    };
+    const isRegeneratingTitle = thread.titleRegeneration != null;
+    const snoozePresets = resolveSnoozePresets(now, timestampFormat, threadRef.environmentId);
+    const isSnoozed = supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() });
+    const canSnoozeNow = canSnooze(thread, { now: now.toISOString() });
+    const items = buildThreadActionMenuItems({
+      canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
+      canTriage: threadTriagePermitted(threadRef.environmentId),
+      canFind: onFind !== undefined,
+      canRename: onStartRename !== undefined,
+      branch: thread.branch ?? null,
+      projectFilter: null,
+      isPinned: thread.pinnedAt != null,
+      isSettled: supports.settlement && thread.settledOverride === "settled",
+      autoSettleEnabled: thread.autoSettleDisabledAt == null,
+      autoSettleAlways:
+        thread.autoSettleAlwaysAt === undefined ? undefined : thread.autoSettleAlwaysAt != null,
+      compactBeforeCacheExpires: thread.compactBeforeCacheExpires,
+      compactOnce: thread.compactOnce,
+      isSnoozed,
+      canSnoozeNow,
+      usageResetSnoozeOptions: usageResetOptions,
+      isRegeneratingTitle,
+      isRunning: !threadRuntimeCanArchive(thread.runtime),
+      hasCompletedRun: thread.latestRun?.completedAt != null,
+      supports,
+      snoozePresets,
+      canShareWithGuest,
+      canTurnIntoProject: canTurnThreadIntoProject(threadRef),
+    });
+    const run = async (action: ThreadActionMenuId) => {
       const api = readLocalApi();
       if (!api) return;
-      const thread = readThreadShell(threadRef);
-      if (!thread) {
-        failureToast(
-          m(msg("Thread actions unavailable")),
-          new Error(m(msg("This thread has not loaded yet."))),
-        );
-        return;
-      }
-      const now = new Date();
-      const configLoaded = readEnvironmentServerConfigLoaded(threadRef.environmentId);
-      const supports = {
-        settlement: configLoaded,
-        autoSettleOptOut: readEnvironmentSupportsAutoSettleOptOut(threadRef.environmentId),
-        snooze: configLoaded,
-        pinning: configLoaded,
-        titleRegeneration: configLoaded,
-      };
-      const isRegeneratingTitle = thread.titleRegeneration != null;
-      const snoozePresets = resolveSnoozePresets(now, timestampFormat, threadRef.environmentId);
-      const isSnoozed = supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() });
-      const canSnoozeNow = canSnooze(thread, { now: now.toISOString() });
-      const [usageResetOptions = []] =
-        supports.snooze && !isSnoozed && canSnoozeNow
-          ? await loadUsageResetSnoozeOptions([threadRef])
-          : [];
-      if (!pending.isCurrent()) return;
-      const items = buildThreadActionMenuItems({
-        canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
-        canTriage: threadTriagePermitted(threadRef.environmentId),
-        canFind: onFind !== undefined,
-        branch: thread.branch ?? null,
-        projectFilter: null,
-        isPinned: thread.pinnedAt != null,
-        isSettled: supports.settlement && thread.settledOverride === "settled",
-        autoSettleEnabled: thread.autoSettleDisabledAt == null,
-        autoSettleAlways:
-          thread.autoSettleAlwaysAt === undefined ? undefined : thread.autoSettleAlwaysAt != null,
-        compactBeforeCacheExpires: thread.compactBeforeCacheExpires,
-        compactOnce: thread.compactOnce,
-        isSnoozed,
-        canSnoozeNow,
-        isRegeneratingTitle,
-        isRunning: !threadRuntimeCanArchive(thread.runtime),
-        hasCompletedRun: thread.latestRun?.completedAt != null,
-        supports,
-        snoozePresets,
-        usageResetSnoozeOptions: usageResetOptions,
-        canShareWithGuest,
-        canTurnIntoProject: canTurnThreadIntoProject(threadRef),
-      });
-      const clicked = await settlePromise(() => api.contextMenu.show(items, position, source));
-      if (clicked._tag === "Failure" || clicked.value === null) return;
-      const action: ThreadActionMenuId = clicked.value;
       if (
         threadActionRequiresOperate(action) &&
         !(isThreadTriageAction(action)
@@ -310,7 +307,7 @@ export function useThreadActionMenu(input: {
           );
           return;
         case "rename":
-          onStartRename();
+          onStartRename?.();
           return;
         case "context-note":
           openContextNoteDialog(threadRef);
@@ -426,6 +423,34 @@ export function useThreadActionMenu(input: {
         default:
           return;
       }
+    };
+    return { items, run, canLoadUsageResets: supports.snooze && !isSnoozed && canSnoozeNow };
+  };
+
+  const openMenu = (position: { x: number; y: number }, source?: ContextMenuSource) => {
+    void (async () => {
+      const api = readLocalApi();
+      if (!api || threadRef === null) return;
+      const pending = startMenuOpen();
+      const menu = readMenu();
+      if (!menu) {
+        failureToast(
+          m(msg("Thread actions unavailable")),
+          new Error(m(msg("This thread has not loaded yet."))),
+        );
+        return;
+      }
+      const [usageResetOptions = []] = menu.canLoadUsageResets
+        ? await loadUsageResetSnoozeOptions([threadRef])
+        : [];
+      if (!pending.isCurrent()) return;
+      const currentMenu = usageResetOptions.length > 0 ? readMenu(usageResetOptions) : menu;
+      if (!currentMenu) return;
+      const clicked = await settlePromise(() =>
+        api.contextMenu.show(currentMenu.items, position, source),
+      );
+      if (clicked._tag === "Failure" || clicked.value === null) return;
+      await currentMenu.run(clicked.value);
     })();
   };
 
@@ -434,5 +459,5 @@ export function useThreadActionMenu(input: {
     void readLocalApi()?.contextMenu.close();
   };
 
-  return { openMenu, closeMenu };
+  return { openMenu, closeMenu, readMenu };
 }
