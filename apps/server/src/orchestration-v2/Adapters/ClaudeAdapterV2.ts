@@ -14705,7 +14705,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               context.input.threadId,
               request.message,
               resolved === "accept" || resolved === "acceptForSession",
-              approvalSessionId,
+              ownRequest.providerSessionId,
             );
           }
           if (resolved === "acceptForSession") {

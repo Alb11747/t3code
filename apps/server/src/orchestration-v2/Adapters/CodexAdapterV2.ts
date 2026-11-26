@@ -6962,7 +6962,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 context.input.threadId,
                 payload.message,
                 response.action === "accept",
-                approvalSessionId,
+                ownRequest.providerSessionId,
               );
             }
             return response;

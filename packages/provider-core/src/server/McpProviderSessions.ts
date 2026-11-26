@@ -44,7 +44,7 @@ interface KeptToolResult {
 export interface T3ApprovalRequest {
   /** The whole question, as the provider's client hands it on. */
   readonly message: string;
-  readonly providerSessionId?: string | undefined;
+  readonly providerSessionId: string;
   readonly pushHooks?: ProviderApprovalPushHooks | undefined;
   /** What an answer is given for; an answer to another state does not count for this request. */
   readonly state?: string | undefined;
@@ -134,12 +134,12 @@ export class McpProviderSessions extends Context.Service<
     readonly findApprovalRequest: (
       threadId: ThreadId,
       message: string,
-      providerSessionId?: string,
+      providerSessionId: string,
     ) => Effect.Effect<KeptApprovalRequest | undefined>;
     readonly forgetApprovalRequest: (
       threadId: ThreadId,
       id: string,
-      providerSessionId?: string,
+      providerSessionId: string,
     ) => Effect.Effect<void>;
     // An adapter that shows T3's own requests says so for its provider instance and passes on
     // each answer the person gave in the app. It is handed the message and no id, so the answer
@@ -153,13 +153,13 @@ export class McpProviderSessions extends Context.Service<
       threadId: ThreadId,
       message: string,
       approved: boolean,
-      providerSessionId?: string,
+      providerSessionId: string,
     ) => Effect.Effect<void>;
     // Ends the request and returns it as it was, with the person's answer if one was given.
     readonly takeApprovalRequest: (
       threadId: ThreadId,
       id: string,
-      providerSessionId?: string,
+      providerSessionId: string,
     ) => Effect.Effect<KeptApprovalRequest | undefined>;
   }
 >()("@t3tools/provider-core/server/McpProviderSessions") {}
@@ -278,7 +278,7 @@ const make = Effect.gen(function* () {
     requests.length === 0
       ? withoutThread(current, threadId)
       : new Map(current).set(threadId, requests);
-  const clearApprovalRequests = (threadId: ThreadId, providerSessionId: string | undefined) =>
+  const clearApprovalRequests = (threadId: ThreadId, providerSessionId: string) =>
     Ref.update(approvalRequests, (current) =>
       storeApprovalRequests(
         current,
@@ -288,7 +288,7 @@ const make = Effect.gen(function* () {
         ),
       ),
     );
-  const takeApprovalRequest = (threadId: ThreadId, id: string, providerSessionId?: string) =>
+  const takeApprovalRequest = (threadId: ThreadId, id: string, providerSessionId: string) =>
     Ref.modify(approvalRequests, (current) => {
       const kept = current.get(threadId);
       const taken = kept?.find(
@@ -319,7 +319,9 @@ const make = Effect.gen(function* () {
         yield* Ref.update(toolResultState, (state) =>
           updateToolResultScope(state, config.threadId, previous?.providerSessionId, undefined),
         );
-        yield* clearApprovalRequests(config.threadId, previous?.providerSessionId);
+        if (previous !== undefined) {
+          yield* clearApprovalRequests(config.threadId, previous.providerSessionId);
+        }
       }
       yield* Ref.update(sessions, (current) =>
         new Map(current).set(

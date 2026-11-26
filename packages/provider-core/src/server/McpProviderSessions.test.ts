@@ -252,6 +252,7 @@ describe("provider HTML references", () => {
 
 describe("McpProviderSessions approval requests", () => {
   const threadId = ThreadId.make("thread-approval-requests");
+  const approvalSessionId = "provider-session-1";
   const pushHooks = { branch: "tools", files: [".husky/pre-push"], commands: [] };
   const makeSession = (providerSessionId: string) => ({
     environmentId: EnvironmentId.make("env-approval-requests"),
@@ -267,23 +268,37 @@ describe("McpProviderSessions approval requests", () => {
     Effect.gen(function* () {
       const sessions = yield* McpProviderSessions.McpProviderSessions;
       const asked = yield* sessions.recordApprovalRequest(threadId, {
+        providerSessionId: approvalSessionId,
         message: "Push tools?",
         pushHooks,
       });
 
-      assert.deepInclude(yield* sessions.findApprovalRequest(threadId, "Push tools?"), {
-        message: "Push tools?",
-        pushHooks,
-      });
+      assert.deepInclude(
+        yield* sessions.findApprovalRequest(threadId, "Push tools?", approvalSessionId),
+        {
+          message: "Push tools?",
+          pushHooks,
+        },
+      );
       // Showing the request does not end it.
-      assert.isDefined(yield* sessions.findApprovalRequest(threadId, "Push tools?"));
-      assert.isUndefined(yield* sessions.findApprovalRequest(threadId, "Push tools!"));
+      assert.isDefined(
+        yield* sessions.findApprovalRequest(threadId, "Push tools?", approvalSessionId),
+      );
       assert.isUndefined(
-        yield* sessions.findApprovalRequest(ThreadId.make("another-thread"), "Push tools?"),
+        yield* sessions.findApprovalRequest(threadId, "Push tools!", approvalSessionId),
+      );
+      assert.isUndefined(
+        yield* sessions.findApprovalRequest(
+          ThreadId.make("another-thread"),
+          "Push tools?",
+          approvalSessionId,
+        ),
       );
 
-      yield* sessions.forgetApprovalRequest(threadId, asked);
-      assert.isUndefined(yield* sessions.findApprovalRequest(threadId, "Push tools?"));
+      yield* sessions.forgetApprovalRequest(threadId, asked, approvalSessionId);
+      assert.isUndefined(
+        yield* sessions.findApprovalRequest(threadId, "Push tools?", approvalSessionId),
+      );
     }).pipe(Effect.provide(McpProviderSessions.layer)),
   );
 
@@ -292,21 +307,28 @@ describe("McpProviderSessions approval requests", () => {
       const sessions = yield* McpProviderSessions.McpProviderSessions;
       // Two calls asking the same thing are answered one at a time, each once.
       const first = yield* sessions.recordApprovalRequest(threadId, {
+        providerSessionId: approvalSessionId,
         message: "Push tools?",
         pushHooks,
       });
       const second = yield* sessions.recordApprovalRequest(threadId, {
+        providerSessionId: approvalSessionId,
         message: "Push tools?",
         pushHooks,
       });
-      yield* sessions.forgetApprovalRequest(threadId, first);
-      yield* sessions.forgetApprovalRequest(threadId, first);
-      assert.deepInclude(yield* sessions.findApprovalRequest(threadId, "Push tools?"), {
-        message: "Push tools?",
-        pushHooks,
-      });
-      yield* sessions.forgetApprovalRequest(threadId, second);
-      assert.isUndefined(yield* sessions.findApprovalRequest(threadId, "Push tools?"));
+      yield* sessions.forgetApprovalRequest(threadId, first, approvalSessionId);
+      yield* sessions.forgetApprovalRequest(threadId, first, approvalSessionId);
+      assert.deepInclude(
+        yield* sessions.findApprovalRequest(threadId, "Push tools?", approvalSessionId),
+        {
+          message: "Push tools?",
+          pushHooks,
+        },
+      );
+      yield* sessions.forgetApprovalRequest(threadId, second, approvalSessionId);
+      assert.isUndefined(
+        yield* sessions.findApprovalRequest(threadId, "Push tools?", approvalSessionId),
+      );
     }).pipe(Effect.provide(McpProviderSessions.layer)),
   );
 
@@ -315,17 +337,25 @@ describe("McpProviderSessions approval requests", () => {
       const sessions = yield* McpProviderSessions.McpProviderSessions;
       yield* sessions.set(makeSession("provider-session-1"));
       const earlier = yield* sessions.recordApprovalRequest(threadId, {
+        providerSessionId: approvalSessionId,
         message: "Push tools?",
         pushHooks,
       });
       yield* sessions.set(makeSession("provider-session-2"));
-      yield* sessions.recordApprovalRequest(threadId, { message: "Push tools?", pushHooks });
-
-      yield* sessions.forgetApprovalRequest(threadId, earlier);
-      assert.deepInclude(yield* sessions.findApprovalRequest(threadId, "Push tools?"), {
+      yield* sessions.recordApprovalRequest(threadId, {
         message: "Push tools?",
         pushHooks,
+        providerSessionId: "provider-session-2",
       });
+
+      yield* sessions.forgetApprovalRequest(threadId, earlier, approvalSessionId);
+      assert.deepInclude(
+        yield* sessions.findApprovalRequest(threadId, "Push tools?", "provider-session-2"),
+        {
+          message: "Push tools?",
+          pushHooks,
+        },
+      );
     }).pipe(Effect.provide(McpProviderSessions.layer)),
   );
 
@@ -333,34 +363,54 @@ describe("McpProviderSessions approval requests", () => {
     Effect.gen(function* () {
       const sessions = yield* McpProviderSessions.McpProviderSessions;
       const tools = yield* sessions.recordApprovalRequest(threadId, {
+        providerSessionId: approvalSessionId,
         message: "Push tools?",
         pushHooks,
         state: "digest-1 1",
       });
-      const docs = yield* sessions.recordApprovalRequest(threadId, { message: "Push docs?" });
+      const docs = yield* sessions.recordApprovalRequest(threadId, {
+        message: "Push docs?",
+        providerSessionId: approvalSessionId,
+      });
       const elsewhere = yield* sessions.recordApprovalRequest(ThreadId.make("another-thread"), {
+        providerSessionId: approvalSessionId,
         message: "Push tools?",
       });
 
-      yield* sessions.answerApprovalRequests(threadId, "Push tools?", true);
+      yield* sessions.answerApprovalRequests(threadId, "Push tools?", true, approvalSessionId);
       // The first answer stands.
-      yield* sessions.answerApprovalRequests(threadId, "Push tools?", false);
+      yield* sessions.answerApprovalRequests(threadId, "Push tools?", false, approvalSessionId);
       // Asked after the answer: not answered by it.
-      const later = yield* sessions.recordApprovalRequest(threadId, { message: "Push tools?" });
+      const later = yield* sessions.recordApprovalRequest(threadId, {
+        message: "Push tools?",
+        providerSessionId: approvalSessionId,
+      });
 
-      assert.deepInclude(yield* sessions.takeApprovalRequest(threadId, tools), {
+      assert.deepInclude(yield* sessions.takeApprovalRequest(threadId, tools, approvalSessionId), {
         approved: true,
         state: "digest-1 1",
       });
-      assert.isUndefined(yield* sessions.takeApprovalRequest(threadId, tools));
-      assert.notProperty(yield* sessions.takeApprovalRequest(threadId, docs), "approved");
-      assert.notProperty(yield* sessions.takeApprovalRequest(threadId, later), "approved");
+      assert.isUndefined(yield* sessions.takeApprovalRequest(threadId, tools, approvalSessionId));
       assert.notProperty(
-        yield* sessions.takeApprovalRequest(ThreadId.make("another-thread"), elsewhere),
+        yield* sessions.takeApprovalRequest(threadId, docs, approvalSessionId),
+        "approved",
+      );
+      assert.notProperty(
+        yield* sessions.takeApprovalRequest(threadId, later, approvalSessionId),
+        "approved",
+      );
+      assert.notProperty(
+        yield* sessions.takeApprovalRequest(
+          ThreadId.make("another-thread"),
+          elsewhere,
+          approvalSessionId,
+        ),
         "approved",
       );
       // A request is taken from its own thread only.
-      assert.isUndefined(yield* sessions.takeApprovalRequest(threadId, elsewhere));
+      assert.isUndefined(
+        yield* sessions.takeApprovalRequest(threadId, elsewhere, approvalSessionId),
+      );
     }).pipe(Effect.provide(McpProviderSessions.layer)),
   );
 
@@ -431,9 +481,15 @@ describe("McpProviderSessions approval requests", () => {
   it.effect("drops what was asked when the thread's session ends", () =>
     Effect.gen(function* () {
       const sessions = yield* McpProviderSessions.McpProviderSessions;
-      yield* sessions.recordApprovalRequest(threadId, { message: "Push tools?", pushHooks });
+      yield* sessions.recordApprovalRequest(threadId, {
+        message: "Push tools?",
+        pushHooks,
+        providerSessionId: approvalSessionId,
+      });
       yield* sessions.clear(threadId);
-      assert.isUndefined(yield* sessions.findApprovalRequest(threadId, "Push tools?"));
+      assert.isUndefined(
+        yield* sessions.findApprovalRequest(threadId, "Push tools?", approvalSessionId),
+      );
     }).pipe(Effect.provide(McpProviderSessions.layer)),
   );
 });

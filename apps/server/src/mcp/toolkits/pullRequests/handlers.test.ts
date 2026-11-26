@@ -50,6 +50,7 @@ import { CHILD_PULL_REQUEST_REPORT_NEXT, PullRequestsToolkit } from "./tools.ts"
 
 const PROJECT_ID = ProjectId.make("project-1");
 const THREAD_ID = ThreadId.make("thread-1");
+const MCP_SESSION_ID = "provider-session-1";
 
 const testCrypto = SecureRandom.make((size) => new Uint8Array(size).fill(7));
 
@@ -57,10 +58,10 @@ const invocation = (
   capabilities: ReadonlyArray<McpInvocationContext.McpCapability>,
 ): McpInvocationContext.McpInvocationScope => ({
   environmentId: EnvironmentId.make("environment-1"),
-  requestNamespace: "provider-session-1",
+  requestNamespace: MCP_SESSION_ID,
   thread: {
     threadId: THREAD_ID,
-    providerSessionId: "provider-session-1",
+    providerSessionId: MCP_SESSION_ID,
     providerInstanceId: ProviderInstanceId.make("codex"),
   },
   client: undefined,
@@ -1479,7 +1480,9 @@ describe("source control tools", () => {
         yield* harness
           .call("pull_request_create", args)
           .pipe(withSessions(asking), asking.provide, Effect.flip);
-        expect(yield* sessions.findApprovalRequest(THREAD_ID, message)).toMatchObject({
+        expect(
+          yield* sessions.findApprovalRequest(THREAD_ID, message, MCP_SESSION_ID),
+        ).toMatchObject({
           message,
           pushHooks: {
             branch: "tools",
@@ -1495,7 +1498,9 @@ describe("source control tools", () => {
         yield* harness
           .call("pull_request_create", args)
           .pipe(withSessions(answering), answering.provide);
-        expect(yield* sessions.findApprovalRequest(THREAD_ID, message)).toBeUndefined();
+        expect(
+          yield* sessions.findApprovalRequest(THREAD_ID, message, MCP_SESSION_ID),
+        ).toBeUndefined();
       }).pipe(Effect.provide(McpProviderSessions.layer)),
     );
 
@@ -1547,8 +1552,12 @@ describe("source control tools", () => {
           answering.provide,
         );
 
-        expect(yield* sessions.findApprovalRequest(THREAD_ID, question("docs"))).toBeUndefined();
-        expect(yield* sessions.findApprovalRequest(THREAD_ID, question("tools"))).toMatchObject({
+        expect(
+          yield* sessions.findApprovalRequest(THREAD_ID, question("docs"), MCP_SESSION_ID),
+        ).toBeUndefined();
+        expect(
+          yield* sessions.findApprovalRequest(THREAD_ID, question("tools"), MCP_SESSION_ID),
+        ).toMatchObject({
           pushHooks: { branch: "tools" },
         });
       }).pipe(Effect.provide(McpProviderSessions.layer)),
@@ -1864,7 +1873,7 @@ describe("source control tools", () => {
           const git = hooked(() => "digest-1");
           const harness = yield* makeHarness({ thread: lowerThread(), git });
           const state = yield* ask(harness, provide);
-          yield* sessions.answerApprovalRequests(THREAD_ID, question(), true);
+          yield* sessions.answerApprovalRequests(THREAD_ID, question(), true, MCP_SESSION_ID);
 
           const result = yield* harness
             .call("pull_request_create", args)
@@ -1886,9 +1895,9 @@ describe("source control tools", () => {
           const git = hooked(() => "digest-1");
           const harness = yield* makeHarness({ thread: lowerThread(), git });
           const state = yield* ask(harness, provide);
-          yield* sessions.answerApprovalRequests(THREAD_ID, question(), false);
+          yield* sessions.answerApprovalRequests(THREAD_ID, question(), false, MCP_SESSION_ID);
           // A later answer does not replace the person's first.
-          yield* sessions.answerApprovalRequests(THREAD_ID, question(), true);
+          yield* sessions.answerApprovalRequests(THREAD_ID, question(), true, MCP_SESSION_ID);
 
           const error = yield* harness
             .call("pull_request_create", args)
@@ -1906,7 +1915,7 @@ describe("source control tools", () => {
             const git = hooked(() => "digest-1");
             const harness = yield* makeHarness({ thread: lowerThread(), git });
             const state = yield* ask(harness, provide);
-            yield* sessions.answerApprovalRequests(THREAD_ID, question(), true);
+            yield* sessions.answerApprovalRequests(THREAD_ID, question(), true, MCP_SESSION_ID);
 
             const error = yield* harness
               .call("pull_request_create", args)
@@ -1916,7 +1925,9 @@ describe("source control tools", () => {
                 "The person declined to run this repository's push hooks. Nothing was pushed and no PR was opened.",
             });
             expect(git.attempts).toEqual([{ approvedDigest: null }]);
-            expect(yield* sessions.findApprovalRequest(THREAD_ID, question())).toBeUndefined();
+            expect(
+              yield* sessions.findApprovalRequest(THREAD_ID, question(), MCP_SESSION_ID),
+            ).toBeUndefined();
           }).pipe(Effect.provide(McpProviderSessions.layer)),
       );
 
@@ -1949,7 +1960,12 @@ describe("source control tools", () => {
           const tools = yield* ask(harness, provide);
           branch = "docs";
           const docs = yield* ask(harness, provide);
-          yield* sessions.answerApprovalRequests(THREAD_ID, question("tools"), true);
+          yield* sessions.answerApprovalRequests(
+            THREAD_ID,
+            question("tools"),
+            true,
+            MCP_SESSION_ID,
+          );
 
           const other = yield* harness
             .call("pull_request_create", args)
@@ -1976,7 +1992,7 @@ describe("source control tools", () => {
           const git = hooked(() => "digest-1");
           const harness = yield* makeHarness({ thread: lowerThread(), git });
           const state = yield* ask(harness, provide);
-          yield* sessions.answerApprovalRequests(THREAD_ID, question(), true);
+          yield* sessions.answerApprovalRequests(THREAD_ID, question(), true, MCP_SESSION_ID);
           // A server that restarted has no requests either.
           yield* sessions.clear(THREAD_ID);
 
@@ -2029,7 +2045,9 @@ describe("source control tools", () => {
           );
           expect(error).toMatchObject({ _tag: "PullRequestForgeError", message: UNCONFIRMED });
           expect(git.attempts).toEqual([{ approvedDigest: null }]);
-          expect(yield* sessions.findApprovalRequest(THREAD_ID, question())).toBeUndefined();
+          expect(
+            yield* sessions.findApprovalRequest(THREAD_ID, question(), MCP_SESSION_ID),
+          ).toBeUndefined();
         }).pipe(Effect.provide(McpProviderSessions.layer)),
       );
 
@@ -2043,8 +2061,9 @@ describe("source control tools", () => {
               request: Ref.makeUnsafe<McpSchema.InputRequired | undefined>(undefined),
               sessions,
             }),
-            sessionClient((message) => sessions.answerApprovalRequests(THREAD_ID, message, true))
-              .provide,
+            sessionClient((message) =>
+              sessions.answerApprovalRequests(THREAD_ID, message, true, MCP_SESSION_ID),
+            ).provide,
           );
           expect(result).toMatchObject({ number: 43, created: true });
           expect(git.attempts).toEqual([{ approvedDigest: null }, { approvedDigest: "digest-1" }]);
