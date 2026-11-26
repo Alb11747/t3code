@@ -23,6 +23,7 @@ import {
   ThreadAccountError,
   clampedPositiveInt,
   PositiveInt,
+  OrchestratorMcpBooleanOrOnce,
   OrchestratorMcpCompactAfterIdle,
 } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -156,9 +157,7 @@ const PendingRequestTool = Tool.make("t3_pending_request", {
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
 
-const CompactBeforeCacheExpiresValue = Schema.NullOr(
-  Schema.Union([Schema.Boolean, Schema.Literal("once")]),
-);
+const CompactBeforeCacheExpiresValue = OrchestratorMcpBooleanOrOnce;
 const threadConfiguration = Schema.Struct({
   threadId: ThreadId,
   modelSelection: ModelSelection,

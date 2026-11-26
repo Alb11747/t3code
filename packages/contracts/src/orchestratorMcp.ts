@@ -128,8 +128,17 @@ export const OrchestratorMcpAutoCompactLimit = Schema.optional(
   }),
 );
 
+/**
+ * Fork: Claude Code passes a parameter whose schema allows a string as the text the model wrote,
+ * so `true` arrives as "true". The JSON-text fallback stays out of the advertised schema.
+ */
+export const OrchestratorMcpBooleanOrOnce = Schema.Union([
+  CodexIdleCompactionOverride,
+  Schema.fromJsonString(Schema.NullOr(Schema.Boolean)),
+]);
+
 export const OrchestratorMcpCompactAfterIdle = Schema.optional(
-  CodexIdleCompactionOverride.annotate({
+  OrchestratorMcpBooleanOrOnce.annotate({
     description:
       'Codex defaults to once per thread if enabled for the provider. "once" arms one, true repeats, false disables, null restores the default. Omit on configure to keep the current setting.',
   }),
