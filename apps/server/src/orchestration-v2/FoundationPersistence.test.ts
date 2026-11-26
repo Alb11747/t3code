@@ -258,9 +258,20 @@ it.effect("does not walk receipts it already scanned on the next pass", () =>
       ) INSERT INTO orchestration_command_receipts (
         rowid, command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status, command_type
       ) SELECT 1000 + n, 'visit-' || n, 'thread', 'imported', '2026-10-17', 0, 'accepted', 'thread.visit' FROM history`;
+      yield* sql`INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json,
+          runtime_mode, interaction_mode, branch, worktree_path, latest_turn_id,
+          created_at, updated_at, archived_at, deleted_at
+        ) VALUES (
+          'not-imported', 'project', 'Legacy thread', '{"instanceId":"codex","model":"gpt-5.4"}',
+          'full-access', 'default', NULL, NULL, NULL,
+          '2026-01-01T00:00:00.000Z', '2026-01-04T00:00:00.000Z', NULL, NULL
+        )`;
+      // A v1 project receipt is legacy too but is never imported, so it must not hold the mark.
       yield* sql`INSERT INTO orchestration_command_receipts (
           rowid, command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status, command_type
-        ) VALUES (5000, 'pending-legacy', 'thread', 'not-imported', '2026-10-17', 0, 'accepted', 'legacy')`;
+        ) VALUES (1, 'legacy-project', 'project', 'project', '2026-10-17', 0, 'accepted', 'legacy'),
+          (5000, 'pending-legacy', 'thread', 'not-imported', '2026-10-17', 0, 'accepted', 'legacy')`;
       const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
       assert.equal((yield* maintenance.pruneEventStore()).deletedReceiptCount, 100);
       const [mark] = yield* sql<{ readonly last_sequence: number }>`
@@ -274,6 +285,14 @@ it.effect("does not walk receipts it already scanned on the next pass", () =>
       );
       // One page from the mark, not a walk over every earlier receipt.
       assert.equal(receiptPages.length, 1);
+      // A mark past the table's end, as VACUUM leaves it, starts the scan over.
+      yield* sql`UPDATE orchestration_v2_projection_metadata SET last_sequence = 999999
+        WHERE projection_name = 'legacy-receipts-scanned-through'`;
+      yield* maintenance.pruneEventStore();
+      const [reset] = yield* sql<{ readonly last_sequence: number }>`
+        SELECT last_sequence FROM orchestration_v2_projection_metadata
+        WHERE projection_name = 'legacy-receipts-scanned-through'`;
+      assert.equal(reset?.last_sequence, 4999);
     }).pipe(
       Effect.provide(
         ProjectionMaintenance.layer.pipe(

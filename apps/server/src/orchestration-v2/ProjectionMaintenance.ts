@@ -44,7 +44,7 @@ const RETAINED_EVENT_HISTORY = Duration.days(1);
 const PAGE_SIZE = 50;
 const REFERENCE_SCAN_WINDOW = 1000;
 // Receipts before this rowid hold no legacy receipt left to prune, so a pass starts after it.
-const LEGACY_RECEIPTS_SCANNED_THROUGH = "legacy-receipts-scanned-through";
+export const LEGACY_RECEIPTS_SCANNED_THROUGH = "legacy-receipts-scanned-through";
 
 type MetadataRow = {
   readonly projection_name: string;
@@ -225,7 +225,10 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
       }
       // Receipts are never pruned otherwise, so without this mark every pass walked them all.
       let firstPending: number | undefined;
-      for (let cursor = receiptsScannedThrough; ;) {
+      // A mark above the table's end is stale (VACUUM renumbers implicit rowids): rescan it all.
+      const start = receiptsScannedThrough > throughReceiptRowId ? 0 : receiptsScannedThrough;
+      let lastKept = start;
+      for (let cursor = start; ;) {
         const rows = yield* sql<{
           readonly row_id: number;
           readonly command_id: string;
@@ -240,7 +243,11 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
               WHERE legacy_import.thread_id = receipt.aggregate_id
                 AND legacy_import.transcript_imported_at IS NOT NULL
             ) AS imported,
-            receipt.command_type = 'legacy' AS pending
+            -- Only a thread receipt the v1 importer may still import can become prunable.
+            receipt.command_type = 'legacy' AND receipt.aggregate_kind = 'thread' AND EXISTS (
+              SELECT 1 FROM projection_threads AS thread
+              WHERE thread.thread_id = receipt.aggregate_id
+            ) AS pending
           FROM orchestration_command_receipts AS receipt
           WHERE receipt.rowid > ${cursor} AND receipt.rowid <= ${throughReceiptRowId}
           ORDER BY receipt.rowid ASC
@@ -248,6 +255,9 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
         `.pipe(NodeSqliteClient.readOnly);
         const obsolete = rows.filter((row) => row.imported === 1).map((row) => row.command_id);
         firstPending ??= rows.find((row) => row.pending === 1 && row.imported !== 1)?.row_id;
+        if (firstPending === undefined) {
+          lastKept = rows.findLast((row) => row.imported !== 1)?.row_id ?? lastKept;
+        }
         yield* Effect.yieldNow;
         if (obsolete.length > 0) {
           yield* sql`DELETE FROM orchestration_command_receipts WHERE command_id IN ${sql.in(obsolete)}`;
@@ -259,9 +269,9 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
         cursor = rows.at(-1)?.row_id ?? cursor;
       }
       // A legacy receipt whose thread is not imported yet is scanned again next pass.
-      const scannedThrough =
-        firstPending === undefined ? throughReceiptRowId : Math.max(firstPending - 1, 0);
-      if (scannedThrough > receiptsScannedThrough) {
+      // Never above a surviving row, so a rowid reused after deleting the tail is still scanned.
+      const scannedThrough = firstPending === undefined ? lastKept : Math.max(firstPending - 1, 0);
+      if (scannedThrough !== receiptsScannedThrough) {
         yield* writeMetadata(LEGACY_RECEIPTS_SCANNED_THROUGH, scannedThrough, now);
       }
       return { deletedEventCount, deletedReceiptCount };

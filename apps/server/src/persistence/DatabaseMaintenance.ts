@@ -249,6 +249,9 @@ const make = Effect.gen(function* () {
         // VACUUM is required to enable incremental auto_vacuum on existing databases.
         yield* sql`PRAGMA auto_vacuum = INCREMENTAL`;
         yield* sql`VACUUM`;
+        // VACUUM renumbers implicit rowids, so the receipt scan mark no longer names a row.
+        yield* sql`DELETE FROM orchestration_v2_projection_metadata
+          WHERE projection_name = ${ProjectionMaintenance.LEGACY_RECEIPTS_SCANNED_THROUGH}`;
         yield* onStep("rebuild-search");
         yield* rebuildMessageSearch(sql);
         yield* onStep("checkpoint");
