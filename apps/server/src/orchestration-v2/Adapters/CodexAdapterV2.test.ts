@@ -727,7 +727,7 @@ function codexReplayPreamble(input: {
   readonly interactionMode?: "plan" | "default";
   readonly turnPolicy?: Pick<
     typeof CodexClient.V2TurnStartParams.Type,
-    "approvalPolicy" | "sandboxPolicy"
+    "approvalPolicy" | "sandboxPolicy" | "additionalContext"
   >;
 }): Array<CodexReplay.CodexAppServerReplayEntry> {
   return [
@@ -1930,9 +1930,29 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const message = "Push tools and run this repository's hook file .husky/pre-push?";
         const pushHooks = { branch: "tools", files: [".husky/pre-push"], commands: [] };
         const pending = yield* Queue.unbounded<OrchestrationV2RuntimeRequest>();
+        const scenario = `own-approval-${serverName}-${asked}`;
+        const sessions = yield* McpProviderSessions.McpProviderSessions;
+        const approvalSessionId = `mcp-session-${scenario}`;
+        yield* sessions.set({
+          environmentId: EnvironmentId.make("env-codex-approval"),
+          threadId: ThreadId.make(`thread-${scenario}`),
+          providerInstanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+          providerSessionId: approvalSessionId,
+          endpoint: "http://127.0.0.1:43123/mcp",
+          authorizationHeader: "Bearer approval-fixture",
+          browserToolsAvailable: false,
+        });
+        const expectedTurn = yield* CodexAdapterV2.buildCodexTurnStartParams({
+          nativeThreadId,
+          codexInput: [{ type: "text", text: prompt }],
+          runtimePolicy: { ...CODEX_TEST_RUNTIME_POLICY, runtimeMode: "auto-accept-edits" },
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          hasT3Mcp: true,
+          browserToolsAvailable: false,
+        });
         const harness = yield* makeCodexReplayHarness(
           makeCodexReplayTranscript({
-            scenario: `own-approval-${serverName}-${asked}`,
+            scenario,
             entries: [
               ...codexReplayPreamble({
                 nativeThreadId,
@@ -1941,6 +1961,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 turnPolicy: {
                   approvalPolicy: "on-request",
                   sandboxPolicy: { type: "workspaceWrite" },
+                  ...(expectedTurn.additionalContext === undefined
+                    ? {}
+                    : { additionalContext: expectedTurn.additionalContext }),
                 },
               }),
               {
@@ -1979,12 +2002,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               ? Queue.offer(pending, event.runtimeRequest)
               : Effect.void,
         );
-        const sessions = yield* McpProviderSessions.McpProviderSessions;
         const ownAsked = asked
           ? yield* sessions.recordApprovalRequest(harness.threadId, {
               message,
               pushHooks,
-              providerSessionId: harness.providerThread.providerSessionId ?? undefined,
+              providerSessionId: approvalSessionId,
             })
           : undefined;
         const turnInput = makeCodexTestTurnInput({
@@ -1999,26 +2021,23 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           runtimePolicy: { ...turnInput.runtimePolicy, runtimeMode: "auto-accept-edits" },
         });
         const request = yield* Queue.take(pending);
-        const card = harness.events.findLast(
+        const item = harness.events.findLast(
           (event) =>
-            event.type === "turn_item.updated" && event.turnItem.type === "approval_request",
+            event.type === "runtime_request.updated" && event.runtimeRequest.id === request.id,
         );
-        const item = card?.type === "turn_item.updated" ? card.turnItem : undefined;
-        assert.deepInclude(item, { prompt: message });
+        const card =
+          item?.type === "runtime_request.updated" ? item.artifacts?.turnItem : undefined;
+        assert.deepInclude(card, { prompt: message });
         if (expected.own) {
-          assert.deepInclude(item, { pushHooks });
-          assert.notProperty(item, "appName");
+          assert.deepInclude(card, { pushHooks });
+          assert.notProperty(card, "appName");
         } else {
-          assert.deepInclude(item, { appName: serverName });
-          assert.notProperty(item, "pushHooks");
+          assert.deepInclude(card, { appName: serverName });
+          assert.notProperty(card, "pushHooks");
         }
         if (ownAsked !== undefined) {
           assert.notProperty(
-            yield* sessions.findApprovalRequest(
-              harness.threadId,
-              message,
-              harness.providerThread.providerSessionId ?? undefined,
-            ),
+            yield* sessions.findApprovalRequest(harness.threadId, message, approvalSessionId),
             "approved",
           );
         }
@@ -2033,7 +2052,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           const kept = yield* sessions.takeApprovalRequest(
             harness.threadId,
             ownAsked,
-            harness.providerThread.providerSessionId ?? undefined,
+            approvalSessionId,
           );
           if (expected.own) assert.deepInclude(kept, { approved: true });
           else assert.notProperty(kept, "approved");
@@ -2061,11 +2080,48 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const message = "Push tools and run this repository's hook file .husky/pre-push?";
         const pushHooks = { branch: "tools", files: [".husky/pre-push"], commands: [] };
         const pending = yield* Queue.unbounded<OrchestrationV2RuntimeRequest>();
+        const scenario = `own-approval-full-access-${interactionMode}`;
+        const sessions = yield* McpProviderSessions.McpProviderSessions;
+        const approvalSessionId = `mcp-session-${scenario}`;
+        yield* sessions.set({
+          environmentId: EnvironmentId.make("env-codex-approval"),
+          threadId: ThreadId.make(`thread-${scenario}`),
+          providerInstanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+          providerSessionId: approvalSessionId,
+          endpoint: "http://127.0.0.1:43123/mcp",
+          authorizationHeader: "Bearer approval-fixture",
+          browserToolsAvailable: false,
+        });
+        const expectedTurn = yield* CodexAdapterV2.buildCodexTurnStartParams({
+          nativeThreadId,
+          codexInput: [{ type: "text", text: prompt }],
+          runtimePolicy: {
+            ...CODEX_TEST_RUNTIME_POLICY,
+            runtimeMode: "full-access",
+            interactionMode,
+          },
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          hasT3Mcp: true,
+          browserToolsAvailable: false,
+        });
         const harness = yield* makeCodexReplayHarness(
           makeCodexReplayTranscript({
-            scenario: `own-approval-full-access-${interactionMode}`,
+            scenario,
             entries: [
-              ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt, interactionMode }),
+              ...codexReplayPreamble({
+                nativeThreadId,
+                nativeTurnId,
+                prompt,
+                interactionMode,
+                turnPolicy: {
+                  ...(expectedTurn.approvalPolicy === undefined
+                    ? {}
+                    : { approvalPolicy: expectedTurn.approvalPolicy }),
+                  ...(expectedTurn.additionalContext === undefined
+                    ? {}
+                    : { additionalContext: expectedTurn.additionalContext }),
+                },
+              }),
               {
                 type: "emit_inbound",
                 frame: {
@@ -2099,22 +2155,17 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               ? Queue.offer(pending, event.runtimeRequest)
               : Effect.void,
         );
-        const sessions = yield* McpProviderSessions.McpProviderSessions;
         const ownAsked = yield* sessions.recordApprovalRequest(harness.threadId, {
-          providerSessionId: harness.providerThread.providerSessionId ?? undefined,
+          providerSessionId: approvalSessionId,
           message,
           pushHooks,
         });
         // Another call's request, answered while this one waits, leaves this one T3 Code's own.
         const answered = yield* sessions.recordApprovalRequest(harness.threadId, {
-          providerSessionId: harness.providerThread.providerSessionId ?? undefined,
+          providerSessionId: approvalSessionId,
           message: "Push docs and run this repository's hook file .husky/pre-push?",
         });
-        yield* sessions.forgetApprovalRequest(
-          harness.threadId,
-          answered,
-          harness.providerThread.providerSessionId ?? undefined,
-        );
+        yield* sessions.forgetApprovalRequest(harness.threadId, answered, approvalSessionId);
         const turnInput = makeCodexTestTurnInput({
           threadId: harness.threadId,
           providerThread: harness.providerThread,
@@ -2136,11 +2187,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             Effect.andThen(Effect.die("T3 Code's own request was answered without the person")),
           ),
         );
-        const card = harness.events.findLast(
+        const item = harness.events.findLast(
           (event) =>
-            event.type === "turn_item.updated" && event.turnItem.type === "approval_request",
+            event.type === "runtime_request.updated" && event.runtimeRequest.id === request.id,
         );
-        assert.deepInclude(card?.type === "turn_item.updated" ? card.turnItem : undefined, {
+        const card =
+          item?.type === "runtime_request.updated" ? item.artifacts?.turnItem : undefined;
+        assert.deepInclude(card, {
           prompt: message,
           pushHooks,
         });
@@ -2150,11 +2203,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         });
         yield* harness.firstTerminal;
         assert.deepInclude(
-          yield* sessions.takeApprovalRequest(
-            harness.threadId,
-            ownAsked,
-            harness.providerThread.providerSessionId ?? undefined,
-          ),
+          yield* sessions.takeApprovalRequest(harness.threadId, ownAsked, approvalSessionId),
           {
             approved: false,
           },

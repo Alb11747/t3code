@@ -48,7 +48,11 @@ const ICONS: Record<string, LucideIcon> = {
 };
 
 // The palette has its own rows for these, and no inline title editor for rename.
-const SKIPPED: ReadonlySet<ThreadActionMenuId> = new Set(["rename", "project-settings"]);
+const SKIPPED: ReadonlySet<ThreadActionMenuId> = new Set([
+  "rename",
+  "project-settings",
+  "context-note",
+]);
 
 const SHORTCUTS: Partial<Record<ThreadActionMenuId, KeybindingCommand>> = {
   settle: "thread.settle",

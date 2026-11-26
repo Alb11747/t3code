@@ -7354,12 +7354,17 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             text: "Steer",
             attachments: [],
           },
+          appContext: [{ key: "unread-note", text: "The PR was updated." }],
         }),
       );
       // The failed offer ends with a notice, so nothing sends the steer again.
       assert.isTrue(Exit.isSuccess(steered));
       yield* harness.awaitTerminal(1);
       assert.equal(harness.terminalEvents()[0]?.status, "completed");
+      const lastProviderThread = harness.events
+        .filter((event) => event.type === "provider_thread.updated")
+        .at(-1)?.providerThread;
+      assert.isUndefined(lastProviderThread?.nativeMetadata?.claudeDeliveredAppContext);
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -8913,6 +8918,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       options?: Parameters<typeof makeWakeHarnessWithOptions>[0],
     ) {
       const harness = yield* makeWakeHarnessWithOptions(options);
+      const approvalSessionId = "mcp-session-claude-elicitation";
+      yield* (yield* McpProviderSessions.McpProviderSessions).set({
+        environmentId: EnvironmentId.make("env-claude-approval"),
+        threadId: harness.threadId,
+        providerInstanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+        providerSessionId: approvalSessionId,
+        endpoint: "http://127.0.0.1:43123/mcp",
+        authorizationHeader: "Bearer approval-fixture",
+        browserToolsAvailable: false,
+      });
       yield* harness.runtime.startTurn(
         makeClaudeTestTurnInput({
           threadId: harness.threadId,
@@ -8939,7 +8954,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(runtimeRequests().length, count);
         return event.runtimeRequest;
       });
-      return { harness, elicit, awaitCard, runtimeRequests };
+      return { harness, elicit, awaitCard, runtimeRequests, approvalSessionId };
     });
 
     it.effect("shows an approval-only form and accepts only after Approve", () =>
@@ -8984,14 +8999,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
     it.effect("shows what T3 Code's own tool asks without naming a server", () =>
       Effect.gen(function* () {
-        const { harness, elicit, awaitCard } = yield* startElicitationTurn();
+        const { harness, elicit, awaitCard, approvalSessionId } = yield* startElicitationTurn();
         const sessions = yield* McpProviderSessions.McpProviderSessions;
         const message = "Push tools and run this repository's hook file .husky/pre-push?";
         const pushHooks = { branch: "tools", files: [".husky/pre-push"], commands: [] };
         yield* sessions.recordApprovalRequest(harness.threadId, {
           message,
           pushHooks,
-          providerSessionId: harness.providerThread.providerSessionId ?? undefined,
+          providerSessionId: approvalSessionId,
         });
         const cards = () =>
           harness.events.flatMap((event) =>
@@ -9027,7 +9042,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
     it.effect("asks the person every time T3 Code's own tool asks", () =>
       Effect.gen(function* () {
-        const { harness, elicit, awaitCard } = yield* startElicitationTurn();
+        const { harness, elicit, awaitCard, approvalSessionId } = yield* startElicitationTurn();
         const sessions = yield* McpProviderSessions.McpProviderSessions;
         const message = "Push tools and run this repository's hook file .husky/pre-push?";
         const pushHooks = { branch: "tools", files: [".husky/pre-push"], commands: [] };
@@ -9044,7 +9059,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
 
         const firstAsked = yield* sessions.recordApprovalRequest(harness.threadId, {
-          providerSessionId: harness.providerThread.providerSessionId ?? undefined,
+          providerSessionId: approvalSessionId,
           message,
           pushHooks,
         });
@@ -9052,11 +9067,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const firstRequest = yield* awaitCard(1);
         // Shown, and not answered by anything but the person.
         assert.notProperty(
-          yield* sessions.findApprovalRequest(
-            harness.threadId,
-            message,
-            harness.providerThread.providerSessionId ?? undefined,
-          ),
+          yield* sessions.findApprovalRequest(harness.threadId, message, approvalSessionId),
           "approved",
         );
         // Nothing to remember an answer by: each request is for what the hooks are then.
@@ -9076,18 +9087,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.deepEqual(yield* Fiber.join(first), { action: "accept", content: {} });
         // What the person answered in the app stays with the request T3 Code made.
         assert.deepInclude(
-          yield* sessions.takeApprovalRequest(
-            harness.threadId,
-            firstAsked,
-            harness.providerThread.providerSessionId ?? undefined,
-          ),
+          yield* sessions.takeApprovalRequest(harness.threadId, firstAsked, approvalSessionId),
           {
             approved: true,
           },
         );
 
         const secondAsked = yield* sessions.recordApprovalRequest(harness.threadId, {
-          providerSessionId: harness.providerThread.providerSessionId ?? undefined,
+          providerSessionId: approvalSessionId,
           message,
           pushHooks,
         });
@@ -9100,11 +9107,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         });
         assert.deepEqual(yield* Fiber.join(second), { action: "decline" });
         assert.deepInclude(
-          yield* sessions.takeApprovalRequest(
-            harness.threadId,
-            secondAsked,
-            harness.providerThread.providerSessionId ?? undefined,
-          ),
+          yield* sessions.takeApprovalRequest(harness.threadId, secondAsked, approvalSessionId),
           {
             approved: false,
           },

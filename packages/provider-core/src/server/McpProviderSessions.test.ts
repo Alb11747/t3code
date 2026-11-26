@@ -368,10 +368,15 @@ describe("McpProviderSessions approval requests", () => {
     Effect.gen(function* () {
       const sessions = yield* McpProviderSessions.McpProviderSessions;
       yield* sessions.set(makeSession("provider-session-1"));
-      const asked = yield* sessions.recordApprovalRequest(threadId, { message: "Push tools?" });
-      yield* sessions.answerApprovalRequests(threadId, "Push tools?", true);
+      const asked = yield* sessions.recordApprovalRequest(threadId, {
+        message: "Push tools?",
+        providerSessionId: "provider-session-1",
+      });
+      yield* sessions.answerApprovalRequests(threadId, "Push tools?", true, "provider-session-1");
       yield* sessions.set(makeSession("provider-session-2"));
-      assert.isUndefined(yield* sessions.takeApprovalRequest(threadId, asked));
+      assert.isUndefined(
+        yield* sessions.takeApprovalRequest(threadId, asked, "provider-session-1"),
+      );
     }).pipe(Effect.provide(McpProviderSessions.layer)),
   );
 

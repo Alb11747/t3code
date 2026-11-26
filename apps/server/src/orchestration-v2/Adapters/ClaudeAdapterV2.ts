@@ -10646,6 +10646,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const steer = context.pendingSteers.get(uuid);
           if (steer === undefined) return;
           context.pendingSteers.delete(uuid);
+          // Later offers may have skipped notes from this unread steer.
+          if (steer.appContextOffered !== undefined) context.appContextOffered = undefined;
           // The notice commits first: a crash before the cancel leaves it pending for recovery.
           yield* emitUnreadSteerNotice(context, uuid, steer, yield* DateTime.now, when);
           yield* emitSteerStatus(context, steer.messageId, "cancelled");
@@ -14569,6 +14571,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const onElicitationEffect = Effect.fn("ClaudeAdapterV2.onElicitation")(function* (
           request: ElicitationRequest,
           callbackOptions: Parameters<NonNullable<ClaudeQueryOptions["onElicitation"]>>[1],
+          approvalSessionId: string | undefined,
         ) {
           if (callbackOptions.signal.aborted)
             return { action: "cancel" } satisfies ElicitationResult;
@@ -14590,9 +14593,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
           // T3's own tools leave what they ask with the thread's MCP session while they wait.
           // A request is T3's when it is one of those, whatever a server calls itself.
-          const approvalSessionId = context.input.providerThread.providerSessionId ?? undefined;
           const ownRequest =
-            request.serverName === CLAUDE_T3_MCP_SERVER
+            request.serverName === CLAUDE_T3_MCP_SERVER && approvalSessionId !== undefined
               ? yield* mcpSessions.findApprovalRequest(
                   context.input.threadId,
                   request.message,
@@ -14728,11 +14730,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 action: resolved === "cancel" ? "cancel" : "decline",
               } satisfies ElicitationResult);
         });
-
-        const onElicitation: NonNullable<ClaudeQueryOptions["onElicitation"]> = (
-          request,
-          callbackOptions,
-        ) => runPromise(onElicitationEffect(request, callbackOptions));
 
         const onUserDialog: NonNullable<ClaudeQueryOptions["onUserDialog"]> = (
           request,
@@ -15447,7 +15444,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }),
             canUseTool,
             onUserDialog,
-            onElicitation,
+            onElicitation: (request, callbackOptions) =>
+              runPromise(
+                onElicitationEffect(request, callbackOptions, mcpSession?.providerSessionId),
+              ),
             onStop,
             supportedDialogKinds: ["resume_return"],
             ...(appendSystemPromptFileText === undefined ? {} : { appendSystemPromptFileText }),
