@@ -5785,5 +5785,7 @@
   "0b1e4aecbd38e0cf": "Quand l’app se connecte à un ordinateur via {product}, elle envoie à l’équipe T3 Code la durée de chaque étape, le type d’erreur, un identifiant de cette session de l’app et la version de l’app. Les traces n’incluent jamais vos fils, prompts ni votre code.",
   "e0856d6a402ad821": "La politique de {organization} n’autorise pas les commandes de disposition des worktrees des projets.",
   "7288765cb3116ff6": "{account} a atteint son plafond pour les sessions courtes. Le reste de son quota de 5 heures, qui se réinitialise à {resetAt}, est réservé aux fils de longue durée. Nouvelle vérification à {releaseAt}.",
-  "da69607e036f3dfa": "Ce compte"
+  "da69607e036f3dfa": "Ce compte",
+  "1e4465377d021a01": "Le quota hebdomadaire de {account}",
+  "2537b53b5428d97d": "Le quota hebdomadaire"
 }

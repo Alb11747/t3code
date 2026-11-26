@@ -13222,5 +13222,7 @@
   "da69607e036f3dfa": "Esta cuenta",
   "ec84b6b01a94e3cf": "{account} alcanzó su límite para sesiones cortas",
   "68d7952d67cd912e": "El resto de su límite de 5 horas, que se restablece {resetAt}, se reserva para los hilos de larga duración. Vuelve a comprobarlo {releaseAt}.",
-  "e4974b202388b884": "En espera mientras {account} está en su límite para sesiones cortas."
+  "e4974b202388b884": "En espera mientras {account} está en su límite para sesiones cortas.",
+  "684b5fa810e83350": "A {account} le queda poco del límite semanal, que se restablece {resetAt}. Las solicitudes se ejecutan normalmente hasta entonces. Si se alcanza antes el límite, la caché del prompt puede caducar.",
+  "21cceb347af13769": "A {account} le queda poco del límite semanal, que se restablece {resetAt}. Próxima solicitud {releaseAt}."
 }

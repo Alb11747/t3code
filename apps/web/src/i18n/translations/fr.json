@@ -13227,5 +13227,7 @@
   "da69607e036f3dfa": "Ce compte",
   "ec84b6b01a94e3cf": "{account} a atteint son plafond pour les sessions courtes",
   "68d7952d67cd912e": "Le reste de son quota de 5 heures, qui se réinitialise {resetAt}, est réservé aux fils de longue durée. Nouvelle vérification {releaseAt}.",
-  "e4974b202388b884": "En attente tant que {account} est à son plafond pour les sessions courtes."
+  "e4974b202388b884": "En attente tant que {account} est à son plafond pour les sessions courtes.",
+  "684b5fa810e83350": "{account} a presque épuisé son quota hebdomadaire, qui se réinitialise {resetAt}. Les requêtes s’exécutent normalement d’ici là. Le cache des consignes peut expirer si le quota est atteint avant.",
+  "21cceb347af13769": "{account} a presque épuisé son quota hebdomadaire, qui se réinitialise {resetAt}. Prochaine requête {releaseAt}."
 }

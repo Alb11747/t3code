@@ -101,12 +101,20 @@ export function keepWarmStallBannerItem(
       variant: "info",
       icon: <SnowflakeIcon />,
       title: resolve(msg("No longer stalling to keep cache warm")),
-      description: resolve(
-        msg(
-          "{account} is nearly out of its 5-hour limit, which resets {resetAt}. Requests run normally until then; reaching the limit first can let the prompt cache expire.",
-          { account, resetAt: reset },
-        ),
-      ),
+      description:
+        hold.window === "7d"
+          ? resolve(
+              msg(
+                "{account} is nearly out of its weekly limit, which resets {resetAt}. Requests run normally until then; reaching the limit first can let the prompt cache expire.",
+                { account, resetAt: reset },
+              ),
+            )
+          : resolve(
+              msg(
+                "{account} is nearly out of its 5-hour limit, which resets {resetAt}. Requests run normally until then; reaching the limit first can let the prompt cache expire.",
+                { account, resetAt: reset },
+              ),
+            ),
       // Same key as the stall's actions: a release still in flight keeps them disabled.
       actions: <StallActions key={hold.resetAt} {...props} />,
     };
@@ -116,16 +124,28 @@ export function keepWarmStallBannerItem(
     variant: "warning",
     icon: <SnowflakeIcon />,
     title: resolve(msg("Stalled to keep cache warm")),
-    description: resolve(
-      msg(
-        "{account} is nearly out of its 5-hour limit, which resets {resetAt}. Next request {releaseAt}.",
-        {
-          account,
-          resetAt: reset,
-          releaseAt: formatUpcomingTimestamp(hold.releaseAt, timestampFormat),
-        },
-      ),
-    ),
+    description:
+      hold.window === "7d"
+        ? resolve(
+            msg(
+              "{account} is nearly out of its weekly limit, which resets {resetAt}. Next request {releaseAt}.",
+              {
+                account,
+                resetAt: reset,
+                releaseAt: formatUpcomingTimestamp(hold.releaseAt, timestampFormat),
+              },
+            ),
+          )
+        : resolve(
+            msg(
+              "{account} is nearly out of its 5-hour limit, which resets {resetAt}. Next request {releaseAt}.",
+              {
+                account,
+                resetAt: reset,
+                releaseAt: formatUpcomingTimestamp(hold.releaseAt, timestampFormat),
+              },
+            ),
+          ),
     actions: <StallActions key={hold.resetAt} {...props} />,
   };
 }

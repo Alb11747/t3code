@@ -120,9 +120,14 @@ export function KeepWarmStallCard({
       snoozed ? gt("Could not wake the thread.") : gt("Could not snooze the thread."),
     );
   const disabled = pending || !permitted;
-  const limit = hold.account
-    ? gt("The 5-hour limit of {account}", { account: hold.account })
-    : gt("The 5-hour limit");
+  const limit =
+    hold.window === "7d"
+      ? hold.account
+        ? gt("The weekly limit of {account}", { account: hold.account })
+        : gt("The weekly limit")
+      : hold.account
+        ? gt("The 5-hour limit of {account}", { account: hold.account })
+        : gt("The 5-hour limit");
   const failure = error ? (
     <Text accessibilityRole="alert" className="text-sm text-destructive">
       {error}

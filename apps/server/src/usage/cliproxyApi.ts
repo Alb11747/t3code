@@ -881,17 +881,25 @@ export const makeCliproxyApi = Effect.gen(function* () {
       const releaseAt = iso(held.release_at);
       const resetAt = iso(held.reset_at);
       if (releaseAt === null) return [];
-      if (held.kind === "keep_warm") {
+      // A paced session (router 0.47.x) holds a warm thread to keep its cache, whatever its kind,
+      // so it shows as a keep-warm stall rather than a wait for the account.
+      if (
+        held.kind === "keep_warm" ||
+        (held.reason === "paced_session" && held.control !== "steer")
+      ) {
         const since = iso(held.since);
-        return resetAt === null
+        const paced = held.reason === "paced_session";
+        return resetAt === null && !paced
           ? []
           : [
               {
                 session: held.session,
                 account: held.account,
                 releaseAt,
-                resetAt,
+                resetAt: resetAt ?? releaseAt,
                 ...(since === null ? {} : { quotaWaitSince: since }),
+                // A paced session's keep-warm hold (router 0.47.2) waits on the weekly window.
+                ...(held.window === "7d" ? { window: "7d" as const } : {}),
               },
             ];
       }

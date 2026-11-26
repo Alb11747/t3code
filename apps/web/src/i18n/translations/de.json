@@ -13227,5 +13227,7 @@
   "da69607e036f3dfa": "Dieses Konto",
   "ec84b6b01a94e3cf": "{account} hat sein Limit für kurze Sitzungen erreicht",
   "68d7952d67cd912e": "Der Rest des 5-Stunden-Limits, das {resetAt} zurückgesetzt wird, bleibt lang laufenden Threads vorbehalten. Erneute Prüfung {releaseAt}.",
-  "e4974b202388b884": "Angehalten, solange {account} sein Limit für kurze Sitzungen erreicht hat."
+  "e4974b202388b884": "Angehalten, solange {account} sein Limit für kurze Sitzungen erreicht hat.",
+  "684b5fa810e83350": "Das Wochenlimit von {account} ist fast ausgeschöpft und wird {resetAt} zurückgesetzt. Anfragen laufen bis dahin normal. Wenn das Limit zuerst erreicht wird, kann der Prompt-Cache ablaufen.",
+  "21cceb347af13769": "Das Wochenlimit von {account} ist fast ausgeschöpft. Es wird {resetAt} zurückgesetzt. Nächste Anfrage {releaseAt}."
 }
