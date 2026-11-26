@@ -342,6 +342,8 @@ const layerUsage = UsageService.layer.pipe(
       MuseUsageHome.layer,
       CodexUsageHistory.layer,
       CursorUsageAccounts.layer.pipe(Layer.provide(CursorAccountReader.layer)),
+      // Fork: memoized, so this is the map HubModelAliasSync writes above; usage reads served models.
+      HubModelAliases.layer,
     ).pipe(Layer.provide(ProviderHostLive.layer.pipe(Layer.provide(ServerSecretStore.layer)))),
   ),
   Layer.provide(layerServerSettings),
