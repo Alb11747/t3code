@@ -13227,5 +13227,8 @@
   "da69607e036f3dfa": "Ce compte",
   "ec84b6b01a94e3cf": "{account} a atteint son plafond pour les sessions courtes",
   "68d7952d67cd912e": "Le reste de son quota de 5 heures, qui se réinitialise {resetAt}, est réservé aux fils de longue durée. Nouvelle vérification {releaseAt}.",
-  "e4974b202388b884": "En attente tant que {account} est à son plafond pour les sessions courtes."
+  "e4974b202388b884": "En attente tant que {account} est à son plafond pour les sessions courtes.",
+  "dbc06b7c545a097d": "Compactage auto",
+  "5b49b60b53bc5c52": "à {tokens}",
+  "2aa8fd91d348be6a": "Ce fil se compacte à {tokens} jetons, une limite définie pour lui."
 }

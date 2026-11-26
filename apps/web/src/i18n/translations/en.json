@@ -13251,5 +13251,8 @@
   "da69607e036f3dfa": "This account",
   "ec84b6b01a94e3cf": "{account} reached its short-session cap",
   "68d7952d67cd912e": "The rest of its 5-hour limit, which resets {resetAt}, is kept for long-running threads. It checks again {releaseAt}.",
-  "e4974b202388b884": "Held while {account} is at its short-session cap."
+  "e4974b202388b884": "Held while {account} is at its short-session cap.",
+  "dbc06b7c545a097d": "Auto-compact",
+  "5b49b60b53bc5c52": "at {tokens}",
+  "2aa8fd91d348be6a": "This thread compacts at {tokens} tokens, a limit set for it."
 }

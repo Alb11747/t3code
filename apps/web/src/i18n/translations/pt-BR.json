@@ -13227,5 +13227,8 @@
   "da69607e036f3dfa": "Esta conta",
   "ec84b6b01a94e3cf": "{account} atingiu o limite para sessões curtas",
   "68d7952d67cd912e": "O restante do limite de 5 horas, redefinido {resetAt}, fica reservado para conversas longas. Verifica de novo {releaseAt}.",
-  "e4974b202388b884": "Em espera enquanto {account} está no limite para sessões curtas."
+  "e4974b202388b884": "Em espera enquanto {account} está no limite para sessões curtas.",
+  "dbc06b7c545a097d": "Compactação automática",
+  "5b49b60b53bc5c52": "em {tokens}",
+  "2aa8fd91d348be6a": "Esta conversa é compactada em {tokens} tokens, um limite definido para ela."
 }
