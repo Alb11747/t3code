@@ -317,9 +317,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
             threadId: input.threadId,
           });
         }
-        // The queued run's own task stays open while the follow-up ahead of it settles.
-        if (input.runId === boxQueuedRunId) return yield* Effect.never;
-        if (input.runId === boxLaterRunId) {
+        if (input.runId === boxLaterRunId || input.runId === boxQueuedRunId) {
           const laterDone = yield* Deferred.await(thread.laterFinished).pipe(
             Effect.timeoutOption(input.timeoutMs),
           );
@@ -334,7 +332,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
           return {
             threadId: input.threadId,
             run: {
-              id: latest(boxLaterRunId),
+              id: latest(input.runId),
               status: Option.isSome(laterDone) ? "completed" : "running",
             } as OrchestrationV2Run,
             timedOut: Option.isNone(laterDone),
@@ -528,7 +526,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
         Effect.as(
           (input.mode === "queue"
             ? {
-                run: { id: boxQueuedRunId, status: "queued" },
+                run: { id: boxQueuedRunId, status: "queued", queueHeld: true },
                 delivery: "queued",
                 message: { atToolBoundary: false },
               }
@@ -2483,7 +2481,7 @@ it.effect.each([
   // Concurrent sends may be recorded here in the opposite order they run there.
   { order: "recorded out of order", queuedFirst: true },
 ])(
-  "a follow-up there ends with its own reply, not one queued behind it ($order)",
+  "both remote sends share a task that returns the settled thread reply ($order)",
   ({ queuedFirst }) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -2518,11 +2516,18 @@ it.effect.each([
           ? [sendQueued, sendFollowUp]
           : [sendFollowUp, sendQueued];
         const firstSent = yield* first;
+        const taskId = (firstSent.structuredContent as { taskId: NodeId }).taskId;
+        const status = () =>
+          a.orchestrator
+            .getThreadRecords(parentThreadId, ["subagents"], { subagentIds: [taskId] })
+            .pipe(Effect.map(({ subagents }) => subagents[0]?.status));
+        expect(yield* status()).toBe(queuedFirst ? "idle" : "running");
         yield* TestClock.adjust("1 second");
         const secondSent = yield* second;
+        expect(yield* status()).toBe(queuedFirst ? "running" : "idle");
         const [followUp, queued] = queuedFirst ? [secondSent, firstSent] : [firstSent, secondSent];
         const followUpId = (followUp.structuredContent as { taskId: NodeId }).taskId;
-        expect((queued.structuredContent as { taskId?: NodeId }).taskId).toBeDefined();
+        expect((queued.structuredContent as { taskId?: NodeId }).taskId).toBe(followUpId);
 
         // The thread there settles on the queued run, after the follow-up's own run ended.
         yield* Ref.set(thread.laterReply, "The slow suite passes too.");
@@ -2530,7 +2535,7 @@ it.effect.each([
         yield* Deferred.succeed(thread.laterFinished, undefined);
         expect(yield* taskResult(a, followUpId)).toMatchObject({
           status: "completed",
-          result: "The slow suite passes too.",
+          result: "The flaky suite passes.",
         });
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
@@ -2552,7 +2557,7 @@ it.effect.each([
     queuedReply: "Running the flaky suite…",
   },
 ])(
-  "a follow-up there ends with its own reply when the $restarted run is restarted",
+  "the shared remote task follows the settled reply when the $restarted run is restarted",
   ({ of, laterReply, restartReply, queuedReply }) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -2592,7 +2597,7 @@ it.effect.each([
         yield* Deferred.succeed(thread.laterFinished, undefined);
         expect(yield* taskResult(a, followUpId)).toMatchObject({
           status: "completed",
-          result: "The slow suite passes too.",
+          result: "The flaky suite passes.",
         });
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
@@ -2735,6 +2740,66 @@ it.effect("a delayed Stop acknowledgement leaves a newer Stop owed", () =>
       expect(yield* a.projections.getOpenRemoteDelegatedTasks).toEqual([]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "startup retires duplicate remote tasks without waking the parent or stopping the peer",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+        const original = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const before = yield* makeLaptop(database, offers, linking);
+            yield* linkTo(before.links, b, "full-access");
+            yield* seedParent(before);
+            return yield* delegateToBox(before);
+          }),
+        );
+        const after = yield* makeLaptop(database, offers, linking);
+        const { subagents } = yield* after.threads.getThreadRecords(parentThreadId, ["subagents"]);
+        const source = subagents[0]!;
+        const latestId = NodeId.make("node:newer");
+        const now = DateTime.add(source.startedAt!, { seconds: 1 });
+        // Replay the second open record an older server persisted for the same remote thread.
+        yield* after.sink.write({
+          commandId: CommandId.make("command:old-duplicate"),
+          events: [
+            {
+              type: "subagent.updated",
+              id: EventId.make("event:old-duplicate"),
+              threadId: parentThreadId,
+              nodeId: latestId,
+              driver: source.driver,
+              occurredAt: now,
+              payload: { ...source, id: latestId, startedAt: now, updatedAt: now },
+            },
+          ],
+        });
+        yield* after.remote.start();
+        expect(yield* taskResult(after, original.taskId)).toMatchObject({
+          remoteChild: { stoppedThere: true },
+          completionDelivery: { state: "disposed" },
+        });
+        expect(yield* after.projections.getOpenRemoteDelegatedTasks).toEqual([
+          { parentThreadId, taskId: latestId },
+        ]);
+        expect(yield* SubscriptionRef.get(offers)).toEqual([]);
+        expect(yield* Ref.get(thread.stops)).toEqual([]);
+        yield* Ref.set(thread.reply, "Finished the queued work.");
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        expect(yield* taskResult(after, latestId)).toMatchObject({
+          result: "Finished the queued work.",
+        });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("a Stop on a task that has its result reaches there after a restart", () =>

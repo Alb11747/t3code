@@ -421,7 +421,7 @@ export interface ProjectionRecordFilter {
   readonly subagentIds?: ReadonlyArray<NodeId>;
   readonly subagentRunIds?: ReadonlyArray<RunId>;
   readonly subagentChildThreadIds?: ReadonlyArray<ThreadId>;
-  readonly subagentRemoteRun?: {
+  readonly openOrMatchingRemoteRun?: {
     readonly environmentId: EnvironmentId;
     readonly threadId: ThreadId;
     readonly runId: RunId;
@@ -745,7 +745,11 @@ export interface ProjectionStoreV2Shape {
    * there still ran tracked background work.
    */
   readonly getOpenRemoteDelegatedTasks: Effect.Effect<
-    ReadonlyArray<{ readonly parentThreadId: ThreadId; readonly taskId: NodeId }>,
+    ReadonlyArray<{
+      readonly parentThreadId: ThreadId;
+      readonly taskId: NodeId;
+      readonly superseded?: true;
+    }>,
     ProjectionStoreV2Error
   >;
   readonly getTurnStartContext: (
@@ -4461,12 +4465,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ${filter?.subagentChildThreadIds === undefined ? sql`` : sql`AND child_thread_id IN (SELECT value FROM json_each(${encodeIdList(filter.subagentChildThreadIds)}))`}
               ${filter?.subagentRunIds === undefined ? sql`` : sql`AND run_id IN (SELECT value FROM json_each(${encodeIdList(filter.subagentRunIds)}))`}
               ${
-                filter?.subagentRemoteRun === undefined
+                filter?.openOrMatchingRemoteRun === undefined
                   ? sql``
                   : sql`
-                AND json_extract(payload_json, '$.remoteChild.environmentId') = ${filter.subagentRemoteRun.environmentId}
-                AND json_extract(payload_json, '$.remoteChild.threadId') = ${filter.subagentRemoteRun.threadId}
-                AND json_extract(payload_json, '$.remoteChild.runId') = ${filter.subagentRemoteRun.runId}
+                AND json_extract(payload_json, '$.remoteChild.environmentId') = ${filter.openOrMatchingRemoteRun.environmentId}
+                AND json_extract(payload_json, '$.remoteChild.threadId') = ${filter.openOrMatchingRemoteRun.threadId}
+                AND (json_type(payload_json, '$.result') = 'null' OR json_extract(payload_json, '$.remoteChild.runId') = ${filter.openOrMatchingRemoteRun.runId})
               `
               }
               ${
@@ -9226,8 +9230,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     const getOpenRemoteDelegatedTasks: ProjectionStoreV2Shape["getOpenRemoteDelegatedTasks"] = sql<{
       readonly thread_id: string;
       readonly subagent_id: string;
+      readonly superseded: number;
     }>`
-      SELECT thread_id, subagent_id FROM orchestration_v2_projection_subagents
+      SELECT thread_id, subagent_id,
+        json_type(payload_json, '$.result') = 'null' AND row_number() OVER (
+          PARTITION BY thread_id, json_extract(payload_json, '$.remoteChild.environmentId'),
+            json_extract(payload_json, '$.remoteChild.threadId'), json_type(payload_json, '$.result')
+          ORDER BY started_at DESC, subagent_id DESC
+        ) > 1 AS superseded
+      FROM orchestration_v2_projection_subagents
       WHERE origin = 'app_owned'
         AND child_thread_id IS NULL
         AND json_type(payload_json, '$.remoteChild') = 'object'
@@ -9249,6 +9260,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         rows.map((row) => ({
           parentThreadId: ThreadId.make(row.thread_id),
           taskId: NodeId.make(row.subagent_id),
+          ...(row.superseded ? { superseded: true as const } : {}),
         })),
       ),
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),

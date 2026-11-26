@@ -4439,6 +4439,7 @@ const make = Effect.gen(function* () {
         ...(result.run.delegatedTaskId === undefined ? {} : { taskId: result.run.delegatedTaskId }),
         status: result.run.status,
         delivery: result.delivery,
+        ...(result.run.queueHeld === true ? { queueHeld: true } : {}),
         ...(result.delivery === "queued"
           ? {
               deliveryNote:
@@ -4502,6 +4503,7 @@ const make = Effect.gen(function* () {
         runId: result.run?.id ?? null,
         status,
         timedOut: result.timedOut,
+        ...(result.run?.queueHeld === true ? { queueHeld: true } : {}),
         ...(wakesCaller ? { next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT } : {}),
         ...(result.resultRun === undefined
           ? {}
