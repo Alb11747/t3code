@@ -77,6 +77,14 @@ describe("accountResetAtMs", () => {
     expect(recovery("claude-opus-5-5")).toBe(Date.parse(at(72)));
   });
 
+  it("uses explicit Antigravity model scope before the legacy pool name", () => {
+    const model = "claude-opus-5-5";
+    const pools = limits({ ...window("gemini-weekly", 100, at(3)), modelIds: [model] });
+    expect(accountResetAtMs("antigravity" as ProviderDriverKind, pools, model, NOW)).toBe(
+      Date.parse(at(3)),
+    );
+  });
+
   it("knows no reset when no reported window gates the model", () => {
     const goOnly = limits(window("go_weekly", 40, at(5)));
     expect(

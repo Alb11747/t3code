@@ -26,6 +26,19 @@ function claudeWindowApplies(window: ServerProviderUsageWindow, model: string): 
     .includes(scope);
 }
 
+// Older Antigravity readings identify the pool by its id instead of listing its models.
+function antigravityWindowApplies(window: ServerProviderUsageWindow, model: string): boolean {
+  if (window.modelIds !== undefined || window.providerIds !== undefined) return true;
+  const family = model.match(/^(gemini|claude|gpt)-/)?.[1];
+  const pool = window.id.match(/^(gemini|claude|gpt|3p)-/)?.[1];
+  return (
+    pool === undefined ||
+    family === undefined ||
+    pool === family ||
+    (pool === "3p" && (family === "claude" || family === "gpt"))
+  );
+}
+
 /**
  * When an account next gets quota back for `model`: the first reset after which the app's
  * per-model rule (`exhaustedUsageWindow`) no longer finds a blocking window, or null when a blocker
@@ -39,10 +52,11 @@ export function accountResetAtMs(
   now: number,
 ): number | null {
   if (!limits || limits.unavailable) return null;
-  const windows =
-    driver === "claudeAgent"
-      ? limits.windows.filter((window) => claudeWindowApplies(window, model))
-      : limits.windows;
+  const windows = limits.windows.filter((window) => {
+    if (driver === "claudeAgent") return claudeWindowApplies(window, model);
+    if (driver === "antigravity") return antigravityWindowApplies(window, model);
+    return true;
+  });
   const blocks = (candidates: ReadonlyArray<ServerProviderUsageWindow>, at: number) =>
     exhaustedUsageWindow(
       { driver, usageLimits: { ...limits, windows: candidates } } as ServerProvider,
