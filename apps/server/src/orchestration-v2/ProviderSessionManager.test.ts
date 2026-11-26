@@ -2641,7 +2641,7 @@ it.effect.each(retryStallScenarios)("retry watchdog respects its own quota hold 
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
     const interrupted = yield* Deferred.make<void>();
-    const driver = scenario === "codex" ? CODEX_DRIVER : ProviderDriverKind.make("claude");
+    const driver = scenario === "codex" ? CODEX_DRIVER : ProviderDriverKind.make("claudeAgent");
     const keepWarm = yield* ClaudeKeepWarm;
     const pinHold = yield* Ref.make<Effect.Success<ReturnType<typeof keepWarm.find>>>(null);
     const effect = Effect.gen(function* () {

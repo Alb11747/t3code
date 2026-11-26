@@ -3053,7 +3053,8 @@ export const layerWithOptions = (
                 activeSinceCheck.delete(item.providerTurnId);
                 yield* Effect.sleep(delay);
                 const held =
-                  entry.runtime.driver === "claude" && !activeSinceCheck.has(item.providerTurnId)
+                  entry.runtime.driver === "claudeAgent" &&
+                  !activeSinceCheck.has(item.providerTurnId)
                     ? yield* claudeKeepWarm.find(item.threadId)
                     : null;
                 if (activeSinceCheck.has(item.providerTurnId)) {
