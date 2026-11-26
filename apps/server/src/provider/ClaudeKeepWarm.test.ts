@@ -195,6 +195,59 @@ it.effect("shows the session's earliest keep-warm hold, with one control read pe
   }).pipe(Effect.provide(layer), Effect.scoped);
 });
 
+it.effect("keeps the weekly window of a paced session's keep-warm hold", () => {
+  const { layer } = fixture({
+    status: 200,
+    body: {
+      held: [
+        {
+          session: "root",
+          kind: "keep_warm",
+          release_at: "2026-11-03T13:59:00Z",
+          reset_at: "2026-11-03T15:00:00Z",
+          window: "7d",
+          reason: "paced_session",
+        },
+      ],
+    },
+  });
+  return Effect.gen(function* () {
+    const keepWarm = yield* ClaudeKeepWarm.ClaudeKeepWarm;
+    const paced = fakeSession("root", 1);
+    yield* keepWarm.register(paced.session);
+    yield* TestClock.adjust("30 seconds");
+    assert.deepEqual(paced.shown, [{ ...hold, window: "7d" }]);
+    assert.include(ClaudeKeepWarm.describeKeepWarmHold({ ...hold, window: "7d" }), "weekly limit");
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
+// Router 0.47.1 reports a warm paced session as a pin; it is still a keep-warm stall, not a wait.
+it.effect("shows a paced session's pin hold as a keep-warm stall", () => {
+  const { layer } = fixture({
+    status: 200,
+    body: {
+      plugin: { version: "0.47.1" },
+      held: [
+        {
+          session: "root",
+          kind: "pin",
+          release_at: "2026-11-03T13:59:00Z",
+          reset_at: "2026-11-03T15:00:00Z",
+          window: "7d",
+          reason: "paced_session",
+        },
+      ],
+    },
+  });
+  return Effect.gen(function* () {
+    const keepWarm = yield* ClaudeKeepWarm.ClaudeKeepWarm;
+    const paced = fakeSession("root", 1);
+    yield* keepWarm.register(paced.session);
+    yield* TestClock.adjust("30 seconds");
+    assert.deepEqual(paced.shown, [{ ...hold, window: "7d" }]);
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
 it.effect("shows a stall pin's hold as a pin hold, ahead of the session's keep-warm hold", () => {
   const { layer } = fixture({
     status: 200,

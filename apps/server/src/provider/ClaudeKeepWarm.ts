@@ -409,7 +409,9 @@ export function describeKeepWarmHold(hold: ClaudeKeepWarmHold): string {
   if (hold.kind === "pin") {
     return `Waiting for ${hold.account ?? "the chosen account"} to reset (this thread is set to wait for it).`;
   }
-  return "Claude is nearly out of its 5-hour limit. Holding requests about once an hour to keep the prompt cache warm until the limit resets.";
+  return hold.window === "7d"
+    ? "Claude is nearly out of its weekly limit. Holding requests about once an hour to keep the prompt cache warm until the limit resets."
+    : "Claude is nearly out of its 5-hour limit. Holding requests about once an hour to keep the prompt cache warm until the limit resets.";
 }
 
 export function describeKeepWarmHoldEnd(

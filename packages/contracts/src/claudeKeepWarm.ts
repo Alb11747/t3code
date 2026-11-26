@@ -18,7 +18,7 @@ export const ClaudeKeepWarmHold = Schema.Struct({
   resetAt: IsoDateTime,
   /** Set when the router knows no reset, such as for an account the hub cannot use right now. */
   resetUnknown: Schema.optionalKey(Schema.Boolean),
-  /** A pin hold's blocking window is the weekly one; absent means the 5-hour window. */
+  /** The hold's blocking window is the weekly one; absent means the 5-hour window. */
   window: Schema.optionalKey(Schema.Literal("7d")),
   /** A router before 0.27.0 keeps a held request on its old pin, so a change must restart it. */
   staysOnPinChange: Schema.optionalKey(Schema.Boolean),

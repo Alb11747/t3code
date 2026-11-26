@@ -12585,10 +12585,26 @@
   "a16b48709357a5a7": "Gérer l’utilisation",
   "a00e74aaa421c524": "restant",
   "0e34c3076c08feb2": [
-    { "t": "span", "i": 1, "c": ["↻ +", { "i": 2, "k": "_gt_value_2", "v": "v" }, "%"] },
+    {
+      "t": "span",
+      "i": 1,
+      "c": [
+        "↻ +",
+        {
+          "i": 2,
+          "k": "_gt_value_2",
+          "v": "v"
+        },
+        "%"
+      ]
+    },
     " ",
     "dans ",
-    { "i": 3, "k": "_gt_value_3", "v": "v" }
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    }
   ],
   "8bd6f07136317c8f": "Aucun fournisseur des environnements sélectionnés ne signale de limites d’abonnement.",
   "87f5d0c61b335f38": "Consultez l’utilisation dans ChatGPT avec votre compte connecté.",
@@ -13230,5 +13246,7 @@
   "e4974b202388b884": "En attente tant que {account} est à son plafond pour les sessions courtes.",
   "dbc06b7c545a097d": "Compactage auto",
   "5b49b60b53bc5c52": "à {tokens}",
-  "2aa8fd91d348be6a": "Ce fil se compacte à {tokens} jetons, une limite définie pour lui."
+  "2aa8fd91d348be6a": "Ce fil se compacte à {tokens} jetons, une limite définie pour lui.",
+  "684b5fa810e83350": "{account} a presque épuisé son quota hebdomadaire, qui se réinitialise {resetAt}. Les requêtes s’exécutent normalement d’ici là. Le cache des consignes peut expirer si le quota est atteint avant.",
+  "21cceb347af13769": "{account} a presque épuisé son quota hebdomadaire, qui se réinitialise {resetAt}. Prochaine requête {releaseAt}."
 }

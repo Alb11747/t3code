@@ -5791,5 +5791,7 @@
   "0b1e4aecbd38e0cf": "När appen ansluter till en dator via {product} skickar den hur lång tid varje steg tog, feltypen, ett ID för den här appsessionen och appversionen till T3 Code-teamet. Spårningar innehåller aldrig dina trådar, prompter eller din kod.",
   "e0856d6a402ad821": "Policyn för {organization} tillåter inte projekts layoutkommandon för worktrees.",
   "7288765cb3116ff6": "{account} har nått sin gräns för korta sessioner. Resten av femtimmarsgränsen, som återställs {resetAt}, sparas åt långvariga trådar. Kontrollerar igen {releaseAt}.",
-  "da69607e036f3dfa": "Det här kontot"
+  "da69607e036f3dfa": "Det här kontot",
+  "1e4465377d021a01": "Veckogränsen för {account}",
+  "2537b53b5428d97d": "Veckogränsen"
 }

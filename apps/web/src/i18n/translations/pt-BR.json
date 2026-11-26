@@ -12585,10 +12585,26 @@
   "a16b48709357a5a7": "Gerenciar uso",
   "a00e74aaa421c524": "restante",
   "0e34c3076c08feb2": [
-    { "t": "span", "i": 1, "c": ["↻ +", { "i": 2, "k": "_gt_value_2", "v": "v" }, "%"] },
+    {
+      "t": "span",
+      "i": 1,
+      "c": [
+        "↻ +",
+        {
+          "i": 2,
+          "k": "_gt_value_2",
+          "v": "v"
+        },
+        "%"
+      ]
+    },
     " ",
     "em ",
-    { "i": 3, "k": "_gt_value_3", "v": "v" }
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    }
   ],
   "8bd6f07136317c8f": "Nenhum provedor nos ambientes selecionados informa limites de assinatura.",
   "87f5d0c61b335f38": "Veja o uso no ChatGPT com sua conta conectada.",
@@ -13230,5 +13246,7 @@
   "e4974b202388b884": "Em espera enquanto {account} está no limite para sessões curtas.",
   "dbc06b7c545a097d": "Compactação automática",
   "5b49b60b53bc5c52": "em {tokens}",
-  "2aa8fd91d348be6a": "Esta conversa é compactada em {tokens} tokens, um limite definido para ela."
+  "2aa8fd91d348be6a": "Esta conversa é compactada em {tokens} tokens, um limite definido para ela.",
+  "684b5fa810e83350": "{account} está perto do limite semanal, que é redefinido {resetAt}. As solicitações seguem normalmente até lá. Se o limite for atingido primeiro, o cache do prompt poderá expirar.",
+  "21cceb347af13769": "{account} está perto do limite semanal, que é redefinido {resetAt}. Próxima solicitação {releaseAt}."
 }

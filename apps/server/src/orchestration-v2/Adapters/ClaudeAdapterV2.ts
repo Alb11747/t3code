@@ -10466,6 +10466,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             shown.resetAt === hold.resetAt &&
             shown.kind === hold.kind &&
             shown.reason === hold.reason &&
+            shown.window === hold.window &&
             shown.account === hold.account &&
             shown.quotaWaitSince === hold.quotaWaitSince
           ) {
@@ -10512,7 +10513,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const hold = state.pause;
           if (hold === null || status !== "interrupted") return null;
           context.rateLimitResetTimes.set(
-            hold.kind === "pin" && hold.window === "7d" ? "seven_day" : "five_hour",
+            hold.window === "7d" ? "seven_day" : "five_hour",
             hold.resetAt,
           );
           return {
@@ -10525,7 +10526,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   ? `Paused until ${hold.account ?? "the account"}'s 5-hour limit resets.`
                   : hold.kind === "pin"
                     ? `Paused until ${hold.account ?? "the chosen account"} has quota again.`
-                    : "Paused to keep Claude's prompt cache warm until its 5-hour limit resets.",
+                    : hold.window === "7d"
+                      ? "Paused to keep Claude's prompt cache warm until its weekly limit resets."
+                      : "Paused to keep Claude's prompt cache warm until its 5-hour limit resets.",
               retryable: true,
               resetAt: hold.resetAt,
             }),

@@ -5791,5 +5791,7 @@
   "0b1e4aecbd38e0cf": "Wenn die App über {product} eine Verbindung zu einem Computer herstellt, sendet sie dem T3 Code-Team, wie lange jeder Schritt gedauert hat, den Fehlertyp, eine ID für diese App-Sitzung und die App-Version. Traces enthalten nie deine Threads, Prompts oder deinen Code.",
   "e0856d6a402ad821": "Die Richtlinie von {organization} erlaubt keine Worktree-Layout-Befehle von Projekten.",
   "7288765cb3116ff6": "{account} hat sein Limit für kurze Sitzungen erreicht. Der Rest des 5-Stunden-Limits, das um {resetAt} zurückgesetzt wird, bleibt lang laufenden Threads vorbehalten. Erneute Prüfung um {releaseAt}.",
-  "da69607e036f3dfa": "Dieses Konto"
+  "da69607e036f3dfa": "Dieses Konto",
+  "1e4465377d021a01": "Das Wochenlimit von {account}",
+  "2537b53b5428d97d": "Das Wochenlimit"
 }

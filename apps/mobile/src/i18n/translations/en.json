@@ -5793,5 +5793,7 @@
   "0b1e4aecbd38e0cf": "When the app connects to a computer through {product}, it sends the T3 Code team how long each step took, any error type, an ID for this app session, and the app version. Traces never include your threads, prompts, or code.",
   "e0856d6a402ad821": "{organization}'s policy does not allow project worktree layout commands.",
   "7288765cb3116ff6": "{account} reached its short-session cap. The rest of its 5-hour limit, which resets at {resetAt}, is kept for long-running threads. It checks again at {releaseAt}.",
-  "da69607e036f3dfa": "This account"
+  "da69607e036f3dfa": "This account",
+  "1e4465377d021a01": "The weekly limit of {account}",
+  "2537b53b5428d97d": "The weekly limit"
 }
