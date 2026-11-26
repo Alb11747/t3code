@@ -98,6 +98,9 @@ export function makeSubagentChildThread(input: {
     accountMovedAtByProviderThread: undefined,
     // Fork: a coordinator's auto-compact limit is its own; a child gets one only when asked.
     autoCompactLimit: null,
+    // Fork: so are its idle-compaction overrides; a child follows the tiers unless asked.
+    compactBeforeCacheExpires: null,
+    compactOnceRequestedAt: null,
     lineage: {
       parentThreadId: input.parentThread.id,
       relationshipToParent: "subagent",

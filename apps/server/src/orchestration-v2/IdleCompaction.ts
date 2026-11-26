@@ -160,7 +160,6 @@ export function idleCompactionWindow(
   const snoozeEndMs =
     thread.snoozedUntil == null ? null : DateTime.toEpochMillis(thread.snoozedUntil);
   const snoozed = snoozeEndMs !== null && snoozeEndMs > nowMs;
-  if (snoozed && !policy.compactSnoozed) return null;
   // Fork: delegated tasks are subagents with their own Claude session and are resumed later, so
   // they compact like listed threads. A native subagent has no session of its own and is skipped
   // by the session check below.
@@ -172,7 +171,12 @@ export function idleCompactionWindow(
       (latest, run) => (latest === null || run.ordinal > latest.ordinal ? run : latest),
       null,
     );
-  if (latestRun?.status !== "completed" || latestRun.completedAt === null) return null;
+  // Fork: a stopped turn leaves its prompt cache as warm as a finished one.
+  if (
+    (latestRun?.status !== "completed" && latestRun?.status !== "interrupted") ||
+    latestRun.completedAt === null
+  )
+    return null;
   const message = messages.find((candidate) => candidate.id === latestRun.userMessageId);
   // Never compact a compaction, so one idle spell compacts at most once.
   if (message === undefined || message.text.trim().toLowerCase() === "/compact") return null;
@@ -198,7 +202,11 @@ export function idleCompactionWindow(
   const expiresAt = usages[0]?.promptCacheExpiresAt;
   const endMs = expiresAt === undefined ? Number.NaN : Date.parse(expiresAt);
   if (!Number.isFinite(endMs) || nowMs >= endMs) return null;
-  const wakesMs = [...policy.scheduledWakesMs, ...(snoozed ? [snoozeEndMs] : [])];
+  // Fork: a snooze's end starts no turn, so a thread unsnoozed before its cache expires is an
+  // ordinary idle thread by then. With snoozed threads off, it must end before compaction starts.
+  const snoozeHoldsMs = snoozed && !policy.compactSnoozed ? snoozeEndMs : null;
+  if (snoozeHoldsMs !== null && snoozeHoldsMs >= endMs - LEAD_MS) return null;
+  const wakesMs = policy.scheduledWakesMs;
   // A wake before the cache expires reuses it, and its own run schedules the next check.
   if (wakesMs.some((wakeMs) => wakeMs < endMs)) return null;
   const backgroundWork = derivePendingBackgroundWork({
@@ -210,14 +218,24 @@ export function idleCompactionWindow(
     pullRequests: thread.pullRequests,
     issueWatches: thread.issueWatches,
   });
+  const delegated = thread.lineage.relationshipToParent === "subagent";
+  // Fork: a delegated task waiting on its own background work has not reported yet, and a /compact
+  // now would become the run its parent reads the result from.
+  if (delegated && backgroundWorkHoldsCompletion(backgroundWork)) return null;
   return {
     runId: latestRun.id,
     startMs: endMs - LEAD_MS,
     endMs,
     usedTokens,
-    settled: thread.settledAt !== null || thread.settledOverride === "settled",
+    // Fork: subagents never settle, so a delegated task its parent never resumed counts as settled.
+    settled:
+      thread.settledAt !== null ||
+      thread.settledOverride === "settled" ||
+      (delegated && latestRun.ordinal === 1),
     hasWakeSignal:
       wakesMs.length > 0 ||
+      // The user means to come back to a snoozed thread.
+      snoozed ||
       pendingGuestMessageCount(thread.guestShare) > 0 ||
       runtimeRequests.some(isPendingMessageUserInput) ||
       backgroundWorkHoldsCompletion(backgroundWork) ||

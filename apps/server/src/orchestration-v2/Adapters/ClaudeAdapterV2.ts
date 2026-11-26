@@ -11031,6 +11031,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             (usage.cache_read_input_tokens ?? 0) > 0 &&
             readCacheExpiry !== undefined
           ) {
+            const lastTtlMs = lastPromptCacheTtlMs;
+            const requestedAt = stream.requestedAt;
             const evidence = yield* resolveClaudeEnv(
               currentQuery.settingsCwd,
               currentQuery.launchArgSettings,
@@ -11041,8 +11043,23 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   ? Effect.succeed(null)
                   : readCacheExpiry(baseUrl, nativeThreadId, stream.messageId),
               ),
-              Effect.timeoutOption("500 millis"),
+              // Fork: a slow host must not cost the turn its expiry, which idle compaction needs.
+              Effect.timeoutOption("3 seconds"),
               Effect.map(Option.getOrNull),
+              // A cache hit refreshes the entry it read, so the last known TTL runs again from the
+              // request, as for a cache write.
+              Effect.map(
+                (read) =>
+                  read ??
+                  (lastTtlMs === undefined || requestedAt === undefined
+                    ? null
+                    : {
+                        promptCacheTtlMs: lastTtlMs,
+                        promptCacheExpiresAt: DateTime.formatIso(
+                          DateTime.add(requestedAt, { milliseconds: lastTtlMs }),
+                        ),
+                      }),
+              ),
             );
             if (evidence != null) {
               tokenUsage = {

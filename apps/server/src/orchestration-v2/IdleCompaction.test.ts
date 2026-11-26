@@ -245,6 +245,12 @@ describe("idleCompactionWindow", () => {
     // A turn Claude itself reported as cancelled did run, so it stays the latest.
     steered.runs = steered.runs.map((run) => ({ ...run, startedAt: at(-MINUTE_MS) }));
     expect(idleCompactionWindow(steered, NOW_MS)).toBeNull();
+    // A stopped turn leaves the cache as warm as a finished one; a failed one may have none.
+    const stopped = records(cache);
+    stopped.runs = stopped.runs.map((run) => ({ ...run, status: "interrupted" as const }));
+    expect(idleCompactionWindow(stopped, NOW_MS)?.runId).toBe(runId);
+    stopped.runs = stopped.runs.map((run) => ({ ...run, status: "failed" as const }));
+    expect(idleCompactionWindow(stopped, NOW_MS)).toBeNull();
     const archived = records(cache);
     archived.thread = { ...archived.thread, archivedAt: at() };
     expect(idleCompactionWindow(archived, NOW_MS)).toBeNull();
@@ -271,7 +277,21 @@ describe("idleCompactionWindow", () => {
         relationshipToParent: "subagent",
       },
     };
-    expect(idleCompactionWindow(delegated, NOW_MS)?.runId).toBe(runId);
+    // One its parent never resumed is done, so it compacts only in the settled tier.
+    expect(idleCompactionWindow(delegated, NOW_MS)).toMatchObject({ runId, settled: true });
+    const resumed = { ...delegated, runs: delegated.runs.map((run) => ({ ...run, ordinal: 2 })) };
+    expect(idleCompactionWindow(resumed, NOW_MS)).toMatchObject({ runId, settled: false });
+    // Waiting on its own subagent it has not reported, and a /compact would become its result.
+    const reporting = {
+      ...resumed,
+      providerThreads: [
+        {
+          ...resumed.providerThreads[0]!,
+          pendingBackgroundTasks: [{ taskId: "task-1", kind: "subagent" as const }],
+        },
+      ],
+    };
+    expect(idleCompactionWindow(reporting, NOW_MS)).toBeNull();
     // A native subagent has no session of its own to compact.
     delegated.thread = { ...delegated.thread, activeProviderThreadId: null };
     expect(idleCompactionWindow(delegated, NOW_MS)).toBeNull();
@@ -317,6 +337,17 @@ describe("idleCompactionWindow", () => {
     { name: "a scheduled wake after expiry", waits: { scheduledInMs: 90 }, compacts: true },
     { name: "a scheduled wake before expiry", waits: { scheduledInMs: 30 }, compacts: false },
     { name: "a snooze when snoozed threads are off", waits: { snoozeInMs: 90 }, compacts: false },
+    // A snooze's end starts no turn, so the thread compacts once it ends.
+    {
+      name: "a snooze ending before expiry when snoozed threads are off",
+      waits: { snoozeInMs: 30 },
+      compacts: true,
+    },
+    {
+      name: "a snooze ending after compaction would start",
+      waits: { snoozeInMs: 59 },
+      compacts: false,
+    },
     {
       name: "a snooze past expiry",
       waits: { snoozeInMs: 90, compactSnoozed: true },
@@ -325,7 +356,7 @@ describe("idleCompactionWindow", () => {
     {
       name: "a snooze ending before expiry",
       waits: { snoozeInMs: 30, compactSnoozed: true },
-      compacts: false,
+      compacts: true,
     },
   ] as const)("a thread with $name is waiting: $compacts", ({ waits, compacts }) => {
     const data = records({ cacheExpiresInMs: 60 * MINUTE_MS });
@@ -644,6 +675,7 @@ describe("IdleCompactionService", () => {
                 }),
             }),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getRecoveryThreadIds: () => Effect.succeed([]),
               getThread: () => Effect.succeed(data.thread),
               hasIdleCompactionWait: () =>
                 Effect.sync(() => {
@@ -752,6 +784,7 @@ describe("IdleCompactionService", () => {
                 }),
             }),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getRecoveryThreadIds: () => Effect.succeed([]),
               getThread: () => Effect.succeed(data.thread),
               getThreadRecords: () =>
                 Effect.succeed({
@@ -817,6 +850,7 @@ describe("IdleCompactionService", () => {
       ...records().thread,
       snoozedUntil: at(90 * MINUTE_MS),
     },
+    recentThreadIds: ReadonlyArray<ThreadId> = [],
   ) =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW_MS);
@@ -847,6 +881,8 @@ describe("IdleCompactionService", () => {
             }),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getRecoveryThreadIds: (kind) =>
+            Effect.succeed(kind === "idle-compactions" ? recentThreadIds : []),
           getThread: () => Effect.succeed(data.thread),
           hasIdleCompactionWait: () => Effect.succeed(false),
           getThreadRecords: (_threadId, _keys, options) =>
@@ -878,6 +914,23 @@ describe("IdleCompactionService", () => {
       }).pipe(Effect.provide(dependencies));
       return dispatched;
     });
+
+  // Timers live in memory, so a restart must arm them again for caches that are still warm.
+  it.effect("arms waiting compaction at start for a thread that completed before it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const dispatched = yield* serviceDispatches(
+          Stream.empty,
+          noScheduledTasks,
+          () => Effect.void,
+          undefined,
+          [threadId],
+        );
+        expect(dispatched).toEqual(["server:idle-compact:idle-thread:run-1"]);
+        expect(yield* serviceDispatches(Stream.empty)).toEqual([]);
+      }),
+    ),
+  );
 
   it.effect.each(["thread.snoozed", "thread.unsettled"] as const)(
     "arms waiting compaction on %s after its run completed",
@@ -1116,6 +1169,7 @@ describe("IdleCompactionService", () => {
               }),
           }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getRecoveryThreadIds: () => Effect.succeed([]),
             getThread: () => Effect.succeed(data.thread),
             getThreadRecords: (_threadId, _keys, options) =>
               Effect.succeed({

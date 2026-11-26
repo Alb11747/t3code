@@ -159,8 +159,7 @@ export const make = Effect.gen(function* () {
         if (
           latestRun === undefined ||
           latestRun.completedAt === null ||
-          (latestRun.status !== "completed" &&
-            (codexPolicy === null || latestRun.status !== "interrupted"))
+          (latestRun.status !== "completed" && latestRun.status !== "interrupted")
         ) {
           if (codexClocks.has(threadId)) codexClocks.set(threadId, null);
           return;
@@ -296,6 +295,14 @@ export const make = Effect.gen(function* () {
           return recheck(event.threadId);
         return Effect.void;
       }),
+    );
+    // Fork: timers live in memory, so after a restart every thread whose cache can still be warm
+    // gets its check again; without it each restart let those caches expire uncompacted.
+    yield* projections.getRecoveryThreadIds("idle-compactions").pipe(
+      Effect.flatMap((threadIds) => Effect.forEach(threadIds, recheck, { discard: true })),
+      Effect.catch((cause) =>
+        Effect.logWarning("idle compaction could not resume timers after start", { cause }),
+      ),
     );
     // Removing or retargeting a task can make its former thread eligible, so recheck both lists.
     let boundThreadIds = new Set<ThreadId>();

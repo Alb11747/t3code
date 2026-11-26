@@ -196,7 +196,9 @@ export type ProjectionRecoveryKind =
   | "restart-continuations"
   | "subagent-results"
   | "delegated-completions"
-  | "unread-steers";
+  | "unread-steers"
+  // Fork: threads whose prompt cache can still be warm, for idle compaction after a restart.
+  | "idle-compactions";
 
 export type ProjectionLimitRecoveryCandidate = Pick<
   OrchestrationV2ThreadShell,
@@ -5298,8 +5300,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           readonly exclude?: ReadonlyArray<string>;
         },
       ) {
+        // A Claude prompt cache lives at most an hour after the request that wrote it.
+        const idleSince = DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { hours: 1 }));
         const candidates = (() => {
           switch (kind) {
+            case "idle-compactions":
+              return sql`
+                SELECT DISTINCT thread_id FROM orchestration_v2_projection_runs
+                WHERE status IN ('completed', 'interrupted') AND completed_at > ${idleSince}
+              `;
             case "boundary-offers":
               return sql`
                 SELECT thread_id FROM orchestration_v2_projection_runs

@@ -206,6 +206,7 @@ const RECOVERY_KIND_SET = {
   "subagent-results": true,
   "delegated-completions": true,
   "unread-steers": true,
+  "idle-compactions": true,
 } satisfies Record<ProjectionStore.ProjectionRecoveryKind, true>;
 const RECOVERY_KINDS = Object.keys(
   RECOVERY_KIND_SET,
