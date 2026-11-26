@@ -343,34 +343,42 @@ it("shows a remote subagent's full title in its tooltip even when its environmen
   const remoteEnvId = EnvironmentId.make("remote-env");
   const remoteThreadId = ThreadId.make("remote-thread");
   const now = DateTime.makeUnsafe("2026-10-31T20:00:00.000Z");
+  const agent = {
+    id: NodeId.make("remote-agent"),
+    threadId,
+    runId: null,
+    parentNodeId: NodeId.make("parent"),
+    origin: "app_owned",
+    createdBy: "agent",
+    driver: "codex",
+    providerInstanceId: "provider",
+    providerThreadId: null,
+    childThreadId: null,
+    nativeTaskRef: null,
+    prompt: "Run remote task",
+    title: longTitle,
+    model: null,
+    status: "completed",
+    result: null,
+    startedAt: now,
+    completedAt: null,
+    updatedAt: now,
+    remoteChild: {
+      environmentId: remoteEnvId,
+      threadId: remoteThreadId,
+      label: "Remote VM with a long machine name in the office",
+    },
+  };
   state.projection = {
     ...(state.projection as Record<string, unknown>),
     subagents: [
+      agent,
       {
-        id: NodeId.make("remote-agent"),
-        threadId,
-        runId: null,
-        parentNodeId: NodeId.make("parent"),
-        origin: "app_owned",
-        createdBy: "agent",
-        driver: "codex",
-        providerInstanceId: "provider",
-        providerThreadId: null,
-        childThreadId: null,
-        nativeTaskRef: null,
-        prompt: "Run remote task",
-        title: longTitle,
-        model: null,
-        status: "completed",
-        result: null,
-        startedAt: null,
-        completedAt: null,
-        updatedAt: now,
-        remoteChild: {
-          environmentId: remoteEnvId,
-          threadId: remoteThreadId,
-          label: "Remote VM with a long machine name in the office",
-        },
+        ...agent,
+        id: NodeId.make("older-remote-task"),
+        title: "Previous prompt",
+        status: "running",
+        startedAt: DateTime.makeUnsafe("2026-10-30"),
       },
     ],
   };
@@ -386,6 +394,7 @@ it("shows a remote subagent's full title in its tooltip even when its environmen
     { router: "/environment/fork" },
   );
 
+  await expect.element(screen.getByText("Previous prompt")).not.toBeInTheDocument();
   // A finished remote task sits with the other finished agents, not in its own list.
   await expect
     .element(screen.getByRole("button", { name: new RegExp(longTitle) }))

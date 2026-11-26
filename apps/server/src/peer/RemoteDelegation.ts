@@ -117,10 +117,8 @@ export class RemoteDelegation extends Context.Service<
       },
     ) => Effect.Effect<{ readonly taskId: NodeId }, OrchestratorMcpFailure>;
     /**
-     * A `t3_thread_send` there that started or queued a run on the thread of
-     * one of this thread's tasks that has its result: like a follow-up to a
-     * finished child here, that run is a new task, whose id the send returns.
-     * Any other send is returned as it came.
+     * A started or queued send to a delegated thread returns its open task.
+     * Once the previous run completes, a later send gets a new task.
      */
     readonly followUp: (
       scope: McpInvocationContext.McpInvocationScope,
@@ -493,12 +491,12 @@ const make = Effect.gen(function* () {
       const isThere = (task: OrchestrationV2Subagent) =>
         task.remoteChild?.environmentId === environmentId &&
         task.remoteChild.threadId === sent.threadId;
-      const finished = parent?.subagents.find((task) => isThere(task) && task.result !== null);
+      const previous = parent?.subagents.findLast(isThere);
       // Bound as a follow-up here is: a background caller's foreground run may have ended.
       const parentRun = parent === undefined ? null : followUpOwnerRun(parent.runs);
       if (
-        finished?.remoteChild === undefined ||
-        finished.model === null ||
+        previous?.remoteChild === undefined ||
+        previous.model === null ||
         parentRun === null ||
         parentRun.rootNodeId === null
       )
@@ -515,15 +513,16 @@ const make = Effect.gen(function* () {
           parentRunId: parentRun.id,
           parentNodeId: parentRun.rootNodeId,
           task: request.message,
-          ...(finished.title === null ? {} : { title: finished.title }),
-          driver: finished.driver,
-          modelSelection: { instanceId: finished.providerInstanceId, model: finished.model },
+          ...(previous.title === null ? {} : { title: previous.title }),
+          driver: previous.driver,
+          modelSelection: { instanceId: previous.providerInstanceId, model: previous.model },
           remoteChild: {
             environmentId,
             threadId: sent.threadId,
-            label: finished.remoteChild.label,
+            label: previous.remoteChild.label,
             runId: sent.runId,
           },
+          status: openTaskStatus(sent.status, sent.queueHeld),
           completionWake: "always",
         })
         .pipe(
@@ -577,9 +576,12 @@ const make = Effect.gen(function* () {
     status: "completed" | "failed" | "cancelled" | "interrupted",
     result: string,
     stoppedThere: "ran-out" | "stopped" | undefined,
-    stopCount?: number,
-    backgroundWork?: ReadonlyArray<OrchestrationV2TaskBackgroundWork>,
-    executedModel?: string,
+    options: {
+      readonly stopCount?: number | undefined;
+      readonly backgroundWork?: ReadonlyArray<OrchestrationV2TaskBackgroundWork>;
+      readonly executedModel?: string | undefined;
+      readonly expectedRemoteRunId?: RunId | null;
+    } = {},
   ) {
     const attempt = yield* random.uuidV4();
     yield* threads
@@ -591,9 +593,7 @@ const make = Effect.gen(function* () {
         status,
         result,
         ...(stoppedThere === undefined ? {} : { stoppedThere }),
-        ...(stopCount === undefined ? {} : { stopCount }),
-        ...(backgroundWork === undefined || backgroundWork.length === 0 ? {} : { backgroundWork }),
-        ...(executedModel === undefined ? {} : { executedModel }),
+        ...options,
       })
       .pipe(
         Effect.catch((error) =>
@@ -771,16 +771,6 @@ const make = Effect.gen(function* () {
         Effect.tap(noDefect),
         // `false` means it is still running there: follow again straight away.
         Effect.repeat({ while: (done) => !done }),
-        Effect.catchTags({
-          OrchestratorMcpFailure: Effect.fn("RemoteDelegation.followFailed")(function* (error) {
-            const reason = yield* finalReason(parentThreadId, taskId, error);
-            if (reason === undefined) return yield* error;
-            // Gone there, or no link to reach it by: nothing left to stop there.
-            const { task } = yield* readTask(parentThreadId, taskId);
-            const stopCount = task?.remoteChild?.stopCount;
-            yield* complete(parentThreadId, taskId, "failed", reason, "stopped", stopCount);
-          }),
-        }),
         // A parent gone here has nothing left to follow for; anything else is retried.
         Effect.catch((error) =>
           threads.getThreadShell(parentThreadId).pipe(
@@ -831,6 +821,30 @@ const make = Effect.gen(function* () {
     const { thread, task } = yield* readTask(parentThreadId, taskId);
     if (task?.remoteChild === undefined) return true;
     const remote = task.remoteChild;
+    return yield* followObservedTask(parentThreadId, task, remote, thread, sequence).pipe(
+      Effect.catchTags({
+        OrchestratorMcpFailure: Effect.fn("RemoteDelegation.followFailed")(function* (error) {
+          const reason = yield* finalReason(parentThreadId, taskId, error);
+          if (reason === undefined) return yield* error;
+          // A missing run only fails the task if this follower still owns that run.
+          yield* complete(parentThreadId, taskId, "failed", reason, "stopped", {
+            stopCount: remote.stopCount,
+            expectedRemoteRunId: remote.runId ?? null,
+          });
+          return yield* settled(parentThreadId, taskId);
+        }),
+      }),
+    );
+  });
+
+  const followObservedTask = Effect.fn("RemoteDelegation.followObservedTask")(function* (
+    parentThreadId: ThreadId,
+    task: OrchestrationV2Subagent,
+    remote: OrchestrationV2RemoteTaskChild,
+    thread: Effect.Success<ReturnType<typeof readTask>>["thread"],
+    sequence: number,
+  ) {
+    const taskId = task.id;
     const scope = followScope(
       { threadId: parentThreadId, providerInstanceId: thread.providerInstanceId },
       remote,
@@ -863,7 +877,7 @@ const make = Effect.gen(function* () {
           terminalStatus(task.status),
           task.result,
           "stopped",
-          remote.stopCount,
+          { stopCount: remote.stopCount },
         );
         return yield* settled(parentThreadId, taskId);
       }
@@ -889,7 +903,8 @@ const make = Effect.gen(function* () {
           (stored) =>
             stored.event.type === "subagent.updated" &&
             stored.event.payload.id === taskId &&
-            stored.event.payload.result !== null,
+            (stored.event.payload.result !== null ||
+              stored.event.payload.remoteChild?.runId !== remote.runId),
         ),
         Stream.runHead,
         Effect.flatMap((ended) =>
@@ -907,9 +922,24 @@ const make = Effect.gen(function* () {
         untilDelegatedWorkSettled: true,
       })
       .pipe(Effect.raceFirst(endedHere));
-    // The next look reads the result and stops it there.
+    // Re-read the task before waiting on a new run or propagating a local stop.
     if ("endedHere" in waited) return false;
-    if (waited.timedOut) return false;
+    if (waited.timedOut) {
+      const status = openTaskStatus(waited.status, waited.queueHeld);
+      if (status !== undefined && status !== task.status) {
+        yield* threads.dispatch({
+          type: "delegated_task.remote.status",
+          commandId: CommandId.make(
+            `command:remote-task-status:${taskId}:${yield* random.uuidV4()}`,
+          ),
+          parentThreadId,
+          taskId,
+          expectedRemoteRunId: remote.runId ?? null,
+          status,
+        });
+      }
+      return false;
+    }
     // A task recorded without its run waits on the thread's latest; a
     // thread there with none has nothing left to wait for.
     if (waited.runId === null) {
@@ -920,35 +950,12 @@ const make = Effect.gen(function* () {
         reply.text === undefined ? "failed" : "completed",
         reply.text ?? "The thread in the linked environment has no run to follow.",
         "ran-out",
+        { expectedRemoteRunId: remote.runId ?? null },
       );
       return yield* settled(parentThreadId, taskId);
     }
     if (!isTerminal(waited.status)) return false;
-    // A later run's answer there may be another open follow-up's, or its restart, which no run id
-    // here names; concurrent sends may record here out of their order there. Then this task's
-    // answer is its own run's latest restart, the one waited on.
-    const sharedThread =
-      waited.resultRun !== undefined &&
-      waited.resultRun.runId !== waited.runId &&
-      (yield* threads.getThreadRecords(parentThreadId, ["subagents"]).pipe(
-        Effect.map(({ subagents }) => {
-          const recordedAt = subagents.find((task) => task.id === taskId)?.startedAt ?? null;
-          return subagents.some(
-            (other) =>
-              other.id !== taskId &&
-              other.remoteChild?.environmentId === remote.environmentId &&
-              other.remoteChild.threadId === remote.threadId &&
-              // One that settled before this was recorded ran before it there.
-              (recordedAt === null ||
-                other.completedAt === null ||
-                DateTime.isGreaterThan(other.completedAt, recordedAt)),
-          );
-        }),
-      ));
-    const resultRun =
-      waited.resultRun !== undefined && !sharedThread
-        ? waited.resultRun
-        : { runId: waited.runId, status: waited.status };
+    const resultRun = waited.resultRun ?? { runId: waited.runId, status: waited.status };
     const result = yield* lastReply(
       scope,
       remote,
@@ -966,9 +973,11 @@ const make = Effect.gen(function* () {
       terminalStatus(resultRun.status),
       result.text ?? noReply,
       backgroundWork.length === 0 ? "ran-out" : undefined,
-      undefined,
-      backgroundWork,
-      result.executedModel,
+      {
+        backgroundWork,
+        executedModel: result.executedModel,
+        expectedRemoteRunId: remote.runId ?? null,
+      },
     );
     return backgroundWork.length === 0 ? yield* settled(parentThreadId, taskId) : false;
   });
@@ -1144,14 +1153,9 @@ const make = Effect.gen(function* () {
         // Best effort: the result stands whether or not the stop gets there.
         yield* stopThere(there, remote, key, reason).pipe(
           Effect.andThen(
-            complete(
-              task.threadId,
-              task.id,
-              terminalStatus(task.status),
-              task.result,
-              "stopped",
-              remote.stopCount,
-            ),
+            complete(task.threadId, task.id, terminalStatus(task.status), task.result, "stopped", {
+              stopCount: remote.stopCount,
+            }),
           ),
           Effect.ignoreCause({ log: true }),
         );
@@ -1178,7 +1182,7 @@ const make = Effect.gen(function* () {
           ? cancelled
           : `${cancelled} It could not be stopped in ${remote.label} and may still run there: ${unstopped}`,
         unstopped === undefined ? "stopped" : undefined,
-        remote.stopCount,
+        { stopCount: remote.stopCount },
       ).pipe(
         Effect.tapError((cause) =>
           Effect.logWarning("remote-delegation.cancel-record-failed", { taskId: task.id, cause }),
@@ -1229,7 +1233,21 @@ const make = Effect.gen(function* () {
         const open = yield* projections.getOpenRemoteDelegatedTasks;
         yield* Effect.forEach(
           open,
-          ({ parentThreadId, taskId }) => followOne(parentThreadId, taskId),
+          ({ parentThreadId, taskId, superseded }) =>
+            superseded
+              ? threads
+                  .dispatch({
+                    type: "delegated_task.remote.complete",
+                    commandId: CommandId.make(`command:remote-task-superseded:${taskId}`),
+                    parentThreadId,
+                    taskId,
+                    status: "completed",
+                    result: "A newer task follows the same linked thread.",
+                    stoppedThere: "ran-out",
+                    superseded: true,
+                  })
+                  .pipe(Effect.ignoreCause({ log: true }))
+              : followOne(parentThreadId, taskId),
           {
             concurrency: "unbounded",
             discard: true,
@@ -1248,6 +1266,22 @@ const failOnDefect = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       Effect.andThen(Effect.fail(new Cause.UnknownError(defect, "A follower hit a defect."))),
     ),
   );
+
+/** Held queues are idle on the delegated task until the peer resumes them. */
+const openTaskStatus = (status: string, queueHeld?: boolean) => {
+  switch (status) {
+    case "queued":
+      return queueHeld ? "idle" : "pending";
+    case "preparing":
+    case "starting":
+    case "running":
+      return "running";
+    case "waiting":
+      return "waiting";
+    default:
+      return undefined;
+  }
+};
 
 const isTerminal = (status: string) =>
   status === "completed" ||

@@ -221,6 +221,30 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
       assert.equal(task?.status, "running");
       const item = projection.turnItems.find((candidate) => candidate.type === "subagent");
       assert.deepEqual(item?.type === "subagent" ? item.remoteChild : undefined, remoteChild);
+      // An answer already being read when a new send lands must not finish the shared task.
+      const nextRunId = RunId.make("run:next-on-the-box");
+      yield* orchestrator.dispatch({
+        ...request,
+        commandId: CommandId.make("command:retarget:records"),
+        task: "Check once more.",
+        remoteChild: { ...remoteChild, runId: nextRunId },
+        status: "pending",
+      });
+      yield* orchestrator.dispatch({
+        type: "delegated_task.remote.complete",
+        commandId: CommandId.make("command:stale-result:records"),
+        parentThreadId: parent.threadId,
+        taskId: task!.id,
+        expectedRemoteRunId: null,
+        status: "completed",
+        result: "Old answer",
+        stoppedThere: "ran-out",
+      });
+      const updated = yield* orchestrator.getThreadProjection(parent.threadId);
+      assert.lengthOf(updated.subagents, 1);
+      assert.equal(updated.subagents[0]?.remoteChild?.runId, nextRunId);
+      assert.equal(updated.subagents[0]?.result, null);
+      assert.equal(updated.subagents[0]?.status, "pending");
       // No thread was created here for the child.
       assert.equal(yield* orchestrator.getThreadShell(remoteChild.threadId), null);
       const other = yield* seedLiveParent("records-no-task");

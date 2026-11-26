@@ -310,14 +310,16 @@ function RemoteSubagentRow(props: {
   const gt = useGT();
   const m = useMessages();
   const { remoteChild } = props.agent;
-  const status = props.agent.status;
+  const status =
+    props.agent.status === "idle" && props.agent.result === null ? "stalled" : props.agent.status;
   const failed = status === "failed";
   const timing = {
-    status,
+    status: props.agent.status,
     startedAt: props.agent.startedAt ? DateTime.formatIso(props.agent.startedAt) : null,
     completedAt: props.agent.completedAt ? DateTime.formatIso(props.agent.completedAt) : null,
   };
-  const showElapsed = !failed && deriveSubagentElapsedMs(timing, 0) !== null;
+  const showElapsed =
+    status !== "stalled" && !failed && deriveSubagentElapsedMs(timing, 0) !== null;
   const title = relationshipThreadTitle({
     title: props.agent.title ?? gt("Subagent"),
     isSubagent: true,
@@ -669,11 +671,25 @@ export function ThreadRelationshipsPanel(props: {
     if (edge.kind !== "subagent" || isParent) return "related";
     return isFinishedAgentStatus(edge.status) ? "previous" : "active";
   });
+  const remoteByThread = new Map<string, RemoteSubagent>();
+  for (const task of projection?.subagents ?? []) {
+    if (task.remoteChild === undefined) continue;
+    const key = scopedThreadKey(task.remoteChild);
+    const previous = remoteByThread.get(key);
+    if (
+      previous?.startedAt &&
+      task.startedAt &&
+      DateTime.isGreaterThan(previous.startedAt, task.startedAt)
+    )
+      continue;
+    remoteByThread.set(key, { ...task, remoteChild: task.remoteChild });
+  }
   const { remoteActive = [], remotePrevious = [] } = groupBy(
-    (projection?.subagents ?? [])
-      .filter((agent): agent is RemoteSubagent => agent.remoteChild !== undefined)
-      .map((remote) => ({ remote })),
-    ({ remote }) => (isFinishedAgentStatus(remote.status) ? "remotePrevious" : "remoteActive"),
+    Array.from(remoteByThread.values(), (remote) => ({ remote })),
+    ({ remote }) =>
+      (remote.status === "idle" && remote.result === null) || !isFinishedAgentStatus(remote.status)
+        ? "remoteActive"
+        : "remotePrevious",
   );
   const groups: ReadonlyArray<{
     id: string;
@@ -692,9 +708,16 @@ export function ThreadRelationshipsPanel(props: {
   ];
   const runningCount =
     (projection?.subagents.filter(
-      (agent) => agent.childThreadId === null && agent.status === "running",
-    ).length ?? 0) + active.filter(({ edge }) => edge.status === "running").length;
-  const stalledCount = active.filter(({ edge }) => edge.status === "stalled").length;
+      (agent) =>
+        agent.childThreadId === null &&
+        agent.remoteChild === undefined &&
+        agent.status === "running",
+    ).length ?? 0) +
+    remoteActive.filter(({ remote }) => remote.status === "running").length +
+    active.filter(({ edge }) => edge.status === "running").length;
+  const stalledCount =
+    remoteActive.filter(({ remote }) => remote.status === "idle").length +
+    active.filter(({ edge }) => edge.status === "stalled").length;
 
   // A linked environment's agent may have delegated this thread from there.
   const delegatedFrom = currentThread?.delegatedFrom;

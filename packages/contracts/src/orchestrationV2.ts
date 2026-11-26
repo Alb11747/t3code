@@ -4145,7 +4145,16 @@ const OrchestrationV2InternalCommand = Schema.Union([
     driver: ProviderDriverKind,
     modelSelection: ModelSelection,
     remoteChild: OrchestrationV2RemoteTaskChild,
+    status: Schema.optional(Schema.Literals(["running", "pending", "idle", "waiting"])),
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.status"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    expectedRemoteRunId: Schema.NullOr(RunId),
+    status: Schema.Literals(["running", "pending", "idle", "waiting"]),
   }),
   /**
    * Completes a delegated task that ran in a linked environment, with what its
@@ -4155,6 +4164,10 @@ const OrchestrationV2InternalCommand = Schema.Union([
    */
   Schema.Struct({
     type: Schema.Literal("delegated_task.remote.complete"),
+    /** Ignore a follower report if another message retargeted the task during its wait. */
+    expectedRemoteRunId: Schema.optional(Schema.NullOr(RunId)),
+    /** Retire a duplicate local record recovered at startup without delivering its result. */
+    superseded: Schema.optional(Schema.Literal(true)),
     commandId: CommandId,
     parentThreadId: ThreadId,
     taskId: NodeId,
