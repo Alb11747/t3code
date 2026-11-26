@@ -24,6 +24,17 @@ const formatBytes = (bytes: number) => {
       : `${kibibytes} KiB`;
 };
 
+// Fork: VACUUM writes the live data about three times (temporary copy, WAL, checkpoint).
+// 25-100 MB/s spans the disks seen so far; antivirus scanning the files can be far slower.
+const formatReclaimEstimate = (liveBytes: number) => {
+  const minutes = (megabytesPerSecond: number) =>
+    Math.max(1, Math.round((3 * liveBytes) / (megabytesPerSecond * 1e6) / 60));
+  const [fast, slow] = [minutes(100), minutes(25)];
+  return fast === slow
+    ? `about ${fast} minute${fast === 1 ? "" : "s"}`
+    : `about ${fast}-${slow} minutes`;
+};
+
 const formatElapsed = (nanos: bigint) => {
   const seconds = Number(nanos / 1_000_000_000n);
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
@@ -98,7 +109,7 @@ export const runDoctor = Effect.fn("runDoctor")(function* (
               status.incrementalVacuumEnabled
                 ? "Returns unused space to disk."
                 : "Returns unused space to disk and turns on automatic shrinking."
-            }\n  Rewrites the whole ${formatBytes(status.databaseBytes)} database, which can take more than an hour on a large database or slow disk.\n  Pauses the background service, if installed, while it runs and may need temporary disk space.`,
+            }\n  Rewrites the whole ${formatBytes(status.databaseBytes)} database: ${formatReclaimEstimate(status.databaseBytes - status.reclaimableBytes)}, longer on a slow disk or with antivirus scanning it.\n  T3 Code can't open on this machine until it finishes: the app shows this T3 home as unavailable. The background service, if installed, is paused and started again afterwards.\n  Needs free space next to the database of about twice the data in use.`,
             recommended:
               !status.incrementalVacuumEnabled ||
               status.reclaimableBytes >= DATABASE_COMPACTION_RECOMMENDED_BYTES,
@@ -160,7 +171,9 @@ export const runDoctor = Effect.fn("runDoctor")(function* (
   }
   if (selected.includes("database")) {
     const service = yield* BootService.BootService;
-    yield* Console.log("\nReclaiming database space. Each step is shown as it starts.");
+    yield* Console.log(
+      "\nReclaiming database space. T3 Code can't open on this machine until this finishes; don't close this window. Each step is shown as it starts.",
+    );
     const startedAt = yield* Clock.monotonicTimeNanos;
     const reportStep = (step: DatabaseMaintenance.DatabaseCompactStep) =>
       Clock.monotonicTimeNanos.pipe(

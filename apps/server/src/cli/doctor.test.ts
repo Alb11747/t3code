@@ -146,82 +146,89 @@ it.effect("reports sizes just under the next unit in that unit", () =>
   }).pipe(Effect.provide(Layer.merge(layerHost, TestConsole.layer))),
 );
 
-it.effect("warns how long reclaiming can take and reports each step with its elapsed time", () =>
-  Effect.gen(function* () {
-    const output: string[] = [];
-    const steps = [
-      ["prune-events", "65 seconds"],
-      ["vacuum", "701 seconds"],
-      ["rebuild-search", "1 second"],
-      ["checkpoint", "1 second"],
-    ] as const;
-    const stateDir = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped();
-    const path = yield* Path.Path;
-    yield* runDoctor(
-      {
-        dbPath: path.join(stateDir, "statev2.sqlite"),
-        serverRuntimeStatePath: path.join(stateDir, "server-runtime.json"),
-      },
-      { fix: true, dryRun: false, interactive: false },
-    ).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          Layer.mock(BootService.BootService)({
-            withStopped: (operation) =>
-              Effect.sync(() => output.push("<pause>")).pipe(
-                Effect.andThen(operation),
-                Effect.ensuring(Effect.sync(() => output.push("<resume>"))),
-              ),
-          }),
-          Layer.succeed(DatabaseMaintenance, {
-            inspect: () =>
-              Effect.succeed({
-                databaseBytes: 12.8 * 1024 ** 3,
-                reclaimableBytes: 0,
-                incrementalVacuumEnabled: false,
-                legacyDatabaseBytes: null,
-                legacyOnlyRecords: null,
-              }),
-            compact: (_databasePath, onStep) =>
-              Effect.gen(function* () {
-                for (const [step, duration] of steps) {
-                  if (onStep) yield* onStep(step);
-                  yield* TestClock.adjust(duration);
-                }
-                return {
-                  beforeBytes: 12.8 * 1024 ** 3,
-                  afterBytes: 12.8 * 1024 ** 3,
-                  deletedEventCount: 0,
-                  deletedReceiptCount: 0,
-                };
-              }),
-            removeLegacyDatabase: () => Effect.void,
-          }),
-        ),
-      ),
-      Effect.provideService(Console.Console, {
-        ...globalThis.console,
-        log: (...args: ReadonlyArray<unknown>) => {
-          output.push(...args.join(" ").split("\n"));
+it.effect(
+  "estimates how long reclaiming takes, warns the app is unavailable, and reports each step with its elapsed time",
+  () =>
+    Effect.gen(function* () {
+      const output: string[] = [];
+      const steps = [
+        ["prune-events", "65 seconds"],
+        ["vacuum", "701 seconds"],
+        ["rebuild-search", "1 second"],
+        ["checkpoint", "1 second"],
+      ] as const;
+      const stateDir = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped();
+      const path = yield* Path.Path;
+      yield* runDoctor(
+        {
+          dbPath: path.join(stateDir, "statev2.sqlite"),
+          serverRuntimeStatePath: path.join(stateDir, "server-runtime.json"),
         },
-      }),
-    );
+        { fix: true, dryRun: false, interactive: false },
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.mock(BootService.BootService)({
+              withStopped: (operation) =>
+                Effect.sync(() => output.push("<pause>")).pipe(
+                  Effect.andThen(operation),
+                  Effect.ensuring(Effect.sync(() => output.push("<resume>"))),
+                ),
+            }),
+            Layer.succeed(DatabaseMaintenance, {
+              inspect: () =>
+                Effect.succeed({
+                  databaseBytes: 12.8 * 1024 ** 3,
+                  reclaimableBytes: 0,
+                  incrementalVacuumEnabled: false,
+                  legacyDatabaseBytes: null,
+                  legacyOnlyRecords: null,
+                }),
+              compact: (_databasePath, onStep) =>
+                Effect.gen(function* () {
+                  for (const [step, duration] of steps) {
+                    if (onStep) yield* onStep(step);
+                    yield* TestClock.adjust(duration);
+                  }
+                  return {
+                    beforeBytes: 12.8 * 1024 ** 3,
+                    afterBytes: 12.8 * 1024 ** 3,
+                    deletedEventCount: 0,
+                    deletedReceiptCount: 0,
+                  };
+                }),
+              removeLegacyDatabase: () => Effect.void,
+            }),
+          ),
+        ),
+        Effect.provideService(Console.Console, {
+          ...globalThis.console,
+          log: (...args: ReadonlyArray<unknown>) => {
+            output.push(...args.join(" ").split("\n"));
+          },
+        }),
+      );
 
-    const paused = output.indexOf("<pause>");
-    const resumed = output.indexOf("<resume>");
-    assert.isAbove(paused, -1, "the repair must run with the service paused");
-    const beforePause = output.slice(0, paused).join("\n");
-    const description = beforePause.slice(beforePause.indexOf("Reclaim database space"));
-    assert.include(description, "12.80 GiB", "the repair must state the database size up front");
-    assert.match(description, /hour/, "the repair must warn it can take over an hour");
-    const progress = output
-      .slice(paused + 1, resumed)
-      .filter((line) => line.trim() !== "" && !line.trim().startsWith("Done"))
-      .map((line) => /\[(\d+:\d{2})\]/.exec(line)?.[1] ?? `unprefixed: ${line}`);
-    assert.deepEqual(
-      progress,
-      ["0:00", "1:05", "12:46", "12:47"],
-      "each compaction step must print one line with the elapsed time as it starts",
-    );
-  }).pipe(Effect.provide(layerHost)),
+      const paused = output.indexOf("<pause>");
+      const resumed = output.indexOf("<resume>");
+      assert.isAbove(paused, -1, "the repair must run with the service paused");
+      const beforePause = output.slice(0, paused).join("\n");
+      const description = beforePause.slice(beforePause.indexOf("Reclaim database space"));
+      assert.include(description, "12.80 GiB", "the repair must state the database size up front");
+      assert.include(
+        description,
+        "about 7-27 minutes",
+        "the repair must estimate its time from the live data, written about three times",
+      );
+      assert.include(description, "can't open", "the repair must say the app is unavailable");
+      const progress = output
+        .slice(paused + 1, resumed)
+        .filter((line) => line.trim() !== "" && !line.trim().startsWith("Done"))
+        .map((line) => /\[(\d+:\d{2})\]/.exec(line)?.[1] ?? `unprefixed: ${line}`);
+      assert.deepEqual(
+        progress,
+        ["0:00", "1:05", "12:46", "12:47"],
+        "each compaction step must print one line with the elapsed time as it starts",
+      );
+    }).pipe(Effect.provide(layerHost)),
 );

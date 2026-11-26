@@ -196,11 +196,14 @@ directory.
 
 The repair's time grows with the size of the whole database, not only the
 space it reclaims, and can exceed an hour on a large database or a slow disk;
-`t3 doctor` shows each step as it runs. It rebuilds the database through a
-temporary copy, so it needs free space of about twice the data still in use
-(the database size minus the reclaimable space): once in the system temporary
-directory (on Linux and macOS, `TMPDIR`, or `/var/tmp` when it is not set) and
-once next to the database for its write-ahead log.
+`t3 doctor` estimates it before starting and shows each step as it runs.
+T3 Code can't open on that machine until the repair ends: the app reports the
+T3 home as unavailable. The repair rebuilds the database through a temporary
+copy, so it needs free space next to the database of about twice the data
+still in use (the database size minus the reclaimable space): once for the
+copy and once for its write-ahead log. If antivirus software scans that
+directory, the repair can take several times longer; excluding the T3 Code data
+directory from scanning avoids that.
 
 If you upgraded from a version before 0.1.0, its database (`state.sqlite`) is
 still kept next to the current one so you can roll back. `t3 doctor` offers to

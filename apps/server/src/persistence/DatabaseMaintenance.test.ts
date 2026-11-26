@@ -272,6 +272,8 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
         yield* Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           assert.deepEqual(yield* sql`PRAGMA auto_vacuum`, [{ auto_vacuum: 2 }]);
+          // The temporary directory is process-wide, so the repair must not leave it set.
+          assert.deepEqual(yield* sql`PRAGMA temp_store_directory`, []);
           assert.deepEqual(yield* sql`SELECT value FROM retained_data`, [{ value: "keep" }]);
           assert.deepEqual(
             yield* sql`
