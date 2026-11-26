@@ -28,6 +28,7 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -49,6 +50,7 @@ import * as CursorUsageAccounts from "@t3tools/provider-cursor/server/CursorUsag
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as AntigravityUsage from "../provider/Drivers/AntigravityUsage.ts";
+import * as HubModelAliases from "../provider/HubModelAliases.ts";
 import * as ProviderHostLive from "../provider/ProviderHostLive.ts";
 import { totalTokens, type UsageRecord } from "@t3tools/provider-core/server/usage";
 import * as UsageService from "./UsageService.ts";
@@ -3127,6 +3129,53 @@ describe("UsageService", () => {
             ratesDocument: rates,
           }),
         ),
+      );
+    }),
+  );
+
+  it.effect("attributes a hub alias to the model that answered it once that model is in use", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      const line = (id: number, timestamp: string, model: string) =>
+        `${JSON.stringify({
+          type: "assistant",
+          timestamp,
+          requestId: `req_${id}`,
+          sessionId: "session-1",
+          message: { id: `msg_${id}`, model, usage: { input_tokens: 10, output_tokens: 1 } },
+        })}\n`;
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(
+          transcript,
+          line(1, "2026-08-01T09:00:00Z", "orbit-short") +
+            line(2, "2026-08-01T10:00:00Z", "orbit-2") +
+            line(3, "2026-08-01T11:00:00Z", "orbit-short"),
+        ),
+      );
+      const aliases = new Map([
+        [ProviderInstanceId.make("claudeAgent"), { "orbit-short": "orbit-2" }],
+      ]);
+
+      const summary = yield* Effect.gen(function* () {
+        const service = yield* UsageService.make;
+        return yield* service.readSummary(WINDOW);
+      }).pipe(
+        Effect.provideService(HubModelAliases.HubModelAliases, {
+          current: Effect.succeed(aliases),
+          changes: Stream.empty,
+          set: () => Effect.void,
+        }),
+        Effect.scoped,
+        Effect.provide(layerService({ prefix: "usage-service-hub-alias-test", home, settings })),
+      );
+
+      // The request before orbit-2 was in use keeps the ID it asked for.
+      assert.deepStrictEqual(
+        summary.buckets.map(({ model, records }) => ({ model, records })),
+        [
+          { model: "orbit-2", records: 2 },
+          { model: "orbit-short", records: 1 },
+        ],
       );
     }),
   );

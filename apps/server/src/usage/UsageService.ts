@@ -31,6 +31,7 @@ import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { formatMalformedUsageWarning } from "@t3tools/shared/usageFormat";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as HubModelAliases from "../provider/HubModelAliases.ts";
 import { BUILT_IN_USAGE_DRIVERS, type BuiltInUsageReadersEnv } from "../provider/builtInDrivers.ts";
 import type { ProviderDriver } from "@t3tools/provider-core/server/driver";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
@@ -58,6 +59,7 @@ import {
   readPhysicalSourceId,
   readTranscriptRecords,
 } from "./usageTranscriptReader.ts";
+import { makeServedUsageModel } from "./servedUsageModel.ts";
 import {
   decodeScanCache,
   dedupeWithinFile,
@@ -97,6 +99,12 @@ const scanReaders = BUILT_IN_USAGE_DRIVERS.flatMap((driver) =>
 const providerRateModels = new Map(
   BUILT_IN_USAGE_DRIVERS.flatMap(({ usage }) =>
     usage?.rateModel === undefined ? [] : [[usage.provider, usage.rateModel] as const],
+  ),
+);
+
+const usageProviderByDriver = new Map(
+  BUILT_IN_USAGE_DRIVERS.flatMap(({ driverKind, usage }) =>
+    usage === undefined ? [] : [[driverKind as string, usage.provider] as const],
   ),
 );
 
@@ -196,6 +204,7 @@ export const make = Effect.gen(function* () {
     });
   const hostname = yield* HostProcess.Hostname;
   const readerContext = yield* Effect.context<BuiltInUsageReadersEnv>();
+  const hubModelAliases = yield* HubModelAliases.HubModelAliases;
 
   const fileCache: ScanCache = new Map();
   // Reads from concurrent windows can still hold the original record after it is corrected.
@@ -924,6 +933,13 @@ export const make = Effect.gen(function* () {
 
     const priceOverrides = createOverrideRateTable(settings.usagePriceOverrides);
     const modelAliases = resolveModelAliases(settings.usageModelAliases);
+    const servedModel =
+      makeServedUsageModel(
+        yield* hubModelAliases.current,
+        (instanceId) =>
+          usageProviderByDriver.get(settings.providerInstances[instanceId]?.driver ?? instanceId),
+        fileCache.values(),
+      ) ?? ((record: UsageRecord) => record);
     const sources: UsageSource[] = [];
 
     // Deleted transcripts' saved usage still aggregates and deduplicates normally.
@@ -1003,7 +1019,8 @@ export const make = Effect.gen(function* () {
     const rateModels = new Set<string>();
     for (const files of filesByDir) {
       for (const file of files) {
-        for (const record of file.records) {
+        for (const raw of file.records) {
+          const record = servedModel(raw);
           const alias = modelAliases.get(record.model);
           const model = alias ?? record.model;
           if (priceOverrides.has(model.trim())) continue;
@@ -1102,7 +1119,7 @@ export const make = Effect.gen(function* () {
         scannedFiles += 1;
         const eventOccurrences = new Map<string, number>();
         for (const rawRecord of file.records) {
-          const record = correctedRecord(rawRecord);
+          const record = servedModel(correctedRecord(rawRecord));
           let usageRecord = record;
           if (
             sharedSessionProviders.has(record.provider) &&
