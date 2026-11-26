@@ -2230,6 +2230,55 @@ it.effect("stores each conversation's account move through a return to automatic
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("resolves a thread's account conversation without reading its history", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:account-conversation");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-account-conversation"),
+      threadId,
+      projectId: ProjectId.make("project:account"),
+      title: "Long thread",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("start-account-conversation"),
+      threadId,
+      messageId: MessageId.make("message:account-conversation"),
+      text: "Work",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const { thread } = yield* projections.getThreadProjection(threadId);
+    const statements: Array<string> = [];
+    const resolved = yield* orchestrator
+      .resolveMessageProviderThread(threadId, modelSelection)
+      .pipe(
+        Effect.provideService(Statement.CurrentTransformer, (statement) => {
+          statements.push(statement.compile()[0]);
+          return Effect.succeed(statement);
+        }),
+      );
+    assert.equal(resolved?.id, thread.activeProviderThreadId);
+    // Composer account previews resolve this often; a long thread's runs and items are megabytes.
+    assert.deepEqual(
+      statements.filter((query) => /_projection_(runs|turn_items)\b/.test(query)),
+      [],
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("gives a delegated child its own account, never the parent's wait or move", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;

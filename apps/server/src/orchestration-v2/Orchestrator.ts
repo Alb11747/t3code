@@ -19801,12 +19801,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ),
     resolveMessageProviderThread: Effect.fn("OrchestratorV2.resolveMessageProviderThread")(
       function* (threadId, modelSelection) {
-        const projection = yield* projectionStore.getThreadRecords(threadId, [
+        const sessions = yield* projectionStore.getThreadRecords(threadId, [
           "providerThreads",
           "providerSessions",
-          "runs",
-          "turnItems",
         ]);
+        const active = sessions.providerThreads.find(
+          (candidate) => candidate.id === sessions.thread.activeProviderThreadId,
+        );
+        // Only a provider switch reads the context boundary; a long thread's history is megabytes.
+        const projection =
+          active === undefined || active.providerInstanceId === modelSelection.instanceId
+            ? { ...sessions, runs: [], turnItems: [] }
+            : yield* projectionStore.getThreadRecords(
+                threadId,
+                ["providerThreads", "providerSessions", "runs", "turnItems"],
+                // The boundary reads only prompts, to tell scheduled fresh runs apart.
+                { turnItemTypes: ["user_message"] },
+              );
         return (yield* resolveMessageDestination(projection, modelSelection)).targetProviderThread;
       },
       (effect, threadId) =>
