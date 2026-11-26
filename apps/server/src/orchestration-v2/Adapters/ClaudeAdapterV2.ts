@@ -5904,8 +5904,7 @@ interface ActiveClaudeTurnContext {
       readonly text: string;
       readonly liveQuery: ClaudeLiveQueryContext;
       readonly pdfReservation: Effect.Success<ReturnType<typeof reserveClaudePdfBudget>>;
-      readonly appContextOffered: ReadonlyMap<string, string> | undefined;
-      readonly appContextBefore: ReadonlyMap<string, string> | undefined;
+      readonly offeredAppContext: boolean;
     }
   >;
   // Claude may settle a turn with a result that echoes only a steer's uuid.
@@ -10647,7 +10646,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           if (steer === undefined) return;
           context.pendingSteers.delete(uuid);
           // Later offers may have skipped notes from this unread steer.
-          if (steer.appContextOffered !== undefined) context.appContextOffered = undefined;
+          if (steer.offeredAppContext) context.appContextOffered = undefined;
           // The notice commits first: a crash before the cancel leaves it pending for recovery.
           yield* emitUnreadSteerNotice(context, uuid, steer, yield* DateTime.now, when);
           yield* emitSteerStatus(context, steer.messageId, "cancelled");
@@ -10729,12 +10728,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           context.pendingSteers.delete(lifecycle.uuid);
           context.retryRiders.delete(lifecycle.uuid);
           // The follow-up turn sends the same files and notes again.
-          if (
-            dropped.appContextOffered !== undefined &&
-            context.appContextOffered === dropped.appContextOffered
-          ) {
-            context.appContextOffered = dropped.appContextBefore;
-          }
+          if (dropped.offeredAppContext) context.appContextOffered = undefined;
           if (dropped.pdfReservation.delivered && !dropped.pdfReservation.refunded) {
             dropped.pdfReservation.refund();
             yield* persistAttachmentBudget(context.nativeThreadId);
@@ -15853,9 +15847,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
             Effect.provideService(Path.Path, path),
           );
-          const appContextBefore = context.appContextOffered;
           const seenAppContext =
-            appContextBefore ?? deliveredAppContext.get(context.nativeThreadId);
+            context.appContextOffered ?? deliveredAppContext.get(context.nativeThreadId);
           const userMessage = withClaudeAppContext(
             steerMessage,
             unseenClaudeAppContext(appContext, seenAppContext),
@@ -15868,7 +15861,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (committed) return;
             committed = true;
             pdfReservation.commit();
-            if (appContextOffered !== undefined) context.appContextOffered = appContextOffered;
+            if (
+              appContextOffered !== undefined &&
+              seenAppContext ===
+                (context.appContextOffered ?? deliveredAppContext.get(context.nativeThreadId))
+            ) {
+              context.appContextOffered = appContextOffered;
+            }
             // Steers held through a backoff ride along until Claude reports reading this input.
             const riders = context.pendingRetrySteers.splice(0, pendingCount);
             if (uuid !== undefined && riders.length > 0) context.retryRiders.set(uuid, riders);
@@ -15904,7 +15903,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ),
               ),
             );
-          return { offer, pdfReservation, appContextBefore, appContextOffered };
+          return { offer, pdfReservation, offeredAppContext: appContextOffered !== undefined };
         });
 
         const overloadRetryWindowOpen = Effect.fnUntraced(function* (
@@ -16892,15 +16891,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 existing.openedPermissionMode === currentTurn.queryPolicy.permissionMode)
                 ? steerSelection
                 : undefined;
-            const { offer, pdfReservation, appContextBefore, appContextOffered } =
-              yield* prepareSteeringOffer(
-                currentTurn,
-                [turnInput.message],
-                steerUuid,
-                liveSteerSelection,
-                turnInput.appContext,
-                turnInput.interrupt,
-              );
+            const { offer, pdfReservation, offeredAppContext } = yield* prepareSteeringOffer(
+              currentTurn,
+              [turnInput.message],
+              steerUuid,
+              liveSteerSelection,
+              turnInput.appContext,
+              turnInput.interrupt,
+            );
             yield* backgroundForegroundSubagents(existing, backgroundDeadline);
             if (liveSteerSelection !== undefined) {
               yield* applySelectionLive(existing, liveSteerSelection);
@@ -16927,8 +16925,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               text: turnInput.message.text,
               liveQuery: existing,
               pdfReservation,
-              appContextOffered,
-              appContextBefore,
+              offeredAppContext,
             });
             yield* Ref.update(steeredTurns, (current) => {
               const next = new Set(current);

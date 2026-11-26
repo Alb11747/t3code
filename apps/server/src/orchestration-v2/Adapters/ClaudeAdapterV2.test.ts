@@ -7060,114 +7060,128 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
   // A steer Claude starts after holding the result answers in this turn, so dropping another
   // steer then must not end the turn under it.
-  it.effect("keeps the turn open for a started steer when Claude drops another", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeWakeHarness;
-      const idAllocator = yield* IdAllocator.IdAllocatorV2;
-      const attemptId = RunAttemptId.make("attempt-steer-dropped");
-      const input = makeClaudeTestTurnInput({
-        threadId: harness.threadId,
-        providerThread: harness.providerThread,
-        now: yield* DateTime.now,
-        attemptId,
-        text: "Run the build.",
-        attachments: [],
-      });
-      yield* harness.runtime.startTurn(input);
-      for (const id of ["message-steer-started", "message-steer-dropped"]) {
-        yield* harness.runtime.steerTurn({
+  it.effect.each([1, 2] as const)(
+    "keeps the turn open and does not record unread notes when Claude drops steer %s",
+    (dropped) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const attemptId = RunAttemptId.make("attempt-steer-dropped");
+        const input = makeClaudeTestTurnInput({
           threadId: harness.threadId,
-          runId: input.runId,
           providerThread: harness.providerThread,
-          providerTurnId: idAllocator.derive.providerTurn({
-            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-            nativeTurnId: `turn:${attemptId}`,
-          }),
-          message: {
-            createdBy: "user",
-            creationSource: "web",
-            messageId: MessageId.make(id),
-            text: `Steer ${id}`,
-            attachments: [],
-          },
+          now: yield* DateTime.now,
+          attemptId,
+          text: "Run the build.",
+          attachments: [],
         });
-      }
-      const lifecycle = (index: number, state: string, uuid: string) =>
-        harness.offerAndWait(
-          claudeSdkFrame({
-            type: "command_lifecycle",
-            command_uuid: harness.promptUuid(index),
-            state,
-            uuid,
-            session_id: WAKE_NATIVE_SESSION,
+        yield* harness.runtime.startTurn(input);
+        const steers = ["message-steer-1", "message-steer-2"];
+        const started = dropped === 1 ? 2 : 1;
+        const notes = steers.map((key) => ({ key, text: `App note for ${key}` }));
+        for (const [index, id] of steers.entries()) {
+          yield* harness.runtime.steerTurn({
+            threadId: harness.threadId,
+            runId: input.runId,
+            providerThread: harness.providerThread,
+            providerTurnId: idAllocator.derive.providerTurn({
+              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+              nativeTurnId: `turn:${attemptId}`,
+            }),
+            message: {
+              createdBy: "user",
+              creationSource: "web",
+              messageId: MessageId.make(id),
+              text: `Steer ${id}`,
+              attachments: [],
+            },
+            appContext: notes.slice(0, index + 1),
+          });
+        }
+        const lifecycle = (index: number, state: string, uuid: string) =>
+          harness.offerAndWait(
+            claudeSdkFrame({
+              type: "command_lifecycle",
+              command_uuid: harness.promptUuid(index),
+              state,
+              uuid,
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+        yield* harness.offerAndWait(
+          makeAssistantTextFrame({
+            uuid: "00000000-0000-4000-8000-000000002505",
+            text: "Build answer.",
           }),
         );
-      yield* harness.offerAndWait(
-        makeAssistantTextFrame({
-          uuid: "00000000-0000-4000-8000-000000002505",
-          text: "Build answer.",
-        }),
-      );
-      yield* harness.offerAndWait(
-        claudeSdkFrame({
-          ...makeResultFrame({ uuid: "00000000-0000-4000-8000-000000002500", result: "Built." }),
-          user_message_uuid: harness.promptUuid(0),
-        }),
-      );
-      yield* lifecycle(1, "started", "00000000-0000-4000-8000-000000002501");
-      yield* lifecycle(2, "cancelled", "00000000-0000-4000-8000-000000002502");
-      yield* harness.offerAndWait(
-        makeAssistantTextFrame({
-          uuid: "00000000-0000-4000-8000-000000002503",
-          text: "Steer reply.",
-        }),
-      );
-      yield* harness.offerAndWait(
-        claudeSdkFrame({
-          ...makeResultFrame({ uuid: "00000000-0000-4000-8000-000000002504", result: "Done." }),
-          user_message_uuid: harness.promptUuid(1),
-        }),
-      );
-      yield* harness.awaitTerminal(1);
-      const reply = harness.events.find(
-        (event) => event.type === "message.updated" && event.message.text === "Steer reply.",
-      );
-      assert.equal(reply?.type === "message.updated" ? reply.message.runId : null, input.runId);
-      // Claude ended its native turn on this answer before it read the steer, so the timeline
-      // must not fold it away as a progress note of the run's last reply.
-      const answer = harness.events.findLast(
-        (event) =>
-          event.type === "turn_item.updated" &&
-          event.turnItem.type === "assistant_message" &&
-          event.turnItem.text === "Build answer.",
-      );
-      assert.equal(
-        answer?.type === "turn_item.updated" && answer.turnItem.type === "assistant_message"
-          ? answer.turnItem.phase
-          : null,
-        "final_answer",
-      );
-      assert.deepEqual(
-        harness.events.flatMap((event) =>
-          event.type === "steer.updated" ? [[event.messageId, event.status]] : [],
-        ),
-        [
-          ["message-steer-started", "pending"],
-          ["message-steer-dropped", "pending"],
-          ["message-steer-started", "completed"],
-        ],
-      );
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            ...makeResultFrame({ uuid: "00000000-0000-4000-8000-000000002500", result: "Built." }),
+            user_message_uuid: harness.promptUuid(0),
+          }),
+        );
+        yield* lifecycle(started, "started", "00000000-0000-4000-8000-000000002501");
+        yield* lifecycle(dropped, "cancelled", "00000000-0000-4000-8000-000000002502");
+        yield* harness.offerAndWait(
+          makeAssistantTextFrame({
+            uuid: "00000000-0000-4000-8000-000000002503",
+            text: "Steer reply.",
+          }),
+        );
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            ...makeResultFrame({ uuid: "00000000-0000-4000-8000-000000002504", result: "Done." }),
+            user_message_uuid: harness.promptUuid(started),
+          }),
+        );
+        yield* harness.awaitTerminal(1);
+        const reply = harness.events.find(
+          (event) => event.type === "message.updated" && event.message.text === "Steer reply.",
+        );
+        assert.equal(reply?.type === "message.updated" ? reply.message.runId : null, input.runId);
+        const persisted = harness.events
+          .filter((event) => event.type === "provider_thread.updated")
+          .at(-1)?.providerThread;
+        assert.isDefined(persisted);
+        assert.notProperty(
+          persisted.nativeMetadata?.claudeDeliveredAppContext ?? {},
+          steers[dropped - 1]!,
+        );
+        // Claude ended its native turn on this answer before it read the steer, so the timeline
+        // must not fold it away as a progress note of the run's last reply.
+        const answer = harness.events.findLast(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "assistant_message" &&
+            event.turnItem.text === "Build answer.",
+        );
+        assert.equal(
+          answer?.type === "turn_item.updated" && answer.turnItem.type === "assistant_message"
+            ? answer.turnItem.phase
+            : null,
+          "final_answer",
+        );
+        assert.deepEqual(
+          harness.events.flatMap((event) =>
+            event.type === "steer.updated" ? [[event.messageId, event.status]] : [],
+          ),
+          [
+            [steers[0], "pending"],
+            [steers[1], "pending"],
+            [steers[started - 1], "completed"],
+          ],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
         ),
       ),
-    ),
   );
 
   it.effect("keeps both result-only replies of a steered turn", () =>
