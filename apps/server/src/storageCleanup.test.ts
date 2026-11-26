@@ -4111,7 +4111,7 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
-  it.live("aggregates expired artifacts and rotated logs while retaining current logs", () =>
+  it.live("cleans expired artifacts and rotated logs while retaining ACP turn history", () =>
     runCleanupTest(
       Effect.gen(function* () {
         const { service, fs, config, enableFiles, disable } = yield* cleanupFixture();
@@ -4129,6 +4129,10 @@ describe("storage cleanup reports and local file policies", () => {
           yield* fs.writeFileString(file, "log");
           yield* fs.utimes(file, 1, 1);
         }
+        yield* fs.makeDirectory(config.providerLogsDir, { recursive: true });
+        const acpTurnHistory = config.providerLogsDir + "/acp-turns.ndjson.1";
+        yield* fs.writeFileString(acpTurnHistory, "turn history");
+        yield* fs.utimes(acpTurnHistory, 1, 1);
         const report = yield* service.runNow;
         expect(report.entries.filter((entry) => entry.kind !== "worktree")).toMatchObject([
           {
@@ -4151,6 +4155,7 @@ describe("storage cleanup reports and local file policies", () => {
         expect(yield* fs.exists(config.logsDir + "/server.log")).toBe(true);
         expect(yield* fs.exists(config.logsDir + "/server.log.1")).toBe(false);
         expect(yield* fs.exists(config.logsDir + "/server.log.2")).toBe(false);
+        expect(yield* fs.exists(acpTurnHistory)).toBe(true);
       }),
     ),
   );

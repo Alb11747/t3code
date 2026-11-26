@@ -67,6 +67,7 @@ import { withWorkspaceLease } from "./workspace/workspaceLease.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { isNetworkPath } from "@t3tools/shared/path";
+import { fileName as acpTurnLogFileName } from "./provider/AcpTurnLog.ts";
 
 const decodeCleanupThread = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJson),
@@ -1974,12 +1975,19 @@ const make = Effect.gen(function* () {
     const realRoot = yield* fs.realPath(root);
     const realParent = yield* fs.realPath(path.dirname(root));
     if (realRoot !== path.join(realParent, path.basename(root))) return removed;
+    const acpTurnLog = path.join(
+      realRoot,
+      path.relative(config.logsDir, config.providerLogsDir),
+      acpTurnLogFileName,
+    );
     const visit = Effect.fn("StorageCleanup.visitFiles")(function* (
       directory: string,
     ): Effect.fn.Return<void, PlatformError | ServerSettingsError> {
       for (const name of yield* fs.readDirectory(directory)) {
         const target = path.join(directory, name);
         if (!inside(realRoot, target)) continue;
+        // ACP turn history has its own size-based retention.
+        if (rotatedLogs && target.startsWith(`${acpTurnLog}.`)) continue;
         const stat = yield* fs.lstat(target);
         if (stat.type === "SymbolicLink") continue;
         if ((yield* fs.realPath(target)) !== target) continue;

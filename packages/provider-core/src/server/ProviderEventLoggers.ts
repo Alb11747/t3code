@@ -13,6 +13,7 @@ export class ProviderEventLoggers extends Context.Service<
   {
     readonly native: EventNdjsonLogger | undefined;
     readonly canonical: EventNdjsonLogger | undefined;
+    readonly writeAcpTurn?: (event: unknown) => Effect.Effect<void>;
   }
 >()("@t3tools/provider-core/server/ProviderEventLoggers") {}
 

@@ -80,6 +80,8 @@ import {
 } from "@t3tools/shared/toolActivity";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/mediaPreview";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
+import { acpInputTokens, acpTurnLogRecord, type AcpTurnMetrics } from "./turnMetrics.ts";
 import { makeAcpMcpOverAcpBridge, type AcpMcpOverAcpBridge } from "./mcpOverAcpBridge.ts";
 import { mcpToolPresentation } from "@t3tools/provider-core/server/mcpToolPresentation";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -120,6 +122,7 @@ import {
   ACP_EMPTY_OPTION_VALUE,
   ACP_SESSION_MODE_OPTION_ID,
   flattenSelectChoices,
+  isAcpThoughtLevelOption,
 } from "./sessionConfig.ts";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 import {
@@ -392,9 +395,7 @@ export function acpPerTurnPromptUsage(
   if (usage == null) {
     return { usageScope: "main_agent", usageStatus: "unavailable", hasSubagents };
   }
-  const inputTokens = geminiUsage
-    ? usage.inputTokens + (usage.cachedReadTokens ?? 0)
-    : usage.inputTokens;
+  const inputTokens = acpInputTokens(usage, geminiUsage);
   const outputTokens = usage.outputTokens;
   // TurnTokenUsage contract: input includes cache read + write and reasoning
   // is a subset of output, so clamp counters that exceed their parent and
@@ -1804,6 +1805,7 @@ interface ActiveAcpTurn {
   /** Completed when an update after dispatch matches `cancelAfterPromptStarts.isStart`. */
   readonly promptStarted: Deferred.Deferred<void, never>;
   promptUsage: EffectAcpSchema.Usage | undefined;
+  turnMetrics?: AcpTurnMetrics;
   backgroundFinalizeGeneration: number;
   /** `replyEndsWithUsageUpdate`: output arrived and its closing `usage_update` has not. */
   replyOpen: boolean;
@@ -2106,6 +2108,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
   const host = yield* ProviderHost.ProviderHost;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const { flavor, selfInvocation: self } = options;
+  const writeAcpTurn =
+    flavor.reportsPerTurnPromptUsage === true
+      ? Option.getOrUndefined(yield* Effect.serviceOption(ProviderEventLoggers))?.writeAcpTurn
+      : undefined;
   const callLauncher = yield* writeAcpMcpCallLauncher(host.paths.stateDir);
   const readMcpContext = (threadId: ThreadId | null) =>
     threadId === null
@@ -6071,6 +6077,14 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           yield* projectExtractedContextUsage(notification, true);
           if (yield* projectAgentTerminalUpdate(notification, context)) return;
           if (yield* projectDetachedBackgroundCommand(notification, context)) return;
+          if (
+            update.sessionUpdate === "usage_update" &&
+            context?.turnMetrics !== undefined &&
+            !context.finalized &&
+            context.nativeThreadId === notification.sessionId
+          ) {
+            context.turnMetrics.lastUsageUpdate = { used: update.used, size: update.size };
+          }
           if (flavor.replyEndsWithUsageUpdate === true) {
             if (context === null) {
               // A reply can end before its continuation run starts; replay its end with its output.
@@ -6361,6 +6375,19 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               yield* offerContinuationRun(notification.sessionId);
             }
             return;
+          }
+          const metrics = context.turnMetrics;
+          if (
+            metrics?.firstOutputAt === null &&
+            (update.sessionUpdate === "tool_call" ||
+              update.sessionUpdate === "tool_call_update" ||
+              ((update.sessionUpdate === "agent_message_chunk" ||
+                update.sessionUpdate === "agent_thought_chunk" ||
+                update.sessionUpdate === "agent_message" ||
+                update.sessionUpdate === "agent_thought") &&
+                acpRootSessionUpdateIngestsOutput(notification)))
+          ) {
+            metrics.firstOutputAt ??= yield* Clock.currentTimeMillis;
           }
           if (
             update.sessionUpdate !== "tool_call_update" &&
@@ -8894,6 +8921,24 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const threadDisposition = options?.threadDisposition ?? "reusable";
           context.finalizedStatus = settledStatus;
           context.finalized = true;
+          const metrics = context.turnMetrics;
+          const promptsDispatched = metrics?.dispatches.filter(Deferred.isDoneUnsafe).length ?? 0;
+          if (writeAcpTurn !== undefined && metrics !== undefined && promptsDispatched > 0) {
+            yield* writeAcpTurn(
+              acpTurnLogRecord({
+                threadId: context.input.threadId,
+                providerTurnId: context.providerTurnId,
+                providerInstanceId: context.input.modelSelection.instanceId,
+                driver,
+                status: settledStatus,
+                metrics,
+                promptsDispatched,
+                completedAt: yield* Clock.currentTimeMillis,
+                usage: context.promptUsage,
+                geminiUsage: flavor.geminiPromptUsage === true,
+              }),
+            );
+          }
           const watchdog = context.inactivityWatchdog;
           context.inactivityWatchdog = undefined;
           if (watchdog !== undefined) {
@@ -9493,10 +9538,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   readonly sequence: number;
                 }
               | undefined;
+            readonly dispatched?: Deferred.Deferred<void>;
             readonly compactSession: AcpAdapterV2Flavor["compactSession"];
           },
         ): Effect.Effect<void> => {
           const sequence = ++context.promptSequence;
+          if (context.turnMetrics !== undefined) {
+            context.turnMetrics.stopReason = null;
+            context.turnMetrics.promptResponseAt = null;
+          }
           const superseded = () => context.promptSequence !== sequence;
           const rollbackOfferedAppContext = () => {
             if (
@@ -9506,18 +9556,52 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               context.appContextOffered = settle.appContext.before;
             }
           };
-          return prompt(superseded).pipe(
+          return Effect.gen(function* () {
+            // Measure turns that send session/prompt from before dispatch, including queueing and busy retries.
+            if (
+              writeAcpTurn !== undefined &&
+              settle.dispatched !== undefined &&
+              !context.finalized
+            ) {
+              if (context.turnMetrics === undefined) {
+                const config = yield* runtime.getConfigOptions;
+                const thoughtLevel = config.find(isAcpThoughtLevelOption);
+                context.turnMetrics ??= {
+                  startedAt: yield* Clock.currentTimeMillis,
+                  model:
+                    findModelConfigOption(config)?.currentValue ??
+                    context.input.modelSelection.model,
+                  effort: thoughtLevel?.type === "select" ? thoughtLevel.currentValue : null,
+                  kind: isCompactCommand(context.input.message) ? "compact" : "prompt",
+                  firstOutputAt: null,
+                  promptResponseAt: null,
+                  stopReason: null,
+                  lastUsageUpdate: null,
+                  dispatches: [],
+                  usageRepliesReceived: 0,
+                };
+              }
+              context.turnMetrics.dispatches.push(settle.dispatched);
+            }
+            return yield* prompt(superseded);
+          }).pipe(
             // Settle the wire before the completion callback's permit so a settled-soft
             // Stop sees the native return. Capture usage only before finalize: a late
             // response must not flip a settled turn.
             Effect.tap((result) =>
-              Effect.suspend(() => {
+              Effect.gen(function* () {
                 if (flavor.reportsPerTurnPromptUsage === true && !context.finalized) {
                   context.promptUsage = addAcpUsage(context.promptUsage, result.usage);
+                  const metrics = context.turnMetrics;
+                  if (metrics !== undefined && settle.dispatched !== undefined) {
+                    if (result.usage != null) metrics.usageRepliesReceived += 1;
+                    if (!superseded()) {
+                      metrics.stopReason = result.stopReason;
+                      metrics.promptResponseAt = yield* Clock.currentTimeMillis;
+                    }
+                  }
                 }
-                return superseded()
-                  ? Effect.void
-                  : Deferred.succeed(context.promptWireSettled, undefined).pipe(Effect.asVoid);
+                if (!superseded()) yield* Deferred.succeed(context.promptWireSettled, undefined);
               }),
             ),
             Effect.tap(() => options.testHooks?.afterPromptWireSettled?.() ?? Effect.void),
@@ -10152,6 +10236,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 checkPromptOutcome,
                 promptParts,
                 appContext: initialAppContext,
+                ...(compactSession === undefined ? { dispatched: promptOptions.dispatched } : {}),
                 compactSession,
               },
             ).pipe(Effect.forkIn(sessionScope));
@@ -10297,6 +10382,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       checkPromptOutcome,
                       promptParts: null,
                       appContext: steerAppContext,
+                      dispatched,
                       compactSession: undefined,
                     },
                   ).pipe(Effect.forkIn(sessionScope));

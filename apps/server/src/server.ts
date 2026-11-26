@@ -76,6 +76,7 @@ import * as DelegatedTaskAnalytics from "./telemetry/DelegatedTaskAnalytics.ts";
 import * as ProviderUsageAnalytics from "./telemetry/ProviderUsageAnalytics.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
 import * as ResetCreditCoordinator from "./provider/resetCreditCoordinator.ts";
+import * as AcpTurnLog from "./provider/AcpTurnLog.ts";
 import * as EventNdjsonLogger from "./provider/EventNdjsonLogger.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -283,7 +284,8 @@ const layerApplicationObservability = EventLoopMonitor.layer.pipe(
 const layerProviderEventLoggers = Layer.effect(
   ProviderEventLoggers.ProviderEventLoggers,
   Effect.gen(function* () {
-    const { providerEventLogPath } = yield* ServerConfig.ServerConfig;
+    const { providerEventLogPath, providerLogsDir } = yield* ServerConfig.ServerConfig;
+    const writeAcpTurn = yield* AcpTurnLog.make(providerLogsDir);
     const attribution = yield* ResourceAttribution.ResourceAttribution;
     const store = yield* EventNdjsonLogger.makeEventNdjsonLogStore(providerEventLogPath, {
       attribution,
@@ -295,9 +297,12 @@ const layerProviderEventLoggers = Layer.effect(
         ),
       ),
     );
-    if (!store) return ProviderEventLoggers.NoOpProviderEventLoggers;
-    yield* Effect.addFinalizer(() => store.close());
-    return { native: store.logger("native"), canonical: store.logger("canonical") };
+    if (store) yield* Effect.addFinalizer(() => store.close());
+    return {
+      native: store?.logger("native"),
+      canonical: store?.logger("canonical"),
+      ...(writeAcpTurn === undefined ? {} : { writeAcpTurn }),
+    };
   }),
 );
 
