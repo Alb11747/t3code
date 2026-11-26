@@ -5853,5 +5853,6 @@
   "7288765cb3116ff6": "{account} hat sein Limit für kurze Sitzungen erreicht. Der Rest des 5-Stunden-Limits, das um {resetAt} zurückgesetzt wird, bleibt lang laufenden Threads vorbehalten. Erneute Prüfung um {releaseAt}.",
   "da69607e036f3dfa": "Dieses Konto",
   "1e4465377d021a01": "Das Wochenlimit von {account}",
-  "2537b53b5428d97d": "Das Wochenlimit"
+  "2537b53b5428d97d": "Das Wochenlimit",
+  "ac0d5f92b313f930": "Vor {age} gelesen · {time}"
 }

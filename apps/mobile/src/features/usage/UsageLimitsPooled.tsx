@@ -23,6 +23,7 @@ import { msg, T, useGT, useMessages, Var } from "gt-react-native";
 import { Fragment, type ReactNode, useId, useState } from "react";
 import { Pressable, View } from "react-native";
 import { useNowMinuteMs } from "../../lib/clock";
+import { relativeTime } from "../../lib/time";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { Defs, Path, Pattern, Rect, Svg } from "react-native-svg";
@@ -510,6 +511,17 @@ export function UsageLimitsSection({
           {source.quotaAccounts?.map((account) => (
             <View key={account.id} className="gap-1">
               <Text className="text-sm font-t3-medium text-foreground">{account.label}</Text>
+              {account.readAt !== undefined && Number.isFinite(Date.parse(account.readAt)) ? (
+                <Text className="text-xs text-foreground-muted">
+                  {gt("Read {age} ago · {time}", {
+                    age: relativeTime(account.readAt, now, m),
+                    time: new Date(account.readAt).toLocaleString(undefined, {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    }),
+                  })}
+                </Text>
+              ) : null}
               {account.windows.map((window) => {
                 const reset = resetLabels(window, now, m);
                 return (

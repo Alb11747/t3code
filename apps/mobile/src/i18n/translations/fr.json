@@ -5847,5 +5847,6 @@
   "7288765cb3116ff6": "{account} a atteint son plafond pour les sessions courtes. Le reste de son quota de 5 heures, qui se réinitialise à {resetAt}, est réservé aux fils de longue durée. Nouvelle vérification à {releaseAt}.",
   "da69607e036f3dfa": "Ce compte",
   "1e4465377d021a01": "Le quota hebdomadaire de {account}",
-  "2537b53b5428d97d": "Le quota hebdomadaire"
+  "2537b53b5428d97d": "Le quota hebdomadaire",
+  "ac0d5f92b313f930": "Lu il y a {age} · {time}"
 }

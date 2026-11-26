@@ -32,6 +32,7 @@ import { usePrimarySettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
+import { QuotaReadAt } from "./QuotaReadAt";
 import { providerClients } from "../settings/providerDriverMeta";
 import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
 import { Button } from "../ui/button";
@@ -739,6 +740,7 @@ export function UsageLimitsPooled({
           {source.quotaAccounts?.map((account) => (
             <div key={account.id} className="space-y-1">
               <h3 className="text-sm font-medium">{account.label}</h3>
+              {account.readAt ? <QuotaReadAt readAt={account.readAt} now={now} /> : null}
               {account.windows.map((window) => {
                 const reset = formatResetsIn(window, now, m);
                 return (

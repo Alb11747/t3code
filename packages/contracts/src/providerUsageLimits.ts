@@ -107,6 +107,8 @@ export const HttpQuotaAccount = Schema.Struct({
   id: TrimmedNonEmptyString,
   label: TrimmedNonEmptyString,
   providerInstanceId: Schema.optional(ProviderInstanceId),
+  /** Fork: when the source last read this account, so a stale reading shows its age. */
+  readAt: Schema.optional(IsoDateTime),
   windows: Schema.Array(
     Schema.Struct({
       id: ServerProviderUsageWindow.fields.id,

@@ -175,4 +175,28 @@ describe("resolveThreadHttpQuotas", () => {
     ).toEqual(["Work plan"]);
     expect(resolveThreadHttpQuotas(null, [source])).toEqual([]);
   });
+
+  it("keeps when a stale reading was taken", () => {
+    const window = { id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 17 } as const;
+    const readAt = "2026-11-26T15:25:45.000Z";
+    const source: UsageLimitSourceSnapshot = {
+      id: UsageLimitSourceId.make("quota"),
+      kind: "http",
+      label: "Quota server",
+      checkedAt,
+      accounts: [],
+      quotaAccounts: [
+        {
+          id: "agy",
+          label: "Antigravity",
+          providerInstanceId: instanceId,
+          readAt,
+          windows: [window],
+        },
+      ],
+    };
+    expect(resolveThreadHttpQuotas(instanceId, [source]).map((quota) => quota.readAt)).toEqual([
+      readAt,
+    ]);
+  });
 });

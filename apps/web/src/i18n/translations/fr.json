@@ -13325,5 +13325,6 @@
   "5b49b60b53bc5c52": "à {tokens}",
   "2aa8fd91d348be6a": "Ce fil se compacte à {tokens} jetons, une limite définie pour lui.",
   "684b5fa810e83350": "{account} a presque épuisé son quota hebdomadaire, qui se réinitialise {resetAt}. Les requêtes s’exécutent normalement d’ici là. Le cache des consignes peut expirer si le quota est atteint avant.",
-  "21cceb347af13769": "{account} a presque épuisé son quota hebdomadaire, qui se réinitialise {resetAt}. Prochaine requête {releaseAt}."
+  "21cceb347af13769": "{account} a presque épuisé son quota hebdomadaire, qui se réinitialise {resetAt}. Prochaine requête {releaseAt}.",
+  "cdd5bb48a2c0373c": "Lu {age} · {time}"
 }

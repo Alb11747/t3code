@@ -26,6 +26,7 @@ import { formatUpcomingTimestamp } from "../../timestampFormat";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { formatContextWindowCompactionMessage } from "./compaction.logic";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
+import { QuotaReadAt } from "../usage/QuotaReadAt";
 import {
   nextPoolReset,
   poolSources,
@@ -84,8 +85,14 @@ export function ThreadDetailsUsage({
             (quotas.length === 0 || limitsNotice(resolved.limits) === null) && (
               <InstanceRows limits={resolved.limits} now={now} />
             )}
-        {quotas.map(({ key, accountLabel, window }) => (
-          <LimitRow key={key} window={window} now={now} accountLabel={accountLabel} />
+        {quotas.map(({ key, accountLabel, readAt, window }) => (
+          <LimitRow
+            key={key}
+            window={window}
+            now={now}
+            accountLabel={accountLabel}
+            readAt={readAt}
+          />
         ))}
       </div>
     </ThreadDetailsSection>
@@ -209,10 +216,12 @@ function LimitRow({
   window,
   now,
   accountLabel,
+  readAt,
 }: {
   readonly window: ServerProviderUsageWindow;
   readonly now: number;
   readonly accountLabel?: string;
+  readonly readAt?: string | undefined;
 }) {
   const gt = useGT();
   const m = useMessages();
@@ -236,6 +245,7 @@ function LimitRow({
             {gt("{label}: {left}% left", { label: window.label, left })}
           </span>
           {accountLabel ? <span className="text-muted-foreground">{accountLabel}</span> : null}
+          {readAt ? <QuotaReadAt readAt={readAt} now={now} /> : null}
           {pace && timeLeft !== null ? (
             <span className="text-muted-foreground">
               {m(PACE_LABEL[pace])} · {gt("{timeLeft}% of the window left", { timeLeft })}

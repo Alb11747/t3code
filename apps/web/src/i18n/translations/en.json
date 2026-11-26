@@ -13349,5 +13349,6 @@
   "5b49b60b53bc5c52": "at {tokens}",
   "2aa8fd91d348be6a": "This thread compacts at {tokens} tokens, a limit set for it.",
   "684b5fa810e83350": "{account} is nearly out of its weekly limit, which resets {resetAt}. Requests run normally until then; reaching the limit first can let the prompt cache expire.",
-  "21cceb347af13769": "{account} is nearly out of its weekly limit, which resets {resetAt}. Next request {releaseAt}."
+  "21cceb347af13769": "{account} is nearly out of its weekly limit, which resets {resetAt}. Next request {releaseAt}.",
+  "cdd5bb48a2c0373c": "Read {age} · {time}"
 }

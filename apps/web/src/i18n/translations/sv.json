@@ -13332,5 +13332,6 @@
   "5b49b60b53bc5c52": "vid {tokens}",
   "2aa8fd91d348be6a": "Den här tråden komprimeras vid {tokens} tokens, en gräns som satts för den.",
   "684b5fa810e83350": "{account} har nästan nått veckogränsen, som återställs {resetAt}. Förfrågningar fortsätter som vanligt tills dess. Om gränsen nås först kan promptcachen löpa ut.",
-  "21cceb347af13769": "{account} har nästan nått sin veckogräns, som återställs {resetAt}. Nästa förfrågan {releaseAt}."
+  "21cceb347af13769": "{account} har nästan nått sin veckogräns, som återställs {resetAt}. Nästa förfrågan {releaseAt}.",
+  "cdd5bb48a2c0373c": "Läst {age} · {time}"
 }

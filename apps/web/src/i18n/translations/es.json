@@ -13320,5 +13320,6 @@
   "5b49b60b53bc5c52": "a {tokens}",
   "2aa8fd91d348be6a": "Este hilo se compacta a {tokens} tokens, un límite fijado para él.",
   "684b5fa810e83350": "A {account} le queda poco del límite semanal, que se restablece {resetAt}. Las solicitudes se ejecutan normalmente hasta entonces. Si se alcanza antes el límite, la caché del prompt puede caducar.",
-  "21cceb347af13769": "A {account} le queda poco del límite semanal, que se restablece {resetAt}. Próxima solicitud {releaseAt}."
+  "21cceb347af13769": "A {account} le queda poco del límite semanal, que se restablece {resetAt}. Próxima solicitud {releaseAt}.",
+  "cdd5bb48a2c0373c": "Leído {age} · {time}"
 }

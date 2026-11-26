@@ -13325,5 +13325,6 @@
   "5b49b60b53bc5c52": "bei {tokens}",
   "2aa8fd91d348be6a": "Dieser Thread wird bei {tokens} Tokens komprimiert, einem für ihn gesetzten Limit.",
   "684b5fa810e83350": "Das Wochenlimit von {account} ist fast ausgeschöpft und wird {resetAt} zurückgesetzt. Anfragen laufen bis dahin normal. Wenn das Limit zuerst erreicht wird, kann der Prompt-Cache ablaufen.",
-  "21cceb347af13769": "Das Wochenlimit von {account} ist fast ausgeschöpft. Es wird {resetAt} zurückgesetzt. Nächste Anfrage {releaseAt}."
+  "21cceb347af13769": "Das Wochenlimit von {account} ist fast ausgeschöpft. Es wird {resetAt} zurückgesetzt. Nächste Anfrage {releaseAt}.",
+  "cdd5bb48a2c0373c": "Gelesen {age} · {time}"
 }

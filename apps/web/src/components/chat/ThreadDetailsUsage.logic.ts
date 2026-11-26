@@ -57,6 +57,7 @@ export function resolveThreadHttpQuotas(
             ? account.windows.map((window) => ({
                 key: JSON.stringify([source.id, account.id, window.id]),
                 accountLabel: account.label,
+                readAt: account.readAt,
                 window,
               }))
             : [],
