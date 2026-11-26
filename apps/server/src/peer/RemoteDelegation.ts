@@ -501,6 +501,24 @@ const make = Effect.gen(function* () {
         parentRun.rootNodeId === null
       )
         return sent;
+      // An open task whose parent turn was stopped can no longer wake it, so the send would fold
+      // into a task nobody hears from: retire it here, without a wake, and record a fresh one.
+      for (const stale of parent?.subagents ?? []) {
+        if (!isThere(stale) || stale.result !== null) continue;
+        if (stale.completionDelivery?.state !== "disposed") continue;
+        yield* threads
+          .dispatch({
+            type: "delegated_task.remote.complete",
+            commandId: CommandId.make(`command:remote-task-superseded:${stale.id}`),
+            parentThreadId,
+            taskId: stale.id,
+            status: "completed",
+            result: "A newer task follows the same linked thread.",
+            stoppedThere: "ran-out",
+            superseded: true,
+          })
+          .pipe(Effect.ignoreCause({ log: true }));
+      }
       // The message id there is the send's, so a retry that reached the same send records once.
       const commandId = CommandId.make(
         `command:remote-followup:${encodeURIComponent(parentThreadId)}:${encodeURIComponent(environmentId)}:${encodeURIComponent(sent.messageId)}`,

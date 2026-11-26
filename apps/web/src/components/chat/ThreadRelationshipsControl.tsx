@@ -676,12 +676,17 @@ export function ThreadRelationshipsPanel(props: {
     if (task.remoteChild === undefined) continue;
     const key = scopedThreadKey(task.remoteChild);
     const previous = remoteByThread.get(key);
-    if (
-      previous?.startedAt &&
-      task.startedAt &&
-      DateTime.isGreaterThan(previous.startedAt, task.startedAt)
-    )
-      continue;
+    // One row per linked thread: its open task, else its newest.
+    if (previous !== undefined) {
+      const previousOpen = previous.result === null;
+      if (previousOpen !== (task.result === null)) {
+        if (previousOpen) continue;
+      } else if (
+        previous.startedAt !== null &&
+        (task.startedAt === null || DateTime.isGreaterThan(previous.startedAt, task.startedAt))
+      )
+        continue;
+    }
     remoteByThread.set(key, { ...task, remoteChild: task.remoteChild });
   }
   const { remoteActive = [], remotePrevious = [] } = groupBy(
