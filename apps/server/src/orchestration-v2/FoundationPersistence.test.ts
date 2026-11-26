@@ -243,6 +243,47 @@ it.effect("discovers on the reader worker and deletes on the writer", () =>
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+it.effect("does not walk receipts it already scanned on the next pass", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const filename = path.join(yield* fs.makeTempDirectoryScoped(), "fixture.sqlite");
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seedCompaction();
+      // A legacy receipt whose thread is not imported yet must be looked at again later.
+      // Ordinary receipts are never pruned, so an unmarked pass would walk them every time.
+      yield* sql`WITH RECURSIVE history(n) AS (
+        SELECT 1 UNION ALL SELECT n + 1 FROM history WHERE n < 120
+      ) INSERT INTO orchestration_command_receipts (
+        rowid, command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status, command_type
+      ) SELECT 1000 + n, 'visit-' || n, 'thread', 'imported', '2026-10-17', 0, 'accepted', 'thread.visit' FROM history`;
+      yield* sql`INSERT INTO orchestration_command_receipts (
+          rowid, command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status, command_type
+        ) VALUES (5000, 'pending-legacy', 'thread', 'not-imported', '2026-10-17', 0, 'accepted', 'legacy')`;
+      const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+      assert.equal((yield* maintenance.pruneEventStore()).deletedReceiptCount, 100);
+      const [mark] = yield* sql<{ readonly last_sequence: number }>`
+        SELECT last_sequence FROM orchestration_v2_projection_metadata
+        WHERE projection_name = 'legacy-receipts-scanned-through'`;
+      assert.equal(mark?.last_sequence, 4999);
+      workerStatements.length = 0;
+      yield* maintenance.pruneEventStore();
+      const receiptPages = workerStatements.filter(({ sql }) =>
+        sql.includes("FROM orchestration_command_receipts AS receipt"),
+      );
+      // One page from the mark, not a walk over every earlier receipt.
+      assert.equal(receiptPages.length, 1);
+    }).pipe(
+      Effect.provide(
+        ProjectionMaintenance.layer.pipe(
+          Layer.provideMerge(SqlitePersistence.layerFromPath(filename)),
+        ),
+      ),
+    );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.effect("paces scheduled compaction while preserving retention state and fixed scan bounds", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;

@@ -43,6 +43,8 @@ const RETAINED_EVENT_HISTORY = Duration.days(1);
 // Small pages bound work on the reader worker and synchronous fallback.
 const PAGE_SIZE = 50;
 const REFERENCE_SCAN_WINDOW = 1000;
+// Receipts before this rowid hold no legacy receipt left to prune, so a pass starts after it.
+const LEGACY_RECEIPTS_SCANNED_THROUGH = "legacy-receipts-scanned-through";
 
 type MetadataRow = {
   readonly projection_name: string;
@@ -187,6 +189,8 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
     const pruneImportedLegacyHistory = Effect.fnUntraced(function* (
       throughSequence: number,
       throughReceiptRowId: number,
+      receiptsScannedThrough: number,
+      now: DateTime.Utc,
       betweenPages: Effect.Effect<void>,
     ) {
       let deletedEventCount = 0;
@@ -219,11 +223,14 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
         if (rows.length < PAGE_SIZE) break;
         cursor = rows.at(-1)?.sequence ?? cursor;
       }
-      for (let cursor = 0; ;) {
+      // Receipts are never pruned otherwise, so without this mark every pass walked them all.
+      let firstPending: number | undefined;
+      for (let cursor = receiptsScannedThrough; ;) {
         const rows = yield* sql<{
           readonly row_id: number;
           readonly command_id: string;
           readonly imported: number;
+          readonly pending: number;
         }>`
           SELECT
             receipt.rowid AS row_id,
@@ -232,13 +239,15 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
               SELECT 1 FROM orchestration_v2_legacy_imports AS legacy_import
               WHERE legacy_import.thread_id = receipt.aggregate_id
                 AND legacy_import.transcript_imported_at IS NOT NULL
-            ) AS imported
+            ) AS imported,
+            receipt.command_type = 'legacy' AS pending
           FROM orchestration_command_receipts AS receipt
           WHERE receipt.rowid > ${cursor} AND receipt.rowid <= ${throughReceiptRowId}
           ORDER BY receipt.rowid ASC
           LIMIT ${PAGE_SIZE}
         `.pipe(NodeSqliteClient.readOnly);
         const obsolete = rows.filter((row) => row.imported === 1).map((row) => row.command_id);
+        firstPending ??= rows.find((row) => row.pending === 1 && row.imported !== 1)?.row_id;
         yield* Effect.yieldNow;
         if (obsolete.length > 0) {
           yield* sql`DELETE FROM orchestration_command_receipts WHERE command_id IN ${sql.in(obsolete)}`;
@@ -248,6 +257,12 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
         yield* betweenPages;
         if (rows.length < PAGE_SIZE) break;
         cursor = rows.at(-1)?.row_id ?? cursor;
+      }
+      // A legacy receipt whose thread is not imported yet is scanned again next pass.
+      const scannedThrough =
+        firstPending === undefined ? throughReceiptRowId : Math.max(firstPending - 1, 0);
+      if (scannedThrough > receiptsScannedThrough) {
+        yield* writeMetadata(LEGACY_RECEIPTS_SCANNED_THROUGH, scannedThrough, now);
       }
       return { deletedEventCount, deletedReceiptCount };
     });
@@ -261,7 +276,8 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
           SELECT projection_name, last_sequence, updated_at
           FROM orchestration_v2_projection_metadata
           WHERE projection_name IN (
-            'thread-projections', ${EVENT_LOG_PRUNE_MARK}, ${EVENT_LOG_PRUNED_THROUGH}
+            'thread-projections', ${EVENT_LOG_PRUNE_MARK}, ${EVENT_LOG_PRUNED_THROUGH},
+            ${LEGACY_RECEIPTS_SCANNED_THROUGH}
           )
         `.pipe(NodeSqliteClient.readOnly);
         const read = (name: string) => metadata.find((row) => row.projection_name === name);
@@ -294,6 +310,8 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
         const legacy = yield* pruneImportedLegacyHistory(
           head,
           bounds[0]?.receipt_row_id ?? 0,
+          read(LEGACY_RECEIPTS_SCANNED_THROUGH)?.last_sequence ?? 0,
+          now,
           betweenPages,
         );
         deletedEventCount += legacy.deletedEventCount;
