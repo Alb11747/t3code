@@ -435,6 +435,11 @@ describe("ThreadAccountService.set", () => {
     { name: "an email in any case", account: "Spare@Example.COM", pinned: OTHER },
     { name: "a unique local part", account: "spare", pinned: OTHER },
     { name: "the name t3_usage shows", account: "spare@example.com (pro)", pinned: OTHER },
+    {
+      name: "the name t3_usage shows beside a same-plan account of the other provider",
+      account: "spare@example.com (Pro, Claude)",
+      pinned: OTHER,
+    },
     { name: "a full email whose local part is shared", account: "work@example.com", pinned: OWNER },
     {
       name: "a shared local part",
@@ -1035,4 +1040,27 @@ describe("ThreadAccountService.preview", () => {
       expect(usage.thread && "afterCompaction" in usage.thread).toBe(false);
     }).pipe(Effect.provide(testLayer({ oldRouter: true }))),
   );
+});
+
+describe("accountNamesIn", () => {
+  it("names a hub's accounts by email and plan, adding what tells clashing ones apart", () => {
+    const account = (routerAlias: string, driver: string, email?: string, plan?: string) =>
+      ({ routerAlias, driver, email, plan }) as never;
+    const accounts = [
+      account(OWNER, "claudeAgent", "me@example.com", "Pro"),
+      account(OTHER, "codex", "ME@example.com", "Pro"),
+      account(ELSEWHERE, "claudeAgent", "solo@example.com"),
+      account("account-4444444444444444", "claudeAgent"),
+      account("account-5555555555555555", "codex", "twin@example.com", "Plus"),
+      account("account-6666666666666666", "codex", "twin@example.com", "Plus"),
+    ];
+    expect(accounts.map(ThreadAccountService.accountNamesIn(accounts))).toEqual([
+      "me@example.com (Pro, Claude)",
+      "ME@example.com (Pro, Codex)",
+      "solo@example.com",
+      "account-4444444444444444",
+      "account-5555555555555555",
+      "account-6666666666666666",
+    ]);
+  });
 });

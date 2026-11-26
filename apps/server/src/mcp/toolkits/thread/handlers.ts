@@ -258,12 +258,14 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
                   chosen && chosenAccount
                     ? { account: chosenAccount, waitWhenOut: chosen.stall }
                     : null,
-                accounts: accounts.accounts.flatMap((account) =>
+                accounts: accounts.accounts.flatMap((account, _index, all) =>
                   account.routerAlias === undefined
                     ? []
                     : [
                         {
-                          account: ThreadAccountService.accountName(account) ?? account.routerAlias,
+                          account:
+                            ThreadAccountService.accountNamesIn(all)(account) ??
+                            account.routerAlias,
                           ...(accounts.next === account.routerAlias ? { next: true } : {}),
                           ...(accounts.owner === account.routerAlias ? { owner: true } : {}),
                         },

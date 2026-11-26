@@ -88,7 +88,7 @@ export type ThreadAccountRedeemInput = (
  * What agents and users read for a hub account: its email and plan. Router aliases are internal
  * ids that tell a reader nothing, so one shows only for an account without an email.
  */
-export const accountName = (
+const accountName = (
   account: Pick<UsageLimitSourceAccount, "email" | "plan" | "routerAlias">,
 ): string | undefined =>
   account.email === undefined
@@ -97,13 +97,41 @@ export const accountName = (
       ? account.email
       : `${account.email} (${account.plan})`;
 
+type NamedAccount = Pick<UsageLimitSourceAccount, "email" | "plan" | "routerAlias" | "driver">;
+
+const accountNameWithProvider = (account: NamedAccount) => {
+  const provider = routerProviderOf(account.driver);
+  return account.email === undefined || provider === undefined
+    ? accountName(account)
+    : `${account.email} (${[account.plan, provider === "codex" ? "Codex" : "Claude"]
+        .filter((part) => part !== undefined)
+        .join(", ")})`;
+};
+
+/**
+ * Names for a hub's accounts that tell them apart: a Claude and a Codex account with the same
+ * email and plan also name their provider, and only accounts that still match show their alias.
+ */
+export const accountNamesIn = (accounts: ReadonlyArray<NamedAccount>) => {
+  const key = (name: string | undefined) => name?.toLowerCase();
+  const clashes = (name: (account: NamedAccount) => string | undefined, account: NamedAccount) =>
+    accounts.some((other) => other !== account && key(name(other)) === key(name(account)));
+  return (account: NamedAccount): string | undefined =>
+    !clashes(accountName, account)
+      ? accountName(account)
+      : !clashes(accountNameWithProvider, account)
+        ? accountNameWithProvider(account)
+        : account.routerAlias;
+};
+
 // An alias the listing does not know stays as it is: nothing better names it.
-const namer =
-  (accounts: ReadonlyArray<UsageLimitSourceAccount>) =>
-  (alias: string): string => {
+const namer = (accounts: ReadonlyArray<UsageLimitSourceAccount>) => {
+  const nameOf = accountNamesIn(accounts);
+  return (alias: string): string => {
     const account = accounts.find((entry) => entry.routerAlias === alias);
-    return (account && accountName(account)) ?? alias;
+    return (account && nameOf(account)) ?? alias;
   };
+};
 
 const namedRouting = (
   routes: NonNullable<ThreadAccountRouting>,
@@ -132,10 +160,12 @@ const named = <T>(
   where: string,
 ): Effect.Effect<T, ThreadAccountError> => {
   const lower = name.toLowerCase();
+  // A name shown for the whole hub can carry the provider even where candidates have one.
   const exact = candidates.filter(
     (candidate) =>
       accountOf(candidate).routerAlias === name ||
-      accountName(accountOf(candidate))?.toLowerCase() === lower,
+      accountName(accountOf(candidate))?.toLowerCase() === lower ||
+      accountNameWithProvider(accountOf(candidate))?.toLowerCase() === lower,
   );
   const byEmail = candidates.filter(
     (candidate) => accountOf(candidate).email?.toLowerCase() === lower,
@@ -150,15 +180,8 @@ const named = <T>(
           );
   if (matches.length === 1) return Effect.succeed(matches[0]!);
   const list = (entries: ReadonlyArray<T>) => {
-    const names = entries.map((entry) => accountName(accountOf(entry)));
-    // Only names two accounts share fall back to the alias, the one way left to tell them apart.
-    return entries
-      .map((entry, index) =>
-        names.indexOf(names[index]) === names.lastIndexOf(names[index])
-          ? names[index]
-          : accountOf(entry).routerAlias,
-      )
-      .join(", ");
+    const listed = accountNamesIn(entries.map(accountOf));
+    return entries.map((entry) => listed(accountOf(entry))).join(", ");
   };
   return Effect.fail(
     matches.length === 0
@@ -999,20 +1022,23 @@ export const make = Effect.gen(function* () {
           Effect.flatMap((routes) =>
             accountsOf(source).pipe(Effect.map((accounts) => ({ routes, accounts }))),
           ),
-          Effect.map(({ routes, accounts }) => ({
-            sourceId: source.id,
-            label: source.label,
-            ...(source.error ? { error: source.error } : {}),
-            accounts: accounts.map((account): AccountUsageSummary => ({
-              driver: account.driver,
-              ...(accountName(account) === undefined ? {} : { account: accountName(account) }),
-              ...(account.subscriptionEndsAt
-                ? { subscriptionEndsAt: account.subscriptionEndsAt }
-                : {}),
-              ...usageSummary(account.usageLimits),
-            })),
-            routing: routes && namedRouting(routes, namer(accounts)),
-          })),
+          Effect.map(({ routes, accounts }) => {
+            const nameOf = accountNamesIn(accounts);
+            return {
+              sourceId: source.id,
+              label: source.label,
+              ...(source.error ? { error: source.error } : {}),
+              accounts: accounts.map((account): AccountUsageSummary => ({
+                driver: account.driver,
+                ...(nameOf(account) === undefined ? {} : { account: nameOf(account) }),
+                ...(account.subscriptionEndsAt
+                  ? { subscriptionEndsAt: account.subscriptionEndsAt }
+                  : {}),
+                ...usageSummary(account.usageLimits),
+              })),
+              routing: routes && namedRouting(routes, namer(accounts)),
+            };
+          }),
         ),
       { concurrency: "unbounded" },
     );
