@@ -13,7 +13,7 @@ import {
   runRanAfter,
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
-import { threadIssueKeysEqual } from "@t3tools/contracts";
+import { resolveIdleCompaction, threadIssueKeysEqual } from "@t3tools/contracts";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
 import { COMPACTION_SUGGESTION_MIN_TOKENS } from "@t3tools/shared/claudeCompaction";
 import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
@@ -1840,6 +1840,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     return { isProviderSwitch, canResumeAcrossInstances, targetProviderThread, providerSwitchPlan };
   });
 
+  // A large Claude conversation whose prompt cache expired: its next turn re-reads it all.
+  const isColdLargeClaudeConversation = Effect.fnUntraced(function* (
+    projection: Pick<OrchestrationV2ThreadProjection, "providerTurns">,
+    providerThread: OrchestrationV2ProviderThread | undefined,
+  ) {
+    if (providerThread?.driver !== "claudeAgent") return false;
+    const usage = projection.providerTurns
+      .filter(
+        (turn) => turn.providerThreadId === providerThread.id && turn.tokenUsage !== undefined,
+      )
+      .map((turn) => turn.tokenUsage!)
+      .toSorted((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
+    const updatedAt =
+      usage === undefined
+        ? DateTime.toEpochMillis(providerThread.updatedAt)
+        : Date.parse(usage.updatedAt);
+    // Keep the composer's 70-minute fallback when Claude reports no TTL.
+    const expiresAt =
+      usage?.promptCacheExpiresAt === undefined
+        ? updatedAt + (usage?.promptCacheTtlMs ?? 70 * 60_000)
+        : Date.parse(usage.promptCacheExpiresAt);
+    return (
+      (usage?.usedTokens ?? providerThread.contextUsage?.usedTokens ?? 0) >=
+        COMPACTION_SUGGESTION_MIN_TOKENS && DateTime.toEpochMillis(yield* DateTime.now) >= expiresAt
+    );
+  });
+
   const assertAgentContextChoice = Effect.fn("Orchestrator.assertAgentContextChoice")(function* (
     command: Extract<OrchestrationV2Command, { type: "message.dispatch" }>,
     projection: Pick<OrchestrationV2ThreadProjection, "providerTurns" | "runs">,
@@ -1866,27 +1893,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           'The destination conversation changed after compaction was requested. Retry with a new clientRequestId and contextPolicy:"compact", or contextPolicy:"keep" to retain its full history. No message was sent.',
       });
     }
-    if (providerThread?.driver !== "claudeAgent") return;
-    const usage = projection.providerTurns
-      .filter(
-        (turn) => turn.providerThreadId === providerThread.id && turn.tokenUsage !== undefined,
-      )
-      .map((turn) => turn.tokenUsage!)
-      .toSorted((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
-    const updatedAt =
-      usage === undefined
-        ? DateTime.toEpochMillis(providerThread.updatedAt)
-        : Date.parse(usage.updatedAt);
-    // Keep the composer's 70-minute fallback when Claude reports no TTL.
-    const expiresAt =
-      usage?.promptCacheExpiresAt === undefined
-        ? updatedAt + (usage?.promptCacheTtlMs ?? 70 * 60_000)
-        : Date.parse(usage.promptCacheExpiresAt);
-    if (
-      (usage?.usedTokens ?? providerThread.contextUsage?.usedTokens ?? 0) >=
-        COMPACTION_SUGGESTION_MIN_TOKENS &&
-      DateTime.toEpochMillis(yield* DateTime.now) >= expiresAt
-    ) {
+    if (yield* isColdLargeClaudeConversation(projection, providerThread)) {
       return yield* new OrchestratorContextPolicyRequiredError({
         threadId: command.threadId,
         message:
@@ -2670,6 +2677,96 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       events,
       effects,
     );
+  });
+
+  // A task's report or a server notice that would start a turn on a cold, large Claude
+  // conversation compacts it first, as a person's return does under "When you return". The wake
+  // runs after the compaction whatever its result, so a failed /compact never strands it.
+  const compactsBeforeServerWake = Effect.fn("Orchestrator.compactsBeforeServerWake")(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    if (
+      command.createdBy !== "agent" ||
+      command.creationSource !== "server" ||
+      (command.notification === undefined && command.delegatedCompletion === undefined) ||
+      command.dispatchMode.type !== "queue_after_active" ||
+      command.afterCompactionMessageId !== undefined ||
+      command.freshContext === true ||
+      command.keepFullHistory === true ||
+      command.steerFollowUpOfRunId !== undefined ||
+      command.scheduledTaskId !== undefined
+    )
+      return false;
+    const projection = yield* getProjectionWithPendingEvents(command.threadId, events, {
+      keepRunIds: [],
+      keepMessageId: command.messageId,
+    });
+    // Only a wake that starts a turn on its own; a busy or held thread keeps its order.
+    if (
+      projection.thread.compactBeforeCacheExpires === false ||
+      projection.runs.some((run) => isActiveRun(run) || run.status === "queued") ||
+      projection.messages.some((message) => message.id === command.messageId)
+    )
+      return false;
+    const modelSelection = command.modelSelection ?? projection.thread.modelSelection;
+    const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+    if (resolveIdleCompaction(settings, modelSelection.instanceId) === "off") return false;
+    const { targetProviderThread } = yield* resolveMessageDestination(
+      projection,
+      modelSelection,
+    ).pipe(mapDispatchError(command));
+    return yield* isColdLargeClaudeConversation(projection, targetProviderThread);
+  });
+
+  const dispatchCompactBeforeServerWake = Effect.fn("Orchestrator.dispatchCompactBeforeServerWake")(
+    function* (
+      command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+      effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    ) {
+      const before = { events: yield* Ref.get(events), effects: yield* Ref.get(effects) };
+      yield* dispatchMessage(
+        {
+          type: "message.dispatch",
+          commandId: command.commandId,
+          threadId: command.threadId,
+          messageId: MessageId.make(`${command.messageId}:compact`),
+          text: "/compact",
+          attachments: [],
+          idleCompaction: "onReturn",
+          ...(command.modelSelection === undefined
+            ? {}
+            : { modelSelection: command.modelSelection }),
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: command.createdBy,
+          creationSource: command.creationSource,
+        },
+        events,
+        effects,
+      );
+      const result = yield* dispatchMessage(command, events, effects);
+      // A wake dispatch can drop its message (a stale question, a settled task); then nothing
+      // runs after the compaction, so it is not worth paying for.
+      const wakeQueued = (yield* Ref.get(events)).some(
+        (event) =>
+          event.type === "run.created" && event.payload.userMessageId === command.messageId,
+      );
+      if (wakeQueued) return result;
+      yield* Ref.set(events, before.events);
+      yield* Ref.set(effects, before.effects);
+      return yield* dispatchMessage(command, events, effects);
+    },
+  );
+
+  const dispatchServerWake = Effect.fn("Orchestrator.dispatchServerWake")(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    return (yield* compactsBeforeServerWake(command, events))
+      ? yield* dispatchCompactBeforeServerWake(command, events, effects)
+      : yield* dispatchMessage(command, events, effects);
   });
 
   const isStaleQuestionWake = Effect.fn("Orchestrator.isStaleQuestionWake")(function* (
@@ -4743,7 +4840,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? { section: sections[index] }
           : {}),
       }));
-      yield* dispatchMessage(
+      yield* dispatchServerWake(
         {
           type: "message.dispatch",
           commandId: command.commandId,
@@ -8231,7 +8328,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const automaticWake =
       command.notification !== undefined ||
       command.delegatedCompletion !== undefined ||
-      serverIdleCompaction;
+      serverIdleCompaction ||
+      // Fork: the compaction a server wake runs first is as automatic as the wake.
+      (command.createdBy === "agent" &&
+        command.creationSource === "server" &&
+        command.idleCompaction === "onReturn");
     if (projection.thread.snoozedUntil != null && !automaticWake) {
       const now = yield* DateTime.now;
       const thread: OrchestrationV2AppThread = {
@@ -12883,7 +12984,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ) {
         return;
       }
-      yield* dispatchMessage(
+      yield* dispatchServerWake(
         {
           type: "message.dispatch",
           commandId: command.commandId,
@@ -18064,7 +18165,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             cause: "The issue watch's thread became inactive while it was read.",
           });
         }
-        yield* dispatchMessage(
+        yield* dispatchServerWake(
           {
             ...command,
             type: "message.dispatch",
@@ -18119,7 +18220,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           },
         });
         if (command.wake !== undefined && !inactive) {
-          yield* dispatchMessage(
+          yield* dispatchServerWake(
             {
               type: "message.dispatch",
               commandId: command.commandId,
@@ -18205,7 +18306,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cancelUnsettledEffects =
           dispatched.compactFirst === true
             ? yield* dispatchCompactFirst(dispatched, events, effects)
-            : yield* dispatchMessage(dispatched, events, effects);
+            : yield* dispatchServerWake(dispatched, events, effects);
         yield* recordSubagentFollowup(dispatched, events).pipe(mapDispatchError(command));
         break;
       }

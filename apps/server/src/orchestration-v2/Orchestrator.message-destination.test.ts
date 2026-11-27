@@ -67,7 +67,11 @@ function providerThread(
   };
 }
 
-function layerTest(compatibleAccounts: boolean, providerDriver = driver) {
+function layerTest(
+  compatibleAccounts: boolean,
+  providerDriver = driver,
+  settings: { readonly idleCompaction?: "off" } = {},
+) {
   const capabilities =
     providerDriver === "codex" ? CodexProviderCapabilitiesV2 : ClaudeProviderCapabilitiesV2;
   const adapters = [firstInstanceId, targetInstanceId].map(
@@ -106,10 +110,14 @@ function layerTest(compatibleAccounts: boolean, providerDriver = driver) {
       ProviderReplayHarness.layerWithRegistry({ name: "message-destination" }, registry, {
         databaseLayer: database,
         runEffectWorker: false,
+        ...(settings.idleCompaction === undefined
+          ? {}
+          : { settingsLayer: ServerSettings.layerTest(settings).pipe(Layer.orDie) }),
       }),
     ),
     Layer.provide(
       ServerSettings.layerTest({
+        ...settings,
         providerInstances: {
           [firstInstanceId]: { driver: providerDriver, enabled: true },
           [targetInstanceId]: { driver: providerDriver, enabled: true },
@@ -475,4 +483,102 @@ it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, prov
       ),
     ),
   ),
+);
+
+it.effect.each(["cold", "warm", "off", "never", "snoozed", "issue-watch"] as const)(
+  "a server wake into a cold large Claude conversation compacts it first ($0)",
+  (scenario) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const epoch = DateTime.makeUnsafe(0);
+      const retained = providerThread("native:wake", targetInstanceId, 500_000, 1, epoch);
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("create:server-wake"),
+        threadId,
+        projectId: ProjectId.make("project:server-wake"),
+        title: "Server wake",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const { thread } = yield* orchestrator.getThreadRecords(threadId, []);
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("event:wake-provider"),
+            type: "provider-thread.updated",
+            threadId,
+            occurredAt: epoch,
+            payload: retained,
+          },
+          {
+            id: EventId.make("event:wake-active"),
+            type: "thread.metadata-updated",
+            threadId,
+            occurredAt: epoch,
+            payload: {
+              ...thread,
+              activeProviderThreadId: retained.id,
+              ...(scenario === "never" ? { compactBeforeCacheExpires: false } : {}),
+              ...(scenario === "snoozed"
+                ? { snoozedAt: epoch, snoozedUntil: DateTime.makeUnsafe(10 * 3_600_000) }
+                : {}),
+            },
+          },
+        ],
+      });
+      yield* TestClock.adjust(scenario === "warm" ? "69 minutes" : "70 minutes");
+      const messageId = MessageId.make("message:server-wake");
+      const notice = {
+        commandId: CommandId.make("send:server-wake"),
+        threadId,
+        messageId,
+        text: "Background activity updated",
+        notification: {
+          source: { kind: "background_task" },
+          outcome: "updated",
+          summary: "Background activity updated",
+        },
+      } as const;
+      // Watches dispatch their own command types, which must compact the same way.
+      yield* orchestrator.dispatch(
+        scenario === "issue-watch"
+          ? { ...notice, type: "thread.issue-watch.wake" }
+          : {
+              ...notice,
+              type: "message.dispatch",
+              attachments: [],
+              dispatchMode: { type: "queue_after_active" },
+              createdBy: "agent",
+              creationSource: "server",
+            },
+      );
+      const { runs, messages } = yield* orchestrator.getThreadRecords(threadId, [
+        "runs",
+        "messages",
+      ]);
+      const wake = runs.find((run) => run.userMessageId === messageId);
+      const compaction = messages.find((message) => message.text === "/compact");
+      if (scenario === "warm" || scenario === "off" || scenario === "never") {
+        expect(compaction).toBeUndefined();
+        expect(wake?.status).toBe("starting");
+        return;
+      }
+      expect(runs.find((run) => run.userMessageId === compaction?.id)?.status).toBe("starting");
+      // A failed compaction must not strand the wake, so it only queues behind it.
+      expect(wake).toMatchObject({ status: "queued", providerThreadId: retained.id });
+      expect(wake?.afterCompactionMessageId).toBeUndefined();
+      if (scenario === "snoozed") {
+        const { thread: after } = yield* orchestrator.getThreadRecords(threadId, []);
+        expect(after.snoozedUntil).not.toBeNull();
+      }
+    }).pipe(
+      Effect.provide(layerTest(false, driver, scenario === "off" ? { idleCompaction: "off" } : {})),
+    ),
 );
