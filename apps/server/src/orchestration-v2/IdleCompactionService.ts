@@ -290,7 +290,10 @@ export const make = Effect.gen(function* () {
           event.type === "thread.pull-request-link-updated" ||
           (event.type === "thread.pull-request-synced" &&
             event.payload.pullRequests?.some((pr) => pr.watch !== undefined) === true) ||
-          canAddIdleWake(event)
+          canAddIdleWake(event) ||
+          // Fork: a queued run or a blocking request held the check, and its end rearms nothing.
+          (event.type === "run.updated" && event.payload.status === "cancelled") ||
+          (event.type === "runtime-request.updated" && event.payload.status !== "pending")
         )
           return recheck(event.threadId);
         return Effect.void;

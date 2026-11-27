@@ -952,6 +952,55 @@ describe("IdleCompactionService", () => {
       ),
   );
 
+  // A queued run or a blocking request held the check; nothing else rearms it once it goes.
+  it.effect.each(["queued run cancelled", "request resolved"] as const)(
+    "arms waiting compaction when a %s after the run completed",
+    (change) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = records();
+          const event: OrchestrationV2DomainEvent =
+            change === "queued run cancelled"
+              ? {
+                  id: EventId.make("queued-cancelled"),
+                  type: "run.updated",
+                  threadId,
+                  runId: RunId.make("run-2"),
+                  occurredAt: at(),
+                  payload: {
+                    ...base.runs[0]!,
+                    id: RunId.make("run-2"),
+                    ordinal: 2,
+                    status: "cancelled",
+                  },
+                }
+              : {
+                  id: EventId.make("request-resolved"),
+                  type: "runtime-request.updated",
+                  threadId,
+                  occurredAt: at(),
+                  payload: {
+                    id: RuntimeRequestId.make("request"),
+                    nodeId: NodeId.make("request-node"),
+                    providerTurnId: null,
+                    nativeRequestRef: null,
+                    kind: "command",
+                    status: "resolved",
+                    responseCapability: {
+                      type: "live",
+                      providerSessionId: ProviderSessionId.make("session"),
+                    },
+                    createdAt: at(),
+                    resolvedAt: at(),
+                  },
+                };
+          expect(yield* serviceDispatches(Stream.make(event))).toEqual([
+            "server:idle-compact:idle-thread:run-1",
+          ]);
+        }),
+      ),
+  );
+
   it.effect("arms waiting compaction when a guest submits after the run completed", () =>
     Effect.scoped(
       Effect.gen(function* () {
