@@ -585,3 +585,66 @@ describe("resolveRestoredRetry", () => {
     expect(resolveRestoredRetry(restored("remote"), [])).toBeNull();
   });
 });
+
+describe("countRestartingThreads", () => {
+  it("separates stalling and paced-waiting threads from running threads", async () => {
+    const { countRestartingThreads } = await import("./updateEverything.logic");
+    const { RunId, ThreadId } = await import("@t3tools/contracts");
+    const future = "2026-11-27T11:00:00.000Z";
+    const rootLineage = (id: string) => ({
+      rootThreadId: ThreadId.make(id),
+      parentThreadId: null,
+      relationshipToParent: null,
+    });
+    const parentId = ThreadId.make("parent-waiting-on-paced");
+    const threads = [
+      // Actively running thread -> counted in running.
+      {
+        id: ThreadId.make("active"),
+        lineage: rootLineage("active"),
+        status: "running",
+        activeRunId: RunId.make("run-1"),
+      },
+      // Keep-warm stalled thread -> counted in pacedOrStalled, not running.
+      {
+        id: ThreadId.make("stalled"),
+        lineage: rootLineage("stalled"),
+        status: "running",
+        activeRunId: RunId.make("run-2"),
+        keepWarmStalled: true,
+      },
+      // Codex paced-waiting subagent -> counted in pacedOrStalled, not running.
+      {
+        id: ThreadId.make("paced-codex"),
+        lineage: {
+          rootThreadId: parentId,
+          parentThreadId: parentId,
+          relationshipToParent: "subagent",
+        },
+        status: "queued",
+        activeRunId: null,
+        activityRunStatus: null,
+        pacedUntil: future,
+      },
+      // Parent blocked waiting on the paced subagent -> counted in pacedOrStalled, not running.
+      {
+        id: parentId,
+        lineage: rootLineage(parentId),
+        status: "running",
+        activeRunId: RunId.make("run-3"),
+        blockedOnThreadWait: true,
+      },
+      // Idle paced thread -> counted in neither.
+      {
+        id: ThreadId.make("idle-paced"),
+        lineage: rootLineage("idle-paced"),
+        status: "completed",
+        activeRunId: null,
+        pacedUntil: future,
+      },
+    ] as const;
+    expect(countRestartingThreads(threads, true)).toEqual({ running: 1, pacedOrStalled: 3 });
+    // Without continuing, a stalled turn is cut short too; only the paced wait goes on by itself.
+    expect(countRestartingThreads(threads, false)).toEqual({ running: 3, pacedOrStalled: 1 });
+  });
+});

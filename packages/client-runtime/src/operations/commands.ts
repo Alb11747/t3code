@@ -160,6 +160,7 @@ export interface UpdateThreadMetadataInput extends ThreadCommandInput {
   readonly linkedPullRequest?: ThreadLinkedPullRequest | null;
   readonly contextNote?: import("@t3tools/contracts").ThreadContextNoteUpdate | null;
   readonly compactBeforeCacheExpires?: boolean | null | "once";
+  readonly paced?: import("@t3tools/contracts").ThreadPaced | null;
   readonly expectedEmpty?: boolean;
 }
 
@@ -755,6 +756,7 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
       input.linkedPullRequest !== undefined ||
       input.contextNote !== undefined ||
       input.compactBeforeCacheExpires !== undefined ||
+      input.paced !== undefined ||
       input.limitRecovery !== undefined
     ) {
       result = yield* dispatch({
@@ -767,6 +769,7 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
         ...(input.compactBeforeCacheExpires === undefined
           ? {}
           : { compactBeforeCacheExpires: input.compactBeforeCacheExpires }),
+        ...(input.paced === undefined ? {} : { paced: input.paced }),
         ...(input.branch === undefined ? {} : { branch: input.branch }),
         ...(input.worktreePath === undefined ? {} : { worktreePath: input.worktreePath }),
         ...(input.expectedEmpty === true ? { expectedEmpty: true } : {}),

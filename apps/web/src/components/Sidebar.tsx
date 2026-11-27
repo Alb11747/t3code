@@ -181,6 +181,7 @@ import {
   buildThreadActionMenuItems,
   compactBeforeCacheExpiresChoice,
   isThreadTriageAction,
+  pacedChoiceAction,
   threadActionRequiresOperate,
 } from "./threadActionMenu.logic";
 import {
@@ -2782,6 +2783,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                   : thread.autoSettleAlwaysAt != null,
               compactBeforeCacheExpires: thread.compactBeforeCacheExpires,
               compactOnce: thread.compactOnce,
+              paced: thread.paced,
               isSnoozed,
               canSnoozeNow,
               isRegeneratingTitle,
@@ -2938,6 +2940,29 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 stackedThreadToast({
                   type: "error",
                   title: gt("Failed to update compaction"),
+                  description: error instanceof Error ? error.message : gt("An error occurred."),
+                }),
+              );
+            }
+            return;
+          }
+          case "paced:off":
+          case "paced:5h":
+          case "paced:7d":
+          case "paced:both": {
+            const result = await updateThreadMetadata({
+              environmentId: threadRef.environmentId,
+              input: {
+                threadId: threadRef.threadId,
+                paced: pacedChoiceAction(clicked.value),
+              },
+            });
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: gt("Failed to update pacing"),
                   description: error instanceof Error ? error.message : gt("An error occurred."),
                 }),
               );

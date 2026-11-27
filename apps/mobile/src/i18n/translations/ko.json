@@ -5837,5 +5837,16 @@
   "b2c6186835bd4e68": "A quota refresh is already running.",
   "c4da6ad3cae3d48a": "Quota refresh limit reached.",
   "40cad5f1d3735ab3": "Refresh available in {time}",
-  "a2bded0a93096ada": "Refreshing…"
+  "a2bded0a93096ada": "Refreshing…",
+  "df7ee33f67c5c9ef": "끄기",
+  "1c46f2f439e4b937": "5시간 구간",
+  "82ba7565559ef1d4": "주간 구간",
+  "71ac94f2427d389a": "둘 다",
+  "6e8f1bca67c609bc": "속도 조절",
+  "a43c3a18b0bf60f6": "일반 속도로 실행합니다.",
+  "c5fa89dedecde6b4": "5시간 구간 사용량이 기준 속도를 초과하는 동안 대기합니다.",
+  "4dc2d08ee71e7955": "주간 구간 사용량이 기준 속도를 초과하는 동안 대기합니다.",
+  "a4e7ce3a06de7d8d": "두 사용량 구간 중 하나라도 기준 속도를 초과하는 동안 대기합니다.",
+  "d75dfd464a324ddd": "속도 조절",
+  "200a2635dde8793c": "정체 중"
 }

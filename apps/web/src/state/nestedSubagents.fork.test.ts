@@ -89,4 +89,20 @@ describe("deriveNestedSubagentTree", () => {
 
     expect(rowsOf(tree)).toEqual({ child: ["grandchild@1:running"] });
   });
+
+  it("shows a paced-waiting Codex grandchild as stalled and out of runningCount", () => {
+    const pacedGrandchild = {
+      ...shell("paced-grandchild", "child", { status: "queued" }),
+      activeRunId: null,
+      pacedUntil: "2026-11-27T11:00:00.000Z",
+    } as unknown as OrchestrationV2ThreadShell;
+    const tree = deriveNestedSubagentTree(root, [
+      shell("root", null),
+      shell("child", "root"),
+      pacedGrandchild,
+    ]);
+
+    expect(tree.runningCount).toBe(0);
+    expect(rowsOf(tree)).toEqual({ child: ["paced-grandchild@1:stalled"] });
+  });
 });

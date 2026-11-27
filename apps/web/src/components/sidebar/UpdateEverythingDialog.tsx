@@ -19,25 +19,30 @@ import { Button } from "../ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { ScrollArea } from "../ui/scroll-area";
-import type { RestartingMachine, UpdateEverythingRow } from "./updateEverything.logic";
+import {
+  countRestartingThreads,
+  type RestartingMachine,
+  type RestartingThreadCounts,
+  type UpdateEverythingRow,
+} from "./updateEverything.logic";
 
-const isRunning = (status: string) =>
-  status === "preparing" || status === "starting" || status === "running";
-
-const runningThreadCountAtom = Atom.family((environmentIds: string) =>
-  Atom.make((get) =>
-    environmentIds
-      .split("\n")
-      .filter((id) => id !== "")
-      .reduce(
-        (count, id) =>
-          count +
-          get(environmentThreadShells.environmentThreadsAtom(EnvironmentId.make(id))).filter(
-            (thread) => isRunning(thread.status),
-          ).length,
-        0,
-      ),
-  ).pipe(Atom.withLabel(`update-everything-running-threads:${environmentIds}`)),
+// Keyed by "continue" or "stop", then the machines' environment ids, one per line.
+const restartingThreadCountsAtom = Atom.family((key: string) =>
+  Atom.make((get): RestartingThreadCounts => {
+    let running = 0;
+    let pacedOrStalled = 0;
+    const [mode, ...environmentIds] = key.split("\n");
+    for (const id of environmentIds) {
+      if (id === "") continue;
+      const counts = countRestartingThreads(
+        get(environmentThreadShells.environmentThreadsAtom(EnvironmentId.make(id))),
+        mode === "continue",
+      );
+      running += counts.running;
+      pacedOrStalled += counts.pacedOrStalled;
+    }
+    return { running, pacedOrStalled };
+  }).pipe(Atom.withLabel(`update-everything-running-threads:${key}`)),
 );
 
 interface UpdateEverythingDialogProps {
@@ -109,23 +114,30 @@ function UpdateEverythingDialogContent({
 }: UpdateEverythingDialogContentProps) {
   const gt = useGT();
   const m = useMessages();
-  const stopped = useAtomValue(
-    runningThreadCountAtom(
-      restarts
-        .filter((machine) => !machine.continuesThreads)
-        .map((machine) => machine.environmentId)
-        .join("\n"),
+  const stoppedCounts = useAtomValue(
+    restartingThreadCountsAtom(
+      [
+        "stop",
+        ...restarts
+          .filter((machine) => !machine.continuesThreads)
+          .map((machine) => machine.environmentId),
+      ].join("\n"),
     ),
   );
-  const continuing = useAtomValue(
-    runningThreadCountAtom(
-      restarts
-        .filter((machine) => machine.continuesThreads)
-        .map((machine) => machine.environmentId)
-        .join("\n"),
+  const continuingCounts = useAtomValue(
+    restartingThreadCountsAtom(
+      [
+        "continue",
+        ...restarts
+          .filter((machine) => machine.continuesThreads)
+          .map((machine) => machine.environmentId),
+      ].join("\n"),
     ),
   );
+  const stopped = stoppedCounts.running;
+  const continuing = continuingCounts.running;
   const running = stopped + continuing;
+  const pacedOrStalled = stoppedCounts.pacedOrStalled + continuingCounts.pacedOrStalled;
   const restarting = new Set(restarts.map((machine) => machine.environmentId));
   const updating = rows.filter((row) => row.app !== null || row.providers.length > 0);
   const skipped = rows.filter((row) => row.skipped !== null);
@@ -215,7 +227,13 @@ function UpdateEverythingDialogContent({
                 </span>
                 <span role="cell" className="text-right">
                   {row.environmentId !== null && restarting.has(row.environmentId) ? (
-                    <RunningThreads environmentId={row.environmentId} />
+                    <RunningThreads
+                      environmentId={row.environmentId}
+                      continuesThreads={
+                        restarts.find((machine) => machine.environmentId === row.environmentId)
+                          ?.continuesThreads === true
+                      }
+                    />
                   ) : null}
                 </span>
               </div>
@@ -250,25 +268,37 @@ function UpdateEverythingDialogContent({
           <p className="self-center text-sm max-sm:order-1 max-sm:text-center sm:mr-auto">
             {disabledReason}
           </p>
-        ) : running > 0 ? (
+        ) : running > 0 || pacedOrStalled > 0 ? (
           <p className="self-center text-muted-foreground text-sm max-sm:order-1 max-sm:text-center sm:mr-auto">
-            {stopped === 0
-              ? gt(
-                  "{count, plural, one {{count} running thread will be interrupted and can resume after the restart.} other {{count} running threads will be interrupted and can resume after the restart.}}",
-                  { count: running },
-                )
-              : continuing === 0
+            {[
+              running > 0
+                ? stopped === 0
+                  ? gt(
+                      "{count, plural, one {{count} running thread will be interrupted and can resume after the restart.} other {{count} running threads will be interrupted and can resume after the restart.}}",
+                      { count: running },
+                    )
+                  : continuing === 0
+                    ? gt(
+                        "{count, plural, one {{count} running thread will be interrupted.} other {{count} running threads will be interrupted.}}",
+                        { count: running },
+                      )
+                    : `${gt(
+                        "{count, plural, one {{count} running thread will be interrupted.} other {{count} running threads will be interrupted.}}",
+                        { count: running },
+                      )} ${gt(
+                        "{count, plural, one {{count} can resume after the restart.} other {{count} can resume after the restart.}}",
+                        { count: continuing },
+                      )}`
+                : null,
+              pacedOrStalled > 0
                 ? gt(
-                    "{count, plural, one {{count} running thread will be interrupted.} other {{count} running threads will be interrupted.}}",
-                    { count: running },
+                    "{count, plural, one {{count} paced or stalled thread will go on by itself.} other {{count} paced or stalled threads will go on by themselves.}}",
+                    { count: pacedOrStalled },
                   )
-                : `${gt(
-                    "{count, plural, one {{count} running thread will be interrupted.} other {{count} running threads will be interrupted.}}",
-                    { count: running },
-                  )} ${gt(
-                    "{count, plural, one {{count} can resume after the restart.} other {{count} can resume after the restart.}}",
-                    { count: continuing },
-                  )}`}
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" ")}
           </p>
         ) : null}
         <AlertDialogClose ref={cancelRef} render={<Button variant="outline" disabled={busy} />}>
@@ -282,12 +312,35 @@ function UpdateEverythingDialogContent({
   );
 }
 
-function RunningThreads({ environmentId }: { readonly environmentId: EnvironmentId }) {
-  const count = useAtomValue(runningThreadCountAtom(environmentId));
+function RunningThreads({
+  environmentId,
+  continuesThreads,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly continuesThreads: boolean;
+}) {
+  const { running, pacedOrStalled } = useAtomValue(
+    restartingThreadCountsAtom(`${continuesThreads ? "continue" : "stop"}\n${environmentId}`),
+  );
   const gt = useGT();
-  return count > 0 ? (
-    <span className="whitespace-nowrap text-warning">
-      {gt("{count, plural, one {{count} running} other {{count} running}}", { count })}
+  if (running === 0 && pacedOrStalled === 0) return null;
+  return (
+    <span className="whitespace-nowrap">
+      {running > 0 ? (
+        <span className="text-warning">
+          {gt("{count, plural, one {{count} running} other {{count} running}}", { count: running })}
+        </span>
+      ) : null}
+      {running > 0 && pacedOrStalled > 0 ? (
+        <span className="text-muted-foreground"> · </span>
+      ) : null}
+      {pacedOrStalled > 0 ? (
+        <span className="text-muted-foreground">
+          {gt("{count, plural, one {{count} paced or stalled} other {{count} paced or stalled}}", {
+            count: pacedOrStalled,
+          })}
+        </span>
+      ) : null}
     </span>
-  ) : null;
+  );
 }

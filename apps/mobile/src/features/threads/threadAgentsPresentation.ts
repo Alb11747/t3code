@@ -23,7 +23,7 @@ import { msg } from "gt-react-native";
 
 import { m, type MessageResolver } from "../../i18n/messages";
 
-export type SubagentRowTone = "working" | "completed" | "failed" | "stopped";
+export type SubagentRowTone = "working" | "stalled" | "completed" | "failed" | "stopped";
 
 export interface SubagentRowPresentation {
   readonly title: string;
@@ -121,13 +121,17 @@ export function resolveSubagentRowPresentation(
   >,
   canOpenRemote = false,
   resolve: MessageResolver = m,
+  /** The child thread is held: a keep-warm stall or a paced wait. */
+  held = false,
 ): SubagentRowPresentation {
-  const live = isActiveSubagentStatus(subagent.status);
+  const live = isActiveSubagentStatus(subagent.status) || held;
   return {
     title: rowTitle(subagent, resolve),
     detail: subagentDetailPreview(subagent),
-    statusLabel: rowStatusLabel(subagent.status, resolve),
-    tone: rowTone(subagent.status),
+    statusLabel: held
+      ? resolve(msg("Stalling", { $context: "agent status" }))
+      : rowStatusLabel(subagent.status, resolve),
+    tone: held ? "stalled" : rowTone(subagent.status),
     live,
     canOpenThread:
       subagent.childThreadId !== null || (subagent.remoteChild !== undefined && canOpenRemote),

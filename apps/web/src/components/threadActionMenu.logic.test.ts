@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildThreadActionMenuItems, type ThreadActionMenuState } from "./threadActionMenu.logic";
+import {
+  buildThreadActionMenuItems,
+  pacedChoiceAction,
+  type ThreadActionMenuState,
+} from "./threadActionMenu.logic";
 
 const baseState: ThreadActionMenuState = {
   canOperate: true,
@@ -90,5 +94,30 @@ describe("buildThreadActionMenuItems", () => {
   it("disables only rename where no inline title editor exists", () => {
     const items = buildThreadActionMenuItems({ ...baseState, canRename: false });
     expect(items.filter((item) => item.disabled).map((item) => item.id)).toEqual(["rename"]);
+  });
+
+  it("hides Paced when undefined and marks the active window choice when supported", () => {
+    expect(buildThreadActionMenuItems(baseState).map((item) => item.id)).not.toContain("paced");
+
+    const offMenu = buildThreadActionMenuItems({ ...baseState, paced: null }).find(
+      (item) => item.id === "paced",
+    );
+    expect(offMenu?.children?.map((child) => [child.id, child.checked])).toEqual([
+      ["paced:off", true],
+      ["paced:5h", false],
+      ["paced:7d", false],
+      ["paced:both", false],
+    ]);
+
+    const bothMenu = buildThreadActionMenuItems({
+      ...baseState,
+      paced: { windows: ["5h", "7d"] },
+    }).find((item) => item.id === "paced");
+    expect(bothMenu?.children?.find((child) => child.checked)?.id).toBe("paced:both");
+
+    expect(pacedChoiceAction("paced:off")).toBeNull();
+    expect(pacedChoiceAction("paced:5h")).toEqual({ windows: ["5h"] });
+    expect(pacedChoiceAction("paced:7d")).toEqual({ windows: ["7d"] });
+    expect(pacedChoiceAction("paced:both")).toEqual({ windows: ["5h", "7d"] });
   });
 });

@@ -13325,5 +13325,13 @@
   "1faf1c5cbd504949": "Could not refresh quota.",
   "b2c6186835bd4e68": "A quota refresh is already running.",
   "c4da6ad3cae3d48a": "Quota refresh limit reached.",
-  "40cad5f1d3735ab3": "Refresh available in {time}"
+  "40cad5f1d3735ab3": "Refresh available in {time}",
+  "c9a8a7b16cfcd4f2": "No se pudo actualizar la regulación",
+  "d75dfd464a324ddd": "Regulado",
+  "df7ee33f67c5c9ef": "Desactivado",
+  "1c46f2f439e4b937": "Ventana de 5 horas",
+  "82ba7565559ef1d4": "Ventana semanal",
+  "71ac94f2427d389a": "Ambas",
+  "893db1285c585482": "{count, plural, one {{count} hilo regulado o en pausa continuará por sí solo.} other {{count} hilos regulados o en pausa continuarán por sí solos.}}",
+  "e9fa2ae1f31f676a": "{count, plural, one {{count} regulado o en pausa} other {{count} regulados o en pausa}}"
 }

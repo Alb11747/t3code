@@ -13330,5 +13330,13 @@
   "1faf1c5cbd504949": "Could not refresh quota.",
   "b2c6186835bd4e68": "A quota refresh is already running.",
   "c4da6ad3cae3d48a": "Quota refresh limit reached.",
-  "40cad5f1d3735ab3": "Refresh available in {time}"
+  "40cad5f1d3735ab3": "Refresh available in {time}",
+  "c9a8a7b16cfcd4f2": "Falha ao atualizar o cadenciamento",
+  "d75dfd464a324ddd": "Cadenciado",
+  "df7ee33f67c5c9ef": "Desativado",
+  "1c46f2f439e4b937": "Janela de 5 horas",
+  "82ba7565559ef1d4": "Janela semanal",
+  "71ac94f2427d389a": "Ambas",
+  "893db1285c585482": "{count, plural, one {{count} thread cadenciada ou em espera continuará sozinha.} other {{count} threads cadenciadas ou em espera continuarão sozinhas.}}",
+  "e9fa2ae1f31f676a": "{count, plural, one {{count} cadenciada ou em espera} other {{count} cadenciadas ou em espera}}"
 }

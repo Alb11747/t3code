@@ -8,6 +8,8 @@ import {
   resolveSubagentMetadata,
   subagentCardDetail,
 } from "@t3tools/client-runtime/state/subagent-display";
+import { threadPacedWait } from "@t3tools/client-runtime/state/claudeKeepWarm";
+import { isActiveSubagentStatus } from "@t3tools/client-runtime/state/subagentRuntime";
 import { formatSubagentEffort } from "@t3tools/client-runtime/state/thread-execution";
 import type { EnvironmentId, OrchestrationV2Subagent } from "@t3tools/contracts";
 import { msg, T, useMessages, Var } from "gt-react-native";
@@ -46,10 +48,20 @@ export function SubagentRow(props: {
   readonly canOpenRemote?: boolean;
 }) {
   const messages = useMessages();
+  const childShell = useThreadShell(
+    props.subagent.childThreadId === null
+      ? null
+      : scopeThreadRef(props.environmentId, props.subagent.childThreadId),
+  );
+  const held =
+    childShell != null &&
+    isActiveSubagentStatus(props.subagent.status) &&
+    (threadPacedWait(childShell) || childShell.keepWarmStalled === true);
   const presentation = resolveSubagentRowPresentation(
     props.subagent,
     props.canOpenRemote,
     messages,
+    held,
   );
   const detail = subagentCardDetail(presentation.detail);
   return (

@@ -13264,5 +13264,13 @@
   "1faf1c5cbd504949": "Could not refresh quota.",
   "b2c6186835bd4e68": "A quota refresh is already running.",
   "c4da6ad3cae3d48a": "Quota refresh limit reached.",
-  "40cad5f1d3735ab3": "Refresh available in {time}"
+  "40cad5f1d3735ab3": "Refresh available in {time}",
+  "c9a8a7b16cfcd4f2": "ペース調整を更新できませんでした",
+  "d75dfd464a324ddd": "ペース調整",
+  "df7ee33f67c5c9ef": "オフ",
+  "1c46f2f439e4b937": "5時間枠",
+  "82ba7565559ef1d4": "週間枠",
+  "71ac94f2427d389a": "両方",
+  "893db1285c585482": "{count, plural, other {ペース調整中または停滞中の {count} 個のスレッドは自動で続行されます。}}",
+  "e9fa2ae1f31f676a": "{count, plural, other {ペース調整中・停滞中 {count} 件}}"
 }

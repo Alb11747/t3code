@@ -342,7 +342,8 @@ export function presentThreadShell(
       : { compactBeforeCacheExpires: thread.compactBeforeCacheExpires }),
     ...(thread.compactOnce === undefined ? {} : { compactOnce: thread.compactOnce }),
     ...(thread.accountChoice ? { accountChoice: thread.accountChoice } : {}),
-    ...(thread.paced ? { paced: thread.paced } : {}),
+    // Absent from servers without pacing, which hides its control.
+    ...(thread.paced === undefined ? {} : { paced: thread.paced }),
     ...(thread.pacedUntil ? { pacedUntil: thread.pacedUntil } : {}),
     branchPullRequest: thread.branchPullRequest ?? null,
     issues: thread.issues ?? [],

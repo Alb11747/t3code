@@ -2,10 +2,16 @@ import {
   managedNightlyDeniedMessage,
   managedUpdatesDenial,
 } from "@t3tools/client-runtime/contract-labels";
+import {
+  stalledSubagentsByThread,
+  threadPacedWait,
+  threadShowsKeepWarmStall,
+} from "@t3tools/client-runtime/state/claudeKeepWarm";
 import type { ServerUpdateState } from "@t3tools/client-runtime/state/server";
 import {
   type DesktopUpdateChannel,
   type EnvironmentId,
+  type OrchestrationV2ThreadShell,
   type ServerConfig,
   type ServerSelfUpdateCapability,
 } from "@t3tools/contracts";
@@ -976,4 +982,58 @@ export function describeUpdateEverything(
     providerCount,
     rows: Array.from(rows.values()),
   };
+}
+
+const isRunningThreadStatus = (status: string) =>
+  status === "preparing" || status === "starting" || status === "running";
+
+export interface RestartingThreadCounts {
+  readonly running: number;
+  readonly pacedOrStalled: number;
+}
+
+/**
+ * Counts threads on a restarting machine, reporting stalling and paced-waiting threads
+ * separately from actively running threads. A stalled turn is cut short like any other, so it
+ * counts apart only where the machine continues threads after the restart.
+ */
+export function countRestartingThreads(
+  threads: ReadonlyArray<
+    Pick<OrchestrationV2ThreadShell, "id" | "lineage" | "status" | "activeRunId"> &
+      Partial<
+        Pick<
+          OrchestrationV2ThreadShell,
+          "activityRunStatus" | "blockedOnThreadWait" | "keepWarmStalled" | "pacedUntil"
+        >
+      >
+  >,
+  continuesThreads: boolean,
+): RestartingThreadCounts {
+  const stalledSubagents = stalledSubagentsByThread(threads);
+  let running = 0;
+  let pacedOrStalled = 0;
+  for (const thread of threads) {
+    if (threadPacedWait(thread)) {
+      pacedOrStalled += 1;
+      continue;
+    }
+    const activeStatus = thread.activityRunStatus ?? thread.status;
+    if (!isRunningThreadStatus(activeStatus)) continue;
+    const waitingOnChild = activeStatus === "running" && thread.blockedOnThreadWait === true;
+    if (
+      continuesThreads &&
+      threadShowsKeepWarmStall(
+        {
+          keepWarmStalled: thread.keepWarmStalled === true,
+          stalledSubagentThreadIds: stalledSubagents.get(thread.id) ?? [],
+        },
+        waitingOnChild,
+      )
+    ) {
+      pacedOrStalled += 1;
+    } else {
+      running += 1;
+    }
+  }
+  return { running, pacedOrStalled };
 }

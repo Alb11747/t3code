@@ -1,4 +1,10 @@
-import type { ContextMenuItem } from "@t3tools/contracts";
+import {
+  pacedChoiceOf,
+  pacedFromChoice,
+  type ContextMenuItem,
+  type OrchestratorMcpPacedChoice,
+  type ThreadPaced,
+} from "@t3tools/contracts";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
 import type { UsageResetSnoozeOption } from "@t3tools/client-runtime/usage-reset-snooze";
 import { msg } from "gt-react";
@@ -24,6 +30,11 @@ export type ThreadActionMenuId =
   | "compact-before-expiry:once"
   | "compact-before-expiry:on"
   | "compact-before-expiry:off"
+  | "paced"
+  | "paced:off"
+  | "paced:5h"
+  | "paced:7d"
+  | "paced:both"
   | "snooze"
   | `snooze:${string}`
   | "unsnooze"
@@ -122,6 +133,8 @@ export interface ThreadActionMenuState {
   readonly compactBeforeCacheExpires?: boolean | null | undefined;
   /** Undefined when the server has no one-shot compaction mark. */
   readonly compactOnce?: boolean | undefined;
+  /** Undefined when the server does not support paced threads. */
+  readonly paced?: ThreadPaced | null | undefined;
   readonly isSnoozed: boolean;
   readonly canSnoozeNow: boolean;
   readonly isRegeneratingTitle: boolean;
@@ -348,6 +361,29 @@ export function buildThreadActionMenuItems(
           },
         ]
       : []),
+    ...(state.paced !== undefined
+      ? [
+          {
+            id: "paced" as const,
+            label: resolve(
+              msg("Paced", { $context: "submenu for pacing a thread to usage windows" }),
+            ),
+            icon: "timer",
+            children: (
+              [
+                ["off", msg("Off", { $context: "pacing disabled" })],
+                ["5h", msg("5-hour window")],
+                ["7d", msg("Weekly window")],
+                ["both", msg("Both", { $context: "both 5-hour and weekly usage windows" })],
+              ] as const
+            ).map(([choice, label]) => ({
+              id: `paced:${choice}` as const,
+              label: resolve(label),
+              checked: pacedChoiceOf(state.paced) === choice,
+            })),
+          },
+        ]
+      : []),
     {
       id: "copy",
       label: resolve(msg("Copy", { $context: "submenu of things to copy" })),
@@ -417,4 +453,10 @@ export function compactBeforeCacheExpiresChoice(
   if (action === "compact-before-expiry:default") return null;
   if (action === "compact-before-expiry:once") return "once";
   return action === "compact-before-expiry:on";
+}
+
+export function pacedChoiceAction(
+  action: `paced:${OrchestratorMcpPacedChoice}`,
+): ThreadPaced | null {
+  return pacedFromChoice(action.slice("paced:".length) as OrchestratorMcpPacedChoice);
 }

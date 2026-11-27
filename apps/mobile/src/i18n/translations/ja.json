@@ -5830,5 +5830,16 @@
   "b2c6186835bd4e68": "A quota refresh is already running.",
   "c4da6ad3cae3d48a": "Quota refresh limit reached.",
   "40cad5f1d3735ab3": "Refresh available in {time}",
-  "a2bded0a93096ada": "Refreshing…"
+  "a2bded0a93096ada": "Refreshing…",
+  "df7ee33f67c5c9ef": "オフ",
+  "1c46f2f439e4b937": "5時間枠",
+  "82ba7565559ef1d4": "週間枠",
+  "71ac94f2427d389a": "両方",
+  "6e8f1bca67c609bc": "ペース調整",
+  "a43c3a18b0bf60f6": "通常速度で実行します。",
+  "c5fa89dedecde6b4": "5時間枠の使用量がペースを上回っている間は待機します。",
+  "4dc2d08ee71e7955": "週間枠の使用量がペースを上回っている間は待機します。",
+  "a4e7ce3a06de7d8d": "いずれかの使用量枠がペースを上回っている間は待機します。",
+  "d75dfd464a324ddd": "ペース調整",
+  "200a2635dde8793c": "停滞中"
 }

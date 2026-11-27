@@ -23,7 +23,10 @@ import {
   resolveThreadActivityTimestamp,
 } from "@t3tools/client-runtime/state/thread-sort";
 import { type EnvironmentThreadSearchMatch } from "@t3tools/client-runtime/state/thread-search";
-import { threadShowsKeepWarmStall } from "@t3tools/client-runtime/state/claudeKeepWarm";
+import {
+  threadPacedWait,
+  threadShowsKeepWarmStall,
+} from "@t3tools/client-runtime/state/claudeKeepWarm";
 import {
   formatWorkingDurationLabel,
   resolveThreadProviderStack,
@@ -880,7 +883,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   };
   const topStatus =
     status === "preparing" || status === "working"
-      ? status === "working" && threadShowsKeepWarmStall(thread, false)
+      ? status === "working" && (threadPacedWait(thread) || threadShowsKeepWarmStall(thread, false))
         ? stallingStatus
         : {
             label:
@@ -893,7 +896,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             className: "text-info-foreground",
           }
       : status === "waiting"
-        ? threadShowsKeepWarmStall(thread, true)
+        ? threadPacedWait(thread) || threadShowsKeepWarmStall(thread, true)
           ? stallingStatus
           : {
               label: gt("Waiting", { $context: "thread status" }),

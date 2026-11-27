@@ -13330,5 +13330,13 @@
   "1faf1c5cbd504949": "Could not refresh quota.",
   "b2c6186835bd4e68": "A quota refresh is already running.",
   "c4da6ad3cae3d48a": "Quota refresh limit reached.",
-  "40cad5f1d3735ab3": "Refresh available in {time}"
+  "40cad5f1d3735ab3": "Refresh available in {time}",
+  "c9a8a7b16cfcd4f2": "Не удалось обновить ограничение темпа",
+  "d75dfd464a324ddd": "По темпу",
+  "df7ee33f67c5c9ef": "Выкл.",
+  "1c46f2f439e4b937": "Пятичасовое окно",
+  "82ba7565559ef1d4": "Недельное окно",
+  "71ac94f2427d389a": "Оба",
+  "893db1285c585482": "{count, plural, one {{count} тред в ожидании темпа или в простое продолжится сам.} few {{count} треда в ожидании темпа или в простое продолжатся сами.} many {{count} тредов в ожидании темпа или в простое продолжатся сами.} other {{count} треда в ожидании темпа или в простое продолжатся сами.}}",
+  "e9fa2ae1f31f676a": "{count, plural, one {{count} по темпу или в простое} few {{count} по темпу или в простое} many {{count} по темпу или в простое} other {{count} по темпу или в простое}}"
 }

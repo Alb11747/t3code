@@ -24,15 +24,21 @@ import type {
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentThreadSearchMatch } from "@t3tools/client-runtime/state/thread-search";
-import { threadShowsKeepWarmStall } from "@t3tools/client-runtime/state/claudeKeepWarm";
+import {
+  threadPacedWait,
+  threadShowsKeepWarmStall,
+} from "@t3tools/client-runtime/state/claudeKeepWarm";
 import {
   formatWorkingDurationLabel,
   resolveThreadWorkingStartedAt,
 } from "@t3tools/client-runtime/state/models";
 import {
   AuthOrchestrationOperateScope,
+  pacedChoiceOf,
+  pacedFromChoice,
   type EnvironmentId,
   type EnvironmentMachineKind,
+  type OrchestratorMcpPacedChoice,
 } from "@t3tools/contracts";
 import { toServerClock } from "@t3tools/client-runtime/clock";
 import type { SnoozePresetSetting } from "@t3tools/contracts/settings";
@@ -884,7 +890,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const showsWoke = status === "ready" && props.wokeAt !== null;
   const statusEntry =
     ((status === "working" || status === "waiting") &&
-    threadShowsKeepWarmStall(thread, status === "waiting")
+    (threadPacedWait(thread) || threadShowsKeepWarmStall(thread, status === "waiting"))
       ? {
           label: msg("Stalling", { $context: "thread status" }),
           icon: "pause" as const,
@@ -1147,6 +1153,28 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               ],
             } satisfies MenuAction,
           ]),
+      // Servers without pacing omit the field.
+      ...(thread.paced === undefined
+        ? []
+        : [
+            {
+              id: "paced",
+              title: gt("Paced", { $context: "submenu for pacing a thread to usage windows" }),
+              image: "timer",
+              subactions: (
+                [
+                  ["off", gt("Off", { $context: "pacing disabled" })],
+                  ["5h", gt("5-hour window")],
+                  ["7d", gt("Weekly window")],
+                  ["both", gt("Both", { $context: "both 5-hour and weekly usage windows" })],
+                ] as const
+              ).map(([choice, title]) => ({
+                id: `paced:${choice}`,
+                title,
+                state: pacedChoiceOf(thread.paced) === choice ? "on" : "off",
+              })),
+            } satisfies MenuAction,
+          ]),
     ],
     [
       gt,
@@ -1155,6 +1183,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       thread.autoSettleAlwaysAt,
       thread.compactBeforeCacheExpires,
       thread.compactOnce,
+      thread.paced,
     ],
   );
   const canTurnIntoProject = canTurnThreadIntoProject(thread);
@@ -1331,6 +1360,13 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                   : nativeEvent.event === "compact-before-expiry:on",
           },
         });
+      if (nativeEvent.event.startsWith("paced:")) {
+        const choice = nativeEvent.event.slice("paced:".length) as OrchestratorMcpPacedChoice;
+        void updateMetadata({
+          environmentId: thread.environmentId,
+          input: { threadId: thread.id, paced: pacedFromChoice(choice) },
+        });
+      }
       if (nativeEvent.event === "arrange") appAtomRegistry.set(threadArrangementOpenAtom, true);
       if (nativeEvent.event === "move-up") handleMoveUp();
       if (nativeEvent.event === "move-down") handleMoveDown();

@@ -2,11 +2,16 @@ import {
   getPromptControlledTraits,
   getTraitSelectChange,
 } from "@t3tools/client-runtime/model-traits";
-import { T, useGT, useLocale, useMessages } from "gt-react-native";
+import { msg, T, useGT, useLocale, useMessages } from "gt-react-native";
 import * as Dialog from "../../components/ui/Dialog";
 import { createV5StackNavigator as createNativeStackNavigator } from "../../native/createV5StackNavigator";
 import { useSheetStackOptions } from "../layout/nested-stacks";
-import { DEFAULT_SERVER_SETTINGS, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  pacedChoiceOf,
+  pacedFromChoice,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import {
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
@@ -14,12 +19,14 @@ import {
 import type {
   EnvironmentId,
   ModelSelection,
+  OrchestratorMcpPacedChoice,
   ProjectId,
   ProviderOptionDescriptor,
   ProviderOptionSelection,
   RuntimeMode,
   ServerSettings,
   ThreadId,
+  ThreadPaced,
 } from "@t3tools/contracts";
 import type { LegendListRenderItemProps } from "@legendapp/list/react-native";
 import { RegistryContext, useAtomMount, useAtomValue } from "@effect/atom-react";
@@ -99,6 +106,7 @@ import { useSelectedThreadWorktree } from "../../state/use-selected-thread-workt
 import { providerWorkspaceSnapshotRefresh } from "../../state/provider-workspace-snapshot-refresh";
 import { threadAllowsProviderSwitch } from "../../state/thread-provider-switching";
 import { environmentServerConfigsAtom, serverEnvironment } from "../../state/server";
+import { threadEnvironment } from "../../state/threads";
 import { mobilePreferencesAtom } from "../../state/preferences";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useNewTaskFlow } from "./new-task-flow-provider";
@@ -282,9 +290,17 @@ function SwitchRow(props: {
   );
 }
 
+const PACED_CHOICE_LABELS: Record<OrchestratorMcpPacedChoice, string> = {
+  off: msg("Off", { $context: "pacing disabled" }),
+  "5h": msg("5-hour window"),
+  "7d": msg("Weekly window"),
+  both: msg("Both", { $context: "both 5-hour and weekly usage windows" }),
+};
+
 type ThreadSettingsSubmenuPage =
   | { readonly kind: "descriptor"; readonly id: string }
-  | { readonly kind: "runtime" };
+  | { readonly kind: "runtime" }
+  | { readonly kind: "paced" };
 
 type ThreadSettingsSessionProps = {
   readonly environmentId: EnvironmentId | null;
@@ -303,6 +319,9 @@ type ThreadSettingsSessionProps = {
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  /** Fork: low-importance pacing windows; undefined when the server does not support pacing. */
+  readonly paced?: ThreadPaced | null | undefined;
+  readonly onUpdatePaced?: ((paced: ThreadPaced | null) => void) | undefined;
   /** Fork: the existing thread's CLI Proxy account section. */
   readonly accountSection?: ReactNode;
 };
@@ -329,6 +348,8 @@ type ThreadSettingsSessionValue = {
   readonly runtimeMode: RuntimeMode;
   readonly runtimeModeChoices: ReadonlyArray<RuntimeModeChoice>;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  readonly paced: ThreadPaced | null | undefined;
+  readonly onUpdatePaced: ((paced: ThreadPaced | null) => void) | undefined;
   readonly displayedDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
   readonly promptTraits: ReturnType<typeof getPromptControlledTraits>;
   readonly displayedModelSelection: ModelSelection | null;
@@ -651,6 +672,8 @@ function ThreadSettingsSessionProvider(
     runtimeMode: compatibleRuntimeMode,
     runtimeModeChoices,
     onUpdateRuntimeMode: props.onUpdateRuntimeMode,
+    paced: props.paced,
+    onUpdatePaced: props.onUpdatePaced,
     displayedDescriptors,
     promptTraits,
     displayedModelSelection: pendingModel?.selection ?? props.selectedModel,
@@ -1033,7 +1056,7 @@ function ThreadSettingsOptionsItem(props: {
         })}
         <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
           <DisclosureRow
-            isLast
+            isLast={session.paced === undefined || session.onUpdatePaced === undefined}
             label={gt("Runtime", { $context: "agent permission mode setting" })}
             value={(() => {
               const label = session.runtimeModeChoices.find(
@@ -1044,6 +1067,16 @@ function ThreadSettingsOptionsItem(props: {
             onPress={() => props.onOpenSubmenu({ kind: "runtime" })}
           />
         </Animated.View>
+        {session.paced !== undefined && session.onUpdatePaced !== undefined ? (
+          <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
+            <DisclosureRow
+              isLast
+              label={gt("Paced", { $context: "thread setting for pacing to usage windows" })}
+              value={m(PACED_CHOICE_LABELS[pacedChoiceOf(session.paced)])}
+              onPress={() => props.onOpenSubmenu({ kind: "paced" })}
+            />
+          </Animated.View>
+        ) : null}
       </Animated.View>
 
       {session.accountSection}
@@ -1243,43 +1276,65 @@ function ThreadSettingsChoiceContent(props: {
             },
           })),
         }
-      : activeDescriptor?.type === "select"
+      : props.submenu.kind === "paced" && session.onUpdatePaced !== undefined
         ? {
-            rows: selectableChoices(activeDescriptor).map((choice) => ({
-              id: choice.id,
-              label: choice.label,
-              description: choice.description,
+            rows: (
+              [
+                ["off", gt("Run at normal speed.")],
+                ["5h", gt("Wait while the 5-hour window is ahead of pace.")],
+                ["7d", gt("Wait while the weekly window is ahead of pace.")],
+                ["both", gt("Wait while either usage window is ahead of pace.")],
+              ] as const
+            ).map(([choice, description]) => ({
+              id: choice,
+              label: m(PACED_CHOICE_LABELS[choice]),
+              description,
               disabled: false,
-              selected:
-                choice.id ===
-                (session.promptTraits.ultrathinkPromptControlled &&
-                activeDescriptor.id === session.promptTraits.primarySelectDescriptor?.id
-                  ? "ultrathink"
-                  : getProviderOptionCurrentValue(
-                      activeDescriptor,
-                      session.displayedModelSelection,
-                      session.reportedModelSelection,
-                    )),
+              selected: pacedChoiceOf(session.paced) === choice,
               onPress: () => {
                 void Haptics.selectionAsync();
-                if (
-                  session.promptTraits.ultrathinkInBodyText &&
-                  activeDescriptor.id === session.promptTraits.primarySelectDescriptor?.id
-                ) {
-                  Dialog.alert(
-                    gt("Reasoning controlled by prompt"),
-                    gt(
-                      'Your prompt contains "ultrathink" in the text. Remove it to change this option.',
-                    ),
-                  );
-                  return;
-                }
-                session.applyOptionChange(activeDescriptor.id, choice.id);
+                session.onUpdatePaced?.(pacedFromChoice(choice));
                 props.onSelected();
               },
             })),
           }
-        : null;
+        : activeDescriptor?.type === "select"
+          ? {
+              rows: selectableChoices(activeDescriptor).map((choice) => ({
+                id: choice.id,
+                label: choice.label,
+                description: choice.description,
+                disabled: false,
+                selected:
+                  choice.id ===
+                  (session.promptTraits.ultrathinkPromptControlled &&
+                  activeDescriptor.id === session.promptTraits.primarySelectDescriptor?.id
+                    ? "ultrathink"
+                    : getProviderOptionCurrentValue(
+                        activeDescriptor,
+                        session.displayedModelSelection,
+                        session.reportedModelSelection,
+                      )),
+                onPress: () => {
+                  void Haptics.selectionAsync();
+                  if (
+                    session.promptTraits.ultrathinkInBodyText &&
+                    activeDescriptor.id === session.promptTraits.primarySelectDescriptor?.id
+                  ) {
+                    Dialog.alert(
+                      gt("Reasoning controlled by prompt"),
+                      gt(
+                        'Your prompt contains "ultrathink" in the text. Remove it to change this option.',
+                      ),
+                    );
+                    return;
+                  }
+                  session.applyOptionChange(activeDescriptor.id, choice.id);
+                  props.onSelected();
+                },
+              })),
+            }
+          : null;
 
   if (!submenuContent) {
     return <View className="flex-1 bg-sheet" />;
@@ -1431,9 +1486,11 @@ function ThreadSettingsModelsScreen() {
             const title =
               submenu.kind === "runtime"
                 ? gt("Runtime", { $context: "agent permission mode setting" })
-                : (session.displayedDescriptors.find(
-                    (descriptor) => descriptor.type === "select" && descriptor.id === submenu.id,
-                  )?.label ?? gt("Option"));
+                : submenu.kind === "paced"
+                  ? gt("Paced", { $context: "thread setting for pacing to usage windows" })
+                  : (session.displayedDescriptors.find(
+                      (descriptor) => descriptor.type === "select" && descriptor.id === submenu.id,
+                    )?.label ?? gt("Option"));
             navigation.navigate("ThreadSettingsChoice", { ...submenu, title });
           }}
         />
@@ -1515,6 +1572,7 @@ export function ExistingThreadSettingsRouteScreen({
   const draftSettings = useComposerDraftSettings(draftKey);
   const threadDraftSettings = useComposerDraftSettings(threadKey);
   const prompt = useComposerDraft(draftKey).text;
+  const updateMetadata = useAtomCommand(threadEnvironment.updateMetadata);
 
   if (!selectedThread) {
     return <View className="flex-1 bg-sheet" />;
@@ -1577,6 +1635,13 @@ export function ExistingThreadSettingsRouteScreen({
       }}
       runtimeMode={threadDraftSettings.runtimeMode ?? selectedThread.runtimeMode}
       onUpdateRuntimeMode={(runtimeMode) => updateComposerDraftSettings(threadKey, { runtimeMode })}
+      paced={selectedThread.paced}
+      onUpdatePaced={(paced) => {
+        void updateMetadata({
+          environmentId: selectedThread.environmentId,
+          input: { threadId: selectedThread.id, paced },
+        });
+      }}
       accountSection={
         <ThreadAccountSection
           environmentId={selectedThread.environmentId}

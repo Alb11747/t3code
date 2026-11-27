@@ -5861,5 +5861,16 @@
   "b2c6186835bd4e68": "A quota refresh is already running.",
   "c4da6ad3cae3d48a": "Quota refresh limit reached.",
   "40cad5f1d3735ab3": "Refresh available in {time}",
-  "a2bded0a93096ada": "Refreshing…"
+  "a2bded0a93096ada": "Refreshing…",
+  "df7ee33f67c5c9ef": "Off",
+  "1c46f2f439e4b937": "5-hour window",
+  "82ba7565559ef1d4": "Weekly window",
+  "71ac94f2427d389a": "Both",
+  "6e8f1bca67c609bc": "Paced",
+  "a43c3a18b0bf60f6": "Run at normal speed.",
+  "c5fa89dedecde6b4": "Wait while the 5-hour window is ahead of pace.",
+  "4dc2d08ee71e7955": "Wait while the weekly window is ahead of pace.",
+  "a4e7ce3a06de7d8d": "Wait while either usage window is ahead of pace.",
+  "d75dfd464a324ddd": "Paced",
+  "200a2635dde8793c": "Stalling"
 }

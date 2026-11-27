@@ -99,6 +99,18 @@ describe("resolveSubagentRowPresentation", () => {
     expect(row.detail).toBe(`${"x".repeat(280)}…`);
     expect(row.statusLabel).toBe("Failed");
   });
+
+  it("shows a held subagent with the stalled tone", () => {
+    const row = resolveSubagentRowPresentation(
+      { ...base, status: "pending" },
+      false,
+      undefined,
+      true,
+    );
+    expect(row.tone).toBe("stalled");
+    expect(row.statusLabel).toBe("Stalling");
+    expect(row.live).toBe(true);
+  });
 });
 
 type WorkflowAgent = OrchestrationV2SubagentWorkflow["agents"][number];

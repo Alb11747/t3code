@@ -33,6 +33,7 @@ import {
   buildThreadActionMenuItems,
   compactBeforeCacheExpiresChoice,
   isThreadTriageAction,
+  pacedChoiceAction,
   threadActionRequiresOperate,
   type ThreadActionMenuId,
 } from "../components/threadActionMenu.logic";
@@ -173,6 +174,7 @@ export function useThreadActionMenu(input: {
         thread.autoSettleAlwaysAt === undefined ? undefined : thread.autoSettleAlwaysAt != null,
       compactBeforeCacheExpires: thread.compactBeforeCacheExpires,
       compactOnce: thread.compactOnce,
+      paced: thread.paced,
       isSnoozed,
       canSnoozeNow,
       usageResetSnoozeOptions: usageResetOptions,
@@ -302,6 +304,20 @@ export function useThreadActionMenu(input: {
               input: {
                 threadId: threadRef.threadId,
                 compactBeforeCacheExpires: compactBeforeCacheExpiresChoice(action),
+              },
+            }),
+          );
+          return;
+        case "paced:off":
+        case "paced:5h":
+        case "paced:7d":
+        case "paced:both":
+          await reportFailure(m(msg("Failed to update pacing")), () =>
+            updateThreadMetadata({
+              environmentId: threadRef.environmentId,
+              input: {
+                threadId: threadRef.threadId,
+                paced: pacedChoiceAction(action),
               },
             }),
           );

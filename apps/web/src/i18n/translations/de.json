@@ -13330,5 +13330,13 @@
   "1faf1c5cbd504949": "Could not refresh quota.",
   "b2c6186835bd4e68": "A quota refresh is already running.",
   "c4da6ad3cae3d48a": "Quota refresh limit reached.",
-  "40cad5f1d3735ab3": "Refresh available in {time}"
+  "40cad5f1d3735ab3": "Refresh available in {time}",
+  "c9a8a7b16cfcd4f2": "Drosselung konnte nicht aktualisiert werden",
+  "d75dfd464a324ddd": "Gedrosselt",
+  "df7ee33f67c5c9ef": "Aus",
+  "1c46f2f439e4b937": "5-Stunden-Fenster",
+  "82ba7565559ef1d4": "Wochenfenster",
+  "71ac94f2427d389a": "Beide",
+  "893db1285c585482": "{count, plural, one {{count} gedrosselter oder stockender Thread läuft von selbst weiter.} other {{count} gedrosselte oder stockende Threads laufen von selbst weiter.}}",
+  "e9fa2ae1f31f676a": "{count, plural, one {{count} gedrosselt oder stockend} other {{count} gedrosselt oder stockend}}"
 }

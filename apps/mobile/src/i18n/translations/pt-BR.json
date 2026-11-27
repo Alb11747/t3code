@@ -5853,5 +5853,16 @@
   "b2c6186835bd4e68": "A quota refresh is already running.",
   "c4da6ad3cae3d48a": "Quota refresh limit reached.",
   "40cad5f1d3735ab3": "Refresh available in {time}",
-  "a2bded0a93096ada": "Refreshing…"
+  "a2bded0a93096ada": "Refreshing…",
+  "df7ee33f67c5c9ef": "Desativado",
+  "1c46f2f439e4b937": "Janela de 5 horas",
+  "82ba7565559ef1d4": "Janela semanal",
+  "71ac94f2427d389a": "Ambas",
+  "6e8f1bca67c609bc": "Cadenciado",
+  "a43c3a18b0bf60f6": "Executar na velocidade normal.",
+  "c5fa89dedecde6b4": "Aguardar enquanto a janela de 5 horas estiver acima do ritmo.",
+  "4dc2d08ee71e7955": "Aguardar enquanto a janela semanal estiver acima do ritmo.",
+  "a4e7ce3a06de7d8d": "Aguardar enquanto qualquer janela de uso estiver acima do ritmo.",
+  "d75dfd464a324ddd": "Cadenciado",
+  "200a2635dde8793c": "Em espera"
 }

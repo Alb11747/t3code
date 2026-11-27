@@ -5,7 +5,10 @@ import type {
   ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
-import { stalledSubagentsByThread } from "@t3tools/client-runtime/state/claudeKeepWarm";
+import {
+  stalledSubagentsByThread,
+  threadPacedWait,
+} from "@t3tools/client-runtime/state/claudeKeepWarm";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
 import * as DateTime from "effect/DateTime";
 import { Atom } from "effect/reactivity";
@@ -66,12 +69,14 @@ export function deriveNestedSubagentTree(
       visited.add(child.id);
       const below = walk(child.id, depth + 1);
       // Its parent's task stays running while its background work or its subagents run.
+      const pacedWait = threadPacedWait(child);
       const running =
         (child.activityRunStatus ?? child.status) === "running" ||
+        pacedWait ||
         (child.pendingBackgroundTasks?.length ?? 0) > 0 ||
         below.length > 0;
       if (!running) continue;
-      const stalled = child.keepWarmStalled === true || waitingOnHeld.has(child.id);
+      const stalled = pacedWait || child.keepWarmStalled === true || waitingOnHeld.has(child.id);
       if (!stalled) runningCount += 1;
       const startedAt = child.activityRunStartedAt ?? child.latestRunStartedAt;
       rows.push(

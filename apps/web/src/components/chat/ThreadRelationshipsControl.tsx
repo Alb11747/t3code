@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { threadPacedWait } from "@t3tools/client-runtime/state/claudeKeepWarm";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
@@ -620,13 +621,17 @@ export function ThreadRelationshipsPanel(props: {
           ? descendantRunStatus(nestedTree.rowsByChild.get(row.threadId))
           : undefined;
       const status = descendantStatus ?? ownStatus;
-      // Held children, and children waiting on a held subagent, read as stalled, not running.
+      // Held (stalled or paced) children, and children waiting on a held subagent, read as
+      // stalled, not running.
+      const childThread = graph.nodes.get(row.threadId)?.thread;
       const stalled =
-        status === "running" &&
         descendantStatus === undefined &&
         !isParentThreadRelationship(row.edge, props.threadId) &&
-        (graph.nodes.get(row.threadId)?.thread?.keepWarmStalled === true ||
-          stalledSubagentIds?.includes(row.threadId) === true);
+        !isFinishedAgentStatus(status) &&
+        ((status === "running" &&
+          (childThread?.keepWarmStalled === true ||
+            stalledSubagentIds?.includes(row.threadId) === true)) ||
+          (childThread != null && threadPacedWait(childThread)));
       return status === row.edge.status && !stalled
         ? row
         : { ...row, edge: { ...row.edge, status: stalled ? "stalled" : status } };
@@ -865,7 +870,9 @@ export function ThreadRelationshipsPanel(props: {
         ? (node?.thread?.activityRunStatus ?? parentNativeStatus)
         : undefined) ?? threadRelationshipRowStatus(graph, { threadId, edge });
     const rowStatus =
-      isParent && relationStatus === "running" && node?.thread?.keepWarmStalled === true
+      isParent &&
+      ((relationStatus === "running" && node?.thread?.keepWarmStalled === true) ||
+        (node?.thread != null && threadPacedWait(node.thread)))
         ? "stalled"
         : relationStatus;
     const stalled = rowStatus === "stalled";

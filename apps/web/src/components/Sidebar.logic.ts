@@ -1,7 +1,10 @@
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
-import { threadShowsKeepWarmStall } from "@t3tools/client-runtime/state/claudeKeepWarm";
+import {
+  threadPacedWait,
+  threadShowsKeepWarmStall,
+} from "@t3tools/client-runtime/state/claudeKeepWarm";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
@@ -663,6 +666,7 @@ type ThreadStatusInput = Pick<
   | "keepWarmStalled"
   | "stalledSubagentThreadIds"
 > & {
+  pacedUntil?: SidebarThreadSummary["pacedUntil"] | undefined;
   lastVisitedAt?: string | null | undefined;
   pendingBackgroundTasks?: SidebarThreadSummary["pendingBackgroundTasks"] | undefined;
   blockedOnThreadWait?: boolean | undefined;
@@ -1290,6 +1294,7 @@ export function resolveThreadStatusPill(input: {
     thread.runtime?.status === "starting" ||
     thread.runtime?.status === "queued"
   ) {
+    if (threadPacedWait(thread)) return STALLING_PILL;
     return {
       label: msg("Connecting"),
       colorClass: "text-sky-600 dark:text-sky-300/80",
@@ -1319,7 +1324,9 @@ export function resolveThreadStatusPill(input: {
   }
 
   if (backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])) {
-    return threadShowsKeepWarmStall(thread, true) ? STALLING_PILL : waiting;
+    return threadPacedWait(thread) || threadShowsKeepWarmStall(thread, true)
+      ? STALLING_PILL
+      : waiting;
   }
 
   const hasPlanReadyPrompt =

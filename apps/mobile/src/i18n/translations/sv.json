@@ -5859,5 +5859,16 @@
   "b2c6186835bd4e68": "A quota refresh is already running.",
   "c4da6ad3cae3d48a": "Quota refresh limit reached.",
   "40cad5f1d3735ab3": "Refresh available in {time}",
-  "a2bded0a93096ada": "Refreshing…"
+  "a2bded0a93096ada": "Refreshing…",
+  "df7ee33f67c5c9ef": "Av",
+  "1c46f2f439e4b937": "5-timmarsfönster",
+  "82ba7565559ef1d4": "Veckofönster",
+  "71ac94f2427d389a": "Båda",
+  "6e8f1bca67c609bc": "Taktad",
+  "a43c3a18b0bf60f6": "Kör i normal hastighet.",
+  "c5fa89dedecde6b4": "Vänta medan 5-timmarsfönstret ligger före schemat.",
+  "4dc2d08ee71e7955": "Vänta medan veckofönstret ligger före schemat.",
+  "a4e7ce3a06de7d8d": "Vänta medan något av användningsfönstren ligger före schemat.",
+  "d75dfd464a324ddd": "Taktad",
+  "200a2635dde8793c": "Står stilla"
 }

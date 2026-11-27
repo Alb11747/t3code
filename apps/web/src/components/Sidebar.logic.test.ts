@@ -507,6 +507,26 @@ describe("resolveThreadStatusPill", () => {
     });
   });
 
+  it("shows Stalling while a paced Codex turn waits in the queue", () => {
+    const codexQueued = {
+      ...baseThread,
+      pacedUntil: "2026-11-27T11:00:00.000Z",
+      latestRun: { ...makeLatestRun(), status: "queued" as const },
+      runtime: { ...baseThread.runtime, status: "queued" as const, activeRunId: null },
+    };
+    expect(resolveSidebarThreadStatus(codexQueued)).toBe("working");
+    expect(resolveThreadStatusPill({ thread: codexQueued })).toMatchObject({
+      label: "Stalling",
+      colorClass: "text-warning-foreground",
+      dotClass: "bg-warning",
+      pulse: false,
+    });
+    // The server clears pacedUntil when the wait ends.
+    expect(resolveThreadStatusPill({ thread: { ...codexQueued, pacedUntil: null } })).toMatchObject(
+      { label: "Connecting" },
+    );
+  });
+
   it("shows waiting for an idle thread with pending background tasks", () => {
     expect(
       resolveThreadStatusPill({

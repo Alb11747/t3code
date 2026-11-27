@@ -38,6 +38,7 @@ import { useVisibleSecondClock } from "./use-visible-second-clock";
 
 const RAIL_ICON = {
   working: "circle.inset.filled",
+  stalled: "pause",
   completed: "checkmark.circle.fill",
   failed: "xmark.circle.fill",
   stopped: "circle",
