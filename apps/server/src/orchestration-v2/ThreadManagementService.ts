@@ -965,7 +965,9 @@ const make = Effect.gen(function* () {
             'contextPolicy:"compact" requires an existing Claude or Codex conversation. Use contextPolicy:"keep" to send normally.',
         });
       }
-      const busy = target.runs.some((run) => !isTerminalRunStatus(run.status));
+      const heldByStop = (run: (typeof target.runs)[number]) =>
+        run.status === "queued" && run.queueHeld === true;
+      const busy = target.runs.some((run) => !isTerminalRunStatus(run.status) && !heldByStop(run));
       // An agent compacting its own thread is busy with the calling turn; compact after it.
       if (busy && input.senderThreadId !== input.threadId) {
         return yield* new ThreadManagementContextPolicyError({
@@ -974,16 +976,34 @@ const make = Effect.gen(function* () {
             'The target is busy. Wait for it to become idle before using contextPolicy:"compact", or use contextPolicy:"keep" to send without compaction.',
         });
       }
+      // Messages held by Stop wait for the user, so the thread never turns idle by itself.
+      if (
+        input.mode !== "restart" &&
+        input.senderThreadId !== input.threadId &&
+        target.runs.some((run) => heldByStop(run) && run.afterCompactionMessageId === undefined)
+      ) {
+        return yield* new ThreadManagementContextPolicyError({
+          threadId: input.threadId,
+          message:
+            'The target was stopped and its queued messages wait for the user. Use mode:"restart" to compact and send now, ahead of them, or contextPolicy:"keep" to wait behind them.',
+        });
+      }
     }
     const autoTarget =
       input.mode === "auto" ? (steerableRun ?? latestActiveRun(target)) : undefined;
     const held = autoTarget === undefined ? null : yield* keepWarm.find(input.threadId);
     const queuesForRouterHold =
       held !== null && held.turn.runId === autoTarget?.id && held.turn.hold.released !== true;
+    // After Stop, an explicit restart can start ahead of the held queue.
+    const restartsAfterStop =
+      input.mode === "restart" &&
+      steerableRun === undefined &&
+      target.runs.some((run) => run.status === "queued" && run.queueHeld === true);
     // Automatic sends to a router-held turn must stay out of the provider's input queue.
+    // Kept history runs as its own turn, so it does not steer a running one.
     const mode =
       queuesForRouterHold ||
-      input.contextPolicy === "keep" ||
+      (input.contextPolicy === "keep" && !restartsAfterStop) ||
       input.outputSchema !== undefined ||
       (input.freshContext && (input.mode === "steer" || input.mode === "restart"))
         ? "queue"
@@ -991,11 +1011,7 @@ const make = Effect.gen(function* () {
     const explicitSteer = mode === "steer" || mode === "restart";
     const steeringTarget =
       mode === "steer" ? (steerableRun ?? latestActiveRun(target)) : steerableRun;
-    // After Stop, an explicit restart can start ahead of the held queue.
-    const restartAfterHold =
-      mode === "restart" &&
-      steeringTarget === undefined &&
-      target.runs.some((run) => run.status === "queued" && run.queueHeld === true);
+    const restartAfterHold = mode === "restart" && restartsAfterStop;
     const missingSteeringTarget =
       explicitSteer && steeringTarget === undefined && !restartAfterHold && !compactBeforeSend;
     // A command receipt outlives its target turn. Dispatch validates and replays it.
@@ -1049,6 +1065,7 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       messageId: input.messageId,
       ...(compactBeforeSend ? { compactFirst: true } : {}),
+      ...(compactBeforeSend && restartAfterHold ? { deliveryIntent: "restart" } : {}),
       ...(input.contextPolicy === "keep" ? { keepFullHistory: true } : {}),
       ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
       ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),

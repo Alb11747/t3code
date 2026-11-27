@@ -752,6 +752,66 @@ it.effect("a compaction that finished without compacting does not stall the queu
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("a restart's compaction and message run ahead of a queue held by Stop", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const threadId = ThreadId.make("thread:restart-compact-held");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create:restart-compact-held"),
+      threadId,
+      projectId: ProjectId.make("project:restart-compact-held"),
+      title: "Restart past a held queue",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const heldId = MessageId.make("message:held");
+    yield* sendFromWeb(threadId, MessageId.make("message:stopped"), "Work");
+    // The user's own compaction pair is held too; the restart must not join it.
+    yield* sendFromWeb(threadId, heldId, "Then this", { compactFirst: true });
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make("stop:restart-compact-held"),
+      threadId,
+    });
+    const messageId = MessageId.make("message:restart");
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("send:restart"),
+      threadId,
+      messageId,
+      text: "Resume",
+      attachments: [],
+      compactFirst: true,
+      deliveryIntent: "restart",
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    const runOf = (runs: ReadonlyArray<OrchestrationV2Run>, id: MessageId) =>
+      runs.find((run) => run.userMessageId === id);
+    const compactionId = MessageId.make(`${messageId}:compact`);
+    const { runs: sent } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+    expect(runOf(sent, heldId)).toMatchObject({ status: "queued", queueHeld: true });
+    expect(runOf(sent, MessageId.make(`${heldId}:compact`))).toMatchObject({
+      status: "queued",
+      queueHeld: true,
+    });
+    expect(runOf(sent, compactionId)?.status).toBe("starting");
+    expect(runOf(sent, messageId)?.queueHeld).not.toBe(true);
+    yield* endCompaction(threadId, runOf(sent, compactionId)!, true);
+    yield* orchestrator.resumeQueuedRuns;
+    const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+    expect(runOf(runs, messageId)?.status).toBe("starting");
+    expect(runOf(runs, heldId)).toMatchObject({ status: "queued", queueHeld: true });
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("a client send that resumes a held queue stays behind a compaction's message", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;

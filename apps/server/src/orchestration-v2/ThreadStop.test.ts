@@ -932,6 +932,74 @@ it.effect("a message the user sends after Stop releases the held queue; an agent
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("after Stop, an agent's restart compacts and sends ahead of the held queue", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const agentSend = (
+      threadId: ThreadId,
+      text: string,
+      mode: "auto" | "restart",
+      contextPolicy: "compact" | "keep",
+    ) =>
+      threads.sendToThread({
+        projectId: ProjectId.make("project:thread-stop"),
+        commandId: CommandId.make(`agent-send:${threadId}:${text}`),
+        threadId,
+        messageId: MessageId.make(`message:${threadId}:${text}`),
+        text,
+        attachments: [],
+        mode,
+        contextPolicy,
+        createdBy: "agent",
+        creationSource: "mcp",
+      });
+    const stopped = (threadId: ThreadId, number: number) =>
+      Effect.gen(function* () {
+        yield* createWatchingThread(threadId, number);
+        yield* send(threadId, "active", "start_immediately");
+        yield* send(threadId, "queued before the stop", "queue_after_active");
+        yield* orchestrator.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make(`stop:${threadId}`),
+          threadId,
+        });
+        assert.deepEqual((yield* threadState(threadId)).runs, ["interrupted", "queued:held"]);
+      });
+
+    const compactThreadId = ThreadId.make("thread:stop-compact");
+    yield* stopped(compactThreadId, 8);
+    // The held queue never empties by itself, so waiting for idle is no answer.
+    const queued = yield* Effect.flip(agentSend(compactThreadId, "nudge", "auto", "compact"));
+    assert.equal(queued._tag, "ThreadManagementContextPolicyError");
+    assert.include(queued.message, 'mode:"restart"');
+    yield* agentSend(compactThreadId, "resume", "restart", "compact");
+    const compacted = yield* orchestrator.getThreadProjection(compactThreadId);
+    assert.deepEqual((yield* threadState(compactThreadId)).runs, [
+      "interrupted",
+      "queued:held",
+      "starting",
+      "queued",
+    ]);
+    const [compaction, resume] = compacted.runs.slice(-2);
+    assert.equal(
+      compacted.messages.find((message) => message.id === compaction!.userMessageId)?.text,
+      "/compact",
+    );
+    assert.equal(resume!.afterCompactionMessageId, compaction!.userMessageId);
+
+    // keep must not turn an explicit restart into a send that waits behind the held queue.
+    const keepThreadId = ThreadId.make("thread:stop-keep");
+    yield* stopped(keepThreadId, 9);
+    yield* agentSend(keepThreadId, "resume", "restart", "keep");
+    assert.deepEqual((yield* threadState(keepThreadId)).runs, [
+      "interrupted",
+      "queued:held",
+      "starting",
+    ]);
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("a run ending after Stop releases no agent message while the user's is held", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;

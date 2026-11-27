@@ -2626,15 +2626,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
-    const { compactFirst: _compactFirst, deliveryIntent: _deliveryIntent, ...message } = command;
+    const { compactFirst: _compactFirst, deliveryIntent, ...message } = command;
     const projection = yield* getProjectionWithPendingEvents(command.threadId, events);
     const { pendingCompactionMessageId } = yield* compactionDependents(
       command.threadId,
       projection.runs,
     );
-    const compactionMessageId =
-      pendingCompactionMessageId ?? MessageId.make(`${command.messageId}:compact`);
-    if (pendingCompactionMessageId === undefined) {
+    // After Stop, a restart compacts ahead of the held queue, so it never joins a compaction
+    // that held messages wait on (held itself, or done with its message held).
+    const restartsPastHold = deliveryIntent === "restart" && !projection.runs.some(isActiveRun);
+    const joinsPending = pendingCompactionMessageId !== undefined && !restartsPastHold;
+    const compactionMessageId = joinsPending
+      ? pendingCompactionMessageId
+      : MessageId.make(`${command.messageId}:compact`);
+    if (!joinsPending) {
       yield* dispatchMessage(
         {
           type: "message.dispatch",
@@ -2648,6 +2653,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? {}
             : { modelSelection: command.modelSelection }),
           dispatchMode: { type: "queue_after_active" },
+          ...(restartsPastHold ? { deliveryIntent } : {}),
           createdBy: command.createdBy,
           creationSource: command.creationSource,
         },
@@ -9108,13 +9114,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   }),
               ),
             );
-      // A follow-up held for its failed compaction holds only itself.
-      const queueIsHeld = projection.runs.some(
-        (candidate) =>
-          candidate.status === "queued" &&
-          candidate.queueHeld === true &&
-          candidate.afterCompactionMessageId === undefined,
-      );
+      // A follow-up held for its failed compaction holds only itself. A compaction's
+      // message is held exactly when its compaction is.
+      const queueIsHeld =
+        requiredCompactionRun !== undefined
+          ? requiredCompactionRun.queueHeld === true
+          : projection.runs.some(
+              (candidate) =>
+                candidate.status === "queued" &&
+                candidate.queueHeld === true &&
+                candidate.afterCompactionMessageId === undefined,
+            );
       // Buffered wakes need a T3 run for output the CLI already started producing.
       // Stop still holds wakes that arrive before the active run settles.
       const wakeSkipsHold =
