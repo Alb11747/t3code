@@ -13333,5 +13333,9 @@
   "2aa8fd91d348be6a": "Den här tråden komprimeras vid {tokens} tokens, en gräns som satts för den.",
   "684b5fa810e83350": "{account} har nästan nått veckogränsen, som återställs {resetAt}. Förfrågningar fortsätter som vanligt tills dess. Om gränsen nås först kan promptcachen löpa ut.",
   "21cceb347af13769": "{account} har nästan nått sin veckogräns, som återställs {resetAt}. Nästa förfrågan {releaseAt}.",
-  "cdd5bb48a2c0373c": "Läst {age} · {time}"
+  "cdd5bb48a2c0373c": "Läst {age} · {time}",
+  "1faf1c5cbd504949": "Could not refresh quota.",
+  "b2c6186835bd4e68": "A quota refresh is already running.",
+  "c4da6ad3cae3d48a": "Quota refresh limit reached.",
+  "40cad5f1d3735ab3": "Refresh available in {time}"
 }

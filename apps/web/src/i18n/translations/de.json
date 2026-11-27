@@ -13326,5 +13326,9 @@
   "2aa8fd91d348be6a": "Dieser Thread wird bei {tokens} Tokens komprimiert, einem für ihn gesetzten Limit.",
   "684b5fa810e83350": "Das Wochenlimit von {account} ist fast ausgeschöpft und wird {resetAt} zurückgesetzt. Anfragen laufen bis dahin normal. Wenn das Limit zuerst erreicht wird, kann der Prompt-Cache ablaufen.",
   "21cceb347af13769": "Das Wochenlimit von {account} ist fast ausgeschöpft. Es wird {resetAt} zurückgesetzt. Nächste Anfrage {releaseAt}.",
-  "cdd5bb48a2c0373c": "Gelesen {age} · {time}"
+  "cdd5bb48a2c0373c": "Gelesen {age} · {time}",
+  "1faf1c5cbd504949": "Could not refresh quota.",
+  "b2c6186835bd4e68": "A quota refresh is already running.",
+  "c4da6ad3cae3d48a": "Quota refresh limit reached.",
+  "40cad5f1d3735ab3": "Refresh available in {time}"
 }

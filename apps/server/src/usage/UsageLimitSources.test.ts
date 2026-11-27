@@ -109,7 +109,7 @@ it.effect("keeps malformed source URLs encodable for config subscribers", () =>
   ),
 );
 
-it.effect("publishes validated HTTP quotas as display-only accounts", () => {
+it.effect("publishes validated HTTP quotas and refreshes only accounts that opt in", () => {
   const window = { id: "monthly", kind: "monthly", label: "Monthly", usedPercent: 35 };
   const accounts = [
     { id: "account", label: "External plan", providerInstanceId: "work-codex", windows: [window] },
@@ -118,11 +118,25 @@ it.effect("publishes validated HTTP quotas as display-only accounts", () => {
   const requests = new Set<string>();
   let usedPercent = 35;
   let oversized = false;
+  let refreshable = false;
+  let status = 200;
+  const retryAt = "2026-11-27T07:35:00Z";
   const client = HttpClient.make((request, url) =>
     Effect.sync(() => {
       requests.add(`${request.method} ${url.href}`);
       expect(url.href).toBe("https://quota.test/v1");
       expect(request.headers.authorization).toBe("Bearer test-token");
+      if (request.method === "POST") {
+        expect(request.body._tag).toBe("Uint8Array");
+        if (request.body._tag === "Uint8Array") {
+          expect(JSON.parse(new TextDecoder().decode(request.body.body))).toEqual({
+            accountId: "account",
+          });
+        }
+        if (status !== 200)
+          return HttpClientResponse.fromWeb(request, new Response(null, { status }));
+        usedPercent = 60;
+      }
       return HttpClientResponse.fromWeb(
         request,
         new Response(
@@ -132,7 +146,15 @@ it.effect("publishes validated HTTP quotas as display-only accounts", () => {
                 new TextEncoder().encode(
                   JSON.stringify({
                     version: 1,
-                    accounts: [{ ...accounts[0], windows: [{ ...window, usedPercent }] }],
+                    accounts: [
+                      {
+                        ...accounts[0],
+                        ...(refreshable
+                          ? { refreshable: true, refreshAfter: retryAt, readAt: retryAt }
+                          : {}),
+                        windows: [{ ...window, usedPercent }],
+                      },
+                    ],
                   }),
                 ),
               );
@@ -153,6 +175,17 @@ it.effect("publishes validated HTTP quotas as display-only accounts", () => {
     yield* sources.refreshModelAliases;
     expect([...requests]).toEqual(["GET https://quota.test/v1"]);
     expect(yield* sources.hub(sourceId)).toBeNull();
+    const input = { sourceId, accountId: "account" };
+    expect((yield* sources.refreshHttpQuota(input).pipe(Effect.result))._tag).toBe("Failure");
+    expect([...requests]).toEqual(["GET https://quota.test/v1"]);
+    refreshable = true;
+    yield* sources.refresh;
+    expect(yield* sources.refreshHttpQuota(input)).toEqual({ outcome: "refreshed" });
+    expect([...requests]).toEqual(["GET https://quota.test/v1", "POST https://quota.test/v1"]);
+    expect((yield* sources.current)[0]?.quotaAccounts?.[0]?.windows[0]?.usedPercent).toBe(60);
+    status = 429;
+    expect(yield* sources.refreshHttpQuota(input)).toEqual({ outcome: "rate-limited", retryAt });
+
     usedPercent = 101;
     yield* sources.refresh;
     const [failed] = yield* sources.current;

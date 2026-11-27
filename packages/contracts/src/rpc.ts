@@ -424,6 +424,8 @@ import {
   ResourceTelemetrySnapshot,
 } from "./resourceTelemetry.ts";
 import {
+  HttpQuotaRefreshInput,
+  HttpQuotaRefreshResult,
   UsageLimitSourceError,
   ProviderConsumeResetCreditInput,
   ProviderConsumeResetCreditResult,
@@ -547,6 +549,7 @@ export const WS_METHODS = {
   providerMcpSignInStart: "provider.mcpSignIn.start",
   providerMcpSignInComplete: "provider.mcpSignIn.complete",
   providerAuthStart: "provider.auth.start",
+  refreshHttpQuota: "provider.refreshHttpQuota",
   providerConsumeResetCredit: "provider.consumeResetCredit",
   claudeKeepWarmAction: "provider.claude.keepWarmAction",
   threadAccountState: "provider.threadAccount.state",
@@ -848,6 +851,12 @@ const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvider, {
 });
 
 const ProviderSetupRpcError = Schema.Union([ProviderSetupError, EnvironmentAuthorizationError]);
+
+const WsRefreshHttpQuotaRpc = Rpc.make(WS_METHODS.refreshHttpQuota, {
+  payload: HttpQuotaRefreshInput,
+  success: HttpQuotaRefreshResult,
+  error: Schema.Union([UsageLimitSourceError, EnvironmentAuthorizationError]),
+});
 
 const WsProviderConsumeResetCreditRpc = Rpc.make(WS_METHODS.providerConsumeResetCredit, {
   payload: ProviderConsumeResetCreditInput,
@@ -2584,6 +2593,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRefreshProvidersRpc,
   WsServerUpdateProviderRpc,
   WsProviderConsumeResetCreditRpc,
+  WsRefreshHttpQuotaRpc,
   WsClaudeKeepWarmActionRpc,
   WsProviderResolveUsageResetSnoozeRpc,
   WsThreadAccountStateRpc,

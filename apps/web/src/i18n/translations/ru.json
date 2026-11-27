@@ -13326,5 +13326,9 @@
   "2aa8fd91d348be6a": "Этот тред сжимается при {tokens} токенов — это лимит, заданный для него.",
   "684b5fa810e83350": "Аккаунт {account} почти исчерпал недельный лимит, который сбросится {resetAt}. До тех пор запросы выполняются как обычно. Если лимит закончится раньше, кэш запроса может истечь.",
   "21cceb347af13769": "Аккаунт {account} почти исчерпал недельный лимит. Он сбросится {resetAt}. Следующий запрос — {releaseAt}.",
-  "cdd5bb48a2c0373c": "Прочитано {age} · {time}"
+  "cdd5bb48a2c0373c": "Прочитано {age} · {time}",
+  "1faf1c5cbd504949": "Could not refresh quota.",
+  "b2c6186835bd4e68": "A quota refresh is already running.",
+  "c4da6ad3cae3d48a": "Quota refresh limit reached.",
+  "40cad5f1d3735ab3": "Refresh available in {time}"
 }

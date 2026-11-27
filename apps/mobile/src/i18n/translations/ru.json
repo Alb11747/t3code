@@ -5928,5 +5928,10 @@
   "da69607e036f3dfa": "Этот аккаунт",
   "1e4465377d021a01": "Недельный лимит аккаунта {account}",
   "2537b53b5428d97d": "Недельный лимит",
-  "ac0d5f92b313f930": "Прочитано {age} назад · {time}"
+  "ac0d5f92b313f930": "Прочитано {age} назад · {time}",
+  "1faf1c5cbd504949": "Could not refresh quota.",
+  "b2c6186835bd4e68": "A quota refresh is already running.",
+  "c4da6ad3cae3d48a": "Quota refresh limit reached.",
+  "40cad5f1d3735ab3": "Refresh available in {time}",
+  "a2bded0a93096ada": "Refreshing…"
 }

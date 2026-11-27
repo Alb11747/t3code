@@ -2774,6 +2774,7 @@ export const layerWsRpc = (
         [WS_METHODS.threadAccountSet]: (input) => threadAccounts.set(input),
         [WS_METHODS.threadAccountSteer]: (input) => threadAccounts.steer(input),
         [WS_METHODS.threadAccountRouting]: (input) => threadAccounts.routing(input),
+        [WS_METHODS.refreshHttpQuota]: usageLimitSources.refreshHttpQuota,
         [WS_METHODS.providerConsumeResetCredit]: (input) =>
           threadAccounts.consumeResetCredit(input),
         [WS_METHODS.providerAuthStart]: (input) => providerAuth.start(input, currentSessionId),

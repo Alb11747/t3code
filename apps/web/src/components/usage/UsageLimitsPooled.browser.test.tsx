@@ -2,15 +2,31 @@ import {
   EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
+  UsageLimitSourceId,
+  type UsageLimitSourceSnapshot,
   type ServerProvider,
 } from "@t3tools/contracts";
 import { CHATGPT_USAGE_URL } from "@t3tools/shared/usageLimits";
-import { describe, expect, it } from "vite-plus/test";
+import { AsyncResult, Atom } from "effect/reactivity";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import "~/index.css";
 
 import { render } from "../../../test/render";
 import { UsageLimitsPooled } from "./UsageLimitsPooled";
+
+const refresh = vi.hoisted(() => vi.fn());
+vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => refresh }));
+vi.mock("../../state/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../state/server")>();
+  return {
+    ...actual,
+    serverEnvironment: {
+      ...actual.serverEnvironment,
+      refreshHttpQuota: { permissionAtom: () => Atom.make(true) },
+    },
+  };
+});
 
 const checkedAt = "2026-10-25T16:00:00.000Z";
 
@@ -102,4 +118,44 @@ describe("UsageLimitsPooled next refill", () => {
     );
     await expect.element(screen.getByText(/^↻ \+\d+%$/)).not.toBeInTheDocument();
   });
+});
+
+it("requests a manual quota refresh and shows the cooldown returned by the router", async () => {
+  refresh
+    .mockReset()
+    .mockResolvedValue(
+      AsyncResult.success({ outcome: "rate-limited", retryAt: "2099-01-01T00:00:00.000Z" }),
+    );
+  const environmentId = EnvironmentId.make("desk");
+  const sourceId = UsageLimitSourceId.make("quota");
+  const source: UsageLimitSourceSnapshot = {
+    id: sourceId,
+    kind: "http",
+    label: "Antigravity",
+    checkedAt,
+    accounts: [],
+    quotaAccounts: [
+      { id: "agy-owner", label: "Antigravity owner", refreshable: true, windows: [] },
+    ],
+  };
+  const presentations = new Map([
+    [
+      environmentId,
+      {
+        entry: { target: { label: "Desk" } },
+        serverConfig: { providers: [], usageLimitSources: [source] },
+      },
+    ],
+  ]);
+  await using screen = await render(
+    <UsageLimitsPooled presentations={presentations} now={Date.parse(checkedAt)} />,
+  );
+  const button = screen.getByRole("button", { name: "Refresh" });
+  await button.click();
+  expect(refresh).toHaveBeenCalledExactlyOnceWith({
+    environmentId,
+    input: { sourceId, accountId: "agy-owner" },
+  });
+  await expect.element(button).toBeDisabled();
+  await expect.element(screen.getByText(/^Refresh available in /)).toBeVisible();
 });

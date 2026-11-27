@@ -316,6 +316,7 @@ export function collectHttpQuotaSources(presentations: Parameters<typeof collect
         ? [
             {
               ...source,
+              environmentId,
               key: `${environmentId}:${source.id}`,
               label:
                 presentations.size > 1

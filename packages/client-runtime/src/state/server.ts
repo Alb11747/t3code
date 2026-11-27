@@ -1768,6 +1768,14 @@ export function createServerEnvironmentAtoms<R, E>(
           ),
         ),
     }),
+    refreshHttpQuota: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:refresh-http-quota",
+      tag: WS_METHODS.refreshHttpQuota,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input]),
+      },
+    }),
     consumeResetCredit: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:consume-reset-credit",
       tag: WS_METHODS.providerConsumeResetCredit,

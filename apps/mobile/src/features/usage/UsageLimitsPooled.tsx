@@ -1,3 +1,5 @@
+import { serverEnvironment } from "../../state/server";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -17,12 +19,13 @@ import {
   collectExternalUsageLinks,
   collectLimitNotices,
   cursorUsageWindowDetails,
+  formatDuration,
   formatUsageCredits,
 } from "@t3tools/shared/usageLimitsCopy";
 import { msg, T, useGT, useMessages, Var } from "gt-react-native";
 import { Fragment, type ReactNode, useId, useState } from "react";
 import { Pressable, View } from "react-native";
-import { useNowMinuteMs } from "../../lib/clock";
+import { useNowAfter, useNowMinuteMs } from "../../lib/clock";
 import { relativeTime } from "../../lib/time";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
@@ -38,6 +41,75 @@ import { environmentPresentations } from "../../state/presentation";
 import { refillLabel, ResetCredits, resetLabels } from "./UsageLimitsSection";
 import { usageProviderKind, useProviderColors } from "./usageProviders";
 import { routesThreads, UsageRouting } from "./UsageRouting";
+
+type HttpQuotaSource = ReturnType<typeof collectHttpQuotaSources>[number];
+type HttpQuotaAccount = NonNullable<HttpQuotaSource["quotaAccounts"]>[number];
+
+function RefreshHttpQuota({
+  source,
+  account,
+  now,
+}: {
+  readonly source: HttpQuotaSource;
+  readonly account: HttpQuotaAccount;
+  readonly now: number;
+}) {
+  const command = serverEnvironment.refreshHttpQuota;
+  const allowed = useAtomValue(command.permissionAtom(source.environmentId));
+  const refresh = useAtomCommand(command, { reportFailure: false });
+  const [busy, setBusy] = useState(false);
+  const [retryAt, setRetryAt] = useState(0);
+  const [status, setStatus] = useState<string | null>(null);
+  const gt = useGT();
+  const m = useMessages();
+  const until = Math.max(retryAt, Date.parse(account.refreshAfter ?? "") || 0);
+
+  const clock = Math.max(now, useNowAfter(until || null));
+
+  if (!allowed) return null;
+  const run = async () => {
+    setBusy(true);
+    setStatus(null);
+    const result = await refresh({
+      environmentId: source.environmentId,
+      input: { sourceId: source.id, accountId: account.id },
+    });
+    setBusy(false);
+    if (result._tag !== "Success") {
+      setStatus(gt("Could not refresh quota."));
+    } else if (result.value.outcome === "busy") {
+      setStatus(gt("A quota refresh is already running."));
+    } else if (result.value.outcome === "rate-limited") {
+      const next = Date.parse(result.value.retryAt ?? "");
+      if (Number.isFinite(next)) setRetryAt(next);
+      else setStatus(gt("Quota refresh limit reached."));
+    }
+  };
+  const message =
+    until > clock
+      ? gt("Refresh available in {time}", { time: formatDuration(until - clock, m) })
+      : status;
+  return (
+    <View className="shrink items-end gap-1">
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ disabled: busy || until > clock, busy }}
+        className="min-h-11 justify-center rounded-lg border border-border px-3 disabled:opacity-50"
+        disabled={busy || until > clock}
+        onPress={() => void run()}
+      >
+        <Text className="text-sm font-t3-medium text-foreground">
+          {busy ? gt("Refreshing…") : gt("Refresh")}
+        </Text>
+      </Pressable>
+      {message ? (
+        <Text accessibilityLiveRegion="polite" className="text-right text-xs text-foreground-muted">
+          {message}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
 
 const PACE_LABEL = {
   ahead: msg("Ahead of pace"),
@@ -510,7 +582,14 @@ export function UsageLimitsSection({
           <Text className="text-base font-t3-medium text-foreground">{source.label}</Text>
           {source.quotaAccounts?.map((account) => (
             <View key={account.id} className="gap-1">
-              <Text className="text-sm font-t3-medium text-foreground">{account.label}</Text>
+              <View className="flex-row items-start justify-between gap-3">
+                <Text className="shrink text-sm font-t3-medium text-foreground">
+                  {account.label}
+                </Text>
+                {account.refreshable ? (
+                  <RefreshHttpQuota source={source} account={account} now={now} />
+                ) : null}
+              </View>
               {account.readAt !== undefined && Number.isFinite(Date.parse(account.readAt)) ? (
                 <Text className="text-xs text-foreground-muted">
                   {gt("Read {age} ago · {time}", {

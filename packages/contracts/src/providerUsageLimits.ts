@@ -109,6 +109,8 @@ export const HttpQuotaAccount = Schema.Struct({
   providerInstanceId: Schema.optional(ProviderInstanceId),
   /** Fork: when the source last read this account, so a stale reading shows its age. */
   readAt: Schema.optional(IsoDateTime),
+  refreshable: Schema.optional(Schema.Boolean),
+  refreshAfter: Schema.optional(IsoDateTime),
   windows: Schema.Array(
     Schema.Struct({
       id: ServerProviderUsageWindow.fields.id,
@@ -118,6 +120,17 @@ export const HttpQuotaAccount = Schema.Struct({
       resetsAt: ServerProviderUsageWindow.fields.resetsAt,
     }),
   ),
+});
+
+export const HttpQuotaRefreshInput = Schema.Struct({
+  sourceId: UsageLimitSourceId,
+  accountId: TrimmedNonEmptyString,
+});
+export type HttpQuotaRefreshInput = typeof HttpQuotaRefreshInput.Type;
+
+export const HttpQuotaRefreshResult = Schema.Struct({
+  outcome: Schema.Literals(["refreshed", "busy", "rate-limited"]),
+  retryAt: Schema.optional(IsoDateTime),
 });
 
 export const HttpQuotaResponse = Schema.Struct({

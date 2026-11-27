@@ -1,3 +1,6 @@
+import { serverEnvironment } from "../../state/server";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { useAtomValue } from "@effect/atom-react";
 import {
   CHATGPT_USAGE_URL,
   collectHttpQuotaSources,
@@ -15,7 +18,7 @@ import {
 import { T, Var, useGT, useMessages } from "gt-react";
 import type { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
-import { AlertTriangleIcon, ExternalLinkIcon, TicketIcon } from "lucide-react";
+import { AlertTriangleIcon, ExternalLinkIcon, RefreshCwIcon, TicketIcon } from "lucide-react";
 import {
   createContext,
   Fragment,
@@ -27,6 +30,7 @@ import {
   useState,
 } from "react";
 
+import { useNowAfter } from "../../hooks/useDeadline";
 import { ensureLocalApi } from "../../localApi";
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
@@ -49,6 +53,73 @@ import {
   formatUsageCredits,
   resetCreditChoices,
 } from "@t3tools/shared/usageLimitsCopy";
+
+type HttpQuotaSource = ReturnType<typeof collectHttpQuotaSources>[number];
+type HttpQuotaAccount = NonNullable<HttpQuotaSource["quotaAccounts"]>[number];
+
+function RefreshHttpQuota({
+  source,
+  account,
+  now,
+}: {
+  readonly source: HttpQuotaSource;
+  readonly account: HttpQuotaAccount;
+  readonly now: number;
+}) {
+  const command = serverEnvironment.refreshHttpQuota;
+  const allowed = useAtomValue(command.permissionAtom(source.environmentId));
+  const refresh = useAtomCommand(command, { reportFailure: false });
+  const [busy, setBusy] = useState(false);
+  const [retryAt, setRetryAt] = useState(0);
+  const [status, setStatus] = useState<string | null>(null);
+  const gt = useGT();
+  const m = useMessages();
+  const until = Math.max(retryAt, Date.parse(account.refreshAfter ?? "") || 0);
+
+  const clock = Math.max(now, useNowAfter(until || null));
+
+  if (!allowed) return null;
+  const run = async () => {
+    setBusy(true);
+    setStatus(null);
+    const result = await refresh({
+      environmentId: source.environmentId,
+      input: { sourceId: source.id, accountId: account.id },
+    });
+    setBusy(false);
+    if (result._tag !== "Success") {
+      setStatus(gt("Could not refresh quota."));
+    } else if (result.value.outcome === "busy") {
+      setStatus(gt("A quota refresh is already running."));
+    } else if (result.value.outcome === "rate-limited") {
+      const next = Date.parse(result.value.retryAt ?? "");
+      if (Number.isFinite(next)) setRetryAt(next);
+      else setStatus(gt("Quota refresh limit reached."));
+    }
+  };
+  const message =
+    until > clock
+      ? gt("Refresh available in {time}", { time: formatDuration(until - clock, m) })
+      : status;
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <Button
+        size="xs"
+        variant="outline"
+        disabled={busy || until > clock}
+        onClick={() => void run()}
+      >
+        <RefreshCwIcon aria-hidden="true" />
+        {busy ? gt("Refreshing…") : gt("Refresh")}
+      </Button>
+      {message ? (
+        <p className="text-right text-xs text-muted-foreground" role="status">
+          {message}
+        </p>
+      ) : null}
+    </div>
+  );
+}
 
 function accountInitials(email: string): string {
   const [local = "", domain = ""] = email.split("@");
@@ -739,8 +810,15 @@ export function UsageLimitsPooled({
           <h2 className="text-sm font-medium">{source.label}</h2>
           {source.quotaAccounts?.map((account) => (
             <div key={account.id} className="space-y-1">
-              <h3 className="text-sm font-medium">{account.label}</h3>
-              {account.readAt ? <QuotaReadAt readAt={account.readAt} now={now} /> : null}
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="text-sm font-medium">{account.label}</h3>
+                  {account.readAt ? <QuotaReadAt readAt={account.readAt} now={now} /> : null}
+                </div>
+                {account.refreshable ? (
+                  <RefreshHttpQuota source={source} account={account} now={now} />
+                ) : null}
+              </div>
               {account.windows.map((window) => {
                 const reset = formatResetsIn(window, now, m);
                 return (

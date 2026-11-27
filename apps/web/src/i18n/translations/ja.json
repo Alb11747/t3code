@@ -13260,5 +13260,9 @@
   "2aa8fd91d348be6a": "このスレッドは、個別に設定された上限の {tokens} トークンで圧縮されます。",
   "684b5fa810e83350": "{account} の週間の使用上限がまもなく切れ、{resetAt} にリセットされます。それまでは通常通りリクエストを処理します。先に上限に達した場合、プロンプトキャッシュが期限切れになることがあります。",
   "21cceb347af13769": "{account} の週間の使用上限がまもなく切れます。{resetAt} にリセットされます。次のリクエストは {releaseAt} です。",
-  "cdd5bb48a2c0373c": "{age}に取得 · {time}"
+  "cdd5bb48a2c0373c": "{age}に取得 · {time}",
+  "1faf1c5cbd504949": "Could not refresh quota.",
+  "b2c6186835bd4e68": "A quota refresh is already running.",
+  "c4da6ad3cae3d48a": "Quota refresh limit reached.",
+  "40cad5f1d3735ab3": "Refresh available in {time}"
 }

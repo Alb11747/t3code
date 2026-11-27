@@ -5832,5 +5832,10 @@
   "da69607e036f3dfa": "이 계정",
   "1e4465377d021a01": "{account}의 주간 한도",
   "2537b53b5428d97d": "주간 한도",
-  "ac0d5f92b313f930": "{age} 전에 읽음 · {time}"
+  "ac0d5f92b313f930": "{age} 전에 읽음 · {time}",
+  "1faf1c5cbd504949": "Could not refresh quota.",
+  "b2c6186835bd4e68": "A quota refresh is already running.",
+  "c4da6ad3cae3d48a": "Quota refresh limit reached.",
+  "40cad5f1d3735ab3": "Refresh available in {time}",
+  "a2bded0a93096ada": "Refreshing…"
 }

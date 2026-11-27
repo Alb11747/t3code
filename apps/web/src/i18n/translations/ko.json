@@ -13257,5 +13257,9 @@
   "2aa8fd91d348be6a": "이 스레드는 따로 설정된 한도인 {tokens} 토큰에서 압축됩니다.",
   "684b5fa810e83350": "{account}의 주간 한도가 거의 소진되었으며 {resetAt}에 재설정됩니다. 그때까지 요청은 정상적으로 실행됩니다. 한도가 먼저 소진되면 프롬프트 캐시가 만료될 수 있습니다.",
   "21cceb347af13769": "{account}의 주간 한도가 거의 소진되었습니다. {resetAt}에 재설정됩니다. 다음 요청은 {releaseAt}입니다.",
-  "cdd5bb48a2c0373c": "{age} 읽음 · {time}"
+  "cdd5bb48a2c0373c": "{age} 읽음 · {time}",
+  "1faf1c5cbd504949": "Could not refresh quota.",
+  "b2c6186835bd4e68": "A quota refresh is already running.",
+  "c4da6ad3cae3d48a": "Quota refresh limit reached.",
+  "40cad5f1d3735ab3": "Refresh available in {time}"
 }

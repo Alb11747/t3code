@@ -5854,5 +5854,10 @@
   "da69607e036f3dfa": "Det här kontot",
   "1e4465377d021a01": "Veckogränsen för {account}",
   "2537b53b5428d97d": "Veckogränsen",
-  "ac0d5f92b313f930": "Läst för {age} sedan · {time}"
+  "ac0d5f92b313f930": "Läst för {age} sedan · {time}",
+  "1faf1c5cbd504949": "Could not refresh quota.",
+  "b2c6186835bd4e68": "A quota refresh is already running.",
+  "c4da6ad3cae3d48a": "Quota refresh limit reached.",
+  "40cad5f1d3735ab3": "Refresh available in {time}",
+  "a2bded0a93096ada": "Refreshing…"
 }

@@ -1,6 +1,8 @@
 import {
   DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL,
   HttpQuotaResponse,
+  type HttpQuotaRefreshInput,
+  type HttpQuotaRefreshResult,
   UsageLimitSourceError,
   type UsageLimitSourceConsumeResetCreditInput,
   type ProviderConsumeResetCreditResult,
@@ -76,6 +78,9 @@ export class UsageLimitSources extends Context.Service<
     readonly current: Effect.Effect<ReadonlyArray<UsageLimitSourceSnapshot>>;
     readonly streamChanges: Stream.Stream<ReadonlyArray<UsageLimitSourceSnapshot>>;
     readonly refresh: Effect.Effect<void>;
+    readonly refreshHttpQuota: (
+      input: HttpQuotaRefreshInput,
+    ) => Effect.Effect<typeof HttpQuotaRefreshResult.Type, UsageLimitSourceError>;
     /**
      * Fork: re-reads only each hub's model aliases, at most once a minute, for an opened model
      * picker; the full refresh's per-account usage reads cost far more.
@@ -141,6 +146,7 @@ function keepLastGoodReadings(
   next: ReadonlyArray<UsageLimitSourceSnapshot>,
 ): ReadonlyArray<UsageLimitSourceSnapshot> {
   return next.map((source) => {
+    if (source.kind === "http") return source;
     // Auth file names can be reused, so only the same hub and login may lend a reading.
     const before = previous.find(
       (candidate) => candidate.id === source.id && candidate.endpoint === source.endpoint,
@@ -190,6 +196,7 @@ export const make = Effect.gen(function* () {
   });
   const scope = yield* Scope.Scope;
   const stateRef = yield* Ref.make<ReadonlyArray<UsageLimitSourceSnapshot>>([]);
+  const httpConfigs = new WeakMap<UsageLimitSourceSnapshot, UsageLimitSourceConfig>();
   // Fork: each source's last account listing from its router, and every current-to-legacy alias
   // pair it has published, so a router rolled back to before 0.28.0 still gets legacy aliases.
   // In memory: after a restart, a rolled-back router's stored new aliases are unknown to it.
@@ -278,9 +285,12 @@ export const make = Effect.gen(function* () {
           Effect.timeout("10 seconds"),
           Effect.result,
         );
-      return result._tag === "Success"
-        ? { ...base, accounts: [], quotaAccounts: result.success.accounts }
-        : { ...base, accounts: [], error: "Could not read the HTTP quota source." };
+      if (result._tag !== "Success") {
+        return { ...base, accounts: [], error: "Could not read the HTTP quota source." };
+      }
+      const snapshot = { ...base, accounts: [], quotaAccounts: result.success.accounts };
+      httpConfigs.set(snapshot, config);
+      return snapshot;
     }
     if (managementKey.length === 0) {
       return { ...base, accounts: [], error: missingManagementKey(config) };
@@ -323,6 +333,91 @@ export const make = Effect.gen(function* () {
     );
     yield* publish(keepLastGoodReadings(yield* Ref.get(stateRef), snapshots));
   }).pipe(refreshLock.withPermits(1), Effect.ignoreCause({ log: true }));
+
+  const refreshHttpQuota = Effect.fn("UsageLimitSources.refreshHttpQuota")(function* ({
+    sourceId,
+    accountId,
+  }: HttpQuotaRefreshInput) {
+    const unavailable = new UsageLimitSourceError({
+      detail: "Could not refresh the HTTP quota source.",
+    });
+    const settings = yield* settingsService.getSettings.pipe(Effect.mapError(() => unavailable));
+    const config = settings.usageLimitSources[sourceId];
+    const advertised = (yield* Ref.get(stateRef)).find((source) => source.id === sourceId);
+    if (
+      !config?.enabled ||
+      config.kind !== "http" ||
+      !advertised?.quotaAccounts?.some(
+        (account) => account.id === accountId && account.refreshable,
+      ) ||
+      !Equal.equals(httpConfigs.get(advertised), config)
+    ) {
+      return yield* unavailable;
+    }
+    const url = URL.parse(config.url);
+    if (!url || !/^https?:$/.test(url.protocol) || url.username || url.password) {
+      return yield* unavailable;
+    }
+    const key = yield* readManagementKey(config);
+    if (!key) return yield* unavailable;
+
+    const response = yield* http
+      .execute(
+        HttpClientRequest.post(url).pipe(
+          HttpClientRequest.setHeader("Accept", "application/json"),
+          HttpClientRequest.setHeader("Authorization", `Bearer ${key}`),
+          HttpClientRequest.bodyJsonUnsafe({ accountId }),
+        ),
+      )
+      .pipe(
+        Effect.flatMap((response) =>
+          Effect.gen(function* () {
+            const feed = response.status === 200 ? yield* decodeHttpQuotaResponse(response) : null;
+            return { status: response.status, feed };
+          }),
+        ),
+        Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
+        Effect.timeout("110 seconds"),
+        Effect.option,
+      );
+
+    const result = Option.getOrUndefined(response);
+    // An unsuccessful request can still have started the CLI, so re-read its cooldown.
+    const snapshot = yield* Effect.gen(function* () {
+      const latest = yield* settingsService.getSettings;
+      if (!Equal.equals(latest.usageLimitSources[sourceId], config)) return;
+      const next: UsageLimitSourceSnapshot = result?.feed
+        ? {
+            ...advertised,
+            checkedAt: DateTime.formatIso(yield* DateTime.now),
+            quotaAccounts: result.feed.accounts,
+          }
+        : yield* readSource(sourceId, config);
+      if (!next.quotaAccounts) return;
+      httpConfigs.set(next, config);
+      const previous = yield* Ref.get(stateRef);
+      yield* publish(previous.map((source) => (source.id === sourceId ? next : source)));
+      return next;
+    }).pipe(
+      refreshLock.withPermits(1),
+      Effect.mapError(() => unavailable),
+    );
+
+    if (result?.status === 409) return { outcome: "busy" } as const;
+    if (result?.status === 429) {
+      const retryAt = snapshot?.quotaAccounts?.find(
+        (account) => account.id === accountId,
+      )?.refreshAfter;
+      return { outcome: "rate-limited", ...(retryAt ? { retryAt } : {}) } as const;
+    }
+    if (
+      !result?.feed?.accounts.some((account) => account.id === accountId && account.readAt) ||
+      !snapshot
+    ) {
+      return yield* unavailable;
+    }
+    return { outcome: "refreshed" } as const;
+  });
 
   // Shares the refresh lock so a stale in-flight read cannot overwrite a redemption.
   const consumeResetCredit = Effect.fn("UsageLimitSources.consumeResetCredit")(function* (
@@ -470,6 +565,7 @@ export const make = Effect.gen(function* () {
 
   return {
     current: Ref.get(stateRef),
+    refreshHttpQuota,
     consumeResetCredit,
     nextPickReset,
     hub,
