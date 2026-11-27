@@ -241,6 +241,8 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           thread.modelSelection.instanceId,
         );
         const chosenAccount = chosen ? (yield* threadAccounts.describeChoice(chosen)).name : null;
+        const pendingAccount =
+          accounts === null ? null : yield* threadAccounts.pendingMove(thread.id);
         return {
           threadId: thread.id,
           modelSelection: thread.modelSelection,
@@ -258,6 +260,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
                   chosen && chosenAccount
                     ? { account: chosenAccount, waitWhenOut: chosen.stall }
                     : null,
+                ...(pendingAccount === null ? {} : { pendingAccount }),
                 accounts: accounts.accounts.flatMap((account, _index, all) =>
                   account.routerAlias === undefined
                     ? []
@@ -287,6 +290,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
             ? yield* resolveAdvertisedModelSelection(requested, thread.worktreePath ?? undefined)
             : requested;
         let sequence: number | undefined;
+        let accountMove: "applied" | "pending" | undefined;
         if (
           input.compactBeforeCacheExpires !== undefined ||
           input.compactAfterIdle !== undefined ||
@@ -311,7 +315,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           sequence = result.sequence;
         }
         if (input.account !== undefined) {
-          yield* (yield* ThreadAccountService.ThreadAccounts).set({
+          accountMove = yield* (yield* ThreadAccountService.ThreadAccounts).move({
             threadId: thread.id,
             account: input.account,
             ...(input.waitWhenOut === undefined ? {} : { stall: input.waitWhenOut }),
@@ -336,6 +340,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
             sequence,
             "modelSelection`, `compactBeforeCacheExpires`, `compactAfterIdle`, `autoCompactLimit` or `account",
           ),
+          ...(accountMove === "pending" ? { accountMove } : {}),
         };
       }),
     ),

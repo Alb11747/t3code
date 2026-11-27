@@ -170,6 +170,10 @@ const threadConfiguration = Schema.Struct({
   account: Schema.optional(
     Schema.NullOr(Schema.Struct({ account: AccountName, waitWhenOut: Schema.Boolean })),
   ),
+  // Fork: a move that applies when the thread's next compaction finishes.
+  pendingAccount: Schema.optional(
+    Schema.Struct({ account: AccountName, waitWhenOut: Schema.Boolean }),
+  ),
   accounts: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -187,7 +191,7 @@ const CompactBeforeCacheExpires = CompactBeforeCacheExpiresValue.annotate({
 const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   ...commandTool,
   description:
-    "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`, `compactBeforeCacheExpires`, `compactAfterIdle`, or `autoCompactLimit`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`. Behind a CLI Proxy hub, the read lists `accounts`; `account` (email or alias) sends the thread's requests to one (null: automatic), and `waitWhenOut` waits for it instead of falling back; a request already waiting follows a change at once, so don't interrupt it. Switching rewrites the context cache once. Moving off an `owner` account drops the conversation's earlier thinking: pass `dropThinking: true` to move anyway, and say in your reply that its earlier thinking was dropped.",
+    "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`, `compactBeforeCacheExpires`, `compactAfterIdle`, or `autoCompactLimit`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`. Behind a CLI Proxy hub, the read lists `accounts`; `account` (email or alias) sends the thread's requests to one (null: automatic), and `waitWhenOut` waits for it instead of falling back; a request already waiting follows a change at once, so don't interrupt it. Moving a large Claude conversation off its warm `owner` account returns `accountMove: 'pending'`: T3 compacts it there (after the running turn) and moves it when the compaction finishes, so don't compact or wait for it yourself; to move your own thread, queue your next instructions with t3_thread_send `mode:'queue'` without a context policy. Other switches apply at once and rewrite the context cache once; moving off an `owner` account then drops the conversation's earlier thinking: pass `dropThinking: true` to move anyway, and say in your reply that its earlier thinking was dropped.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
@@ -204,7 +208,12 @@ const ThreadConfigureTool = Tool.make("t3_thread_configure", {
     waitWhenOut: Schema.optional(Schema.Boolean),
     dropThinking: Schema.optional(Schema.Boolean),
   }),
-  success: Schema.Union([threadConfiguration, OrchestrationV2DispatchCommandResult]),
+  // The pending result comes before the plain one, which would accept it by dropping the key.
+  success: Schema.Union([
+    threadConfiguration,
+    Schema.Struct({ sequence: NonNegativeInt, accountMove: Schema.Literal("pending") }),
+    OrchestrationV2DispatchCommandResult,
+  ]),
   failure: Schema.Union([OrchestratorMcpFailure, ThreadAccountError]),
   dependencies: [
     ...commandTool.dependencies,

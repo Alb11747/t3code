@@ -6,6 +6,7 @@ import {
   UsageLimitSourceError,
   type UsageLimitSourceSnapshot,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -18,6 +19,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ClaudeKeepWarm from "../provider/ClaudeKeepWarm.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ThreadAccountRouting from "../provider/ThreadAccountRouting.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ThreadAccountService from "./ThreadAccountService.ts";
 import * as UsageLimitSources from "./UsageLimitSources.ts";
@@ -110,6 +112,7 @@ function testLayer(input: {
   readonly separateCodexHub?: boolean;
   readonly unpinError?: UsageLimitSourceError;
   readonly previousHubUnavailable?: boolean;
+  readonly providerTurns?: ReadonlyArray<unknown>;
 }) {
   const runsCodex = input.codex || input.separateCodexHub;
   const current = input.separateCodexHub
@@ -189,6 +192,7 @@ function testLayer(input: {
           runs: input.heldCompletedBeforeInterrupt
             ? [{ id: input.heldRunId, status: "failed" }]
             : [],
+          providerTurns: input.providerTurns ?? [],
           providerThreads: [
             {
               providerInstanceId: runsCodex ? "codex" : "claude",
@@ -236,6 +240,7 @@ function testLayer(input: {
     }),
     Layer.mock(ServerSettings.ServerSettingsService)({
       getSettings: Effect.succeed((input.settings ?? { usageLimitSources: {} }) as never),
+      streamChanges: Stream.empty,
       updateSettings: (patch) =>
         Effect.sync(() => {
           input.settingsPatches?.push(patch);
@@ -634,6 +639,90 @@ describe("ThreadAccountService.set", () => {
       }
     }),
   );
+});
+
+describe("ThreadAccountService.move", () => {
+  it.effect("compacts a large warm conversation on its account before moving it", () => {
+    const pins: Array<Parameters<UsageLimitSources.UsageLimitSources["Service"]["pin"]>[1]> = [];
+    const commands: OrchestrationV2ServerCommand[] = [];
+    const providerThreadId = ProviderThreadId.make("provider-thread:routed");
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const routing = yield* ThreadAccountRouting.make;
+      const service = yield* ThreadAccountService.make.pipe(
+        Effect.provideService(ThreadAccountRouting.ThreadAccountRouting, routing),
+      );
+      const turnStart = (compactedAt: number | null) =>
+        routing.prepareTurn({
+          appThread: { id: threadId, accountChoice: null } as never,
+          providerThread: {
+            id: providerThreadId,
+            driver: "claudeAgent",
+            providerInstanceId: "claude",
+            nativeThreadRef: { nativeId: "native-session" },
+          } as never,
+          loadCompactions: Effect.succeed(
+            compactedAt === null
+              ? []
+              : ([
+                  {
+                    type: "compaction",
+                    status: "completed",
+                    providerThreadId,
+                    completedAt: DateTime.makeUnsafe(compactedAt),
+                  },
+                ] as never),
+          ),
+        });
+
+      expect(yield* service.move({ threadId, account: OTHER, stall: true })).toBe("pending");
+      expect(pins).toEqual([]);
+      expect(commands).toMatchObject([
+        {
+          type: "message.dispatch",
+          text: "/compact",
+          dispatchMode: { type: "queue_after_active" },
+        },
+      ]);
+      // The compaction's own turn stays on the warm account.
+      yield* turnStart(null);
+      expect(pins).toEqual([]);
+      expect(yield* service.pendingMove(threadId)).toEqual({
+        account: "spare@example.com (Pro)",
+        waitWhenOut: true,
+      });
+
+      // The first turn after it moves before its first request.
+      expect(yield* turnStart(NOW + 60_000)).toBe(true);
+      expect(pins).toMatchObject([
+        { sessions: ["native-session"], account: OTHER, stall: true, move: true },
+      ]);
+      expect(commands.at(-1)).toMatchObject({
+        type: "thread.account-choice.set",
+        accountChoice: { account: OTHER, stall: true },
+      });
+      expect(yield* service.pendingMove(threadId)).toBeNull();
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        testLayer({
+          owner: OWNER,
+          pins,
+          commands,
+          providerTurns: [
+            {
+              providerThreadId,
+              tokenUsage: {
+                usedTokens: 143_000,
+                promptCacheExpiresAt: DateTime.formatIso(DateTime.makeUnsafe(NOW + 30 * 60_000)),
+                updatedAt: DateTime.formatIso(DateTime.makeUnsafe(NOW)),
+              },
+            },
+          ],
+        }),
+      ),
+    );
+  });
 });
 
 describe("ThreadAccountService.launchChoice", () => {
