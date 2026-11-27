@@ -32,6 +32,13 @@ export const threadAccountChoiceFor = (
 ): ThreadAccountChoice | null =>
   choice && (choice.instanceId === undefined || choice.instanceId === instanceId) ? choice : null;
 
+/**
+ * A Claude conversation at least this large with a warm cache can compact on its account before a
+ * move (`compactFirst`), so the new account writes only the compacted context. A compaction leaves
+ * about 20-45K tokens, so compacting a smaller one saves little and loses detail.
+ */
+export const THREAD_ACCOUNT_MOVE_COMPACTION_MIN_TOKENS = 60_000;
+
 /** Shown before, and returned instead of, moving a conversation its account owns. */
 export const THREAD_ACCOUNT_MOVE_WARNING =
   "This conversation is bound to its current account, so switching drops its earlier thinking (it is tied to that account; messages, tool results and files stay) and re-sends the context as a cold cache write.";
@@ -101,6 +108,11 @@ export const ThreadAccountSetInput = Schema.Struct({
   stall: Schema.optional(Schema.Boolean),
   /** Acknowledges THREAD_ACCOUNT_MOVE_WARNING; required to move an owned conversation. */
   dropThinking: Schema.optional(Schema.Boolean),
+  /**
+   * Moving a large warm Claude conversation off its owner compacts it there first and moves when
+   * the compaction finishes; the result is then "pending". Otherwise the move applies at once.
+   */
+  compactFirst: Schema.optional(Schema.Boolean),
 });
 export type ThreadAccountSetInput = typeof ThreadAccountSetInput.Type;
 

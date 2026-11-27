@@ -73,6 +73,13 @@ export interface DeferredAccountMove {
   /** For reads: the account's name and its wait-when-out setting. */
   readonly account: string;
   readonly waitWhenOut: boolean;
+  /**
+   * The router account holding the warm conversation. Turns before the compaction pin it, so a
+   * stored choice of another account cannot move the compaction itself to a cold cache.
+   */
+  readonly owner: { readonly sourceId: UsageLimitSourceId; readonly routerAccount: string };
+  /** Whether the queued compaction's run is still to run or running. */
+  readonly compactionLive: Effect.Effect<boolean>;
   /** Pins and records the new account. */
   readonly apply: Effect.Effect<void, ThreadAccountError>;
 }
@@ -179,25 +186,36 @@ export const make = Effect.gen(function* () {
   const failedWaitingPins = new Set<ThreadId>();
   const pendingMoves = new Map<ThreadId, DeferredAccountMove>();
 
-  // Runs a pending move once its compaction finished; true when the move pinned the new account.
+  // Runs a pending move once its compaction finished: "applied" when the move pinned the new
+  // account, the move when it still waits for its compaction, and undefined otherwise.
   const applyPendingMove = Effect.fn("ThreadAccountRouting.applyPendingMove")(function* <E>(
     input: PrepareTurnInput<E>,
   ) {
     const pending = pendingMoves.get(input.appThread.id);
-    if (pending === undefined) return false;
+    if (pending === undefined) return undefined;
     const compactions = yield* input.loadCompactions.pipe(Effect.orElseSucceed(() => []));
-    if (!compactedSince(compactions, input.providerThread.id, pending.sinceMs)) return false;
+    if (!compactedSince(compactions, input.providerThread.id, pending.sinceMs)) {
+      if (yield* pending.compactionLive) return pending;
+      // The compaction failed, was interrupted or left the queue: the move must not fire on some
+      // later, unrelated compaction, so the thread stays on its account.
+      pendingMoves.delete(input.appThread.id);
+      yield* Effect.logWarning("Dropped an account move whose compaction did not finish.", {
+        threadId: input.appThread.id,
+        account: pending.account,
+      });
+      return undefined;
+    }
     // One attempt: a failed move leaves the thread on its account rather than retrying each turn.
     pendingMoves.delete(input.appThread.id);
     return yield* pending.apply.pipe(
       Effect.timeout(MOVE_TIMEOUT),
-      Effect.as(true),
+      Effect.as("applied" as const),
       Effect.catchCause((cause) =>
         Effect.logWarning("Could not apply the account move after compaction.", {
           threadId: input.appThread.id,
           account: pending.account,
           cause,
-        }).pipe(Effect.as(false)),
+        }).pipe(Effect.as(undefined)),
       ),
     );
   });
@@ -207,14 +225,20 @@ export const make = Effect.gen(function* () {
   ) {
     // The move pinned and recorded the new account itself; this turn's thread record predates it.
     // Like any move's next turn, it drops thinking the old account signed.
-    if (yield* applyPendingMove(input)) {
+    const pending = yield* applyPendingMove(input);
+    if (pending === "applied") {
       failedWaitingPins.delete(input.appThread.id);
       return true;
     }
-    const choice = threadAccountChoiceFor(
+    const stored = threadAccountChoiceFor(
       input.appThread.accountChoice,
       input.providerThread.providerInstanceId,
     );
+    // Until the compaction runs, a stored choice yields to the warm owner (without waiting for it).
+    const choice =
+      stored && pending !== undefined
+        ? { sourceId: pending.owner.sourceId, account: pending.owner.routerAccount, stall: false }
+        : stored;
     const session = input.providerThread.nativeThreadRef?.nativeId;
     const moves = input.appThread.accountMovedAtByProviderThread;
     const conversation = input.providerThread.id;
@@ -247,7 +271,10 @@ export const make = Effect.gen(function* () {
       }
       yield* sources.pin(hub, {
         sessions: [session],
-        account: (yield* sources.routerAlias(choice.sourceId))(choice.account),
+        account:
+          choice === stored
+            ? (yield* sources.routerAlias(choice.sourceId))(choice.account)
+            : choice.account,
         stall,
         expiresAt: controlExpiry(yield* DateTime.now),
         renew: true,

@@ -12,6 +12,7 @@ import {
   type ThreadAccountState,
   type ThreadId,
   type UsageLimitSourceAccount,
+  THREAD_ACCOUNT_MOVE_COMPACTION_MIN_TOKENS,
   threadAccountChoiceFor,
 } from "@t3tools/contracts";
 import { ArrowRightIcon, CheckIcon, ChevronDownIcon } from "lucide-react";
@@ -217,6 +218,11 @@ function ThreadAccountPickerChip(
           next: accountShortLabel(next, state.accounts),
         }
       : null;
+  // The server compacts first only while the cache is warm, and otherwise switches at once.
+  const offersCompaction =
+    canWaitForAccount &&
+    props.contextTokens !== null &&
+    props.contextTokens >= THREAD_ACCOUNT_MOVE_COMPACTION_MIN_TOKENS;
   const contextNote =
     props.contextTokens !== null && props.contextTokens > 0
       ? gt("Switching re-sends the thread's {tokens} context as a cold cache write.", {
@@ -237,6 +243,7 @@ function ThreadAccountPickerChip(
     account: RouterAccountAlias | null,
     waitWhenOut: boolean,
     dropThinking = false,
+    compactFirst = false,
   ): Promise<void> {
     const stall = canWaitForAccount && waitWhenOut;
     if (isDraft) {
@@ -254,7 +261,13 @@ function ThreadAccountPickerChip(
     setBusy(true);
     const result = await runSet({
       environmentId,
-      input: { threadId, account, stall, ...(dropThinking ? { dropThinking } : {}) },
+      input: {
+        threadId,
+        account,
+        stall,
+        ...(dropThinking ? { dropThinking } : {}),
+        ...(compactFirst ? { compactFirst } : {}),
+      },
     });
     setBusy(false);
     if (result._tag === "Failure") {
@@ -268,6 +281,16 @@ function ThreadAccountPickerChip(
       fail(gt("Could not switch accounts"), result);
     } else {
       accountSendGuard.noteOwnChange(threadKey);
+      const target = byAlias(account);
+      if (result.value === "pending" && target) {
+        toastManager.add({
+          type: "info",
+          title: gt("Compacting first"),
+          description: gt("The thread switches to {account} when the compaction finishes.", {
+            account: accountLabel(target),
+          }),
+        });
+      }
     }
     props.refresh();
     previews.refresh();
@@ -477,12 +500,28 @@ function ThreadAccountPickerChip(
                 },
               )}{" "}
               {contextNote}
+              {offersCompaction
+                ? ` ${gt("Compacting first runs the compaction on the warm cache, so the new account writes only the summary.")}`
+                : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogClose render={<Button variant="ghost" />}>
               <T>Cancel</T>
             </AlertDialogClose>
+            {offersCompaction ? (
+              <Button
+                variant="outline"
+                disabled={busy}
+                onClick={() => {
+                  const target = pendingMove?.routerAlias;
+                  setPendingMove(null);
+                  if (target) void apply(target, choice?.stall ?? false, true, true);
+                }}
+              >
+                <T>Compact first</T>
+              </Button>
+            ) : null}
             <Button
               disabled={busy}
               onClick={() => {
@@ -491,7 +530,7 @@ function ThreadAccountPickerChip(
                 if (target) void apply(target, choice?.stall ?? false, true);
               }}
             >
-              <T>Switch account</T>
+              {offersCompaction ? <T>Switch now</T> : <T>Switch account</T>}
             </Button>
           </AlertDialogFooter>
         </AlertDialogPopup>

@@ -883,7 +883,8 @@ const WsThreadAccountPreviewRpc = Rpc.make(WS_METHODS.threadAccountPreview, {
 
 const WsThreadAccountSetRpc = Rpc.make(WS_METHODS.threadAccountSet, {
   payload: ThreadAccountSetInput,
-  success: Schema.Void,
+  // "pending" only answers `compactFirst`, which older clients never send.
+  success: Schema.UndefinedOr(Schema.Literal("pending")),
   error: ThreadAccountRpcError,
 });
 

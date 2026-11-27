@@ -2771,7 +2771,12 @@ export const layerWsRpc = (
         [WS_METHODS.providerResolveUsageResetSnooze]: (input) => usageResetSnooze.resolve(input),
         [WS_METHODS.threadAccountState]: (input) => threadAccounts.state(input),
         [WS_METHODS.threadAccountPreview]: (input) => threadAccounts.preview(input),
-        [WS_METHODS.threadAccountSet]: (input) => threadAccounts.set(input),
+        [WS_METHODS.threadAccountSet]: (input) =>
+          input.compactFirst === true
+            ? threadAccounts
+                .move(input)
+                .pipe(Effect.map((result) => (result === "pending" ? result : undefined)))
+            : threadAccounts.set(input).pipe(Effect.as(undefined)),
         [WS_METHODS.threadAccountSteer]: (input) => threadAccounts.steer(input),
         [WS_METHODS.threadAccountRouting]: (input) => threadAccounts.routing(input),
         [WS_METHODS.providerConsumeResetCredit]: (input) =>

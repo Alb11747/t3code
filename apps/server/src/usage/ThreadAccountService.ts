@@ -3,6 +3,7 @@ import {
   agentsCanRedeemResetCreditsOf,
   CommandId,
   IDLE_COMPACTION_TEXT,
+  THREAD_ACCOUNT_MOVE_COMPACTION_MIN_TOKENS,
   MessageId,
   THREAD_ACCOUNT_MOVE_WARNING,
   ThreadAccountError,
@@ -77,9 +78,6 @@ const MAX_CONTROL_MS = 7 * 24 * 60 * 60 * 1000;
 const PREVIEW_SHARE_MS = 5_000;
 // Like turn-start pins: a dead hub must not hold a send's account check or the chip.
 const PREVIEW_TIMEOUT = "3 seconds";
-// A compaction leaves about 20-45k tokens, so compacting a smaller context before a move saves
-// little and loses detail.
-const MOVE_COMPACTION_MIN_TOKENS = 60_000;
 // Claude's cache TTL when a turn reports none, as the composer assumes.
 const DEFAULT_PROMPT_CACHE_TTL_MS = 70 * 60_000;
 const REDEEM_OFF =
@@ -256,9 +254,9 @@ export class ThreadAccounts extends Context.Reference<{
   ) => Effect.Effect<ThreadAccountPreview, ThreadAccountError>;
   readonly set: (input: ThreadAccountSetInput) => Effect.Effect<void, ThreadAccountError>;
   /**
-   * An agent's `set`: a move off the account that holds a large warm Claude conversation compacts
-   * it there first and applies when the compaction finishes ("pending"), so the new account
-   * writes only the compacted context. Other changes apply at once.
+   * `set` for agents and the picker's "compact first": a move off the account that holds a large
+   * warm Claude conversation compacts it there first and applies when the compaction finishes
+   * ("pending"), so the new account writes only the compacted context. Other changes apply at once.
    */
   readonly move: (
     input: ThreadAccountSetInput,
@@ -623,19 +621,75 @@ export const make = Effect.gen(function* () {
     threadId: ThreadId,
     providerThreadId: string,
   ) {
-    const { providerTurns } = yield* orchestrator
-      .getThreadRecords(threadId, ["providerTurns"])
-      .pipe(Effect.orElseSucceed(() => ({ providerTurns: [] })));
+    const { providerTurns, turnItems } = yield* orchestrator
+      .getThreadRecords(threadId, ["providerTurns", "turnItems"], {
+        turnItemTypes: ["compaction"],
+      })
+      .pipe(Effect.orElseSucceed(() => ({ providerTurns: [], turnItems: [] })));
     const usage = providerTurns
       .filter((turn) => turn.providerThreadId === providerThreadId)
       .flatMap((turn) => (turn.tokenUsage === undefined ? [] : [turn.tokenUsage]))
       .toSorted((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
-    if (usage === undefined || usage.usedTokens < MOVE_COMPACTION_MIN_TOKENS) return false;
+    if (usage === undefined || usage.usedTokens < THREAD_ACCOUNT_MOVE_COMPACTION_MIN_TOKENS)
+      return false;
+    // A compaction since that reading already shrank the context: another would only lose detail.
+    const readAt = Date.parse(usage.updatedAt);
+    if (
+      turnItems.some(
+        (item) =>
+          item.type === "compaction" &&
+          item.providerThreadId === providerThreadId &&
+          item.status === "completed" &&
+          item.completedAt !== null &&
+          DateTime.toEpochMillis(item.completedAt) > readAt,
+      )
+    )
+      return false;
     const expiresAt =
       usage.promptCacheExpiresAt === undefined
         ? Date.parse(usage.updatedAt) + (usage.promptCacheTtlMs ?? DEFAULT_PROMPT_CACHE_TTL_MS)
         : Date.parse(usage.promptCacheExpiresAt);
     return DateTime.toEpochMillis(yield* DateTime.now) < expiresAt;
+  });
+
+  // Whether the run of a queued message is still to run or running.
+  const messageRunLive = (threadId: ThreadId, messageId: MessageId) =>
+    orchestrator.getThreadRecords(threadId, ["runs"]).pipe(
+      Effect.map(({ runs }) =>
+        runs.some((run) => run.userMessageId === messageId && !isTerminalRunStatus(run.status)),
+      ),
+      // Unreadable: keep the move waiting; the next turn start reads again.
+      Effect.orElseSucceed(() => true),
+    );
+
+  // Drops the thread's pending move, and the compaction it queued if that has not started.
+  const dropPendingMove = Effect.fn("ThreadAccounts.dropPendingMove")(function* (
+    threadId: ThreadId,
+  ) {
+    const pending = yield* accountRouting.pendingMove(threadId);
+    if (pending === undefined) return;
+    yield* accountRouting.cancelMove(threadId);
+    yield* Effect.gen(function* () {
+      const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+      const run = runs.find(
+        (run) => run.userMessageId === pending.compactionMessageId && run.status === "queued",
+      );
+      if (run === undefined) return;
+      yield* orchestrator.dispatch({
+        type: "queued-run.cancel",
+        commandId: CommandId.make(`${pending.compactionMessageId}:cancel`),
+        threadId,
+        runId: run.id,
+      });
+    }).pipe(
+      // The compaction then runs on its own, which costs a little detail and nothing else.
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Could not cancel a dropped account move's compaction.", {
+          threadId,
+          cause,
+        }),
+      ),
+    );
   });
 
   // Assigned below: `set` defers moves that later call it again.
@@ -657,8 +711,6 @@ export const make = Effect.gen(function* () {
     const commandId = accountMoveCommandId(input.threadId, DateTime.toEpochMillis(now));
     if (input.account === null) {
       if (target === null && storedSourceId === undefined) return yield* fail(NOT_ROUTED);
-      // A valid explicit choice replaces a move still waiting for its compaction.
-      yield* accountRouting.cancelMove(input.threadId);
       const sessions = yield* threadSessions(input.threadId, session);
       if (
         !storedChoice &&
@@ -687,7 +739,6 @@ export const make = Effect.gen(function* () {
       (entry) => entry,
       "on this thread's CLI Proxy hub",
     )).routerAlias as RouterAccountAlias;
-    yield* accountRouting.cancelMove(input.threadId);
     // Changing only the account keeps the stored wait-when-out setting.
     const current = threadAccountChoiceFor(storedChoice, target.instanceId);
     const stall =
@@ -717,7 +768,8 @@ export const make = Effect.gen(function* () {
           model: thread.modelSelection.model,
         })
       : null;
-    const moved = !!pick?.owner && rename(pick.owner) !== account;
+    const owner = pick?.owner ?? null;
+    const moved = owner !== null && rename(owner) !== account;
     // The move wakes the router hold. Capture its run before the pin round-trip.
     const held = moved ? yield* keepWarm.find(input.threadId) : null;
     // A held request needs its account now, so only a running or idle conversation waits.
@@ -733,34 +785,37 @@ export const make = Effect.gen(function* () {
       const sinceMs = DateTime.toEpochMillis(now);
       const compactionId = `account-move-compact:${input.threadId}:${sinceMs}`;
       // A compaction an earlier move queued, still to run, serves this move too.
-      const queued =
-        waiting !== undefined &&
-        (yield* orchestrator.getThreadRecords(input.threadId, ["runs"])).runs.some(
-          (run) =>
-            run.userMessageId === waiting.compactionMessageId && !isTerminalRunStatus(run.status),
-        );
+      const queued = waiting !== undefined && (yield* waiting.compactionLive);
+      const compactionMessageId = queued
+        ? waiting.compactionMessageId
+        : MessageId.make(compactionId);
       const choice = { sourceId: target.source.id, account, stall, instanceId: target.instanceId };
+      // Registered before the dispatch, so the compaction's own turn start pins the warm owner.
       yield* accountRouting.deferMove({
         threadId: input.threadId,
         sinceMs: queued ? waiting.sinceMs : sinceMs,
-        compactionMessageId: queued ? waiting.compactionMessageId : MessageId.make(compactionId),
+        compactionMessageId,
         account: (yield* describeChoice(choice)).name,
         waitWhenOut: stall,
+        owner: { sourceId: target.source.id, routerAccount: owner },
+        compactionLive: messageRunLive(input.threadId, compactionMessageId),
         apply: applyMove({ ...input, stall, dropThinking: true }),
       });
       if (!queued) {
         // Like the keep-warm compaction: it runs after the current turn, as its own turn.
-        yield* orchestrator.dispatch({
-          type: "message.dispatch",
-          commandId: CommandId.make(compactionId),
-          messageId: MessageId.make(compactionId),
-          threadId: input.threadId,
-          text: IDLE_COMPACTION_TEXT,
-          attachments: [],
-          dispatchMode: { type: "queue_after_active" },
-          createdBy: "user",
-          creationSource: "server",
-        });
+        yield* orchestrator
+          .dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(compactionId),
+            messageId: MessageId.make(compactionId),
+            threadId: input.threadId,
+            text: IDLE_COMPACTION_TEXT,
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "user",
+            creationSource: "server",
+          })
+          .pipe(Effect.tapError(() => accountRouting.cancelMove(input.threadId)));
       }
       return "pending";
     }
@@ -825,8 +880,16 @@ export const make = Effect.gen(function* () {
     yield* keepWarm.forget;
     return "applied";
   });
+  // A change that applied at once replaces a move still waiting for its compaction; a failed one
+  // leaves that move in place.
+  const change = (input: ThreadAccountSetInput, options?: { readonly compactFirst?: boolean }) =>
+    set(input, options).pipe(
+      Effect.tap((result) =>
+        result === "applied" ? dropPendingMove(input.threadId) : Effect.void,
+      ),
+    );
   applyMove = (input) =>
-    asThreadAccountError(set(input)).pipe(Effect.asVoid, Effect.ensuring(forgetPicks));
+    asThreadAccountError(change(input)).pipe(Effect.asVoid, Effect.ensuring(forgetPicks));
 
   const launchChoice = Effect.fn("ThreadAccounts.launchChoice")(function* (input: {
     readonly instanceId: ProviderInstanceId;
@@ -1360,9 +1423,11 @@ export const make = Effect.gen(function* () {
     preview: (input: ThreadAccountPreviewInput) => asThreadAccountError(preview(input)),
     // Pins, steers and margins change the pick, so the next preview reads the router again.
     set: (input: ThreadAccountSetInput) =>
-      asThreadAccountError(set(input)).pipe(Effect.asVoid, Effect.ensuring(forgetPicks)),
+      asThreadAccountError(change(input)).pipe(Effect.asVoid, Effect.ensuring(forgetPicks)),
     move: (input: ThreadAccountSetInput) =>
-      asThreadAccountError(set(input, { compactFirst: true })).pipe(Effect.ensuring(forgetPicks)),
+      asThreadAccountError(change(input, { compactFirst: true })).pipe(
+        Effect.ensuring(forgetPicks),
+      ),
     pendingMove: (threadId: ThreadId) =>
       accountRouting
         .pendingMove(threadId)

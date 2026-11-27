@@ -113,6 +113,7 @@ function testLayer(input: {
   readonly unpinError?: UsageLimitSourceError;
   readonly previousHubUnavailable?: boolean;
   readonly providerTurns?: ReadonlyArray<unknown>;
+  readonly runs?: Array<unknown>;
 }) {
   const runsCodex = input.codex || input.separateCodexHub;
   const current = input.separateCodexHub
@@ -191,8 +192,9 @@ function testLayer(input: {
           },
           runs: input.heldCompletedBeforeInterrupt
             ? [{ id: input.heldRunId, status: "failed" }]
-            : [],
+            : (input.runs ?? []),
           providerTurns: input.providerTurns ?? [],
+          turnItems: [],
           providerThreads: [
             {
               providerInstanceId: runsCodex ? "codex" : "claude",
@@ -645,6 +647,7 @@ describe("ThreadAccountService.move", () => {
   it.effect("compacts a large warm conversation on its account before moving it", () => {
     const pins: Array<Parameters<UsageLimitSources.UsageLimitSources["Service"]["pin"]>[1]> = [];
     const commands: OrchestrationV2ServerCommand[] = [];
+    const runs: Array<{ id: string; userMessageId: unknown; status: string }> = [];
     const providerThreadId = ProviderThreadId.make("provider-thread:routed");
     return Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
@@ -652,9 +655,9 @@ describe("ThreadAccountService.move", () => {
       const service = yield* ThreadAccountService.make.pipe(
         Effect.provideService(ThreadAccountRouting.ThreadAccountRouting, routing),
       );
-      const turnStart = (compactedAt: number | null) =>
+      const turnStart = (compactedAt: number | null, accountChoice: unknown = null) =>
         routing.prepareTurn({
-          appThread: { id: threadId, accountChoice: null } as never,
+          appThread: { id: threadId, accountChoice } as never,
           providerThread: {
             id: providerThreadId,
             driver: "claudeAgent",
@@ -674,25 +677,54 @@ describe("ThreadAccountService.move", () => {
                 ] as never),
           ),
         });
-
-      expect(yield* service.move({ threadId, account: OTHER, stall: true })).toBe("pending");
-      expect(pins).toEqual([]);
-      expect(commands).toMatchObject([
-        {
+      const move = Effect.gen(function* () {
+        expect(yield* service.move({ threadId, account: OTHER, stall: true })).toBe("pending");
+        const compaction = commands.at(-1);
+        expect(compaction).toMatchObject({
           type: "message.dispatch",
           text: "/compact",
           dispatchMode: { type: "queue_after_active" },
-        },
-      ]);
-      // The compaction's own turn stays on the warm account.
-      yield* turnStart(null);
+        });
+        const run = {
+          id: `run:${runs.length}`,
+          userMessageId: (compaction as { messageId: unknown }).messageId,
+          status: "queued",
+        };
+        runs.push(run);
+        return run;
+      });
+
+      const first = yield* move;
       expect(pins).toEqual([]);
+      // The compaction's own turn stays on the warm owner, even over a stored choice of another.
+      first.status = "running";
+      yield* turnStart(null, {
+        sourceId: "hub",
+        account: OTHER,
+        stall: true,
+        instanceId: "claude",
+      });
+      expect(pins).toMatchObject([{ account: OWNER, stall: false, move: false }]);
       expect(yield* service.pendingMove(threadId)).toEqual({
         account: "spare@example.com (Pro)",
         waitWhenOut: true,
       });
+      // A change that fails leaves the waiting move in place.
+      const refused = yield* service
+        .set({ threadId, account: OTHER, stall: true })
+        .pipe(Effect.result);
+      expect(Result.isFailure(refused) && refused.failure.requiresDropThinking).toBe(true);
+      expect(yield* service.pendingMove(threadId)).not.toBeNull();
+      // A compaction that ends without compacting drops the move rather than leaving it to fire on
+      // a later, unrelated compaction.
+      first.status = "failed";
+      expect(yield* turnStart(null)).toBe(false);
+      expect(yield* service.pendingMove(threadId)).toBeNull();
 
-      // The first turn after it moves before its first request.
+      yield* TestClock.adjust("1 second");
+      yield* move;
+      // The first turn after its compaction moves before its first request.
+      pins.length = 0;
       expect(yield* turnStart(NOW + 60_000)).toBe(true);
       expect(pins).toMatchObject([
         { sessions: ["native-session"], account: OTHER, stall: true, move: true },
@@ -709,6 +741,7 @@ describe("ThreadAccountService.move", () => {
           owner: OWNER,
           pins,
           commands,
+          runs,
           providerTurns: [
             {
               providerThreadId,
