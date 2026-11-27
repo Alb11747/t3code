@@ -23,6 +23,7 @@ import { Fragment, useLayoutEffect, useState } from "react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { observeResize } from "../../lib/observeResize";
+import { cn } from "../../lib/utils";
 import { environmentPresentations } from "../../state/presentation";
 import { useEnvironmentScope, readEnvironmentScope } from "../../state/session";
 import { serverEnvironment } from "../../state/server";
@@ -122,14 +123,16 @@ export function usePaceMark(timeLeft: number | null) {
   return [setBar, roomy ? paceMarkStyles(timeLeft) : null] as const;
 }
 
-function WindowBar({
+export function WindowBar({
   color,
   window,
   now,
+  compact = false,
 }: {
   readonly color: string;
   readonly window: ServerProviderUsageWindow;
   readonly now: number;
+  readonly compact?: boolean;
 }) {
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const gt = useGT();
@@ -169,16 +172,24 @@ function WindowBar({
             role="img"
             aria-label={summary}
             tabIndex={0}
-            className="relative h-6 cursor-default rounded-full outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            className={cn(
+              "relative cursor-default rounded-full outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+              compact ? "h-3" : "h-6",
+            )}
           />
         }
       >
         {/* Clip both layers so the gap exposes even a translucent composer surface. */}
         <div className="absolute inset-0" style={paceMark?.gap}>
-          <div className="absolute inset-x-0 inset-y-1.5 rounded-full bg-muted" />
+          <div
+            className={cn(
+              "absolute inset-x-0 rounded-full bg-muted",
+              compact ? "inset-y-1" : "inset-y-1.5",
+            )}
+          />
           {remaining > 0 ? (
             <div
-              className="absolute inset-y-1.5 left-0 rounded-full"
+              className={cn("absolute left-0 rounded-full", compact ? "inset-y-1" : "inset-y-1.5")}
               style={{ width: `${remaining}%`, backgroundColor: color }}
             />
           ) : null}
@@ -186,7 +197,10 @@ function WindowBar({
         {paceMark ? (
           <span
             aria-hidden
-            className="absolute inset-y-1 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
+            className={cn(
+              "absolute w-0.5 -translate-x-1/2 rounded-full bg-foreground",
+              compact ? "inset-y-0.5" : "inset-y-1",
+            )}
             style={paceMark.tick}
           />
         ) : null}

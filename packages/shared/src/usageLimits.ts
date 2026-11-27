@@ -309,6 +309,19 @@ export interface LimitAccount {
   readonly limits: ServerProviderUsageLimits;
 }
 
+export function groupHttpQuotaWindows(windows: ReadonlyArray<ServerProviderUsageWindow>) {
+  const groups = new Map<string, ServerProviderUsageWindow[]>();
+  for (const window of windows) {
+    const separator = window.label.indexOf(" · ");
+    const group = separator > 0 ? window.label.slice(0, separator) : "";
+    const row = group ? { ...window, label: window.label.slice(separator + 3) } : window;
+    const entries = groups.get(group);
+    if (entries) entries.push(row);
+    else groups.set(group, [row]);
+  }
+  return [...groups];
+}
+
 export function collectHttpQuotaSources(presentations: Parameters<typeof collectLimitAccounts>[0]) {
   return [...presentations].flatMap(([environmentId, presentation]) =>
     (presentation.serverConfig?.usageLimitSources ?? []).flatMap((source) =>

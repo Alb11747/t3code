@@ -10,6 +10,7 @@ import {
   collectLimitAccounts,
   collectLimitPools,
   displayLimitWindows,
+  groupHttpQuotaWindows,
   paceRemainingPercent,
   remainingPercent,
   type LimitAccount,
@@ -38,7 +39,7 @@ import { ProviderIcon } from "../../components/ProviderIcon";
 import type { MessageResolver } from "../../i18n/messages";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { environmentPresentations } from "../../state/presentation";
-import { refillLabel, ResetCredits, resetLabels } from "./UsageLimitsSection";
+import { refillLabel, ResetCredits, resetLabels, WindowRow } from "./UsageLimitsSection";
 import { usageProviderKind, useProviderColors } from "./usageProviders";
 import { routesThreads, UsageRouting } from "./UsageRouting";
 
@@ -601,18 +602,24 @@ export function UsageLimitsSection({
                   })}
                 </Text>
               ) : null}
-              {account.windows.map((window) => {
-                const reset = resetLabels(window, now, m);
-                return (
-                  <View key={window.id} className="flex-row justify-between gap-3">
-                    <Text className="shrink text-sm text-foreground-muted">{window.label}</Text>
-                    <Text className="text-sm text-foreground-muted">
-                      {gt("{remaining}% left", { remaining: remainingPercent(window) })}
-                      {reset ? ` · ${reset.compact}` : ""}
-                    </Text>
-                  </View>
-                );
-              })}
+              {groupHttpQuotaWindows(account.windows).map(([group, windows]) => (
+                <View key={group} className="gap-1.5 border-t border-border pt-2">
+                  {group ? (
+                    <Text className="text-xs font-t3-medium text-foreground">{group}</Text>
+                  ) : null}
+                  {windows.map((window) => (
+                    <WindowRow
+                      key={window.id}
+                      window={window}
+                      color={
+                        account.providerInstanceId === "antigravity" ? colors.antigravity : null
+                      }
+                      now={now}
+                      compact
+                    />
+                  ))}
+                </View>
+              ))}
             </View>
           ))}
         </View>

@@ -55,17 +55,19 @@ function useBarColor(driver: Driver): string | null {
   return kind ? colors[kind] : null;
 }
 
-function WindowRow(props: {
+export function WindowRow(props: {
   readonly window: ServerProviderUsageWindow;
   readonly color: string | null;
   readonly now: number;
+  readonly compact?: boolean;
 }) {
-  const { window, now } = props;
+  const { window, now, compact = false } = props;
   const remaining = remainingPercent(window);
   const timeLeft = paceRemainingPercent(window, now);
   const pace = paceOf(window, now);
   const m = useMessages();
-  const resetsIn = resetLabels(window, now, m)?.full;
+  const reset = resetLabels(window, now, m);
+  const resetsIn = compact ? reset?.compact : reset?.full;
   const [barWidth, setBarWidth] = useState(0);
   const tickX =
     timeLeft === null || barWidth < 6
@@ -95,8 +97,18 @@ function WindowRow(props: {
   return (
     <View className="gap-1">
       <View className="flex-row items-baseline justify-between gap-3">
-        <Text className="text-sm text-foreground">{window.label}</Text>
-        <Text className="text-sm font-t3-medium tabular-nums text-foreground">
+        <Text
+          className={compact ? "shrink text-xs text-foreground-muted" : "text-sm text-foreground"}
+        >
+          {window.label}
+        </Text>
+        <Text
+          className={
+            compact
+              ? "text-xs font-t3-medium tabular-nums text-foreground"
+              : "text-sm font-t3-medium tabular-nums text-foreground"
+          }
+        >
           <T>
             <Var>{remaining}</Var>% left
           </T>

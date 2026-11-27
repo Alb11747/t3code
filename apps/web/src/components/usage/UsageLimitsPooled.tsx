@@ -1,5 +1,6 @@
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { ProviderDriverKind } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import {
   CHATGPT_USAGE_URL,
@@ -7,6 +8,7 @@ import {
   collectLimitAccounts,
   collectLimitPools,
   displayLimitWindows,
+  groupHttpQuotaWindows,
   type LimitAccount,
   type LimitPool,
   type LimitPoolMember,
@@ -43,7 +45,14 @@ import { Button } from "../ui/button";
 import { OpenAI } from "../Icons";
 import { Alert, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { PaceIcon, ResetCreditDialog, barColor, usePaceMark, useResetCredit } from "./UsageLimits";
+import {
+  PaceIcon,
+  ResetCreditDialog,
+  barColor,
+  usePaceMark,
+  useResetCredit,
+  WindowBar,
+} from "./UsageLimits";
 import {
   collectExternalUsageLinks,
   collectLimitNotices,
@@ -819,21 +828,44 @@ export function UsageLimitsPooled({
                   <RefreshHttpQuota source={source} account={account} now={now} />
                 ) : null}
               </div>
-              {account.windows.map((window) => {
-                const reset = formatResetsIn(window, now, m);
-                return (
-                  <div
-                    key={window.id}
-                    className="flex justify-between gap-3 text-sm text-muted-foreground"
-                  >
-                    <span>{window.label}</span>
-                    <span>
-                      {gt("{remaining}% left", { remaining: remainingPercent(window) })}
-                      {reset ? ` · ${reset}` : ""}
-                    </span>
+              {account.windows.length ? (
+                <div className="@container">
+                  <div className="grid gap-x-6 gap-y-3 @lg:grid-cols-2">
+                    {groupHttpQuotaWindows(account.windows).map(([group, windows]) => (
+                      <div key={group} className="min-w-0 space-y-2 border-t pt-2">
+                        {group ? <h4 className="text-xs font-medium">{group}</h4> : null}
+                        {windows.map((window) => {
+                          const reset = formatResetsIn(window, now, m);
+                          return (
+                            <div
+                              key={window.id}
+                              className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 text-xs"
+                            >
+                              <span className="text-muted-foreground">{window.label}</span>
+                              <span className="text-end font-medium tabular-nums">
+                                {gt("{remaining}% left", { remaining: remainingPercent(window) })}
+                              </span>
+                              <WindowBar
+                                color={
+                                  account.providerInstanceId === "antigravity"
+                                    ? barColor(ProviderDriverKind.make("antigravity"))
+                                    : "var(--foreground)"
+                                }
+                                window={window}
+                                now={now}
+                                compact
+                              />
+                              <span className="text-end text-muted-foreground tabular-nums">
+                                {reset}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ))}
                   </div>
-                );
-              })}
+                </div>
+              ) : null}
             </div>
           ))}
         </section>

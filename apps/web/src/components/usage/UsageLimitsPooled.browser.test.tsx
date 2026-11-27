@@ -120,7 +120,7 @@ describe("UsageLimitsPooled next refill", () => {
   });
 });
 
-it("requests a manual quota refresh and shows the cooldown returned by the router", async () => {
+it("renders compact quota meters and shows the cooldown after a manual refresh", async () => {
   refresh
     .mockReset()
     .mockResolvedValue(
@@ -135,7 +135,21 @@ it("requests a manual quota refresh and shows the cooldown returned by the route
     checkedAt,
     accounts: [],
     quotaAccounts: [
-      { id: "agy-owner", label: "Antigravity owner", refreshable: true, windows: [] },
+      {
+        id: "agy-owner",
+        label: "Antigravity owner",
+        refreshable: true,
+        windows: [
+          { id: "gemini-7d", kind: "weekly", label: "Gemini · Weekly", usedPercent: 77 },
+          { id: "gemini-5h", kind: "session", label: "Gemini · Five hour", usedPercent: 40 },
+          {
+            id: "claude_gpt-7d",
+            kind: "weekly",
+            label: "Claude and GPT · Weekly",
+            usedPercent: 51,
+          },
+        ],
+      },
     ],
   };
   const presentations = new Map([
@@ -150,6 +164,10 @@ it("requests a manual quota refresh and shows the cooldown returned by the route
   await using screen = await render(
     <UsageLimitsPooled presentations={presentations} now={Date.parse(checkedAt)} />,
   );
+  await expect.element(screen.getByRole("heading", { name: "Gemini" })).toBeVisible();
+  await expect.element(screen.getByRole("heading", { name: "Claude and GPT" })).toBeVisible();
+  await expect.element(screen.getByRole("img", { name: "Weekly: 23% left" })).toBeVisible();
+  await expect.element(screen.getByRole("img", { name: "Five hour: 60% left" })).toBeVisible();
   const button = screen.getByRole("button", { name: "Refresh" });
   await button.click();
   expect(refresh).toHaveBeenCalledExactlyOnceWith({
