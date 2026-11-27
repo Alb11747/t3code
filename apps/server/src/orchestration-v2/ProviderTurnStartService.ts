@@ -2490,11 +2490,11 @@ export const layer: Layer.Layer<
         reportedCacheExpiry === undefined
           ? undefined
           : Option.getOrUndefined(DateTime.make(reportedCacheExpiry));
-      // Fork: the compaction an account move waits on runs warm-only, like an idle compaction, so
-      // the router never serves it from a cold account.
+      // Fork: an account move's compaction runs warm-only, like an idle compaction, so the router
+      // never serves it from a cold account.
       const warmOnlyCompaction =
         message.idleCompaction === "beforeCacheExpires" ||
-        (yield* threadAccountRouting.movesAfter(projection.thread.id, message.id));
+        ThreadAccountRouting.isAccountMoveCompaction(message.id);
       // Fork: pins expire, so each turn re-applies the thread's chosen router account.
       const dropMismatchedThinking = yield* threadAccountRouting.prepareTurn({
         appThread: projection.thread,

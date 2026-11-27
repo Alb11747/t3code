@@ -11,6 +11,7 @@ import {
   type ProviderConsumeResetCreditInput,
   type ProviderConsumeResetCreditResult,
   type ProviderInstanceId,
+  type ProviderThreadId,
   ProviderSetupError,
   RouterAccountAlias,
   RouterProvider,
@@ -55,7 +56,11 @@ import * as ClaudeKeepWarm from "../provider/ClaudeKeepWarm.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as AccountRouting from "../provider/ThreadAccountRouting.ts";
-import { accountMoveCommandId, controlExpiry } from "../provider/ThreadAccountRouting.ts";
+import {
+  accountMoveCommandId,
+  accountMoveCompactionMessageId,
+  controlExpiry,
+} from "../provider/ThreadAccountRouting.ts";
 import * as Settings from "../serverSettings.ts";
 import { routerProviderOf } from "./cliproxyApi.ts";
 import * as UsageLimitSources from "./UsageLimitSources.ts";
@@ -650,9 +655,19 @@ export const make = Effect.gen(function* () {
   });
 
   // Where a move's own compaction stands: only a completed compaction item of its run counts.
+  // Where a move's own compaction stands: only a completed compaction of its run in the moved
+  // conversation counts.
   const moveCompaction = Effect.fn("ThreadAccounts.moveCompaction")(
-    function* (threadId: ThreadId, messageId: MessageId) {
-      const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+    function* (
+      threadId: ThreadId,
+      messageId: MessageId,
+      providerThreadId: ProviderThreadId,
+      session: string,
+    ) {
+      const { runs, attempts } = yield* orchestrator.getThreadRecords(threadId, [
+        "runs",
+        "attempts",
+      ]);
       const run = runs.find((candidate) => candidate.userMessageId === messageId);
       if (run === undefined) return "ended" as const;
       if (!isTerminalRunStatus(run.status)) return "live" as const;
@@ -661,11 +676,21 @@ export const make = Effect.gen(function* () {
         turnItemRunIds: [run.id],
         turnItemTypes: ["compaction"],
       });
+      const sameConversation = attempts.some(
+        (attempt) =>
+          attempt.runId === run.id &&
+          attempt.providerThreadId === providerThreadId &&
+          attempt.nativeThreadId === session,
+      );
       // Claude can finish /compact's run while reporting a failed or skipped compaction.
-      return turnItems.some(
-        (item) =>
-          item.type === "compaction" && item.status === "completed" && item.skipped !== true,
-      )
+      return sameConversation &&
+        turnItems.some(
+          (item) =>
+            item.type === "compaction" &&
+            item.providerThreadId === providerThreadId &&
+            item.status === "completed" &&
+            item.skipped !== true,
+        )
         ? ("compacted" as const)
         : ("ended" as const);
     },
@@ -803,19 +828,24 @@ export const make = Effect.gen(function* () {
     ) {
       // A compaction an earlier move queued, still to run, serves this move too.
       const reuse =
-        waiting !== undefined && (!waiting.dispatched || (yield* waiting.compaction) === "live");
+        waiting !== undefined &&
+        waiting.providerThreadId === providerThread.id &&
+        waiting.session === session &&
+        (!waiting.dispatched || (yield* waiting.compaction) === "live");
       const compactionMessageId = reuse
         ? waiting.compactionMessageId
-        : MessageId.make(`account-move-compact:${input.threadId}:${DateTime.toEpochMillis(now)}`);
+        : accountMoveCompactionMessageId(input.threadId, DateTime.toEpochMillis(now));
       const choice = { sourceId: target.source.id, account, stall, instanceId: target.instanceId };
       // Registered before the dispatch, so the compaction's turn already runs warm-only.
       yield* accountRouting.deferMove({
         threadId: input.threadId,
+        providerThreadId: providerThread.id,
+        session,
         compactionMessageId,
         dispatched: reuse && waiting.dispatched,
         account: (yield* describeChoice(choice)).name,
         waitWhenOut: stall,
-        compaction: moveCompaction(input.threadId, compactionMessageId),
+        compaction: moveCompaction(input.threadId, compactionMessageId, providerThread.id, session),
         apply: applyMove({ ...input, stall, dropThinking: true }),
       });
       if (!reuse) {

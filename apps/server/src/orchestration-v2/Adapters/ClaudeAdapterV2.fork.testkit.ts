@@ -1747,6 +1747,14 @@ export function runClaudeAdapterForkSuite<HarnessError, CaptureError>(
         }).pipe(Effect.result);
         assert.equal(expired._tag, "Failure");
         assert.lengthOf(harness.offeredMessages, 0);
+        // Without a reported expiry there is no deadline to send, so it skips the same way.
+        const { promptCacheExpiresAt: _expiry, ...withoutExpiry } = input;
+        const unknown = yield* harness.runtime.compactThread!({
+          ...withoutExpiry,
+          idleCompaction: true,
+        }).pipe(Effect.result);
+        assert.equal(unknown._tag, "Failure");
+        assert.lengthOf(harness.offeredMessages, 0);
 
         const unverifiedGateway = yield* harness.runtime.compactThread!({
           ...input,

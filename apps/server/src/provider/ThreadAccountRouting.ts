@@ -1,6 +1,6 @@
 import {
   CommandId,
-  type MessageId,
+  MessageId,
   threadAccountChoiceFor,
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
@@ -64,9 +64,23 @@ export function accountMoveDropsThinking(
  */
 export type MoveCompactionState = "live" | "compacted" | "ended";
 
+const MOVE_COMPACTION_PREFIX = "account-move-compact:";
+/** The `/compact` an account move queues. */
+export const accountMoveCompactionMessageId = (threadId: ThreadId, at: number) =>
+  MessageId.make(`${MOVE_COMPACTION_PREFIX}${threadId}:${at}`);
+/**
+ * Whether a message is an account move's `/compact`, whose turn runs warm-only. Read from the
+ * persisted message id, so a restart or a dropped move cannot turn it into a cold compaction.
+ */
+export const isAccountMoveCompaction = (messageId: string) =>
+  messageId.startsWith(MOVE_COMPACTION_PREFIX);
+
 /** An account move waiting for the compaction it queued; see `deferMove`. */
 export interface DeferredAccountMove {
   readonly threadId: ThreadId;
+  /** The conversation the move compacts; a turn on another one drops the move. */
+  readonly providerThreadId: ProviderThreadId;
+  readonly session: string;
   /** The `/compact` message the move queued; a later move reuses it while it is still to run. */
   readonly compactionMessageId: MessageId;
   /** False until the compaction's dispatch committed, before which it has no run to read. */
@@ -154,10 +168,9 @@ export class ThreadAccountRouting extends Context.Reference<{
   /** Whether the latest turn could not pin a choice that waits for its account. */
   readonly pinFailed: (threadId: ThreadId) => Effect.Effect<boolean>;
   /**
-   * Holds an account move until the compaction it queued completes: the first turn start after
-   * that applies the move before pinning. The compaction runs warm-only (`movesAfter`), so the new
-   * account writes only the compacted context. Replaces the thread's earlier pending move.
-   * In memory: a restart drops the move, and the thread stays on its account.
+   * Holds an account move until its warm-only compaction completes, then applies it at the next
+   * turn start, so the new account writes only the compacted context. Replaces an earlier pending
+   * move but keeps its dispatch state for the same compaction. In memory: a restart drops the move.
    */
   readonly deferMove: (move: DeferredAccountMove) => Effect.Effect<void>;
   /** Marks the pending move queuing that compaction as dispatched, if it still is the thread's. */
@@ -168,11 +181,6 @@ export class ThreadAccountRouting extends Context.Reference<{
   /** Drops the thread's pending move if it still waits on that compaction. */
   readonly cancelMove: (threadId: ThreadId, compactionMessageId: MessageId) => Effect.Effect<void>;
   readonly pendingMove: (threadId: ThreadId) => Effect.Effect<DeferredAccountMove | undefined>;
-  /**
-   * Whether the message is a pending move's compaction. Its turn then runs as a warm-only
-   * compaction: the quota router serves it only from the account whose cache is warm, or skips it.
-   */
-  readonly movesAfter: (threadId: ThreadId, messageId: MessageId) => Effect.Effect<boolean>;
 }>("t3/provider/ThreadAccountRouting", {
   defaultValue: () => ({
     prepareTurn: () => Effect.succeed(false),
@@ -181,7 +189,6 @@ export class ThreadAccountRouting extends Context.Reference<{
     markDispatched: () => Effect.void,
     cancelMove: () => Effect.void,
     pendingMove: () => Effect.undefined,
-    movesAfter: () => Effect.succeed(false),
   }),
 }) {}
 
@@ -196,10 +203,16 @@ export const make = Effect.gen(function* () {
   // Applies a pending move once its own compaction completed; true when it pinned the new account.
   const applyPendingMove = Effect.fn("ThreadAccountRouting.applyPendingMove")(function* (
     threadId: ThreadId,
+    providerThread: OrchestrationV2ProviderThread,
   ) {
     const pending = pendingMoves.get(threadId);
     if (pending === undefined || !pending.dispatched) return false;
-    const state = yield* pending.compaction;
+    const conversation = providerThread.nativeThreadRef?.nativeId;
+    const state =
+      providerThread.id !== pending.providerThreadId || conversation !== pending.session
+        ? // Its compaction cannot vouch for another conversation.
+          "ended"
+        : yield* pending.compaction;
     // A move replaced meanwhile is the newer move's to settle.
     if (state === "live" || pendingMoves.get(threadId) !== pending) return false;
     pendingMoves.delete(threadId);
@@ -230,7 +243,7 @@ export const make = Effect.gen(function* () {
   ) {
     // The move pinned and recorded the new account itself; this turn's thread record predates it.
     // Like any move's next turn, it drops thinking the old account signed.
-    if (yield* applyPendingMove(input.appThread.id)) {
+    if (yield* applyPendingMove(input.appThread.id, input.providerThread)) {
       failedWaitingPins.delete(input.appThread.id);
       return true;
     }
@@ -341,7 +354,12 @@ export const make = Effect.gen(function* () {
 
   const deferMove = (move: DeferredAccountMove) =>
     Effect.sync(() => {
-      pendingMoves.set(move.threadId, move);
+      // A move read before its compaction's dispatch committed must not unset the flag.
+      const current = pendingMoves.get(move.threadId);
+      const dispatched =
+        move.dispatched ||
+        (current?.compactionMessageId === move.compactionMessageId && current.dispatched);
+      pendingMoves.set(move.threadId, { ...move, dispatched });
     });
   const markDispatched = (threadId: ThreadId, compactionMessageId: MessageId) =>
     Effect.sync(() => {
@@ -355,8 +373,6 @@ export const make = Effect.gen(function* () {
         pendingMoves.delete(threadId);
     });
   const pendingMove = (threadId: ThreadId) => Effect.sync(() => pendingMoves.get(threadId));
-  const movesAfter = (threadId: ThreadId, messageId: MessageId) =>
-    Effect.sync(() => pendingMoves.get(threadId)?.compactionMessageId === messageId);
 
   return {
     prepareTurn,
@@ -365,7 +381,6 @@ export const make = Effect.gen(function* () {
     markDispatched,
     cancelMove,
     pendingMove,
-    movesAfter,
   } satisfies (typeof ThreadAccountRouting)["Service"];
 });
 

@@ -287,9 +287,10 @@ function ThreadAccountPickerChip(
         toastManager.add({
           type: "info",
           title: gt("Compacting first"),
-          description: gt("The thread switches to {account} when the compaction finishes.", {
-            account: accountLabel(target),
-          }),
+          description: gt(
+            "The thread switches to {account} on its next turn after the compaction. If the compaction is skipped, it stays on its account.",
+            { account: accountLabel(target) },
+          ),
         });
       }
     }
