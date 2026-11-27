@@ -650,6 +650,77 @@ it.effect("waitForThread can wait past an ended run for the thread's delegated w
   }),
 );
 
+it.effect("a settled wait names the last answer, not a later compaction, as the result", () =>
+  Effect.gen(function* () {
+    const projectId = ProjectId.make("project:thread-management:compaction-result");
+    const threadId = ThreadId.make("thread:thread-management:compaction-result");
+    const runIdOf = (name: string) => RunId.make(`run:thread-management:compaction-result:${name}`);
+    const at = (seconds: number) => DateTime.makeUnsafe(seconds * 1_000);
+    const run = (name: string, ordinal: number) =>
+      ({
+        id: runIdOf(name),
+        ordinal,
+        status: "completed",
+        userMessageId: `message:${name}`,
+        startedAt: at(ordinal * 2 - 1),
+        completedAt: at(ordinal * 2),
+      }) as unknown as OrchestrationV2Run;
+    // After the turn that answered: a monitor update, then an idle compaction.
+    const runs = [run("answer", 1), run("monitor", 2), run("compact", 3)];
+    const message = (name: string, text: string, notification?: object) => ({
+      id: `message:${name}`,
+      runId: runIdOf(name),
+      role: "user",
+      text,
+      createdBy: "agent",
+      ...(notification === undefined ? {} : { notification }),
+    });
+    const messages = [
+      message("answer", "Do it"),
+      message("monitor", "Monitor update", { source: { kind: "monitor" }, outcome: "updated" }),
+      message("compact", "/compact"),
+    ];
+    const layerTest = ThreadManagementService.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+      Layer.provide(
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          getThreadEventSequence: () => Effect.succeed(0),
+          restartContinuationPending: () => Effect.succeed(false),
+          delegatedTaskResultPending: () => Effect.succeed(false),
+          streamStoredEventsFrom: () => Stream.never,
+          getThreadRecords: (_threadId, _fields, filter) =>
+            Effect.sync(
+              () =>
+                ({
+                  thread: { id: threadId, projectId, deletedAt: null },
+                  runs,
+                  messages:
+                    filter?.messageIds === undefined
+                      ? messages
+                      : messages.filter((entry) => filter.messageIds!.includes(entry.id as never)),
+                  subagents: [],
+                  providerThreads: [],
+                }) as unknown as OrchestrationV2ThreadProjection,
+            ),
+        }),
+      ),
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(layerReceiptsTest),
+    );
+    const service = yield* ThreadManagementService.ThreadManagementService.pipe(
+      Effect.provide(layerTest),
+    );
+    const result = yield* service.waitForThread({
+      projectId,
+      threadId,
+      runId: runIdOf("compact"),
+      timeoutMs: 60 * 60 * 1_000,
+      untilDelegatedWorkSettled: true,
+    });
+    expect(result).toMatchObject({ timedOut: false, resultRun: { id: runIdOf("answer") } });
+  }),
+);
+
 it.effect(
   "a turn that ended without its result is waited past, and a later turn answers for it",
   () =>

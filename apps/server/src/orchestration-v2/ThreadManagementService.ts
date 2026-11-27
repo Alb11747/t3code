@@ -45,7 +45,11 @@ import {
   ThreadId,
   type TurnItemId,
 } from "@t3tools/contracts";
-import { delegatedTaskProgress } from "@t3tools/provider-core/server/subagentProjection";
+import {
+  delegatedTaskProgress,
+  monitorUpdateRunIds,
+} from "@t3tools/provider-core/server/subagentProjection";
+import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
 import { AgentScope } from "@t3tools/shared/AgentScope";
@@ -1315,7 +1319,38 @@ const make = Effect.gen(function* () {
       const pending = yield* orchestrator
         .delegatedTaskResultPending(input.threadId)
         .pipe(Effect.mapError(loadError));
-      return pending ? undefined : progress.resultRun;
+      return pending ? undefined : yield* answerRun(records, progress.resultRun);
+    });
+    // Fork: a compaction is upkeep, not an answer, so the result stays the run before it. A remote
+    // task's follower reads this, and would otherwise report every idle compaction there as a turn.
+    const isCompactionRun = Effect.fnUntraced(function* (run: OrchestrationV2Run) {
+      const { messages } = yield* getProjectThreadRecords(input, ["messages"], {
+        messageIds: [run.userMessageId],
+      });
+      return messages.some(isCompactionCommandMessage);
+    });
+    const answerRun = Effect.fnUntraced(function* (
+      records: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
+      resultRun: OrchestrationV2Run | undefined,
+    ) {
+      if (resultRun === undefined || !(yield* isCompactionRun(resultRun))) return resultRun;
+      // Monitor updates are not answers either, as for the result run itself.
+      const monitorRuns = monitorUpdateRunIds(records.messages);
+      const earlier = records.runs
+        .filter(
+          (run) =>
+            run.id !== resultRun.id &&
+            isTerminalRunStatus(run.status) &&
+            run.status !== "rolled_back" &&
+            !monitorRuns.has(run.id) &&
+            (run.startedAt !== null || run.ordinal === 1) &&
+            runRanAfter(resultRun, run),
+        )
+        .toSorted((a, b) => (runRanAfter(a, b) ? -1 : runRanAfter(b, a) ? 1 : 0));
+      for (const run of earlier) {
+        if (!(yield* isCompactionRun(run))) return run;
+      }
+      return resultRun;
     });
     const evaluate = Effect.fn("orchestrationV2.threadManagement.evaluate")(function* (
       runs: ReadonlyArray<OrchestrationV2Run>,
