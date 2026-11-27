@@ -289,8 +289,13 @@ test("skips non-canonical JSON, earlier stubs and every T3 tool alias", () => {
     "non-canonical JSON",
   );
   assert.equal(
-    archive.stubRow(row("command_execution", { output: `[t3-archive:${output}`, exitCode: 0 }), "0")
-      .skip,
+    archive.stubRow(
+      row("command_execution", {
+        output: `${output}\n[t3-archive:0123456789abcdef] 9 characters archived. Full output: node fork/scripts/turn-item-archive.cjs view --thread t --item i\n`,
+        exitCode: 0,
+      }),
+      "0",
+    ).skip,
     "already archived",
   );
   for (const toolName of [
@@ -379,7 +384,6 @@ test("verify catches a stub without its record and ignores quoted markers", asyn
     sleep: noSleep,
   };
   await archive.run(opts);
-  assert.deepEqual(archive.verify(opts).problems, []);
   // Drop row b's record from the shared segment: its stub no longer has a record.
   const zlib = require("node:zlib");
   const [file] = fs
@@ -394,6 +398,12 @@ test("verify catches a stub without its record and ignores quoted markers", asyn
   const problems = archive.verify(opts).problems;
   assert.equal(problems.length, 1);
   assert.match(problems[0], /^row b: stub [0-9a-f]{16} has no archive record/);
+  // A row quoting a's full marker line (a thread read of it) is neither a stub nor skipped.
+  const quoted = JSON.parse(f.payload("a")).output.match(/\[t3-archive:[^\n]*/)[0];
+  f.add("reader", "t", "command_execution", { output: `${big("r")}\n${quoted}`, exitCode: 0 });
+  await archive.run(opts);
+  assert.match(JSON.parse(f.payload("reader")).output, /--item reader\n/);
+  assert.equal(archive.verify(opts).problems.length, 1);
 });
 
 test("releases the lock when the database can't be opened", async () => {

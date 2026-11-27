@@ -30,7 +30,10 @@ const TOOL_TYPES = ["command_execution", "dynamic_tool"];
 const SETTLED_STATUSES = ["completed", "failed", "cancelled", "interrupted"];
 const LIVE_RUN_STATUSES = ["queued", "preparing", "starting", "running", "waiting"];
 const MARKER_TEXT = "[t3-archive:";
-const MARKER_PATTERN = /\[t3-archive:([0-9a-f]{16})\] \d+ characters archived\. Full output: /g;
+// A stub's marker names its own item, so quoted markers (one thread reading
+// another's archived output) are told apart from real stubs.
+const MARKER_PATTERN =
+  /\[t3-archive:([0-9a-f]{16})\] \d+ characters archived\. Full output: node fork\/scripts\/turn-item-archive\.cjs view --thread \S+ --item ([^\s"\\]+)/g;
 // T3's own tools (every server alias T3 records) feed links, summaries and failure
 // checks from their output, so they stay whole; their results are small anyway.
 const T3_TOOL_PATTERN = /^(?:mcp[-_]{1,2})?t3[-_ ]?code(?:[-_ ]?direct)?(?:__|[-_.:/ ])/i;
@@ -79,6 +82,15 @@ function marker(context, omitted) {
   return `\n${MARKER_TEXT}${context.archiveId}] ${omitted} characters archived. Full output: node fork/scripts/turn-item-archive.cjs view --thread ${context.threadId} --item ${context.itemId}\n`;
 }
 
+function ownArchiveIds(payloadJson, itemId) {
+  if (!payloadJson.includes(MARKER_TEXT)) return new Set();
+  return new Set(
+    Array.from(payloadJson.matchAll(MARKER_PATTERN))
+      .filter((match) => match[2] === itemId)
+      .map((match) => match[1]),
+  );
+}
+
 function stubText(text, head, tail, context) {
   const kept = cutHead(text, head);
   const end = cutTail(text, tail);
@@ -120,7 +132,9 @@ function binaryBlock(block) {
  */
 function stubRow(row, archiveId) {
   if (row.inline_work_output === 1) return { skip: "inline output" };
-  if (row.payload_json.includes(MARKER_TEXT)) return { skip: "already archived" };
+  if (ownArchiveIds(row.payload_json, row.turn_item_id).size > 0) {
+    return { skip: "already archived" };
+  }
   let payload;
   try {
     payload = JSON.parse(row.payload_json);
@@ -518,12 +532,13 @@ async function run(options) {
   const sleep = options.sleep ?? defaultSleep;
   const release = acquireLock(options.archiveDir);
   let db;
+  let summary;
   try {
     db = openDatabase(options.db, { write: true });
     const cutoff = cutoffOf(options);
     const idle = idleQuery(db);
     const afterWrite = writeTracker(db, sleep);
-    const summary = {
+    summary = {
       threads: 0,
       rows: 0,
       savedBytes: 0,
@@ -630,6 +645,10 @@ async function run(options) {
     }
     await afterWrite.finish();
     return summary;
+  } catch (error) {
+    // Rows stubbed before the stop are committed; report them with the error.
+    if (summary !== undefined) error.summary = summary;
+    throw error;
   } finally {
     db?.close();
     release();
@@ -796,10 +815,7 @@ function verify(options) {
     );
     for (let from = 0; from < last; from += VERIFY_ROWID_SPAN) {
       for (const row of page.all({ $from: from, $to: from + VERIFY_ROWID_SPAN })) {
-        const archiveIds = new Set(
-          Array.from(row.payload_json.matchAll(MARKER_PATTERN), (match) => match[1]),
-        );
-        for (const archiveId of archiveIds) {
+        for (const archiveId of ownArchiveIds(row.payload_json, row.turn_item_id)) {
           if (!known.has(`${archiveId}:${row.turn_item_id}`)) {
             summary.problems.push(
               `row ${row.turn_item_id}: stub ${archiveId} has no archive record`,
@@ -884,6 +900,7 @@ if (require.main === module) {
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (error) => {
+      if (error.summary) process.stdout.write(`${JSON.stringify(error.summary, null, 2)}\n`);
       process.stderr.write(`${error.message}\n`);
       process.exit(1);
     },
