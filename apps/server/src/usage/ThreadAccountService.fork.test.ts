@@ -701,6 +701,7 @@ describe("ThreadAccountService.move", () => {
           type: "message.dispatch",
           text: "/compact",
           createdBy: "agent",
+          modelSelection,
           dispatchMode: { type: "queue_after_active" },
         });
         // Its warm-only intent lives in the persisted message id, which outlives the move.

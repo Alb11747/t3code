@@ -850,13 +850,15 @@ export const make = Effect.gen(function* () {
       });
       if (!reuse) {
         // Its own turn after the current one. An agent's message, so it never joins another
-        // pending compaction: the move needs this run's compaction.
+        // pending compaction: the move needs this run's compaction. Pinned to the Claude model it
+        // compacts, so a queued switch to another provider cannot take it.
         yield* orchestrator
           .dispatch({
             type: "message.dispatch",
             commandId: CommandId.make(compactionMessageId),
             messageId: compactionMessageId,
             threadId: input.threadId,
+            modelSelection: thread.modelSelection,
             text: IDLE_COMPACTION_TEXT,
             attachments: [],
             dispatchMode: { type: "queue_after_active" },

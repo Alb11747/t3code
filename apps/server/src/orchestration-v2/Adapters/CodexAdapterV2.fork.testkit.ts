@@ -394,6 +394,15 @@ export function runCodexAdapterForkSuite(input: CodexAdapterForkSuiteInput) {
             text: prompt,
           }),
         );
+      // A warm-only compaction (an account move's) fails before any request: Codex has no
+      // warm-only path.
+      const requested = requests.length;
+      const warmOnly = yield* harness.runtime.compactThread!({
+        ...(yield* turnInput("warm-only")),
+        idleCompaction: true,
+      }).pipe(Effect.result);
+      assert.equal(warmOnly._tag, "Failure");
+      assert.lengthOf(requests, requested);
       const first = yield* harness.runtime
         .startTurn(yield* turnInput("rejected"))
         .pipe(Effect.forkScoped);
