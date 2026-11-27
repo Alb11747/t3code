@@ -577,6 +577,8 @@ export const make = Effect.gen(function* () {
         // stay behind a saved start the provider may have accepted, and a delegated follow-up is
         // held so its parent's task goes idle.
         if (retryableRuns.length === 0 && run.delegatedTaskId === undefined) continue;
+        // Fork: a paced turn waits for its account's pace, not a person; PacedThreads starts it.
+        if (retryableRuns.length === 0 && projection.thread.pacedUntil != null) continue;
         events.push({
           id: yield* allocateEventId(),
           type: "run.updated",

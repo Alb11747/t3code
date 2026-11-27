@@ -6,6 +6,8 @@ import {
   type RunId,
   OrchestratorMcpFailure,
   type OrchestrationV2Command,
+  pacedChoiceOf,
+  pacedFromChoice,
   threadAccountChoiceFor,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -225,6 +227,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       input.compactBeforeCacheExpires === undefined &&
       input.compactAfterIdle === undefined &&
       input.autoCompactLimit === undefined &&
+      input.paced === undefined &&
       input.account === undefined,
     McpToolAccess.reads((input) =>
       Effect.gen(function* () {
@@ -251,6 +254,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
             : (thread.compactBeforeCacheExpires ?? null),
           compactAfterIdle: thread.compactAfterIdle ?? null,
           autoCompactLimit: thread.autoCompactLimit ?? null,
+          paced: pacedChoiceOf(thread.paced),
           ...(accounts === null
             ? {}
             : {
@@ -290,7 +294,8 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         if (
           input.compactBeforeCacheExpires !== undefined ||
           input.compactAfterIdle !== undefined ||
-          input.autoCompactLimit !== undefined
+          input.autoCompactLimit !== undefined ||
+          input.paced !== undefined
         ) {
           const result = yield* threads
             .dispatch({
@@ -306,6 +311,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
               ...(input.autoCompactLimit === undefined
                 ? {}
                 : { autoCompactLimit: input.autoCompactLimit }),
+              ...(input.paced === undefined ? {} : { paced: pacedFromChoice(input.paced) }),
             })
             .pipe(Effect.mapError(dispatchFailure));
           sequence = result.sequence;
@@ -334,7 +340,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         return {
           sequence: yield* required(
             sequence,
-            "modelSelection`, `compactBeforeCacheExpires`, `compactAfterIdle`, `autoCompactLimit` or `account",
+            "modelSelection`, `compactBeforeCacheExpires`, `compactAfterIdle`, `autoCompactLimit`, `paced` or `account",
           ),
         };
       }),

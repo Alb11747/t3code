@@ -720,6 +720,11 @@ export interface ProjectionStoreV2Shape {
   readonly getThreadsWithAccountChoices: (
     sourceId: string,
   ) => Effect.Effect<ReadonlyArray<OrchestrationV2AppThread>, ProjectionStoreV2Error>;
+  /** Fork: unarchived paced threads, and any thread still holding a paced turn. */
+  readonly getPacedThreads: () => Effect.Effect<
+    ReadonlyArray<OrchestrationV2AppThread>,
+    ProjectionStoreV2Error
+  >;
   /** Fork: threads whose provider threads carry these native session ids, archived ones included. */
   readonly getThreadsByNativeIds: (
     nativeIds: ReadonlyArray<string>,
@@ -892,6 +897,7 @@ export interface ProjectionStoreV2Shape {
   >;
   readonly canStartQueuedRun: (
     threadId: ThreadId,
+    options?: { readonly ignorePacing?: boolean },
   ) => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly getHeldQueuedRuns: (
     threadId: ThreadId,
@@ -1998,6 +2004,9 @@ export function threadShellFromProjection(
     compactBeforeCacheExpires: projection.thread.compactBeforeCacheExpires ?? null,
     compactOnce: compactOnceApplies(projection.thread.compactOnceRequestedAt, projection.runs),
     ...(projection.thread.accountChoice ? { accountChoice: projection.thread.accountChoice } : {}),
+    // Always sent, so clients can tell a server without pacing (absent) from an unpaced thread.
+    paced: projection.thread.paced ?? null,
+    ...(projection.thread.pacedUntil ? { pacedUntil: projection.thread.pacedUntil } : {}),
     providerInstanceId: projection.thread.providerInstanceId,
     modelSelection: projection.thread.modelSelection,
     runtimeMode: projection.thread.runtimeMode,
@@ -2330,6 +2339,8 @@ function shellFromState(input: {
     ...(input.state.thread.accountChoice
       ? { accountChoice: input.state.thread.accountChoice }
       : {}),
+    paced: input.state.thread.paced ?? null,
+    ...(input.state.thread.pacedUntil ? { pacedUntil: input.state.thread.pacedUntil } : {}),
     providerInstanceId: input.state.thread.providerInstanceId,
     modelSelection: input.state.thread.modelSelection,
     runtimeMode: input.state.thread.runtimeMode,
@@ -6872,14 +6883,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         )
         .pipe(Effect.mapError(controlReadError(threadId)));
 
-    const canStartQueuedRun: ProjectionStoreV2Shape["canStartQueuedRun"] = (threadId) =>
+    const canStartQueuedRun: ProjectionStoreV2Shape["canStartQueuedRun"] = (threadId, options) =>
       sql
         .withTransaction(
           Effect.gen(function* () {
             yield* requireThread(threadId);
+            const now = DateTime.formatIso(yield* DateTime.now);
+            // A paced thread's held turn waits for its account to fall back to pace.
             const rows = yield* sql<{ readonly ready: number }>`
           SELECT 1 AS ready FROM orchestration_v2_projection_threads AS thread
           WHERE thread.thread_id = ${threadId} AND thread.archived_at IS NULL AND thread.deleted_at IS NULL
+            ${options?.ignorePacing === true ? sql`` : sql`AND COALESCE(json_extract(thread.payload_json, '$.pacedUntil') <= ${now}, 1)`}
             AND EXISTS (SELECT 1 FROM orchestration_v2_projection_runs
               WHERE thread_id = ${threadId} AND status = 'queued'
                 AND json_extract(payload_json, '$.queueHeld') IS NOT 1
@@ -9327,6 +9341,20 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
+    const getPacedThreads = Effect.fn("ProjectionStore.getPacedThreads")(
+      function* () {
+        const rows = yield* sql<PayloadRow>`
+          SELECT payload_json FROM orchestration_v2_projection_threads
+          WHERE deleted_at IS NULL
+            AND ((archived_at IS NULL AND json_extract(payload_json, '$.paced') IS NOT NULL)
+              OR json_extract(payload_json, '$.pacedUntil') IS NOT NULL)
+          ORDER BY thread_id ASC
+        `;
+        return yield* Effect.forEach(rows, (row) => decodeThreadPayload(row.payload_json));
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
     // No index on the native id; only explicit routing reads ask, for the few sessions a hub lists.
     const getThreadsByNativeIds = Effect.fn("ProjectionStore.getThreadsByNativeIds")(
       function* (nativeIds: ReadonlyArray<string>) {
@@ -10228,6 +10256,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getThreadsWithPullRequests: readOnReader(getThreadsWithPullRequests),
       getThreadsWithIssueWatches: readOnReader(getThreadsWithIssueWatches),
       getThreadsWithAccountChoices: readOnReader(getThreadsWithAccountChoices),
+      getPacedThreads: readOnReader(getPacedThreads),
       getThreadsByNativeIds: readOnReader(getThreadsByNativeIds),
       getThreadTitles: readOnReader(getThreadTitles),
       getThreadLinkMetadata: readOnReader(getThreadLinkMetadata),

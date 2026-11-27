@@ -121,7 +121,15 @@ export class UsageLimitSources extends Context.Service<
     ) => Effect.Effect<string>;
   } & Pick<
     CliproxyApi,
-    "nextPick" | "pin" | "unpin" | "steer" | "unsteer" | "margin" | "subscriptionEnd"
+    | "nextPick"
+    | "pin"
+    | "unpin"
+    | "pace"
+    | "unpace"
+    | "steer"
+    | "unsteer"
+    | "margin"
+    | "subscriptionEnd"
   >
 >()("t3/usage/UsageLimitSources") {}
 
@@ -577,6 +585,8 @@ export const make = Effect.gen(function* () {
     removedEndAlias,
     pin: api.pin,
     unpin: api.unpin,
+    pace: api.pace,
+    unpace: api.unpace,
     steer: api.steer,
     unsteer: api.unsteer,
     margin: api.margin,

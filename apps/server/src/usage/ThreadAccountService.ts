@@ -55,6 +55,7 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { accountMoveCommandId, controlExpiry } from "../provider/ThreadAccountRouting.ts";
 import * as Settings from "../serverSettings.ts";
 import { routerProviderOf } from "./cliproxyApi.ts";
+import { accountPaceRows } from "./pacedSessions.ts";
 import * as UsageLimitSources from "./UsageLimitSources.ts";
 import * as UsageResetSnoozeService from "./UsageResetSnoozeService.ts";
 
@@ -148,6 +149,9 @@ const namedRouting = (
   ...(routes.margins && { margins: routes.margins }),
   ...(routes.ends && {
     ends: routes.ends.map((end) => ({ ...end, account: name(end.account) })),
+  }),
+  ...(routes.pace && {
+    pace: routes.pace.map((entry) => ({ ...entry, account: name(entry.account) })),
   }),
 });
 
@@ -969,12 +973,17 @@ export const make = Effect.gen(function* () {
       const account = alias(end.account);
       return endsAt === undefined || account === null ? [] : [{ account, endsAt }];
     });
+    const pace = accountPaceRows(control.accounts ?? []).flatMap((row) => {
+      const account = alias(row.account);
+      return account === null ? [] : [{ ...row, account }];
+    });
     const result: ThreadAccountRouting = {
       steers: [...routerSteers, ...savedSteers],
       pins,
       held: [...held.values()],
       margins,
       ends,
+      ...(pace.length === 0 ? {} : { pace }),
     };
     return result;
   });

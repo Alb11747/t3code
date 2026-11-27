@@ -103,6 +103,7 @@ import * as HubModelAliases from "./provider/HubModelAliases.ts";
 import * as HubModelAliasSync from "./usage/HubModelAliasSync.ts";
 import * as ThreadAccountRouting from "./provider/ThreadAccountRouting.ts";
 import * as ThreadAccountService from "./usage/ThreadAccountService.ts";
+import * as PacedThreads from "./usage/PacedThreads.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as PeerForwarding from "./peer/PeerForwarding.ts";
@@ -815,6 +816,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ).pipe(Layer.provide(OrchestrationMilestones.layer), Layer.provide(ProjectionStoreV2.layer)),
   ProviderUsageLimitsIngestion.layer,
   ThreadAccountService.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
+  PacedThreads.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
   HubModelAliasSync.layer,
   layerProviderInstallationRefresh,
   ProviderInstallation.layer,

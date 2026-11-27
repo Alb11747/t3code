@@ -25,6 +25,8 @@ import {
   PositiveInt,
   OrchestratorMcpBooleanOrOnce,
   OrchestratorMcpCompactAfterIdle,
+  OrchestratorMcpPaced,
+  OrchestratorMcpPacedChoice,
 } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Schema from "effect/Schema";
@@ -166,6 +168,7 @@ const threadConfiguration = Schema.Struct({
   compactBeforeCacheExpires: CompactBeforeCacheExpiresValue,
   compactAfterIdle: OrchestratorMcpCompactAfterIdle,
   autoCompactLimit: Schema.optional(Schema.NullOr(PositiveInt)),
+  paced: OrchestratorMcpPacedChoice,
   // Fork: CLI Proxy quota-router accounts, present when the provider routes through one.
   account: Schema.optional(
     Schema.NullOr(Schema.Struct({ account: AccountName, waitWhenOut: Schema.Boolean })),
@@ -187,7 +190,7 @@ const CompactBeforeCacheExpires = CompactBeforeCacheExpiresValue.annotate({
 const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   ...commandTool,
   description:
-    "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`, `compactBeforeCacheExpires`, `compactAfterIdle`, or `autoCompactLimit`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`. Behind a CLI Proxy hub, the read lists `accounts`; `account` (email or alias) sends the thread's requests to one (null: automatic), and `waitWhenOut` waits for it instead of falling back; a request already waiting follows a change at once, so don't interrupt it. Switching rewrites the context cache once. Moving off an `owner` account drops the conversation's earlier thinking: pass `dropThinking: true` to move anyway, and say in your reply that its earlier thinking was dropped.",
+    "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`, `compactBeforeCacheExpires`, `compactAfterIdle`, `autoCompactLimit`, or `paced` (low importance: wait while usage is ahead of pace). Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`. Behind a CLI Proxy hub, the read lists `accounts`; `account` (email or alias) sends the thread's requests to one (null: automatic), and `waitWhenOut` waits for it instead of falling back; a request already waiting follows a change at once, so don't interrupt it. Switching rewrites the context cache once. Moving off an `owner` account drops the conversation's earlier thinking: pass `dropThinking: true` to move anyway, and say in your reply that its earlier thinking was dropped.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
@@ -200,6 +203,7 @@ const ThreadConfigureTool = Tool.make("t3_thread_configure", {
           "Tokens at which this thread auto-compacts, capped at its model's window; null: the model's default. A loaded Codex thread picks it up when Codex next loads it.",
       }),
     ),
+    paced: OrchestratorMcpPaced,
     account: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
     waitWhenOut: Schema.optional(Schema.Boolean),
     dropThinking: Schema.optional(Schema.Boolean),

@@ -1,6 +1,7 @@
 import {
   ProviderDriverKind,
   UsageLimitSourceError,
+  type PacedWindow,
   type ProviderConsumeResetCreditResult,
   type UsageLimitSourceAccount,
   type UsageLimitSourceConfig,
@@ -21,6 +22,13 @@ import {
   grokUsageResponseToLimits,
 } from "@t3tools/provider-grok/server";
 import { codexPlanLabel } from "../provider/CodexProvider.ts";
+import {
+  PACED_PATH,
+  pacedBody,
+  RouterAccountPace,
+  RouterPacedSessions,
+  unpacedBody,
+} from "./pacedSessions.ts";
 import { codexRateLimitsToLimits } from "../provider/codexUsageLimits.ts";
 import { claudeUsageResponseToLimits } from "../provider/claudeUsageLimits.ts";
 import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
@@ -212,6 +220,8 @@ const Control = Schema.Struct({
       ),
     ),
   ),
+  // Quota router 0.47: paced sessions.
+  paced: RouterPacedSessions,
   // Quota router 0.26.0: the plugin's version.
   plugin: Schema.optional(
     Schema.NullOr(Schema.Struct({ version: Schema.optional(Schema.String) })),
@@ -225,6 +235,8 @@ const Control = Schema.Struct({
           provider: Schema.String,
           auth_index: Schema.optional(Schema.String),
           legacy_account: Schema.optional(Schema.String),
+          // 0.47: how far each window's use is ahead of its pace line.
+          pace: RouterAccountPace,
         }),
       ),
     ),
@@ -1048,6 +1060,23 @@ export const makeCliproxyApi = Effect.gen(function* () {
     });
   });
 
+  /** Registers sessions as paced until `expiresAt`; posting again renews them. */
+  const pace = Effect.fn("CliproxyApi.pace")(function* (
+    config: CliproxyHub,
+    sessions: ReadonlyArray<string>,
+    windows: ReadonlyArray<PacedWindow>,
+    expiresAt: string,
+  ) {
+    yield* management(config, PACED_PATH, pacedBody(sessions, windows, expiresAt));
+  });
+
+  const unpace = Effect.fn("CliproxyApi.unpace")(function* (
+    config: CliproxyHub,
+    sessions: ReadonlyArray<string>,
+  ) {
+    yield* management(config, PACED_PATH, unpacedBody(sessions), { method: "DELETE" });
+  });
+
   const unpin = Effect.fn("CliproxyApi.unpin")(function* (
     config: CliproxyHub,
     sessions: ReadonlyArray<string>,
@@ -1143,6 +1172,8 @@ export const makeCliproxyApi = Effect.gen(function* () {
     control,
     pin,
     unpin,
+    pace,
+    unpace,
     steer,
     unsteer,
     margin,

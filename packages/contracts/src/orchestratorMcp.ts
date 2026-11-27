@@ -4,7 +4,7 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { AuthMcpClientAccess } from "./auth.ts";
 import { OrchestratorMcpThreadAccountHold, OrchestratorMcpThreadStall } from "./claudeKeepWarm.ts";
-import { AccountName } from "./threadAccount.ts";
+import { AccountName, PacedWindow, type ThreadPaced } from "./threadAccount.ts";
 import {
   ContextTransferId,
   EnvironmentId,
@@ -144,6 +144,29 @@ export const OrchestratorMcpCompactAfterIdle = Schema.optional(
   }),
 );
 
+/**
+ * Fork: a paced thread's windows. `waitingUntil`: its Codex turn waits until then; a Claude
+ * request's wait shows in `stalled`. Absent when the thread is not paced.
+ */
+export const OrchestratorMcpThreadPaced = Schema.Struct({
+  windows: Schema.Array(PacedWindow),
+  waitingUntil: Schema.NullOr(IsoDateTime),
+});
+
+/** Fork: how agents set a thread's pacing; `pacedFromChoice` maps it to the stored form. */
+export const OrchestratorMcpPacedChoice = Schema.Literals(["5h", "7d", "both", "off"]);
+export type OrchestratorMcpPacedChoice = typeof OrchestratorMcpPacedChoice.Type;
+export const OrchestratorMcpPaced = Schema.optional(
+  OrchestratorMcpPacedChoice.annotate({
+    description:
+      'Low importance: waits while its account is ahead of pace in the 5-hour ("5h"), weekly ("7d") or either ("both") window, and goes on by itself. "off": full speed.',
+  }),
+);
+export const pacedFromChoice = (choice: OrchestratorMcpPacedChoice): ThreadPaced | null =>
+  choice === "off" ? null : { windows: choice === "both" ? ["5h", "7d"] : [choice] };
+export const pacedChoiceOf = (paced: ThreadPaced | null | undefined): OrchestratorMcpPacedChoice =>
+  !paced ? "off" : paced.windows.length > 1 ? "both" : paced.windows[0];
+
 export const OrchestratorMcpTarget = Schema.Struct({
   providerInstanceId: Schema.optional(
     ProviderInstanceId.annotate({
@@ -177,6 +200,7 @@ export const OrchestratorMcpTarget = Schema.Struct({
   ...OrchestratorMcpLaunchAccountFields,
   autoCompactLimit: OrchestratorMcpAutoCompactLimit,
   compactAfterIdle: OrchestratorMcpCompactAfterIdle,
+  paced: OrchestratorMcpPaced,
   account: Schema.optional(
     Schema.NullOr(TrimmedNonEmptyString).annotate({
       description:
@@ -536,6 +560,7 @@ export const OrchestratorMcpThreadListItem = Schema.Struct({
   snoozedUntil: Schema.NullOr(IsoDateTime),
   stalled: Schema.optional(Schema.NullOr(OrchestratorMcpThreadStall)),
   accountHold: Schema.optional(OrchestratorMcpThreadAccountHold),
+  paced: Schema.optional(OrchestratorMcpThreadPaced),
   /** Absent from linked environments that predate it. */
   pinned: Schema.optional(Schema.Boolean),
   /** Absent from linked environments that predate it. */
@@ -619,6 +644,7 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
   snoozedUntil: Schema.NullOr(IsoDateTime),
   stalled: Schema.optional(Schema.NullOr(OrchestratorMcpThreadStall)),
   accountHold: Schema.optional(OrchestratorMcpThreadAccountHold),
+  paced: Schema.optional(OrchestratorMcpThreadPaced),
   /** Fork: the CLI Proxy account chosen for the thread's requests; absent or null is automatic. */
   account: Schema.optional(
     Schema.NullOr(

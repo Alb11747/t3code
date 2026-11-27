@@ -384,6 +384,7 @@ const make = Effect.gen(function* () {
           ...(target.autoCompactLimit === undefined
             ? {}
             : { autoCompactLimit: target.autoCompactLimit }),
+          ...(target.paced === undefined ? {} : { paced: target.paced }),
           ...(runtimeMode === undefined ? {} : { runtimeMode }),
           ...(interactionMode === undefined ? {} : { interactionMode }),
           // Fork: the environment it runs in resolves the account on its own hub.

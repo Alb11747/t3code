@@ -101,6 +101,9 @@ export function makeSubagentChildThread(input: {
     // Fork: so are its idle-compaction overrides; a child follows the tiers unless asked.
     compactBeforeCacheExpires: null,
     compactOnceRequestedAt: null,
+    // Fork: a child is paced only when its delegation asks; a hold was the parent's account's.
+    paced: null,
+    pacedUntil: null,
     lineage: {
       parentThreadId: input.parentThread.id,
       relationshipToParent: "subagent",

@@ -156,6 +156,7 @@ function layerProjectionStore(
       hasIdleCompactionWait: () => Effect.die("unused hasIdleCompactionWait"),
       getThreadsWithIssueWatches: () => Effect.die("unused getThreadsWithIssueWatches"),
       getThreadsWithAccountChoices: () => Effect.die("unused getThreadsWithAccountChoices"),
+      getPacedThreads: () => Effect.die("unused getPacedThreads"),
       getThreadsByNativeIds: () => Effect.die("unused getThreadsByNativeIds"),
       getThreadWorktreePaths: () => Effect.die("unused getThreadWorktreePaths"),
       getThreadProjection: () => Effect.die("control effects must not load transcript"),

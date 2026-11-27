@@ -6,6 +6,7 @@ import {
   type OrchestrationV2AppThread,
   CommandId,
   type ThreadAccountChoice,
+  type ThreadPaced,
   threadAccountChoiceFor,
   type ChatAttachment,
   type MessageId,
@@ -115,6 +116,7 @@ export interface ThreadLaunchInput {
   readonly interactionMode: ProviderInteractionMode;
   readonly workspaceStrategy: ThreadLaunchWorkspaceStrategy;
   readonly accountChoice?: ThreadAccountChoice;
+  readonly paced?: ThreadPaced;
   /** Fork: tokens at which the new thread auto-compacts. */
   readonly compactAfterIdle?: OrchestrationV2AppThread["compactAfterIdle"];
   readonly autoCompactLimit?: number;
@@ -1570,6 +1572,7 @@ const make = Effect.gen(function* () {
                 commandId: input.commandId,
                 threadId: candidateThreadId,
                 expectedEmpty: true,
+                ...(input.paced === undefined ? {} : { paced: input.paced }),
                 ...(input.compactAfterIdle === undefined
                   ? {}
                   : { compactAfterIdle: input.compactAfterIdle }),
@@ -1588,6 +1591,7 @@ const make = Effect.gen(function* () {
                 runtimeMode: input.runtimeMode,
                 interactionMode: input.interactionMode,
                 ...(launchAccountChoice === null ? {} : { accountChoice: launchAccountChoice }),
+                ...(input.paced === undefined ? {} : { paced: input.paced }),
                 ...(input.compactAfterIdle === undefined
                   ? {}
                   : { compactAfterIdle: input.compactAfterIdle }),

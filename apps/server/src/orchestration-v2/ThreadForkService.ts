@@ -159,6 +159,9 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
         compactBeforeCacheExpires: null,
         compactAfterIdle: null,
         compactOnceRequestedAt: null,
+        // A fork or side chat runs at full speed unless asked; a hold was the source's account's.
+        paced: null,
+        pacedUntil: null,
         createdBy: input.createdBy,
         creationSource: input.creationSource,
         id: input.targetThreadId,

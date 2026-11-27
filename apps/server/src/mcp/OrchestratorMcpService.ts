@@ -71,6 +71,7 @@ import {
   resolveProjectProviderInstanceEnabled,
   SECRET_REQUEST_UNSAVED_NOTE,
   threadAccountChoiceFor,
+  pacedFromChoice,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import { isModelFamilyAlias, resolveFamilyAlias } from "@t3tools/shared/latestModel";
@@ -1048,6 +1049,21 @@ function threadStall(
   };
 }
 
+// Fork: a paced thread's windows and the time its held Codex turn may start.
+function threadPaced(
+  shell: Pick<OrchestrationV2ThreadShell, "paced" | "pacedUntil">,
+  nowMs: number,
+): Pick<OrchestratorMcpThreadListItem, "paced"> {
+  if (!shell.paced) return {};
+  const until = shell.pacedUntil ?? null;
+  return {
+    paced: {
+      windows: shell.paced.windows,
+      waitingUntil: until !== null && Date.parse(until) > nowMs ? until : null,
+    },
+  };
+}
+
 // Fork: a choice made for another provider instance no longer applies.
 function accountOf(
   thread: OrchestrationV2ThreadProjection["thread"],
@@ -1164,6 +1180,7 @@ function listItemFromShell(
     ...threadSettlement(shell),
     ...threadSnooze(shell, nowMs),
     ...threadStall(shell),
+    ...threadPaced(shell, nowMs),
     pinned: shell.pinnedAt != null,
     ...threadBackgroundWork(shell),
     parentThreadId: shell.lineage.parentThreadId,
@@ -1234,6 +1251,7 @@ function threadDetail(
     ...threadSettlement(projection.thread),
     ...threadSnooze(shell, nowMs),
     ...threadStall(shell),
+    ...threadPaced(shell, nowMs),
     ...accountOf(projection.thread, account),
     pinned: shell.pinnedAt != null,
     ...threadBackgroundWork(shell),
@@ -2926,6 +2944,9 @@ const make = Effect.gen(function* () {
             ...(input.target?.autoCompactLimit === undefined
               ? {}
               : { autoCompactLimit: input.target.autoCompactLimit }),
+            ...(input.target?.paced === undefined
+              ? {}
+              : { paced: pacedFromChoice(input.target.paced) }),
             ...(input.notifyParent === undefined ? {} : { notifyParent: input.notifyParent }),
             // Async delegations wake the parent on every child terminal; wait
             // delegations deliver through the blocking tool call until `awaitTask`
@@ -3994,6 +4015,9 @@ const make = Effect.gen(function* () {
                   ...(request.target?.autoCompactLimit === undefined
                     ? {}
                     : { autoCompactLimit: request.target.autoCompactLimit }),
+                  ...(request.target?.paced === undefined
+                    ? {}
+                    : { paced: pacedFromChoice(request.target.paced) }),
                   branch: parent.thread.branch,
                   worktreePath: parent.thread.worktreePath,
                   ...(parent.thread.linkOrigin === undefined

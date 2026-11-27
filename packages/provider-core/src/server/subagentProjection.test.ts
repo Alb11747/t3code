@@ -44,4 +44,26 @@ describe("makeSubagentChildThread", () => {
     );
     expect(child.accountMovedAt).toBeNull();
   });
+
+  it("runs at full speed unless its delegation paces it", () => {
+    const child = makeSubagentChildThread({
+      parentThread: {
+        id: "parent",
+        lineage: { rootThreadId: "parent" },
+        paced: { windows: ["5h"] },
+        pacedUntil: "2026-11-27T12:00:00.000Z",
+      } as never,
+      childThreadId: "child" as never,
+      parentNodeId: "node" as never,
+      activeProviderThreadId: null,
+      providerInstanceId: "codex" as never,
+      modelSelection: { instanceId: "codex", model: "model" } as never,
+      title: "Child",
+      now: DateTime.makeUnsafe(0),
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    expect(child.paced).toBeNull();
+    expect(child.pacedUntil).toBeNull();
+  });
 });

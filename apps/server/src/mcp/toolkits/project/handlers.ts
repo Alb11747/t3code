@@ -3,6 +3,7 @@ import {
   MessageId,
   ThreadId,
   OrchestratorMcpFailure,
+  pacedFromChoice,
   type OrchestrationV2ThreadLaunchWorkspaceStrategy,
   ProjectId,
   type TaskFolderError,
@@ -415,6 +416,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             code: "invalid_request",
             message: "waitWhenOut needs an account. No thread was created.",
           });
+        const paced = input.paced === undefined ? null : pacedFromChoice(input.paced);
         const accountChoice =
           replaying || !requestedAccount
             ? undefined
@@ -467,6 +469,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           ...(input.autoCompactLimit === undefined
             ? {}
             : { autoCompactLimit: input.autoCompactLimit }),
+          ...(paced === null ? {} : { paced }),
           ...(input.message === undefined && attachments.length === 0
             ? {}
             : {

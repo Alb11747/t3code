@@ -217,6 +217,10 @@ export interface EnvironmentThreadShell {
   readonly compactOnce?: boolean;
   /** Fork: the CLI Proxy account the thread's requests go to; absent or null is automatic. */
   readonly accountChoice?: import("@t3tools/contracts").ThreadAccountChoice | null;
+  /** Fork: low importance; absent or null runs at full speed. */
+  readonly paced?: import("@t3tools/contracts").ThreadPaced | null;
+  /** Fork: a paced Codex thread waits to start its next turn until then. */
+  readonly pacedUntil?: string | null;
   readonly branchPullRequest?: ThreadLinkedPullRequest | null;
   /** Absent from rows built before issue linking; the server sends an empty list. */
   readonly issues?: ReadonlyArray<import("@t3tools/contracts").ThreadIssueLink>;
@@ -338,6 +342,8 @@ export function presentThreadShell(
       : { compactBeforeCacheExpires: thread.compactBeforeCacheExpires }),
     ...(thread.compactOnce === undefined ? {} : { compactOnce: thread.compactOnce }),
     ...(thread.accountChoice ? { accountChoice: thread.accountChoice } : {}),
+    ...(thread.paced ? { paced: thread.paced } : {}),
+    ...(thread.pacedUntil ? { pacedUntil: thread.pacedUntil } : {}),
     branchPullRequest: thread.branchPullRequest ?? null,
     issues: thread.issues ?? [],
     lineage: thread.lineage,

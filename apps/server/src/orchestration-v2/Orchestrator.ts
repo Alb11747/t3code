@@ -2875,7 +2875,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         readonly continuationSettled?: boolean;
       },
     ) {
-      if (!(yield* projectionStore.canStartQueuedRun(threadId))) return;
+      // Send now on one queued message is the user's override of a paced hold.
+      const sendsNow = options?.userStarted === true && options.queuedRunId !== undefined;
+      if (!(yield* projectionStore.canStartQueuedRun(threadId, { ignorePacing: sendsNow }))) return;
       let projection = yield* readCommandProjection(threadId);
       if (
         projection.thread.archivedAt !== null ||
@@ -4636,6 +4638,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       runtimeMode: command.runtimeMode,
       interactionMode: command.interactionMode,
       ...(command.accountChoice === undefined ? {} : { accountChoice: command.accountChoice }),
+      ...(command.paced == null ? {} : { paced: command.paced }),
       ...(command.compactAfterIdle === undefined
         ? {}
         : { compactAfterIdle: command.compactAfterIdle }),
@@ -5767,6 +5770,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...(command.autoCompactLimit === undefined
               ? {}
               : { autoCompactLimit: command.autoCompactLimit }),
+            // Turning pacing off also ends a Codex hold, so the queue can start.
+            ...(command.paced === undefined
+              ? {}
+              : { paced: command.paced, ...(command.paced === null ? { pacedUntil: null } : {}) }),
+            ...(command.pacedUntil === undefined ? {} : { pacedUntil: command.pacedUntil }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
             ...(command.limitRecovery !== undefined &&
             limitRecovery?.snooze === true &&
@@ -8928,6 +8936,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       )
         ? (latestRun ?? undefined)
         : undefined;
+    // Fork: a paced thread whose account is ahead of pace starts no turn; the message queues until
+    // PacedThreads clears the hold. A new thread has no run to queue behind, so it starts.
+    const pacedUntil = projection.thread.pacedUntil;
+    const pacedQueueRun =
+      activeRun === undefined &&
+      worktreeMissingRun === undefined &&
+      (dispatchMode.type === "queue_after_active" || dispatchMode.type === "start_immediately") &&
+      pacedUntil != null &&
+      pacedUntil > DateTime.formatIso(yield* DateTime.now)
+        ? (latestRun ?? undefined)
+        : undefined;
     const requiredCompactionRun =
       command.afterCompactionMessageId === undefined
         ? undefined
@@ -8985,6 +9004,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       worktreeMissingRun ??
       steerFollowUpSource ??
       stoppedQueueRun ??
+      pacedQueueRun ??
       (waitsForCompaction ? requiredCompactionRun : undefined) ??
       (startsAfterCompaction ? compactionFollowUp : undefined);
     const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(projection);
@@ -11305,6 +11325,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         interactionMode: command.interactionMode,
         ...(command.workspaceStrategy === undefined ? {} : { branch: null, worktreePath: null }),
         ...(command.accountChoice === undefined ? {} : { accountChoice: command.accountChoice }),
+        ...(command.paced == null ? {} : { paced: command.paced }),
         ...(command.compactAfterIdle === undefined
           ? {}
           : { compactAfterIdle: command.compactAfterIdle }),
@@ -19030,14 +19051,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (command.type === "queued-message.promote-to-steer" &&
         command.boundaryOffer?.step === "withdraw") ||
       command.type === "boundary-offers.withdraw" ||
-      (command.type === "thread.runtime-mode.set" && runtimeModeCeiling !== undefined)
+      (command.type === "thread.runtime-mode.set" && runtimeModeCeiling !== undefined) ||
+      // Fork: a paced hold that ends here (pacing off, or the account back on pace) frees the queue.
+      (command.type === "thread.metadata.update" &&
+        (command.paced === null || command.pacedUntil === null))
     ) {
+      const automatic =
+        command.type === "thread.runtime-mode.set" ||
+        command.type === "boundary-offers.withdraw" ||
+        command.type === "thread.metadata.update";
       yield* mapDispatchError(command)(
         startNextQueuedRun(commandThreadId(command), {
-          userStarted:
-            command.type !== "thread.runtime-mode.set" &&
-            command.type !== "boundary-offers.withdraw",
-          ...(command.type === "boundary-offers.withdraw" ? { latestRunEnded: true } : {}),
+          userStarted: !automatic,
+          ...(command.type === "boundary-offers.withdraw" ||
+          command.type === "thread.metadata.update"
+            ? { latestRunEnded: true }
+            : {}),
           ...(queuedRunId === undefined ? {} : { queuedRunId }),
         }),
       );

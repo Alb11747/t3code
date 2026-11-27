@@ -25,6 +25,17 @@ export const ThreadAccountChoice = Schema.Struct({
 });
 export type ThreadAccountChoice = typeof ThreadAccountChoice.Type;
 
+/** Fork: a usage window a paced thread keeps pace with: the 5-hour or the weekly one. */
+export const PacedWindow = Schema.Literals(["5h", "7d"]);
+export type PacedWindow = typeof PacedWindow.Type;
+
+/**
+ * Fork: a low-importance thread that waits while an account it uses is ahead of pace in a chosen
+ * window. The router holds Claude's requests; T3 holds a Codex thread's next turn start.
+ */
+export const ThreadPaced = Schema.Struct({ windows: Schema.NonEmptyArray(PacedWindow) });
+export type ThreadPaced = typeof ThreadPaced.Type;
+
 /** The choice when it applies to `instanceId`; a provider or model switch leaves it stale. */
 export const threadAccountChoiceFor = (
   choice: ThreadAccountChoice | null | undefined,
@@ -186,6 +197,22 @@ const routingNaming = <Account extends Schema.Top>(account: Account) =>
       ),
       /** Declared subscription ends; they stay until removed, also once passed. */
       ends: Schema.optional(Schema.Array(Schema.Struct({ account, endsAt: IsoDateTime }))),
+      /**
+       * Fork: each account's use against its pace line (percent of the window); paced threads
+       * wait while `ahead`, until `until`. Absent from routers without pacing.
+       */
+      pace: Schema.optional(
+        Schema.Array(
+          Schema.Struct({
+            account,
+            window: PacedWindow,
+            used: Schema.Number,
+            line: Schema.Number,
+            ahead: Schema.Boolean,
+            until: Schema.NullOr(IsoDateTime),
+          }),
+        ),
+      ),
     }),
   );
 export const ThreadAccountRouting = routingNaming(RouterAccountAlias);

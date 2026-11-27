@@ -50,7 +50,7 @@ import {
 import { AuthMcpClientAccess } from "./auth.ts";
 import { ChatAttachment } from "./chatAttachment.ts";
 import { ClaudeKeepWarmHold } from "./claudeKeepWarm.ts";
-import { ThreadAccountChoice } from "./threadAccount.ts";
+import { ThreadAccountChoice, ThreadPaced } from "./threadAccount.ts";
 import { ThreadGuestShare } from "./guestShare.ts";
 import { ThreadContextNote, ThreadContextNoteUpdate } from "./threadContextNote.ts";
 import { StoredThreadTags, ThreadTag } from "./threadTags.ts";
@@ -529,6 +529,10 @@ export const OrchestrationV2AppThread = Schema.Struct({
   compactOnceRequestedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** Fork: the quota-router account the thread's requests go to; null routes automatically. */
   accountChoice: Schema.optional(Schema.NullOr(ThreadAccountChoice)),
+  /** Fork: low importance; null or absent runs at full speed. */
+  paced: Schema.optional(Schema.NullOr(ThreadPaced)),
+  /** Fork: a paced Codex thread starts no queued turn before this; its account is ahead of pace. */
+  pacedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** Legacy timestamp kept to decode existing account moves. */
   accountMovedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** A moved provider conversation drops old thinking until it compacts. */
@@ -2515,6 +2519,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   /** Fork: a one-shot compaction mark still applies. Absent from servers without it. */
   compactOnce: Schema.optional(Schema.Boolean),
   accountChoice: Schema.optional(Schema.NullOr(ThreadAccountChoice)),
+  paced: Schema.optional(Schema.NullOr(ThreadPaced)),
+  pacedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -3441,6 +3447,7 @@ export const OrchestrationV2Command = Schema.Union([
     runtimeMode: RuntimeMode,
     interactionMode: ProviderInteractionMode,
     accountChoice: Schema.optional(Schema.NullOr(ThreadAccountChoice)),
+    paced: Schema.optional(Schema.NullOr(ThreadPaced)),
     compactAfterIdle: Schema.optional(CodexIdleCompactionOverride),
     autoCompactLimit: Schema.optional(PositiveInt),
     branch: Schema.NullOr(GitRefName),
@@ -3607,6 +3614,10 @@ export const OrchestrationV2Command = Schema.Union([
     compactAfterIdle: Schema.optional(CodexIdleCompactionOverride),
     /** Fork: null returns the thread to its model's default. */
     autoCompactLimit: Schema.optional(Schema.NullOr(PositiveInt)),
+    /** Fork: null turns pacing off. */
+    paced: Schema.optional(Schema.NullOr(ThreadPaced)),
+    /** Fork: set by the server's pace check for a Codex thread. */
+    pacedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
     regenerateTitle: Schema.optional(Schema.Boolean),
     branch: Schema.optional(Schema.NullOr(GitRefName)),
     worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -3957,6 +3968,7 @@ export const OrchestrationV2Command = Schema.Union([
     workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
     /** Fork: the child's own account choice, which its first turn pins; null routes automatically. */
     accountChoice: Schema.optional(Schema.NullOr(ThreadAccountChoice)),
+    paced: Schema.optional(Schema.NullOr(ThreadPaced)),
     compactAfterIdle: Schema.optional(CodexIdleCompactionOverride),
     autoCompactLimit: Schema.optional(PositiveInt),
     // Defaults to settled_only; fire-and-forget wakes require always.
@@ -4429,6 +4441,7 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
   /** Fork: a draft's account choice, stored before its first message starts. */
   accountChoice: Schema.optional(ThreadAccountChoice),
+  paced: Schema.optional(ThreadPaced),
   initialMessage: Schema.optional(
     Schema.Struct({
       messageId: Schema.optional(MessageId),
