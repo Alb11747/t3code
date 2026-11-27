@@ -48,10 +48,16 @@ const REQUEST_TIMEOUT = Duration.seconds(30);
 export const serverClient = Effect.fn("RunningServer.serverClient")(function* (
   origin: string,
   scopes: ReadonlyArray<AuthEnvironmentScope>,
+  options?: { readonly sessionTtl?: Duration.Duration },
 ) {
   const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
   const session = yield* Effect.acquireRelease(
-    environmentAuth.issueSession({ scopes, subject: "cli", label: "t3 cli", ttl: SESSION_TTL }),
+    environmentAuth.issueSession({
+      scopes,
+      subject: "cli",
+      label: "t3 cli",
+      ttl: options?.sessionTtl ?? SESSION_TTL,
+    }),
     ({ sessionId }) => environmentAuth.revokeSession(sessionId).pipe(Effect.ignore({ log: true })),
   );
   return yield* HttpApiClient.make(EnvironmentHttpApi, {

@@ -8,22 +8,33 @@ import {
   resolveIdleCompaction,
   resolveProjectProviderInstanceEnabled,
   type OrchestrationV2DomainEvent,
+  type PrepareRestartInput,
+  type PrepareRestartResult,
+  type PrepareRestartSkipReason,
+  type ProviderInstanceId,
+  type ProviderThreadId,
   type RunId,
+  type ScheduledTask,
+  type ServerSettings,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FiberMap from "effect/FiberMap";
+import * as Layer from "effect/Layer";
+import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { forkParked } from "../serverActivation.ts";
 import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
-import * as ServerSettings from "../serverSettings.ts";
+import * as ServerSettingsService from "../serverSettings.ts";
 import {
   codexIdleCompactionPolicy,
   codexIdleCompactionWindow,
   compactOnceApplies,
+  hasBlockingIdleCompactionWork,
   idleCompactionCompacts,
   idleCompactionMessageId,
   idleCompactionScope,
@@ -32,7 +43,22 @@ import {
   lastStartedOrPendingRun,
 } from "./IdleCompaction.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import {
+  makePrepareRestart,
+  type ClaudeIdleEvaluation,
+  type PrepareRestartError,
+} from "./PrepareRestart.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+
+export class IdleCompactionService extends Context.Service<
+  IdleCompactionService,
+  {
+    readonly start: () => Effect.Effect<void, never, Scope.Scope>;
+    readonly prepareRestart: (
+      input: PrepareRestartInput,
+    ) => Effect.Effect<PrepareRestartResult, PrepareRestartError>;
+  }
+>()("t3/orchestration-v2/IdleCompactionService") {}
 
 function canAddIdleWake(event: OrchestrationV2DomainEvent): boolean {
   switch (event.type) {
@@ -75,13 +101,198 @@ function canChangeCodexIdleWork(event: OrchestrationV2DomainEvent): boolean {
 export const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
-  const settings = yield* ServerSettings.ServerSettingsService;
+  const settings = yield* ServerSettingsService.ServerSettingsService;
   const scheduledTasks = yield* ScheduledTaskService;
   // A null clock keeps a blocked candidate subscribed until its pending work changes.
   const codexClocks = new Map<
     ThreadId,
     { readonly runId: RunId; readonly sinceMs: number } | null
   >();
+
+  const isClaudeInstance = (current: ServerSettings, providerInstanceId: ProviderInstanceId) =>
+    Object.hasOwn(current.providerInstances, providerInstanceId)
+      ? current.providerInstances[providerInstanceId]?.driver === "claudeAgent"
+      : providerInstanceId === "claudeAgent";
+
+  const scopeOf = (
+    current: ServerSettings,
+    selected: {
+      readonly providerInstanceId: ProviderInstanceId;
+      readonly compactBeforeCacheExpires?: boolean | null | undefined;
+    },
+    compactOnce: boolean,
+  ) =>
+    idleCompactionScope(
+      resolveIdleCompaction(current, selected.providerInstanceId),
+      selected.compactBeforeCacheExpires,
+      compactOnce,
+    );
+
+  const loadRecords = Effect.fn("IdleCompactionService.loadRecords")(function* (
+    threadId: ThreadId,
+    activeProviderThreadId: ProviderThreadId | null,
+    runId: RunId | undefined,
+  ) {
+    const activeProviderThreadIds = activeProviderThreadId === null ? [] : [activeProviderThreadId];
+    return yield* projections.getThreadRecords(
+      threadId,
+      [
+        "runs",
+        "messages",
+        "providerThreads",
+        "providerTurns",
+        "runtimeRequests",
+        "turnItems",
+        "contextTransfers",
+      ],
+      {
+        messageRunIds: runId === undefined ? [] : [runId],
+        turnItemStatuses: ["pending", "running", "waiting"],
+        // Include older runs that can still block compaction, and rolled-back runs whose
+        // background items should be ignored.
+        runStatuses: ["queued", "preparing", "starting", "running", "waiting", "rolled_back"],
+        includeLatestRun: true,
+        // Without an active provider thread there is no session to compact.
+        providerThreadIds: activeProviderThreadIds,
+        providerTurnThreadIds: activeProviderThreadIds,
+        latestProviderTurnUsageOnly: true,
+        runtimeRequestStatuses: ["pending"],
+        contextTransferStatuses: ["pending"],
+      },
+    );
+  });
+
+  const evaluateClaude = Effect.fn("IdleCompactionService.evaluateClaude")(function* (
+    threadId: ThreadId,
+    initialRunId: RunId | undefined,
+    options?: {
+      readonly horizonMs?: number;
+      readonly tasks?: ReadonlyArray<ScheduledTask>;
+    },
+  ) {
+    const skip = (
+      reason: Exclude<PrepareRestartSkipReason, "budget_exhausted">,
+    ): ClaudeIdleEvaluation => ({ kind: "skip", reason });
+
+    let runId = initialRunId;
+    while (true) {
+      const current = yield* settings.getSettings;
+      const thread = yield* projections.getThread(threadId);
+      const claudeInstance = isClaudeInstance(current, thread.providerInstanceId);
+      // Staleness needs the runs, so any mark passes this pre-filter.
+      const likelyScope = scopeOf(current, thread, thread.compactOnceRequestedAt != null);
+      if (
+        !claudeInstance ||
+        likelyScope === null ||
+        (likelyScope === "tiers" &&
+          !Object.values(idleCompactionTiersOf(current)).some((tier) => tier.enabled)) ||
+        !resolveProjectProviderInstanceEnabled(current, thread.projectId, thread.providerInstanceId)
+      ) {
+        return skip("not_eligible");
+      }
+
+      const records = yield* loadRecords(threadId, thread.activeProviderThreadId, runId);
+      if (
+        !resolveProjectProviderInstanceEnabled(
+          current,
+          records.thread.projectId,
+          records.thread.providerInstanceId,
+        )
+      ) {
+        return skip("not_eligible");
+      }
+      if (hasBlockingIdleCompactionWork(records)) return skip("busy");
+
+      const latestRun = lastStartedOrPendingRun(records.runs);
+      if (
+        latestRun === undefined ||
+        latestRun.completedAt === null ||
+        (latestRun.status !== "completed" && latestRun.status !== "interrupted")
+      ) {
+        return skip("not_eligible");
+      }
+      if (latestRun.id !== runId) {
+        runId = latestRun.id;
+        continue;
+      }
+
+      const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+      const scope = scopeOf(
+        current,
+        records.thread,
+        compactOnceApplies(records.thread.compactOnceRequestedAt, records.runs),
+      );
+      if (scope === null) return skip("not_eligible");
+
+      const compactSnoozed = compactSnoozedThreadsOf(current);
+      if (records.thread.deletedAt !== null || records.thread.archivedAt !== null) {
+        return skip("not_eligible");
+      }
+      // Pulling a snoozed thread forward while still snoozed would bypass compactSnoozed=false,
+      // which normally relies on sleeping until window.startMs after the snooze ends.
+      if (
+        options?.horizonMs !== undefined &&
+        !compactSnoozed &&
+        records.thread.snoozedUntil != null &&
+        DateTime.toEpochMillis(records.thread.snoozedUntil) > nowMs
+      ) {
+        return skip("snoozed");
+      }
+
+      const tasks = options?.tasks ?? (yield* scheduledTasks.list()).tasks;
+      const wakes = tasks.filter(
+        (task) => task.threadId === threadId && task.enabled && task.blockedByPolicy === undefined,
+      );
+      const window = idleCompactionWindow(records, nowMs, {
+        compactSnoozed,
+        scheduledWakesMs: wakes.flatMap((task) =>
+          task.nextRunAt === null ? [] : [Date.parse(task.nextRunAt)],
+        ),
+      });
+      if (window === null || window.runId !== runId) return skip("not_eligible");
+
+      const compacts = yield* idleCompactionCompacts(
+        scope,
+        idleCompactionTiersOf(current),
+        {
+          ...window,
+          hasWakeSignal:
+            window.hasWakeSignal || wakes.some((task) => task.schedule.type === "webhook"),
+        },
+        projections.hasIdleCompactionWait(threadId),
+      );
+      if (!compacts) return skip("not_eligible");
+
+      if (nowMs >= window.startMs) {
+        return { kind: "dispatch" as const, runId, endMs: window.endMs };
+      }
+      if (options?.horizonMs !== undefined) {
+        return window.endMs <= options.horizonMs
+          ? { kind: "dispatch" as const, runId, endMs: window.endMs }
+          : skip("outside_window");
+      }
+      return { kind: "sleep" as const, runId, sleepMs: window.startMs - nowMs };
+    }
+  });
+
+  const dispatchClaude = Effect.fn("IdleCompactionService.dispatchClaude")(function* (
+    threadId: ThreadId,
+    runId: RunId,
+  ) {
+    return yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      // One compaction per completed run, even across duplicate events.
+      commandId: CommandId.make(`server:idle-compact:${threadId}:${runId}`),
+      messageId: MessageId.make(`idle-compact:${threadId}:${runId}`),
+      threadId,
+      text: IDLE_COMPACTION_TEXT,
+      attachments: [],
+      createdBy: "agent",
+      creationSource: "server",
+      idleCompaction: "beforeCacheExpires",
+      dispatchMode: { type: "start_immediately" },
+    });
+  });
 
   const compactWhenDue = Effect.fn("IdleCompactionService.compactWhenDue")(
     // Without a run, takes the latest completed run.
@@ -91,61 +302,20 @@ export const make = Effect.gen(function* () {
       while (true) {
         const current = yield* settings.getSettings;
         const thread = yield* projections.getThread(threadId);
-        const claudeInstance = Object.hasOwn(current.providerInstances, thread.providerInstanceId)
-          ? current.providerInstances[thread.providerInstanceId]?.driver === "claudeAgent"
-          : thread.providerInstanceId === "claudeAgent";
-        const scopeOf = (selected: typeof thread, compactOnce: boolean) =>
-          idleCompactionScope(
-            resolveIdleCompaction(current, selected.providerInstanceId),
-            selected.compactBeforeCacheExpires,
-            compactOnce,
-          );
-        // Staleness needs the runs, so any mark passes this pre-filter.
-        const likelyScope = scopeOf(thread, thread.compactOnceRequestedAt != null);
         const codexPolicy = codexIdleCompactionPolicy(current, thread);
-        if (
-          codexPolicy === null &&
-          (!claudeInstance ||
-            likelyScope === null ||
-            (likelyScope === "tiers" &&
-              !Object.values(idleCompactionTiersOf(current)).some((tier) => tier.enabled)) ||
-            !resolveProjectProviderInstanceEnabled(
-              current,
-              thread.projectId,
-              thread.providerInstanceId,
-            ))
-        ) {
+        if (codexPolicy === null) {
           codexClocks.delete(threadId);
+          const decision = yield* evaluateClaude(threadId, runId);
+          if (decision.kind === "skip") return;
+          if (decision.kind === "sleep") {
+            runId = decision.runId;
+            yield* Effect.sleep(Duration.millis(decision.sleepMs));
+            continue;
+          }
+          yield* dispatchClaude(threadId, decision.runId);
           return;
         }
-        const activeProviderThreadIds =
-          thread.activeProviderThreadId === null ? [] : [thread.activeProviderThreadId];
-        const records = yield* projections.getThreadRecords(
-          threadId,
-          [
-            "runs",
-            "messages",
-            "providerThreads",
-            "providerTurns",
-            "runtimeRequests",
-            "turnItems",
-            "contextTransfers",
-          ],
-          {
-            messageRunIds: runId === undefined ? [] : [runId],
-            turnItemStatuses: ["pending", "running", "waiting"],
-            // Include older runs that can still block compaction, and rolled-back runs whose
-            // background items should be ignored.
-            runStatuses: ["queued", "preparing", "starting", "running", "waiting", "rolled_back"],
-            includeLatestRun: true,
-            // Without an active provider thread there is no session to compact.
-            providerThreadIds: activeProviderThreadIds,
-            providerTurnThreadIds: activeProviderThreadIds,
-            latestProviderTurnUsageOnly: true,
-            runtimeRequestStatuses: ["pending"],
-            contextTransferStatuses: ["pending"],
-          },
-        );
+        const records = yield* loadRecords(threadId, thread.activeProviderThreadId, runId);
         if (
           !resolveProjectProviderInstanceEnabled(
             current,
@@ -169,85 +339,37 @@ export const make = Effect.gen(function* () {
           continue;
         }
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-        if (codexPolicy !== null) {
-          const policy = codexIdleCompactionPolicy(current, records.thread);
-          const window = policy === null ? null : codexIdleCompactionWindow(records, policy);
-          if (window === null || policy === null) {
-            codexClocks.delete(threadId);
-            return;
-          }
-          if (window.blocked) {
-            codexClocks.set(threadId, null);
-            return;
-          }
-          const clock = codexClocks.get(threadId);
-          const idleSinceMs = clock?.runId === runId ? clock.sinceMs : nowMs;
-          codexClocks.set(threadId, { runId, sinceMs: idleSinceMs });
-          const startMs = Math.max(idleSinceMs, window.idleAtMs) + policy.delayMs;
-          if (nowMs < startMs) {
-            yield* Effect.sleep(Duration.millis(startMs - nowMs));
-            continue;
-          }
-          yield* orchestrator.dispatch({
-            type: "message.dispatch",
-            commandId: CommandId.make(`server:idle-compact:${threadId}:${runId}:${idleSinceMs}`),
-            messageId: idleCompactionMessageId(threadId, runId),
-            threadId,
-            text: IDLE_COMPACTION_TEXT,
-            attachments: [],
-            createdBy: "agent",
-            creationSource: "server",
-            idleSinceMs,
-            dispatchMode: { type: "start_immediately" },
-          });
+        const policy = codexIdleCompactionPolicy(current, records.thread);
+        const window = policy === null ? null : codexIdleCompactionWindow(records, policy);
+        if (window === null || policy === null) {
           codexClocks.delete(threadId);
           return;
         }
-        const scope = scopeOf(
-          records.thread,
-          compactOnceApplies(records.thread.compactOnceRequestedAt, records.runs),
-        );
-        if (scope === null) return;
-        const { tasks } = yield* scheduledTasks.list();
-        const wakes = tasks.filter(
-          (task) =>
-            task.threadId === threadId && task.enabled && task.blockedByPolicy === undefined,
-        );
-        const window = idleCompactionWindow(records, nowMs, {
-          compactSnoozed: compactSnoozedThreadsOf(current),
-          scheduledWakesMs: wakes.flatMap((task) =>
-            task.nextRunAt === null ? [] : [Date.parse(task.nextRunAt)],
-          ),
-        });
-        if (window === null || window.runId !== runId) return;
-        const compacts = yield* idleCompactionCompacts(
-          scope,
-          idleCompactionTiersOf(current),
-          {
-            ...window,
-            hasWakeSignal:
-              window.hasWakeSignal || wakes.some((task) => task.schedule.type === "webhook"),
-          },
-          projections.hasIdleCompactionWait(threadId),
-        );
-        if (!compacts) return;
-        if (nowMs < window.startMs) {
-          yield* Effect.sleep(Duration.millis(window.startMs - nowMs));
+        if (window.blocked) {
+          codexClocks.set(threadId, null);
+          return;
+        }
+        const clock = codexClocks.get(threadId);
+        const idleSinceMs = clock?.runId === runId ? clock.sinceMs : nowMs;
+        codexClocks.set(threadId, { runId, sinceMs: idleSinceMs });
+        const startMs = Math.max(idleSinceMs, window.idleAtMs) + policy.delayMs;
+        if (nowMs < startMs) {
+          yield* Effect.sleep(Duration.millis(startMs - nowMs));
           continue;
         }
         yield* orchestrator.dispatch({
           type: "message.dispatch",
-          // One compaction per completed run, even across duplicate events.
-          commandId: CommandId.make(`server:idle-compact:${threadId}:${runId}`),
-          messageId: MessageId.make(`idle-compact:${threadId}:${runId}`),
+          commandId: CommandId.make(`server:idle-compact:${threadId}:${runId}:${idleSinceMs}`),
+          messageId: idleCompactionMessageId(threadId, runId),
           threadId,
           text: IDLE_COMPACTION_TEXT,
           attachments: [],
           createdBy: "agent",
           creationSource: "server",
-          idleCompaction: "beforeCacheExpires",
+          idleSinceMs,
           dispatchMode: { type: "start_immediately" },
         });
+        codexClocks.delete(threadId);
         return;
       }
     },
@@ -329,5 +451,16 @@ export const make = Effect.gen(function* () {
       ),
     );
   });
-  return { start };
+
+  const prepareRestart = makePrepareRestart({
+    orchestrator,
+    projections,
+    scheduledTasks,
+    evaluateClaude,
+    dispatchClaude,
+  });
+
+  return IdleCompactionService.of({ start, prepareRestart });
 });
+
+export const layer = Layer.effect(IdleCompactionService, make);

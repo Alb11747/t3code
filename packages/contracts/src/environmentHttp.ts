@@ -72,6 +72,7 @@ import {
   EnvironmentSpeechTranscriptionResult,
 } from "./speech.ts";
 import { PeerLinkClientPairingCredential, PeerLinkClientPairingRequest } from "./peerLink.ts";
+import { PrepareRestartInput, PrepareRestartResult } from "./prepareRestart.ts";
 import { SecretReference } from "./secretReference.ts";
 import {
   OrchestrationV2ShellHttpSnapshot,
@@ -1100,6 +1101,15 @@ class EnvironmentWebhooksHttpApi extends HttpApiGroup.make("webhooks")
   .add(HttpApiEndpoint.get("webhookGet", WEBHOOK_PATH, webhookEndpoint))
   .annotate(HttpApi.RedactedNames, { params: ["token"] }) {}
 
+class EnvironmentMaintenanceHttpApi extends HttpApiGroup.make("maintenance").add(
+  HttpApiEndpoint.post("prepareRestart", "/api/server/prepare-restart", {
+    headers: OptionalBearerHeaders,
+    payload: PrepareRestartInput,
+    success: PrepareRestartResult,
+    error: [EnvironmentRequestInvalidError, ...EnvironmentScopedOperationErrors],
+  }).middleware(EnvironmentAuthenticatedAuth),
+) {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
@@ -1110,4 +1120,5 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentVoiceHttpApi)
   .add(EnvironmentConnectHttpApi)
   .add(EnvironmentWebhooksHttpApi)
-  .add(EnvironmentPeerLinkHttpApi) {}
+  .add(EnvironmentPeerLinkHttpApi)
+  .add(EnvironmentMaintenanceHttpApi) {}

@@ -247,6 +247,7 @@ import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
 import * as ThreadSettlementService from "./orchestration-v2/ThreadSettlementService.ts";
 import * as IdleCompactionService from "./orchestration-v2/IdleCompactionService.ts";
+import * as PrepareRestartHttp from "./orchestration-v2/PrepareRestartHttp.ts";
 import * as ThreadPullRequestService from "./orchestration-v2/ThreadPullRequestService.ts";
 import * as ThreadIssueService from "./orchestration-v2/ThreadIssueService.ts";
 import * as RunFinalizationService from "./orchestration-v2/RunFinalizationService.ts";
@@ -702,9 +703,13 @@ const layerThreadSettlementWorker = Layer.effectDiscard(
   ThreadSettlementService.make.pipe(Effect.flatMap((service) => service.start())),
 ).pipe(Layer.provide(layerPullRequestService), Layer.provide(ProjectionStoreV2.layer));
 
+const layerIdleCompactionService = IdleCompactionService.layer.pipe(
+  Layer.provide(ProjectionStoreV2.layer),
+);
+
 const layerIdleCompactionWorker = Layer.effectDiscard(
-  IdleCompactionService.make.pipe(Effect.flatMap((service) => service.start())),
-).pipe(Layer.provide(ProjectionStoreV2.layer));
+  IdleCompactionService.IdleCompactionService.pipe(Effect.flatMap((service) => service.start())),
+).pipe(Layer.provideMerge(layerIdleCompactionService));
 
 const layerThreadPullRequestWorker = Layer.effectDiscard(
   ThreadPullRequestService.make.pipe(Effect.flatMap((service) => service.start())),
@@ -941,6 +946,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(PeerClientPairingHttp.layer.pipe(Layer.provide(PeerClientPairing.layerIssuer))),
       Layer.provide(CloudHttp.layer),
       Layer.provide(OrchestrationHttp.layer),
+      Layer.provide(PrepareRestartHttp.layer),
       Layer.provide(PullRequestHttp.layer),
       Layer.provide(ProjectHttp.layer),
       Layer.provide(speechHttpApiLayer),
