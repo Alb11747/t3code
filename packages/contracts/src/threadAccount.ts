@@ -66,6 +66,8 @@ export const ThreadAccountState = Schema.NullOr(
     steer: Schema.NullOr(RouterAccountAlias),
     /** The account an account-bound conversation is tied to; only an explicit move changes it. */
     owner: Schema.NullOr(RouterAccountAlias),
+    /** The host takes `compactFirst` on a set; older hosts omit it and would switch at once. */
+    compactFirst: Schema.optional(Schema.Boolean),
   }),
 );
 export type ThreadAccountState = typeof ThreadAccountState.Type;

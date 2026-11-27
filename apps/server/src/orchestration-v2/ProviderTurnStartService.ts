@@ -2490,6 +2490,11 @@ export const layer: Layer.Layer<
         reportedCacheExpiry === undefined
           ? undefined
           : Option.getOrUndefined(DateTime.make(reportedCacheExpiry));
+      // Fork: the compaction an account move waits on runs warm-only, like an idle compaction, so
+      // the router never serves it from a cold account.
+      const warmOnlyCompaction =
+        message.idleCompaction === "beforeCacheExpires" ||
+        (yield* threadAccountRouting.movesAfter(projection.thread.id, message.id));
       // Fork: pins expire, so each turn re-applies the thread's chosen router account.
       const dropMismatchedThinking = yield* threadAccountRouting.prepareTurn({
         appThread: projection.thread,
@@ -2539,7 +2544,7 @@ export const layer: Layer.Layer<
             sameNativeThread &&
             !acceptedAttempts.some((source) => source.nativeThreadId !== undefined)),
         ...(promptCacheExpiresAt === undefined ? {} : { promptCacheExpiresAt }),
-        ...(message.idleCompaction === "beforeCacheExpires" ? { idleCompaction: true } : {}),
+        ...(warmOnlyCompaction ? { idleCompaction: true } : {}),
         ...(dropMismatchedThinking ? { dropMismatchedThinking } : {}),
         shouldStartProviderTurn: runControls.shouldStartProviderTurn,
         ...(runningRun.batchQueuedReports === true &&

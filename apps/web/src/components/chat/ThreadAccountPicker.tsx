@@ -220,6 +220,7 @@ function ThreadAccountPickerChip(
       : null;
   // The server compacts first only while the cache is warm, and otherwise switches at once.
   const offersCompaction =
+    state.compactFirst === true &&
     canWaitForAccount &&
     props.contextTokens !== null &&
     props.contextTokens >= THREAD_ACCOUNT_MOVE_COMPACTION_MIN_TOKENS;

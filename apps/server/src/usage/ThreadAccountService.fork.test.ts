@@ -114,6 +114,9 @@ function testLayer(input: {
   readonly previousHubUnavailable?: boolean;
   readonly providerTurns?: ReadonlyArray<unknown>;
   readonly runs?: Array<unknown>;
+  readonly turnItems?: Array<{ readonly runId: string }>;
+  // Runs inside a dispatch, before it returns.
+  readonly onDispatch?: { current?: Effect.Effect<unknown> | undefined };
 }) {
   const runsCodex = input.codex || input.separateCodexHub;
   const current = input.separateCodexHub
@@ -184,7 +187,7 @@ function testLayer(input: {
         }),
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
-      getThreadRecords: (id) =>
+      getThreadRecords: (id, _fields, filter) =>
         Effect.succeed({
           thread: {
             modelSelection: runsCodex ? { instanceId: "codex", model: "gpt-5" } : modelSelection,
@@ -194,7 +197,11 @@ function testLayer(input: {
             ? [{ id: input.heldRunId, status: "failed" }]
             : (input.runs ?? []),
           providerTurns: input.providerTurns ?? [],
-          turnItems: [],
+          turnItems: (input.turnItems ?? []).filter(
+            (item) =>
+              filter?.turnItemRunIds === undefined ||
+              filter.turnItemRunIds.includes(item.runId as never),
+          ),
           providerThreads: [
             {
               providerInstanceId: runsCodex ? "codex" : "claude",
@@ -220,6 +227,7 @@ function testLayer(input: {
       dispatch: (command) =>
         Effect.gen(function* () {
           input.commands?.push(command);
+          if (input.onDispatch?.current) yield* input.onDispatch.current;
           if (input.heldCompletedBeforeInterrupt && command.type === "run.interrupt") {
             return yield* new Orchestrator.OrchestratorDispatchError({
               commandId: command.commandId,
@@ -649,45 +657,45 @@ describe("ThreadAccountService.move", () => {
     const commands: OrchestrationV2ServerCommand[] = [];
     const runs: Array<{ id: string; userMessageId: unknown; status: string }> = [];
     const providerThreadId = ProviderThreadId.make("provider-thread:routed");
+    const compaction = (runId: string) => ({
+      type: "compaction",
+      status: "completed",
+      runId,
+      providerThreadId,
+      completedAt: DateTime.makeUnsafe(NOW - 1_000),
+    });
+    const turnItems = [compaction("run:other")];
+    const onDispatch: { current?: Effect.Effect<unknown> | undefined } = {};
     return Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const routing = yield* ThreadAccountRouting.make;
       const service = yield* ThreadAccountService.make.pipe(
         Effect.provideService(ThreadAccountRouting.ThreadAccountRouting, routing),
       );
-      const turnStart = (compactedAt: number | null, accountChoice: unknown = null) =>
-        routing.prepareTurn({
-          appThread: { id: threadId, accountChoice } as never,
-          providerThread: {
-            id: providerThreadId,
-            driver: "claudeAgent",
-            providerInstanceId: "claude",
-            nativeThreadRef: { nativeId: "native-session" },
-          } as never,
-          loadCompactions: Effect.succeed(
-            compactedAt === null
-              ? []
-              : ([
-                  {
-                    type: "compaction",
-                    status: "completed",
-                    providerThreadId,
-                    completedAt: DateTime.makeUnsafe(compactedAt),
-                  },
-                ] as never),
-          ),
-        });
+      const turnStart = routing.prepareTurn({
+        appThread: { id: threadId, accountChoice: null } as never,
+        providerThread: {
+          id: providerThreadId,
+          driver: "claudeAgent",
+          providerInstanceId: "claude",
+          nativeThreadRef: { nativeId: "native-session" },
+        } as never,
+        loadCompactions: Effect.succeed([]),
+      });
       const move = Effect.gen(function* () {
         expect(yield* service.move({ threadId, account: OTHER, stall: true })).toBe("pending");
-        const compaction = commands.at(-1);
-        expect(compaction).toMatchObject({
+        const command = commands.at(-1) as unknown as { messageId: never };
+        // An agent's /compact never joins another compaction: the move needs this run's own.
+        expect(command).toMatchObject({
           type: "message.dispatch",
           text: "/compact",
+          createdBy: "agent",
           dispatchMode: { type: "queue_after_active" },
         });
+        expect(yield* routing.movesAfter(threadId, command.messageId)).toBe(true);
         const run = {
           id: `run:${runs.length}`,
-          userMessageId: (compaction as { messageId: unknown }).messageId,
+          userMessageId: command.messageId,
           status: "queued",
         };
         runs.push(run);
@@ -695,16 +703,10 @@ describe("ThreadAccountService.move", () => {
       });
 
       const first = yield* move;
-      expect(pins).toEqual([]);
-      // The compaction's own turn stays on the warm owner, even over a stored choice of another.
+      // T3 pins nothing for the compaction: its turn runs warm-only on the router.
       first.status = "running";
-      yield* turnStart(null, {
-        sourceId: "hub",
-        account: OTHER,
-        stall: true,
-        instanceId: "claude",
-      });
-      expect(pins).toMatchObject([{ account: OWNER, stall: false, move: false }]);
+      expect(yield* turnStart).toBe(false);
+      expect(pins).toEqual([]);
       expect(yield* service.pendingMove(threadId)).toEqual({
         account: "spare@example.com (Pro)",
         waitWhenOut: true,
@@ -714,18 +716,22 @@ describe("ThreadAccountService.move", () => {
         .set({ threadId, account: OTHER, stall: true })
         .pipe(Effect.result);
       expect(Result.isFailure(refused) && refused.failure.requiresDropThinking).toBe(true);
-      expect(yield* service.pendingMove(threadId)).not.toBeNull();
-      // A compaction that ends without compacting drops the move rather than leaving it to fire on
-      // a later, unrelated compaction.
-      first.status = "failed";
-      expect(yield* turnStart(null)).toBe(false);
+      // Its run ending without its own compaction drops the move, whatever else compacted.
+      first.status = "completed";
       expect(yield* service.pendingMove(threadId)).toBeNull();
+      expect(yield* turnStart).toBe(false);
+      expect(pins).toEqual([]);
 
+      // A turn starting while the next move's /compact is still being dispatched keeps the move.
       yield* TestClock.adjust("1 second");
-      yield* move;
+      onDispatch.current = turnStart;
+      const second = yield* move;
+      onDispatch.current = undefined;
+      expect(yield* service.pendingMove(threadId)).not.toBeNull();
+      second.status = "completed";
+      turnItems.push(compaction(second.id));
       // The first turn after its compaction moves before its first request.
-      pins.length = 0;
-      expect(yield* turnStart(NOW + 60_000)).toBe(true);
+      expect(yield* turnStart).toBe(true);
       expect(pins).toMatchObject([
         { sessions: ["native-session"], account: OTHER, stall: true, move: true },
       ]);
@@ -742,6 +748,8 @@ describe("ThreadAccountService.move", () => {
           pins,
           commands,
           runs,
+          turnItems,
+          onDispatch,
           providerTurns: [
             {
               providerThreadId,
