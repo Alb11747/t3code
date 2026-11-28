@@ -1893,6 +1893,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           'The destination conversation changed after compaction was requested. Retry with a new clientRequestId and contextPolicy:"compact", or contextPolicy:"keep" to retain its full history. No message was sent.',
       });
     }
+    // A turn still active on this conversation (even one stalled behind the quota router)
+    // re-reads the history on its next request, so a steer or a message queued behind it
+    // adds no cold re-read. Refusing here also left no option but keep: compact is refused
+    // while the target is busy.
+    if (
+      providerThread !== undefined &&
+      projection.runs.some((run) => isActiveRun(run) && run.providerThreadId === providerThread.id)
+    )
+      return;
     if (yield* isColdLargeClaudeConversation(projection, providerThread)) {
       return yield* new OrchestratorContextPolicyRequiredError({
         threadId: command.threadId,

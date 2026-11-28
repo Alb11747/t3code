@@ -134,6 +134,7 @@ const scenarios = [
   "same-instance-active",
   "missing-active",
   "busy-queue",
+  "busy-same-conversation",
   "busy-self-compact",
   "queued-context-policies",
   "warm",
@@ -157,8 +158,12 @@ const scenarios = [
 it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, providerDriver }) =>
   Effect.gen(function* () {
     const queuedContextPolicies = scenario === "queued-context-policies";
+    const busySameConversation = scenario === "busy-same-conversation";
     const busyQueue =
-      scenario === "busy-queue" || scenario === "busy-self-compact" || queuedContextPolicies;
+      scenario === "busy-queue" ||
+      busySameConversation ||
+      scenario === "busy-self-compact" ||
+      queuedContextPolicies;
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const messages = yield* ThreadManagement.ThreadManagementService;
     const sink = yield* EventSink.EventSinkV2;
@@ -167,7 +172,7 @@ it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, prov
     const first = providerThread(
       "native:first",
       firstInstanceId,
-      busyQueue ? 1_000 : 500_000,
+      busyQueue && !busySameConversation ? 1_000 : 500_000,
       20,
       epoch,
       providerDriver,
@@ -243,16 +248,23 @@ it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, prov
         creationSource: "web",
       });
       const current = yield* orchestrator.getThreadRecords(threadId, []);
+      // busy-same-conversation queues onto the busy run's own conversation.
       yield* sink.write({
-        events: [
-          {
-            id: EventId.make("event:select-queued-account"),
-            type: "thread.provider-switched",
-            threadId,
-            occurredAt: epoch,
-            payload: { ...current.thread, modelSelection, providerInstanceId: targetInstanceId },
-          },
-        ],
+        events: busySameConversation
+          ? []
+          : [
+              {
+                id: EventId.make("event:select-queued-account"),
+                type: "thread.provider-switched",
+                threadId,
+                occurredAt: epoch,
+                payload: {
+                  ...current.thread,
+                  modelSelection,
+                  providerInstanceId: targetInstanceId,
+                },
+              },
+            ],
       });
     }
     if (scenario === "reported-expiry" || scenario === "warm-reported") {
@@ -431,6 +443,15 @@ it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, prov
       expect(fresh.message.atToolBoundary).not.toBe(true);
       return;
     }
+    if (busySameConversation) {
+      // A turn still active on the cold conversation re-reads it anyway (2026-11-27 stall).
+      const sent = yield* messages.sendToThread(input);
+      const { runs } = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+      expect(sent.delivery).toBe("queued");
+      expect(sent.run.providerThreadId).toBe(first.id);
+      expect(runs.find((run) => run.id !== sent.run.id)?.providerThreadId).toBe(first.id);
+      return;
+    }
     const error = yield* Effect.flip(messages.sendToThread(input));
     expect(error).toBeInstanceOf(ThreadManagement.ThreadManagementContextPolicyError);
     expect(
@@ -477,6 +498,7 @@ it.effect.each(scenarios)("resumes $providerDriver $scenario", ({ scenario, prov
       layerTest(
         scenario === "compatible-account" ||
           scenario === "busy-queue" ||
+          scenario === "busy-same-conversation" ||
           scenario === "busy-self-compact" ||
           scenario === "busy-preparing",
         providerDriver,
