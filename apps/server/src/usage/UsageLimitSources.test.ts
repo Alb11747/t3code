@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -634,84 +635,104 @@ it.effect("keeps a hub's model aliases when its account read fails", () =>
   ),
 );
 
-it.effect("refreshes a stale snapshot with no client watching, but not for pace numbers", () => {
-  let accountReads = 0;
-  let pace = 10;
-  return Effect.gen(function* () {
-    const sources = yield* UsageLimitSources.make;
-    yield* sources.streamChanges.pipe(
-      Stream.filter((next) => next.length > 0),
-      Stream.runHead,
-    );
-    expect(accountReads).toBe(1);
-    // Pace changes on every control read; only a change of account names re-reads them.
-    const hub = { url: "https://hub.test", managementKey: "key" };
-    for (const next of [20, 30]) {
-      pace = next;
-      yield* sources.control(UsageLimitSourceId.make("hub"), hub);
-      yield* TestClock.adjust("1 second");
-    }
-    expect(accountReads).toBe(1);
-    // No foreground client keeps the background refresh off, until the snapshot is 15 minutes old.
-    yield* TestClock.adjust("10 minutes");
-    expect(accountReads).toBe(1);
-    yield* TestClock.adjust("5 minutes");
-    expect(accountReads).toBe(2);
-  }).pipe(
-    Effect.provide([
-      ServerSettings.layerTest({
-        usageLimitSources: {
-          [UsageLimitSourceId.make("hub")]: {
-            kind: "cliproxy",
-            url: "https://hub.test",
-            managementKey: "key",
-            enabled: true,
+it.effect(
+  "publishes a router's late aliases with no client watching, but not for pace numbers",
+  () => {
+    let accountReads = 0;
+    let pace = 10;
+    // The router has not listed its accounts when the server starts (2026-11-27: account-named
+    // launches were refused for hours).
+    let routerReady = false;
+    const aliasesOf = (snapshots: ReadonlyArray<UsageLimitSourceSnapshot>) =>
+      snapshots.flatMap((source) => source.accounts.map((account) => account.routerAlias ?? null));
+    return Effect.gen(function* () {
+      const sources = yield* UsageLimitSources.make;
+      yield* sources.streamChanges.pipe(
+        Stream.filter((next) => next.length > 0),
+        Stream.runHead,
+      );
+      expect(accountReads).toBe(1);
+      expect(aliasesOf(yield* sources.current)).toEqual([null, null]);
+      routerReady = true;
+      // No foreground client keeps the background refresh off, and its 6-hour interval does not
+      // hold back the refresh of a snapshot 15 minutes old.
+      yield* TestClock.adjust("10 minutes");
+      expect(accountReads).toBe(1);
+      yield* TestClock.adjust("5 minutes");
+      expect(accountReads).toBe(2);
+      expect(aliasesOf(yield* sources.current)).toEqual(["account-a", "account-b"]);
+      // Pace changes on every control read; only a change of account names re-reads them.
+      const hub = { url: "https://hub.test", managementKey: "key" };
+      for (const next of [20, 30]) {
+        pace = next;
+        yield* sources.control(UsageLimitSourceId.make("hub"), hub);
+        yield* TestClock.adjust("1 second");
+      }
+      expect(accountReads).toBe(2);
+    }).pipe(
+      Effect.provide([
+        ServerSettings.layerTest({
+          backgroundActivity: {
+            profile: "custom",
+            overrides: { providerHealthRefreshInterval: Duration.hours(6) },
           },
-        },
-      }),
-      Layer.mock(BackgroundPolicy.BackgroundPolicy)({
-        shouldRunScopeWork: () => Effect.succeed(false),
-      }),
-      Layer.succeed(SecretResolver.SecretResolver, {
-        label: (provider) => Effect.succeed(provider),
-        read: (references) => Effect.succeed(references.map(() => undefined)),
-        invalidate: () => Effect.void,
-      }),
-      Layer.succeed(
-        HttpClient.HttpClient,
-        HttpClient.make((request) =>
-          Effect.sync(() => {
-            const path = new URL(request.url).pathname;
-            if (path.endsWith("/control")) {
-              return HttpClientResponse.fromWeb(
-                request,
-                Response.json({
-                  accounts: [
-                    {
-                      account: "account-a",
+          usageLimitSources: {
+            [UsageLimitSourceId.make("hub")]: {
+              kind: "cliproxy",
+              url: "https://hub.test",
+              managementKey: "key",
+              enabled: true,
+            },
+          },
+        }),
+        Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+          shouldRunScopeWork: () => Effect.succeed(false),
+        }),
+        Layer.succeed(SecretResolver.SecretResolver, {
+          label: (provider) => Effect.succeed(provider),
+          read: (references) => Effect.succeed(references.map(() => undefined)),
+          invalidate: () => Effect.void,
+        }),
+        Layer.succeed(
+          HttpClient.HttpClient,
+          HttpClient.make((request) =>
+            Effect.sync(() => {
+              const path = new URL(request.url).pathname;
+              if (path.endsWith("/control")) {
+                return HttpClientResponse.fromWeb(
+                  request,
+                  Response.json({
+                    accounts: routerReady
+                      ? ["a", "b"].map((index) => ({
+                          account: `account-${index}`,
+                          provider: "codex",
+                          auth_index: index,
+                          pace: { "5h": { used: pace } },
+                        }))
+                      : null,
+                  }),
+                );
+              }
+              if (path.endsWith("/auth-files")) {
+                accountReads += 1;
+                return HttpClientResponse.fromWeb(
+                  request,
+                  Response.json({
+                    files: ["a", "b"].map((index) => ({
+                      id: `${index}.json`,
+                      auth_index: index,
                       provider: "codex",
-                      auth_index: "a",
-                      pace: { "5h": { used: pace } },
-                    },
-                  ],
-                }),
-              );
-            }
-            if (path.endsWith("/auth-files")) {
-              accountReads += 1;
-              return HttpClientResponse.fromWeb(
-                request,
-                Response.json({
-                  files: [{ id: "first.json", auth_index: "a", provider: "codex" }],
-                }),
-              );
-            }
-            return HttpClientResponse.fromWeb(request, new Response("down", { status: 503 }));
-          }),
+                    })),
+                  }),
+                );
+              }
+              return HttpClientResponse.fromWeb(request, new Response("down", { status: 503 }));
+            }),
+          ),
         ),
-      ),
-      NodeCrypto.layer,
-    ]),
-    Effect.scoped,
-  );
-});
+        NodeCrypto.layer,
+      ]),
+      Effect.scoped,
+    );
+  },
+);

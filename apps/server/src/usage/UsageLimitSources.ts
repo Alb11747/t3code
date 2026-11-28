@@ -345,7 +345,9 @@ export const make = Effect.gen(function* () {
 
   // Serialize refreshes so slow old-settings reads cannot resurrect removed sources after newer refreshes.
   const refreshLock = yield* Semaphore.make(1);
-  let refreshedAt = Number.NEGATIVE_INFINITY;
+  // When a refresh last published, including sources that reported a handled error; the startup
+  // refresh starts the clock, so the idle loop waits for its deadline rather than reading twice.
+  let refreshedAt = yield* Clock.currentTimeMillis;
   const refresh = Effect.gen(function* () {
     const settings = yield* settingsService.getSettings.pipe(
       Effect.orElseSucceed((): ServerSettings | null => null),
@@ -588,15 +590,20 @@ export const make = Effect.gen(function* () {
           ? backgroundPolicy.shouldRunScopeWork({ type: "provider-status" })
           : Effect.succeed(false),
       ),
-      Effect.flatMap((shouldRun) =>
-        Effect.map(
-          Clock.currentTimeMillis,
-          (now) => shouldRun || now - refreshedAt >= IDLE_REFRESH_MS,
-        ),
-      ),
       Effect.flatMap((shouldRun) => (shouldRun ? refresh : Effect.void)),
       Effect.ignoreCause({ log: true }),
     ),
+  ).pipe(Effect.forkScoped);
+
+  // Its own timer, so a long provider-health interval cannot delay it past the stale deadline.
+  yield* Effect.forever(
+    Effect.gen(function* () {
+      const wait = refreshedAt + IDLE_REFRESH_MS - (yield* Clock.currentTimeMillis);
+      if (wait > 0) return yield* Effect.sleep(Duration.millis(wait));
+      yield* refresh;
+      // A refresh that timed out leaves refreshedAt behind; space out the retries.
+      yield* Effect.sleep("1 minute");
+    }),
   ).pipe(Effect.forkScoped);
 
   yield* refresh.pipe(Effect.forkScoped);
