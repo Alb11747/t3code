@@ -367,6 +367,7 @@ const delegatedId = ThreadId.make(
 const archivedLaunchId = ThreadId.make("mcp:launch:5df7ed4e963ae24b4b373194a21939564ff761319eda72");
 // A deleted web thread whose whole id is the delegated thread's trailing uuid.
 const deletedWebId = ThreadId.make("60114142-4ad8-4dea-90ab-bd290cf71bee");
+const webId = ThreadId.make("7e3c9a10-5b2d-4f61-8a0e-3c4d5e6f7a8b");
 const twinIds = [
   ThreadId.make("mcp:abcdef12-0000-4000-8000-000000000001"),
   ThreadId.make("mcp:abcdef12-0000-4000-8000-000000000002"),
@@ -381,6 +382,7 @@ const shortIdShells = new Map([
       archivedAt: liveThreadShell(archivedLaunchId).updatedAt,
     },
   ],
+  [webId, liveThreadShell(webId)],
   ...twinIds.map((id) => [id, liveThreadShell(id)] as const),
 ]);
 const shortIdThreads = Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -401,6 +403,7 @@ it.effect.each([
   ["a uuid that is not the trailing one", "b362d26a", "ran"],
   ["a prefix of no thread", "0123abcd", "ran"],
   ["a deleted thread's own full id", deletedWebId, "ran"],
+  ["another spelling of a full id", webId.toUpperCase(), "runtime_mode_escalation_denied"],
 ] as const)("resolves %s before checking it", ([, threadId, expected]) =>
   call("writes_threads", supervised, { threadId }).pipe(
     Effect.map((outcome) => expect(outcome).toBe(expected)),

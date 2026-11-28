@@ -78,7 +78,8 @@ export const resolveShortThreadIds = Effect.fn("mcp.resolveShortThreadIds")(func
       .findThreadIdsContaining(prefix)
       .pipe(Effect.mapError(unavailable));
     // A thread's own id, even a deleted one's, keeps its meaning: the tool answers for it.
-    if (contained.some((row) => row.threadId.toLowerCase() === value.toLowerCase())) continue;
+    // Ids compare byte for byte, as every lookup does; another spelling resolves below.
+    if (contained.some((row) => row.threadId === value)) continue;
     const matches = contained
       .filter((row) => !row.deleted && trailingThreadIdToken(row.threadId).startsWith(prefix))
       .map((row) => row.threadId);
