@@ -35,8 +35,9 @@ const make = Effect.gen(function* () {
       McpToolAccess.either(
         (input) => input.action === "refresh",
         // The RPC needs provider management: a refresh sends the source's management key and can
-        // run the provider's CLI. Only a T3 thread with the broadest modes stands in for that.
-        McpToolAccess.writesOwnerWork("refresh provider quota readings", (input) =>
+        // run the provider's CLI. Only a full-access T3 thread stands in for that, even under a
+        // lower runtime-mode ceiling.
+        McpToolAccess.writesEnvironment((input) =>
           Effect.gen(function* () {
             yield* McpInvocationContext.requireThreadScope(
               yield* McpInvocationContext.McpInvocationContext,

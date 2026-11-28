@@ -51,6 +51,7 @@ const callTool = (
   args: object,
   capabilities = scope.capabilities,
   thread: McpInvocationContext.McpInvocationScope["thread"] | null = scope.thread,
+  extra: Partial<McpInvocationContext.McpInvocationScope> = {},
 ) =>
   McpServer.McpServer.pipe(
     Effect.flatMap((server) => server.callTool({ name: "t3_usage", arguments: args })),
@@ -58,6 +59,7 @@ const callTool = (
       ...scope,
       capabilities,
       thread: thread ?? undefined,
+      ...extra,
     }),
     Effect.provideService(McpSchema.McpServerClient, client),
   );
@@ -163,6 +165,13 @@ it.effect.each([
   { caller: "an approval-required thread", runtimeMode: "approval-required", refused: true },
   { caller: "a plan-mode thread", runtimeMode: "full-access", plan: true, refused: true },
   { caller: "a client outside T3", runtimeMode: "full-access", outside: true, refused: true },
+  // An administrator's lower ceiling does not make its broadest thread a provider manager.
+  {
+    caller: "a thread at an approval-required ceiling",
+    runtimeMode: "approval-required",
+    ceiling: true,
+    refused: true,
+  },
   { caller: "a full-access thread", runtimeMode: "full-access", refused: false },
 ] as const)("refreshes a quota reading only for $caller with full access", (row) => {
   const calls: Array<unknown> = [];
@@ -172,6 +181,7 @@ it.effect.each([
       args,
       scope.capabilities,
       "outside" in row ? null : scope.thread,
+      "ceiling" in row ? { runtimeModeCeiling: "approval-required" } : {},
     );
     expect(result.isError === true).toBe(row.refused);
     expect(calls).toEqual(
