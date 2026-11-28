@@ -67,7 +67,7 @@ export const OrchestratorMcpThreadAccountHold = Schema.Struct({
  * Keep-warm: `release` stops holding until the reset (`restore` undoes it), `switch` moves to
  * another account, `compact` compacts on the warm account and continues, `pause` ends the turn as
  * a usage limit. Pin hold: `stop_waiting` (or `release`, from older clients) keeps the account but
- * stops waiting for it. Short-cap holds support `pause` and explicit account switches.
+ * stops waiting for it until the hold's reset, when the thread waits again. Short-cap holds support `pause` and explicit account switches.
  */
 export const ClaudeKeepWarmAction = Schema.Literals([
   "release",

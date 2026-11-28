@@ -12,6 +12,7 @@ import {
   type ThreadId,
   type UsageLimitSourceAccount,
   threadAccountChoiceFor,
+  threadAccountChoiceResumesAt,
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
@@ -23,6 +24,7 @@ import * as Dialog from "../../components/ui/Dialog";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import type { MessageResolver } from "../../i18n/messages";
 import { cn } from "../../lib/cn";
+import { useDeadlinePassed } from "../../lib/clock";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { noteThreadAccountChange } from "../../state/thread-account-send-guard";
@@ -109,6 +111,8 @@ export function ThreadAccountSection(props: {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const state = query.data;
+  // Stopping the wait on a held thread lasts until the hold's reset.
+  const stallResumed = useDeadlinePassed(threadAccountChoiceResumesAt(props.choice));
   if (!state || state.accounts.length < 2) return null;
 
   const byAlias = (alias: string | null | undefined) =>
@@ -179,10 +183,11 @@ export function ThreadAccountSection(props: {
       target && account && !dropThinking ? () => confirmMove(target, account, stall) : undefined,
     );
   };
+  const waits = choice ? choice.stall || stallResumed : false;
   const pick = (account: UsageLimitSourceAccount | null) => {
     const alias = account?.routerAlias ?? null;
     if (alias === (choice?.account ?? null)) return;
-    const stall = choice?.stall ?? false;
+    const stall = waits;
     if (account && alias && owner && owner.routerAlias !== alias) {
       confirmMove(account, alias, stall);
       return;
@@ -267,7 +272,7 @@ export function ThreadAccountSection(props: {
                 <T>Wait when it runs out</T>
               </Text>
               <Text className="text-xs text-foreground-muted">
-                {choice?.stall
+                {waits
                   ? gt("On: waits for the account to reset.")
                   : gt("Off: falls back to another account.")}
               </Text>
@@ -275,7 +280,7 @@ export function ThreadAccountSection(props: {
             <ThemedSwitch
               accessibilityLabel={gt("Wait when it runs out")}
               disabled={disabled || !chosen?.routerAlias}
-              value={choice?.stall ?? false}
+              value={waits}
               onValueChange={(stall) => {
                 if (chosen?.routerAlias) set(chosen.routerAlias, stall);
               }}

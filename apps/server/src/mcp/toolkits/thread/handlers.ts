@@ -9,7 +9,9 @@ import {
   pacedChoiceOf,
   pacedFromChoice,
   threadAccountChoiceFor,
+  threadAccountChoiceStalls,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 import { isModelFamilyAlias } from "@t3tools/shared/latestModel";
@@ -260,7 +262,13 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
             : {
                 account:
                   chosen && chosenAccount
-                    ? { account: chosenAccount, waitWhenOut: chosen.stall }
+                    ? {
+                        account: chosenAccount,
+                        waitWhenOut: threadAccountChoiceStalls(
+                          chosen,
+                          yield* Clock.currentTimeMillis,
+                        ),
+                      }
                     : null,
                 accounts: accounts.accounts.flatMap((account, _index, all) =>
                   account.routerAlias === undefined

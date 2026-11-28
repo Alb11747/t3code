@@ -35,6 +35,7 @@ import {
   type UsageLimitSourceId,
   type UsageLimitSourceSnapshot,
   threadAccountChoiceFor,
+  threadAccountChoiceStalls,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -641,14 +642,25 @@ export const make = Effect.gen(function* () {
     )).routerAlias as RouterAccountAlias;
     // Changing only the account keeps the stored wait-when-out setting.
     const current = threadAccountChoiceFor(storedChoice, target.instanceId);
+    const sameAccount = current !== null && rename(current.account) === account;
     const stall =
       canWait &&
-      (input.stall ?? (current && rename(current.account) === account ? current.stall : false));
+      (input.stall ??
+        (sameAccount ? threadAccountChoiceStalls(current, DateTime.toEpochMillis(now)) : false));
+    // Stopping the wait on a held thread lasts until the hold's reset; a later choice that leaves
+    // the wait alone keeps that end.
+    const stallResumesAt = stall
+      ? undefined
+      : (input.stallResumesAt ??
+        (input.stall === undefined && sameAccount && current.stall === false
+          ? current.stallResumesAt
+          : undefined));
     if (
       current?.sourceId === target.source.id &&
       current.instanceId === target.instanceId &&
-      rename(current.account) === account &&
-      current.stall === stall
+      sameAccount &&
+      current.stall === stall &&
+      current.stallResumesAt === stallResumesAt
     ) {
       if (!session) return;
       const pins = yield* matchingPins(target, [session]);
@@ -714,6 +726,7 @@ export const make = Effect.gen(function* () {
         sourceId: target.source.id,
         account,
         stall,
+        ...(stallResumesAt === undefined || !canWait ? {} : { stallResumesAt }),
         instanceId: target.instanceId,
       },
       ...(moved && session !== undefined && providerThread !== undefined
@@ -911,7 +924,7 @@ export const make = Effect.gen(function* () {
       if (listed.has(session) || !choice) continue;
       pins.push({
         account: alias(choice.account) ?? choice.account,
-        stall: choice.stall,
+        stall: threadAccountChoiceStalls(choice, DateTime.toEpochMillis(yield* DateTime.now)),
         active: false,
         thread: { id: thread.id, title: thread.title },
         session: null,
@@ -1076,7 +1089,13 @@ export const make = Effect.gen(function* () {
         ...(afterCompactionName ? { afterCompaction: afterCompactionName } : {}),
         owner: picked?.owner ? name(picked.owner) : null,
         chosen: chosen
-          ? { account: (yield* describeChoice(chosen)).name, waitWhenOut: chosen.stall }
+          ? {
+              account: (yield* describeChoice(chosen)).name,
+              waitWhenOut: threadAccountChoiceStalls(
+                chosen,
+                DateTime.toEpochMillis(yield* DateTime.now),
+              ),
+            }
           : null,
       },
     };

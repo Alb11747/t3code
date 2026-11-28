@@ -155,6 +155,23 @@ describe("ThreadAccountRouting.prepareTurn", () => {
       drops: true,
     },
     { name: "makes no router call without a choice", input: {}, pins: [], drops: false },
+    // Stop waiting on a held thread lasts one reset (user, 2026-11-28).
+    {
+      name: "falls back until a stopped wait's reset",
+      input: {
+        accountChoice: { ...CHOICE, stall: false, stallResumesAt: "2026-11-14T15:00:00.000Z" },
+      },
+      pins: [expect.objectContaining({ account: CHOICE.account, stall: false })],
+      drops: false,
+    },
+    {
+      name: "waits again once a stopped wait's reset has passed",
+      input: {
+        accountChoice: { ...CHOICE, stall: false, stallResumesAt: "2026-11-14T11:00:00.000Z" },
+      },
+      pins: [expect.objectContaining({ account: CHOICE.account, stall: true })],
+      drops: false,
+    },
     {
       name: "refreshes a legacy Codex wait as a fallback pin",
       input: {

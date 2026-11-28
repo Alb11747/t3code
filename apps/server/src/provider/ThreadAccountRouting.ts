@@ -8,8 +8,10 @@ import {
   type ProviderThreadId,
   type ThreadId,
   type UsageLimitSourceId,
+  threadAccountChoiceStalls,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -170,7 +172,10 @@ export const make = Effect.gen(function* () {
       failedWaitingPins.delete(input.appThread.id);
       return drops;
     }
-    const stall = routerProvider === "claude" && choice.stall;
+    // A stopped wait ends at the hold's reset; this turn's pin then waits again.
+    const stall =
+      routerProvider === "claude" &&
+      threadAccountChoiceStalls(choice, yield* Clock.currentTimeMillis);
     if (!stall) failedWaitingPins.delete(input.appThread.id);
     yield* Effect.gen(function* () {
       const hub = yield* sources.hub(choice.sourceId);

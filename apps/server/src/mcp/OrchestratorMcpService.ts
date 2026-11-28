@@ -72,6 +72,7 @@ import {
   SECRET_REQUEST_UNSAVED_NOTE,
   threadAccountChoiceFor,
   pacedFromChoice,
+  threadAccountChoiceStalls,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import { isModelFamilyAlias, resolveFamilyAlias } from "@t3tools/shared/latestModel";
@@ -1068,13 +1069,14 @@ function threadPaced(
 function accountOf(
   thread: OrchestrationV2ThreadProjection["thread"],
   described: { readonly name: string; readonly pinned?: false } | undefined,
+  nowMs: number,
 ) {
   const choice = threadAccountChoiceFor(thread.accountChoice, thread.modelSelection.instanceId);
   return choice
     ? {
         account: {
           account: described?.name ?? choice.account,
-          waitWhenOut: choice.stall,
+          waitWhenOut: threadAccountChoiceStalls(choice, nowMs),
           ...(described?.pinned === false ? { pinned: false as const } : {}),
         },
       }
@@ -1252,7 +1254,7 @@ function threadDetail(
     ...threadSnooze(shell, nowMs),
     ...threadStall(shell),
     ...threadPaced(shell, nowMs),
-    ...accountOf(projection.thread, account),
+    ...accountOf(projection.thread, account, nowMs),
     pinned: shell.pinnedAt != null,
     ...threadBackgroundWork(shell),
     createdAt: DateTime.formatIso(projection.thread.createdAt),

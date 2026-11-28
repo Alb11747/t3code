@@ -13,9 +13,12 @@ import {
   type ThreadId,
   type UsageLimitSourceAccount,
   threadAccountChoiceFor,
+  threadAccountChoiceResumesAt,
 } from "@t3tools/contracts";
 import { ArrowRightIcon, CheckIcon, ChevronDownIcon } from "lucide-react";
-import { useEffect, useEffectEvent, useState } from "react";
+import { useEffectEvent, useState } from "react";
+
+import { useDeadlinePassed } from "../../hooks/useDeadline";
 
 import { useComposerDraftAccountChoice, useComposerDraftStore } from "../../composerDraftStore";
 import { usePrimarySettings } from "../../hooks/useSettings";
@@ -163,6 +166,8 @@ function ThreadAccountPickerChip(
     isDraft ? draftChoice : shell?.accountChoice,
     state.instanceId,
   );
+  // Stopping the wait on a held thread lasts until the hold's reset.
+  const stallResumed = useDeadlinePassed(threadAccountChoiceResumesAt(choice));
   const externallyOpen = useThreadAccountPickerOpen(threadKey);
   const [open, setOpen] = useState(false);
   const [pendingMove, setPendingMove] = useState<UsageLimitSourceAccount | null>(null);
@@ -273,6 +278,8 @@ function ThreadAccountPickerChip(
     previews.refresh();
   }
 
+  const waits = choice ? choice.stall || stallResumed : false;
+
   function pick(account: UsageLimitSourceAccount | null) {
     const alias = account?.routerAlias ?? null;
     if (alias === (choice?.account ?? null)) return;
@@ -280,7 +287,7 @@ function ThreadAccountPickerChip(
       setPendingMove(account);
       return;
     }
-    void apply(alias, choice?.stall ?? false);
+    void apply(alias, waits);
   }
 
   async function steer(account: RouterAccountAlias | null) {
@@ -398,14 +405,14 @@ function ThreadAccountPickerChip(
                       <T>Wait when it runs out</T>
                     </span>
                     <span className="text-xs text-muted-foreground">
-                      {choice?.stall
+                      {waits
                         ? gt("On: waits for this account to reset.")
                         : gt("Off: falls back to another account.")}
                     </span>
                   </span>
                   <Switch
                     size="sm"
-                    checked={choice?.stall ?? false}
+                    checked={waits}
                     disabled={busy || chosen === undefined || (!isDraft && !permitted)}
                     onCheckedChange={(stall) => {
                       if (chosen?.routerAlias) void apply(chosen.routerAlias, stall);
@@ -488,7 +495,7 @@ function ThreadAccountPickerChip(
               onClick={() => {
                 const target = pendingMove?.routerAlias;
                 setPendingMove(null);
-                if (target) void apply(target, choice?.stall ?? false, true);
+                if (target) void apply(target, waits, true);
               }}
             >
               <T>Switch account</T>

@@ -570,9 +570,9 @@ it.effect("runs keep-warm actions against the stalled turn", () => {
 });
 
 it.effect.each([
-  { action: "stop_waiting", set: { account: WARM, stall: false } },
+  { action: "stop_waiting", set: { account: WARM, stall: false, stallResumesAt: hold.resetAt } },
   // What older clients' Back to normal sends; it means the same for a pin hold.
-  { action: "release", set: { account: WARM, stall: false } },
+  { action: "release", set: { account: WARM, stall: false, stallResumesAt: hold.resetAt } },
   { action: "pause", paused: true },
   { action: "switch", error: "Choose the account to switch to" },
   { action: "compact", error: "a compaction would wait too" },

@@ -154,18 +154,27 @@ export const make = Effect.gen(function* () {
         if (account === undefined) {
           return yield* refuse("The router did not say which account this thread waits for.");
         }
-        yield* threadAccounts.set({ threadId, account, stall: false }).pipe(
-          // The agent's dropThinking confirmation has no place here; the picker asks for it.
-          Effect.mapError((error) =>
-            error.requiresDropThinking === true
-              ? new ClaudeKeepWarmActionError({
-                  threadId,
-                  detail:
-                    "Another account owns this conversation, so falling back would drop its earlier thinking. Use Switch account to move it; it asks first.",
-                })
-              : failWith(error),
-          ),
-        );
+        // Only until the hold's reset: the thread then waits for its account again. A hold whose
+        // reset the router does not know stops waiting for good.
+        yield* threadAccounts
+          .set({
+            threadId,
+            account,
+            stall: false,
+            ...(turn.hold.resetUnknown === true ? {} : { stallResumesAt: turn.hold.resetAt }),
+          })
+          .pipe(
+            // The agent's dropThinking confirmation has no place here; the picker asks for it.
+            Effect.mapError((error) =>
+              error.requiresDropThinking === true
+                ? new ClaudeKeepWarmActionError({
+                    threadId,
+                    detail:
+                      "Another account owns this conversation, so falling back would drop its earlier thinking. Use Switch account to move it; it asks first.",
+                  })
+                : failWith(error),
+            ),
+          );
         return;
       }
       case "pause":

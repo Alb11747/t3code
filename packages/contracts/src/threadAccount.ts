@@ -20,10 +20,29 @@ export const ThreadAccountChoice = Schema.Struct({
   sourceId: UsageLimitSourceId,
   account: RouterAccountAlias,
   stall: Schema.Boolean,
+  /**
+   * Fork: when `stall` is false only because the user stopped waiting on a held thread, the reset
+   * after which it waits again. Read `stall` through `threadAccountChoiceStalls`.
+   */
+  stallResumesAt: Schema.optional(IsoDateTime),
   /** The provider instance the choice was made for; absent on choices stored before it was kept. */
   instanceId: Schema.optional(ProviderInstanceId),
 });
 export type ThreadAccountChoice = typeof ThreadAccountChoice.Type;
+
+/** Fork: when a stopped wait ends (epoch milliseconds), or null when the choice has none. */
+export const threadAccountChoiceResumesAt = (
+  choice: ThreadAccountChoice | null | undefined,
+): number | null =>
+  choice && !choice.stall && choice.stallResumesAt !== undefined
+    ? Date.parse(choice.stallResumesAt)
+    : null;
+
+/** Fork: whether the choice waits when its account runs out at `now` (epoch milliseconds). */
+export const threadAccountChoiceStalls = (choice: ThreadAccountChoice, now: number): boolean => {
+  const resumesAt = threadAccountChoiceResumesAt(choice);
+  return choice.stall || (resumesAt !== null && resumesAt <= now);
+};
 
 /** Fork: a usage window a paced thread keeps pace with: the 5-hour or the weekly one. */
 export const PacedWindow = Schema.Literals(["5h", "7d"]);
@@ -110,6 +129,8 @@ export const ThreadAccountSetInput = Schema.Struct({
   threadId: ThreadId,
   account: Schema.NullOr(RouterAccountAlias),
   stall: Schema.optional(Schema.Boolean),
+  /** Fork: with `stall: false`, the reset after which the thread waits when out again. */
+  stallResumesAt: Schema.optional(IsoDateTime),
   /** Acknowledges THREAD_ACCOUNT_MOVE_WARNING; required to move an owned conversation. */
   dropThinking: Schema.optional(Schema.Boolean),
 });
