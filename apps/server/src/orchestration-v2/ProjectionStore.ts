@@ -681,6 +681,14 @@ export interface ProjectionStoreV2Shape {
   readonly getThreadShell: (
     threadId: ThreadId,
   ) => Effect.Effect<OrchestrationV2ThreadShell | null, ProjectionStoreV2Error>;
+  /**
+   * Fork: undeleted threads whose id contains this lowercase hex text, archived ones included,
+   * at most `limit`. Scans thread rows; MCP short-id resolution filters the matches further.
+   */
+  readonly findThreadIdsContaining: (
+    hex: string,
+    limit: number,
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionStoreV2Error>;
   /** The thread whose current guest share has this id. Scans thread rows; only redeem uses it. */
   readonly findGuestShareThreadId: (
     shareId: GuestShareId,
@@ -10095,6 +10103,22 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       return rows[0] === undefined ? null : ThreadId.make(rows[0].thread_id);
     }, Effect.mapError(shellSnapshotReadError));
 
+    const findThreadIdsContaining = Effect.fn("ProjectionStore.findThreadIdsContaining")(function* (
+      hex: string,
+      limit: number,
+    ) {
+      // Only hex reaches here, so the text has no LIKE wildcards to escape.
+      if (!/^[0-9a-f-]+$/.test(hex)) return [];
+      const rows = yield* sql<{ readonly thread_id: string }>`
+        SELECT thread_id
+        FROM orchestration_v2_projection_threads
+        WHERE deleted_at IS NULL AND lower(thread_id) LIKE ${`%${hex}%`}
+        ORDER BY thread_id
+        LIMIT ${limit}
+      `;
+      return rows.map((row) => ThreadId.make(row.thread_id));
+    }, Effect.mapError(shellSnapshotReadError));
+
     const listOlderSettledThreads: ProjectionStoreV2Shape["listOlderSettledThreads"] = Effect.fn(
       "ProjectionStore.listOlderSettledThreads",
     )(function* ({ before, projectIds, limit }) {
@@ -10248,6 +10272,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       readShellSnapshot: readOnReader(readShellSnapshot),
       listOlderSettledThreads: readOnReader(listOlderSettledThreads),
       getThreadShell: readOnReader(getThreadShell),
+      findThreadIdsContaining: readOnReader(findThreadIdsContaining),
       findGuestShareThreadId: readOnReader(findGuestShareThreadId),
       getThread: readOnReader(getThread),
       findThread: readOnReader(findThread),

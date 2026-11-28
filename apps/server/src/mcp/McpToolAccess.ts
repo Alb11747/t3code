@@ -32,6 +32,7 @@ import {
   callerLinkOrigin,
 } from "./linkOrigin.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import { resolveShortThreadIds } from "./shortThreadIds.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
 import {
   assertBroadestAccess,
@@ -481,7 +482,17 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
 ) {
   // Optional so toolkits that never leave this environment build without it.
   const forwarding = yield* Effect.serviceOption(PeerForwarding.PeerForwarding);
-  const handlers: Record<string, unknown> = { ...checked };
+  // Fork: short thread ids resolve first, so the declaration's checks see the full id. A call
+  // for a linked environment is forwarded as given, and that environment resolves it.
+  const handlers: Record<string, unknown> = {};
+  for (const [name, handle] of Object.entries(
+    checked as unknown as Record<
+      string,
+      (params: object) => Effect.Effect<unknown, OrchestratorMcpFailure>
+    >,
+  )) {
+    handlers[name] = (params: object) => resolveShortThreadIds(params).pipe(Effect.flatMap(handle));
+  }
   for (const [name, declaration] of Object.entries<Declaration<unknown>>(declarations)) {
     const tool = toolkit.tools[name];
     if (tool === undefined) continue;

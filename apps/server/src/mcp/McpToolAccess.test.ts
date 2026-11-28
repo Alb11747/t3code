@@ -24,6 +24,7 @@ import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import { liveThreadShell } from "./McpToolAccess.testkit.ts";
+import { resolveShortThreadIds } from "./shortThreadIds.ts";
 
 const supervisedThreadId = ThreadId.make("thread:supervised");
 const planThreadId = ThreadId.make("thread:plan");
@@ -355,6 +356,64 @@ it.effect.each([
         }),
       ),
     ),
+  ),
+);
+
+// Fork: short thread ids. Each resolved id names a full-access thread, so a supervised caller is
+// refused exactly when the check saw the full id; an unresolved id reaches the handler as missing.
+const delegatedId = ThreadId.make(
+  "thread:delegated-task:command%3Amcp%3Ab362d26a-62cf-4fd7-992d-37d7b53b6132%3Adelegate-task%3A60114142-4ad8-4dea-90ab-bd290cf71bee",
+);
+const archivedLaunchId = ThreadId.make("mcp:launch:5df7ed4e963ae24b4b373194a21939564ff761319eda72");
+const twinIds = [
+  ThreadId.make("mcp:abcdef12-0000-4000-8000-000000000001"),
+  ThreadId.make("mcp:abcdef12-0000-4000-8000-000000000002"),
+];
+const shortIdShells = new Map([
+  [supervisedThreadId, shells.get(supervisedThreadId)!],
+  [delegatedId, liveThreadShell(delegatedId)],
+  [
+    archivedLaunchId,
+    {
+      ...liveThreadShell(archivedLaunchId),
+      archivedAt: liveThreadShell(archivedLaunchId).updatedAt,
+    },
+  ],
+  ...twinIds.map((id) => [id, liveThreadShell(id)] as const),
+]);
+const shortIdThreads = Layer.mock(ThreadManagement.ThreadManagementService)({
+  getThreadShell: (threadId) => Effect.succeed(shortIdShells.get(threadId) ?? null),
+  findThreadIdsContaining: (hex) =>
+    Effect.succeed([...shortIdShells.keys()].filter((id) => id.toLowerCase().includes(hex))),
+});
+
+it.effect.each([
+  ["a unique short id", "60114142", "runtime_mode_escalation_denied"],
+  ["a URL-encoded longer prefix", "60114142-4ad8%2D4dea", "runtime_mode_escalation_denied"],
+  ["an archived thread's hash prefix", "5DF7ED4E96", "runtime_mode_escalation_denied"],
+  ["an ambiguous short id", "abcdef12", "invalid_request"],
+  ["a uuid that is not the trailing one", "b362d26a", "ran"],
+  ["a prefix of no thread", "0123abcd", "ran"],
+] as const)("resolves %s before checking it", ([, threadId, expected]) =>
+  call("writes_threads", supervised, { threadId }).pipe(
+    Effect.map((outcome) => expect(outcome).toBe(expected)),
+    Effect.provide(probeServer(shortIdThreads)),
+  ),
+);
+
+it.effect("lists an ambiguous short id's threads with their links", () =>
+  resolveShortThreadIds({ threadId: "abcdef12" }).pipe(
+    Effect.flip,
+    Effect.map((error) => {
+      expect(error.code).toBe("invalid_request");
+      for (const id of twinIds) {
+        expect(error.message).toContain(
+          `\`${id}\` ${McpInvocationContext.threadLinkFor(supervised, id)}`,
+        );
+      }
+    }),
+    Effect.provideService(McpInvocationContext.McpInvocationContext, supervised),
+    Effect.provide(shortIdThreads),
   ),
 );
 

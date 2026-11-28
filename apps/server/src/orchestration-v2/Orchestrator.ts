@@ -588,6 +588,11 @@ export interface OrchestratorV2Shape {
   readonly findGuestShareThreadId: (
     shareId: GuestShareId,
   ) => Effect.Effect<ThreadId | null, OrchestratorV2Error>;
+  /** Fork: undeleted threads whose id contains this lowercase hex text; see ProjectionStore. */
+  readonly findThreadIdsContaining: (
+    hex: string,
+    limit: number,
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, OrchestratorV2Error>;
   /** Titles of the given threads that exist, archived ones included. */
   readonly getThreadLinkMetadata: (
     threadIds: ReadonlyArray<ThreadId>,
@@ -20050,6 +20055,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .getThreadShell(threadId)
         .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
     }),
+    findThreadIdsContaining: Effect.fn("OrchestratorV2.findThreadIdsContaining")(
+      function (hex, limit) {
+        return projectionStore
+          .findThreadIdsContaining(hex, limit)
+          .pipe(Effect.mapError(shellProjectionError));
+      },
+    ),
     findGuestShareThreadId: Effect.fn("OrchestratorV2.findGuestShareThreadId")(function (shareId) {
       return projectionStore
         .findGuestShareThreadId(shareId)
