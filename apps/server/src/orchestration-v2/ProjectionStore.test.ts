@@ -3456,6 +3456,81 @@ it.effect("SQL shells read a subagent family and a worktree's threads", () =>
   }).pipe(Effect.provide(layerTest)),
 );
 
+// Fork: MCP short thread ids.
+it.effect("SQL finds threads with an id segment starting with hex text", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const now = yield* DateTime.now;
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const create = (threadId: ThreadId, deleted = false) =>
+      Effect.gen(function* () {
+        const payload = {
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+          id: threadId,
+          projectId: ProjectId.make("project:a"),
+          title: threadId,
+          providerInstanceId,
+          modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          snoozedUntil: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        };
+        yield* store.apply({
+          id: EventId.make(`event:short:${threadId}`),
+          type: "thread.created",
+          threadId,
+          occurredAt: now,
+          payload,
+        });
+        if (deleted)
+          yield* store.apply({
+            id: EventId.make(`event:short-deleted:${threadId}`),
+            type: "thread.deleted",
+            threadId,
+            occurredAt: now,
+            payload: { ...payload, deletedAt: now },
+          });
+      });
+    const delegated = ThreadId.make(
+      "thread:delegated-task:command%3Amcp%3Ab362d26a-62cf-4fd7-992d-37d7b53b6132%3Adelegate-task%3A60114142-4ad8-4dea-90ab-bd290cf71bee",
+    );
+    const deletedWeb = ThreadId.make("60114142-4ad8-4dea-90ab-bd290cf71bee");
+    const launch = ThreadId.make("mcp:launch:60114142ffff");
+    const midSegment = ThreadId.make("mcp:a60114142");
+    yield* create(delegated);
+    yield* create(deletedWeb, true);
+    yield* create(launch);
+    yield* create(midSegment);
+
+    assert.sameDeepMembers(
+      [...(yield* store.findThreadIdsContaining("60114142"))],
+      [
+        { threadId: delegated, deleted: false },
+        { threadId: deletedWeb, deleted: true },
+        { threadId: launch, deleted: false },
+      ],
+    );
+    assert.deepEqual(
+      [...(yield* store.findThreadIdsContaining("b362d26a"))],
+      [{ threadId: delegated, deleted: false }],
+    );
+    assert.deepEqual([...(yield* store.findThreadIdsContaining("%"))], []);
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("SQL list older settled threads below a cursor", () =>
   Effect.gen(function* () {
     const store = yield* ProjectionStore.ProjectionStoreV2;

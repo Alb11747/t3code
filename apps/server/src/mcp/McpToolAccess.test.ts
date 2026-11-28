@@ -365,6 +365,8 @@ const delegatedId = ThreadId.make(
   "thread:delegated-task:command%3Amcp%3Ab362d26a-62cf-4fd7-992d-37d7b53b6132%3Adelegate-task%3A60114142-4ad8-4dea-90ab-bd290cf71bee",
 );
 const archivedLaunchId = ThreadId.make("mcp:launch:5df7ed4e963ae24b4b373194a21939564ff761319eda72");
+// A deleted web thread whose whole id is the delegated thread's trailing uuid.
+const deletedWebId = ThreadId.make("60114142-4ad8-4dea-90ab-bd290cf71bee");
 const twinIds = [
   ThreadId.make("mcp:abcdef12-0000-4000-8000-000000000001"),
   ThreadId.make("mcp:abcdef12-0000-4000-8000-000000000002"),
@@ -384,7 +386,11 @@ const shortIdShells = new Map([
 const shortIdThreads = Layer.mock(ThreadManagement.ThreadManagementService)({
   getThreadShell: (threadId) => Effect.succeed(shortIdShells.get(threadId) ?? null),
   findThreadIdsContaining: (hex) =>
-    Effect.succeed([...shortIdShells.keys()].filter((id) => id.toLowerCase().includes(hex))),
+    Effect.succeed(
+      [...shortIdShells.keys(), deletedWebId]
+        .filter((id) => id.toLowerCase().includes(hex))
+        .map((threadId) => ({ threadId, deleted: threadId === deletedWebId })),
+    ),
 });
 
 it.effect.each([
@@ -394,6 +400,7 @@ it.effect.each([
   ["an ambiguous short id", "abcdef12", "invalid_request"],
   ["a uuid that is not the trailing one", "b362d26a", "ran"],
   ["a prefix of no thread", "0123abcd", "ran"],
+  ["a deleted thread's own full id", deletedWebId, "ran"],
 ] as const)("resolves %s before checking it", ([, threadId, expected]) =>
   call("writes_threads", supervised, { threadId }).pipe(
     Effect.map((outcome) => expect(outcome).toBe(expected)),

@@ -682,13 +682,16 @@ export interface ProjectionStoreV2Shape {
     threadId: ThreadId,
   ) => Effect.Effect<OrchestrationV2ThreadShell | null, ProjectionStoreV2Error>;
   /**
-   * Fork: undeleted threads whose id contains this lowercase hex text, archived ones included,
-   * at most `limit`. Scans thread rows; MCP short-id resolution filters the matches further.
+   * Fork: every thread whose id has a segment starting with this lowercase hex text, deleted,
+   * archived and settled ones included. Scans thread rows; MCP short-id resolution filters
+   * the matches by each id's trailing segment, so this must not cap them.
    */
   readonly findThreadIdsContaining: (
     hex: string,
-    limit: number,
-  ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionStoreV2Error>;
+  ) => Effect.Effect<
+    ReadonlyArray<{ readonly threadId: ThreadId; readonly deleted: boolean }>,
+    ProjectionStoreV2Error
+  >;
   /** The thread whose current guest share has this id. Scans thread rows; only redeem uses it. */
   readonly findGuestShareThreadId: (
     shareId: GuestShareId,
@@ -10105,18 +10108,22 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
 
     const findThreadIdsContaining = Effect.fn("ProjectionStore.findThreadIdsContaining")(function* (
       hex: string,
-      limit: number,
     ) {
-      // Only hex reaches here, so the text has no LIKE wildcards to escape.
+      // Only hex reaches here, so the text has no LIKE wildcards to escape. A segment starts the
+      // id or follows `:`, raw or URL-encoded once (`%3a`) or twice (`%253a`).
       if (!/^[0-9a-f-]+$/.test(hex)) return [];
-      const rows = yield* sql<{ readonly thread_id: string }>`
-        SELECT thread_id
+      const rows = yield* sql<{ readonly thread_id: string; readonly deleted: number }>`
+        SELECT thread_id, deleted_at IS NOT NULL AS deleted
         FROM orchestration_v2_projection_threads
-        WHERE deleted_at IS NULL AND lower(thread_id) LIKE ${`%${hex}%`}
+        WHERE lower(thread_id) LIKE ${`${hex}%`}
+          OR lower(thread_id) LIKE ${`%:${hex}%`}
+          OR lower(thread_id) LIKE ${`%3a${hex}%`}
         ORDER BY thread_id
-        LIMIT ${limit}
       `;
-      return rows.map((row) => ThreadId.make(row.thread_id));
+      return rows.map((row) => ({
+        threadId: ThreadId.make(row.thread_id),
+        deleted: row.deleted === 1,
+      }));
     }, Effect.mapError(shellSnapshotReadError));
 
     const listOlderSettledThreads: ProjectionStoreV2Shape["listOlderSettledThreads"] = Effect.fn(
