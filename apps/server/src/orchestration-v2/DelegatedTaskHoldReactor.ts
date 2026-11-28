@@ -20,8 +20,10 @@ import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
 /**
- * Tells a task's owner when the task's message is held in its child's queue. Only a person's
- * send or Resume releases a held queue, so without this the owner waits on an `idle` task forever.
+ * Tells a task's owner when the task's message is held in its child's queue. Nothing releases it
+ * on its own: a person's send or Resume does, and so does a later run that completes there, such
+ * as one an agent starts with a restart send (Orchestrator `releaseUnattendedHolds`). Without this
+ * notice the owner waits on an `idle` task forever.
  */
 export class DelegatedTaskHoldReactor extends Context.Service<
   DelegatedTaskHoldReactor,
@@ -62,7 +64,7 @@ const make = Effect.gen(function* () {
       commandId: CommandId.make(`server:delegated-task-held:${key}`),
       threadId: task.threadId,
       messageId: MessageId.make(`message:delegated-task-held:${key}`),
-      text: `Delegated task ${task.id} has not run: its message is held in the queue of thread ${childThreadId}. T3 holds a thread's queue when the thread is stopped (task_cancel on another of its tasks stops it too) or its provider fails, and only a person's message or Resume in that thread releases it. If the task is no longer needed, cancel it with task_cancel; otherwise tell the user it is waiting.`,
+      text: `Delegated task ${task.id} has not run: its message is held in the queue of thread ${childThreadId}. T3 holds a thread's queue when the thread is stopped (task_cancel on another of its tasks stops it too) or its provider fails. A person's message or Resume in that thread releases it. You can release it too: a t3_thread_send with mode "restart" to that thread runs ahead of the hold, and once that run completes the held agent messages follow, unless a person's own message is also held there. If the task is no longer needed, cancel it with task_cancel; otherwise restart the thread or tell the user it is waiting.`,
       notification: {
         source: { kind: "delegated_task", taskIds: [task.id], childThreadId },
         outcome: "updated",
