@@ -9118,14 +9118,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
           compactThread: Effect.fn("CodexAdapterV2.compactThread")(
             function* (turnInput) {
-              // Fork: a warm-only compaction (an account move's) has no warm-only path here, so it
-              // skips rather than compacting a Codex conversation nobody asked to compact.
-              if (turnInput.idleCompaction !== undefined) {
-                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-                  driver: CODEX_PROVIDER,
-                  detail: "Warm-only compaction skipped: Codex has no warm-only compaction.",
-                });
-              }
               const threadId = yield* getNativeThreadId(turnInput.providerThread);
               yield* submitNativeTurn(
                 turnInput,

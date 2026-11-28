@@ -2408,7 +2408,12 @@ export const layer: Layer.Layer<
                 }),
               ))
             : compact
-              ? (input.session.compactThread?.(turnInput) ??
+              ? // Fork: only Claude has a warm-only compaction (idle or account-move). Another
+                // provider, even one picked by editing the queued message, would compact its own
+                // conversation and spend quota, so the compaction counts as unsupported there.
+                ((turnInput.idleCompaction !== undefined && input.session.driver !== "claudeAgent"
+                  ? undefined
+                  : input.session.compactThread?.(turnInput)) ??
                 Effect.fail(
                   new ProviderAdapter.ProviderAdapterTurnStartError({
                     driver: input.session.driver,

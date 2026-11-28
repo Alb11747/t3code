@@ -95,7 +95,10 @@ const layerRunExecutionTest = RunExecutionService.layer.pipe(
       PreviewAgentActivity.layer,
       Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
       layerTurnItemPositionsTest,
-      mockEventSink({}),
+      // A run that fails before its provider starts records that it failed.
+      mockEventSink({
+        writeIfRunCurrent: () => Effect.succeed({ committed: true, storedEvents: [] }),
+      }),
       IdAllocator.layer,
       ThreadCommandExecutor.layer,
       Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
@@ -1154,68 +1157,74 @@ it.effect(
         { text: " /compact ", attachments: [], expected: "compact" },
         { text: "/compact", attachments: [attachment], expected: "prompt" },
         { text: "Continue the work", attachments: [], expected: "prompt" },
+        // A warm-only compaction reaches no provider but Claude.
+        { text: "/compact", attachments: [], idleCompaction: true, expected: undefined },
       ];
       for (const [index, testCase] of cases.entries()) {
         const threadId = ThreadId.make(`thread:compact-routing:${index}`);
         const attemptId = RunAttemptId.make(`attempt:compact-routing:${index}`);
-        yield* runExecution.startRootRun({
-          commandId: CommandId.make(`command:compact-routing:${index}`),
-          appThread: rootAppThread(threadId),
-          providerSessionId: ProviderSessionId.make(`session:compact-routing:${index}`),
-          session: {
-            events: Stream.never,
-            startTurn: () =>
-              Effect.sync(() => {
-                calls.push("prompt");
-              }),
-            compactThread: () =>
-              Effect.sync(() => {
-                calls.push("compact");
-              }),
-          } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
-          run: {
-            id: RunId.make(`run:compact-routing:${index}`),
-            threadId,
-            ordinal: 1,
-            providerInstanceId: ProviderInstanceId.make("codex"),
-          } as OrchestrationV2Run,
-          rootNode: {
-            id: NodeId.make(`node:compact-routing:${index}`),
-          } as OrchestrationV2ExecutionNode,
-          checkpointScope: {
-            id: CheckpointScopeId.make(`checkpoint:compact-routing:${index}`),
-          } as OrchestrationV2CheckpointScope,
-          providerThread: {
-            id: ProviderThreadId.make(`provider-thread:compact-routing:${index}`),
-            driver,
-          } as OrchestrationV2ProviderThread,
-          attempt: { id: attemptId, providerTurnId: null } as OrchestrationV2RunAttempt,
-          attemptId,
-          providerTurnOrdinal: 1,
-          message: {
-            messageId: MessageId.make(`message:compact-routing:${index}`),
-            text: testCase.text,
-            attachments: testCase.attachments,
-            createdBy: "user",
-            creationSource: "web",
-          },
-          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-          runtimePolicy: {
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            cwd: process.cwd(),
-            approvalPolicy: "never",
-            sandboxPolicy: {
-              type: "readOnly",
-              access: { type: "fullAccess" },
-              networkAccess: false,
+        yield* runExecution
+          .startRootRun({
+            commandId: CommandId.make(`command:compact-routing:${index}`),
+            appThread: rootAppThread(threadId),
+            providerSessionId: ProviderSessionId.make(`session:compact-routing:${index}`),
+            session: {
+              driver,
+              events: Stream.never,
+              startTurn: () =>
+                Effect.sync(() => {
+                  calls.push("prompt");
+                }),
+              compactThread: () =>
+                Effect.sync(() => {
+                  calls.push("compact");
+                }),
+            } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
+            run: {
+              id: RunId.make(`run:compact-routing:${index}`),
+              threadId,
+              ordinal: 1,
+              providerInstanceId: ProviderInstanceId.make("codex"),
+            } as OrchestrationV2Run,
+            rootNode: {
+              id: NodeId.make(`node:compact-routing:${index}`),
+            } as OrchestrationV2ExecutionNode,
+            checkpointScope: {
+              id: CheckpointScopeId.make(`checkpoint:compact-routing:${index}`),
+            } as OrchestrationV2CheckpointScope,
+            providerThread: {
+              id: ProviderThreadId.make(`provider-thread:compact-routing:${index}`),
+              driver,
+            } as OrchestrationV2ProviderThread,
+            attempt: { id: attemptId, providerTurnId: null } as OrchestrationV2RunAttempt,
+            attemptId,
+            providerTurnOrdinal: 1,
+            message: {
+              messageId: MessageId.make(`message:compact-routing:${index}`),
+              text: testCase.text,
+              attachments: testCase.attachments,
+              createdBy: "user",
+              creationSource: "web",
             },
-          },
-        });
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+            ...(testCase.idleCompaction ? { idleCompaction: true } : {}),
+            runtimePolicy: {
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: process.cwd(),
+              approvalPolicy: "never",
+              sandboxPolicy: {
+                type: "readOnly",
+                access: { type: "fullAccess" },
+                networkAccess: false,
+              },
+            },
+          })
+          .pipe(Effect.ignore);
       }
       assert.deepEqual(
         calls,
-        cases.map((testCase) => testCase.expected),
+        cases.flatMap((testCase) => (testCase.expected === undefined ? [] : [testCase.expected])),
       );
     }).pipe(Effect.provide(layerRunExecutionTest)),
 );
