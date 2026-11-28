@@ -5,6 +5,7 @@ import {
   type ServerProvider,
   UsageLimitSourceError,
   type UsageLimitSourceSnapshot,
+  UsageLimitSourceId,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -110,6 +111,8 @@ function testLayer(input: {
   readonly separateCodexHub?: boolean;
   readonly unpinError?: UsageLimitSourceError;
   readonly previousHubUnavailable?: boolean;
+  // An HTTP quota source beside the hub, as the private Antigravity source serves.
+  readonly quotaSource?: UsageLimitSourceSnapshot;
 }) {
   const runsCodex = input.codex || input.separateCodexHub;
   const current = input.separateCodexHub
@@ -124,6 +127,7 @@ function testLayer(input: {
     : input.codex
       ? withCodex
       : snapshots;
+  const sources = input.quotaSource ? [...current, input.quotaSource] : current;
   return Layer.mergeAll(
     Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
       getInstance: () =>
@@ -140,8 +144,8 @@ function testLayer(input: {
       getProviders: Effect.succeed(runsCodex ? [provider, codexProvider] : [provider]),
     }),
     Layer.mock(UsageLimitSources.UsageLimitSources)({
-      current: Effect.succeed(current),
-      streamChanges: Stream.make(current),
+      current: Effect.succeed(sources),
+      streamChanges: Stream.make(sources),
       routerAlias: () => Effect.succeed((alias) => input.renamed?.[alias] ?? alias),
       removedEndAlias: (_sourceId, _hub, alias) => Effect.succeed(input.renamed?.[alias] ?? alias),
       hub: (id) =>
@@ -286,6 +290,8 @@ function setAccount(input: {
   readonly separateCodexHub?: boolean;
   readonly unpinError?: UsageLimitSourceError;
   readonly previousHubUnavailable?: boolean;
+  // An HTTP quota source beside the hub, as the private Antigravity source serves.
+  readonly quotaSource?: UsageLimitSourceSnapshot;
 }) {
   const pins: Array<Parameters<UsageLimitSources.UsageLimitSources["Service"]["pin"]>[1]> = [];
   const commands: OrchestrationV2ServerCommand[] = [];
@@ -968,6 +974,50 @@ describe("ThreadAccountService agent controls", () => {
         ),
       );
     },
+  );
+});
+
+describe("ThreadAccountService.usage", () => {
+  it.effect("shows an HTTP quota source's readings with their age", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const service = yield* ThreadAccountService.make;
+      const usage = yield* service.usage({});
+      expect(usage.hubs.find((hub) => hub.sourceId === "antigravity")).toMatchObject({
+        accounts: [],
+        quotaAccounts: [
+          {
+            id: "neon",
+            label: "Neon",
+            readAt: "2026-11-14T09:00:00.000Z",
+            ageMinutes: 180,
+            refreshable: true,
+            windows: [{ label: "Weekly", usedPercent: 40 }],
+          },
+        ],
+      });
+    }).pipe(
+      Effect.provide(
+        testLayer({
+          quotaSource: {
+            id: UsageLimitSourceId.make("antigravity"),
+            kind: "http",
+            label: "Antigravity",
+            checkedAt: "2026-11-14T12:00:00.000Z",
+            accounts: [],
+            quotaAccounts: [
+              {
+                id: "neon",
+                label: "Neon",
+                readAt: "2026-11-14T09:00:00.000Z",
+                refreshable: true,
+                windows: [{ id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 40 }],
+              },
+            ],
+          } as unknown as UsageLimitSourceSnapshot,
+        }),
+      ),
+    ),
   );
 });
 

@@ -219,6 +219,29 @@ export const hubSourceOf = (
   return hubs.length === 1 ? hubs[0]! : null;
 };
 
+// Fork: an HTTP quota reading with its age, since its source may read it only every few hours.
+const quotaSummary = (
+  account: NonNullable<UsageLimitSourceSnapshot["quotaAccounts"]>[number],
+  now: number,
+) => {
+  const readAt = account.readAt === undefined ? Number.NaN : Date.parse(account.readAt);
+  return {
+    id: account.id,
+    label: account.label,
+    ...(account.readAt === undefined ? {} : { readAt: account.readAt }),
+    ...(Number.isNaN(readAt)
+      ? {}
+      : { ageMinutes: Math.max(0, Math.floor((now - readAt) / 60_000)) }),
+    ...(account.refreshable === undefined ? {} : { refreshable: account.refreshable }),
+    ...(account.refreshAfter === undefined ? {} : { refreshAfter: account.refreshAfter }),
+    windows: account.windows.map((window) => ({
+      label: window.label,
+      usedPercent: window.usedPercent,
+      ...(window.resetsAt ? { resetsAt: window.resetsAt } : {}),
+    })),
+  };
+};
+
 const usageSummary = (limits: ServerProviderUsageLimits) => ({
   checkedAt: limits.checkedAt,
   windows: limits.windows.map((window) => ({
@@ -1021,6 +1044,7 @@ export const make = Effect.gen(function* () {
           ]
         : [],
     );
+    const now = yield* Clock.currentTimeMillis;
     const hubs = yield* Effect.forEach(
       snapshots,
       (source) =>
@@ -1045,6 +1069,13 @@ export const make = Effect.gen(function* () {
                   : {}),
                 ...usageSummary(account.usageLimits),
               })),
+              ...(source.quotaAccounts
+                ? {
+                    quotaAccounts: source.quotaAccounts.map((account) =>
+                      quotaSummary(account, now),
+                    ),
+                  }
+                : {}),
               routing: routes && namedRouting(routes, namer(accounts)),
             };
           }),

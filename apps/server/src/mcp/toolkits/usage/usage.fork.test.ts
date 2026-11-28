@@ -13,6 +13,7 @@ import { McpSchema, McpServer } from "effect/ai";
 
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadAccountService from "../../../usage/ThreadAccountService.ts";
+import * as UsageLimitSources from "../../../usage/UsageLimitSources.ts";
 import { advertisedJsonSchema } from "../../advertisedJsonSchema.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -86,6 +87,15 @@ const layer = (
           }),
       }),
     ),
+    Layer.provide(
+      Layer.mock(UsageLimitSources.UsageLimitSources)({
+        refreshHttpQuota: (input) =>
+          Effect.sync(() => {
+            calls.push({ refresh: input });
+            return { outcome: "refreshed" as const };
+          }),
+      }),
+    ),
   );
 
 const account = "account-2222222222222222";
@@ -108,6 +118,11 @@ it.effect.each([
   },
   { action: "end", args: { account, endsAt: null }, call: { end: { account, endsAt: null } } },
   { action: "redeem", args: { account }, call: { redeem: { account } } },
+  {
+    action: "refresh",
+    args: { sourceId: "antigravity", accountId: "neon" },
+    call: { refresh: { sourceId: "antigravity", accountId: "neon" } },
+  },
 ])("$action needs a caller that can control threads, not full access", ({ action, args, call }) => {
   const calls: Array<unknown> = [];
   return Effect.gen(function* () {

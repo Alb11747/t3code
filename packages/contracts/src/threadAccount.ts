@@ -275,6 +275,22 @@ export type AccountUsageSummary = typeof AccountUsageSummary.Type;
 export const ThreadAccountUsageInput = Schema.Struct({ threadId: Schema.optional(ThreadId) });
 export type ThreadAccountUsageInput = typeof ThreadAccountUsageInput.Type;
 
+/**
+ * Fork: an account an HTTP quota source reads, such as Antigravity, which the source may read only
+ * every few hours. `ageMinutes` is how old the reading was when this answer was built.
+ */
+export const HttpQuotaUsageSummary = Schema.Struct({
+  id: Schema.String,
+  label: Schema.String,
+  readAt: Schema.optional(IsoDateTime),
+  ageMinutes: Schema.optional(Schema.Number),
+  /** Whether `t3_usage` `refresh` can ask the source to read it again. */
+  refreshable: Schema.optional(Schema.Boolean),
+  /** The source refuses refreshes until then. */
+  refreshAfter: Schema.optional(IsoDateTime),
+  windows: Schema.Array(UsageWindowSummary),
+});
+
 /** Every account's usage and each hub's routing; `thread` only when one was asked about. */
 export const ThreadAccountUsage = Schema.Struct({
   /** Whether the user lets agents redeem reset credits. */
@@ -288,6 +304,8 @@ export const ThreadAccountUsage = Schema.Struct({
       label: Schema.String,
       error: Schema.optional(Schema.String),
       accounts: Schema.Array(AccountUsageSummary),
+      /** Fork: an HTTP quota source's readings, which it keeps apart from `accounts`. */
+      quotaAccounts: Schema.optional(Schema.Array(HttpQuotaUsageSummary)),
       /** Null when the hub has no quota router to read. */
       routing: routingNaming(AccountName),
     }),

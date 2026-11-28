@@ -2,6 +2,7 @@ import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import * as ThreadAccountService from "../../../usage/ThreadAccountService.ts";
+import * as UsageLimitSources from "../../../usage/UsageLimitSources.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { readCaller, readThread } from "../../threadAccess.ts";
@@ -15,6 +16,7 @@ const missing = (name: string) =>
 
 const make = Effect.gen(function* () {
   const accounts = yield* ThreadAccountService.ThreadAccounts;
+  const sources = yield* UsageLimitSources.UsageLimitSources;
   const done = { done: true } as const;
   return {
     t3_usage: McpToolAccess.either(
@@ -47,7 +49,7 @@ const make = Effect.gen(function* () {
               return done;
             }),
         ),
-        // Steers, ends and redemptions act on accounts every thread shares, not on one thread.
+        // Steers, ends, redemptions and quota refreshes act on accounts every thread shares.
         McpToolAccess.writes(
           (input) =>
             Effect.gen(function* () {
@@ -70,6 +72,21 @@ const make = Effect.gen(function* () {
                   });
                 }
                 return yield* accounts.redeem({ account: input.account, ...credit });
+              }
+              if (input.action === "refresh") {
+                if (input.sourceId === undefined) return yield* missing("sourceId");
+                if (input.accountId === undefined) return yield* missing("accountId");
+                return yield* sources
+                  .refreshHttpQuota({ sourceId: input.sourceId, accountId: input.accountId })
+                  .pipe(
+                    Effect.mapError(
+                      (error) =>
+                        new OrchestratorMcpFailure({
+                          code: "provider_unavailable",
+                          message: error.detail,
+                        }),
+                    ),
+                  );
               }
               if (input.action === "end") {
                 if (!input.account) return yield* missing("account");
