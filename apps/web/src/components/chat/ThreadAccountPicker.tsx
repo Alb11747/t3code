@@ -16,7 +16,7 @@ import {
   threadAccountChoiceResumesAt,
 } from "@t3tools/contracts";
 import { ArrowRightIcon, CheckIcon, ChevronDownIcon } from "lucide-react";
-import { useEffectEvent, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 
 import { useDeadlinePassed } from "../../hooks/useDeadline";
 
