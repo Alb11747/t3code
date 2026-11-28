@@ -134,6 +134,24 @@ export class UsageLimitSources extends Context.Service<
 >()("t3/usage/UsageLimitSources") {}
 
 const LISTING_TIMEOUT = "3 seconds";
+// The background refresh runs only for a foreground client on an unlocked host, but agents read
+// accounts with nobody watching (a launch that names one resolves it here), so a snapshot this old
+// refreshes regardless. Without it, a startup read whose router had not listed its aliases yet
+// stayed for hours and refused every account-named launch.
+const IDLE_REFRESH_MS = 15 * 60_000;
+// Bounds a whole refresh, which holds the refresh lock; each hub call has its own shorter limit.
+const REFRESH_TIMEOUT = "2 minutes";
+
+/** A listing's account names; pace numbers in it change on every read. */
+const listingNames = (listing: RouterListing) =>
+  JSON.stringify(
+    listing?.map((entry) => [
+      entry.account,
+      entry.provider,
+      entry.auth_index,
+      entry.legacy_account,
+    ]) ?? listing,
+  );
 
 function sourceLabel(id: string, config: UsageLimitSourceConfig): string {
   if (config.label) return config.label;
@@ -212,7 +230,7 @@ export const make = Effect.gen(function* () {
     UsageLimitSourceId,
     { readonly listing: RouterListing; readonly legacyOf: ReadonlyMap<string, string> }
   >();
-  // Whether the listing changed from an earlier one.
+  // Whether the listing's account names changed from an earlier one.
   const observe = (sourceId: UsageLimitSourceId, listing: RouterListing) => {
     const previous = routerNames.get(sourceId);
     const legacyOf = new Map(previous?.legacyOf);
@@ -220,7 +238,7 @@ export const make = Effect.gen(function* () {
       if (entry.legacy_account) legacyOf.set(entry.account, entry.legacy_account);
     }
     routerNames.set(sourceId, { listing, legacyOf });
-    return previous !== undefined && !Equal.equals(previous.listing, listing);
+    return previous !== undefined && listingNames(previous.listing) !== listingNames(listing);
   };
   // A failed or slow read keeps the last listing; a hub never read (or without a router) computes
   // aliases. Bounded like other control reads, since every account read of the refresh waits on it.
@@ -327,6 +345,7 @@ export const make = Effect.gen(function* () {
 
   // Serialize refreshes so slow old-settings reads cannot resurrect removed sources after newer refreshes.
   const refreshLock = yield* Semaphore.make(1);
+  let refreshedAt = Number.NEGATIVE_INFINITY;
   const refresh = Effect.gen(function* () {
     const settings = yield* settingsService.getSettings.pipe(
       Effect.orElseSucceed((): ServerSettings | null => null),
@@ -340,7 +359,12 @@ export const make = Effect.gen(function* () {
       { concurrency: 4 },
     );
     yield* publish(keepLastGoodReadings(yield* Ref.get(stateRef), snapshots));
-  }).pipe(refreshLock.withPermits(1), Effect.ignoreCause({ log: true }));
+    refreshedAt = yield* Clock.currentTimeMillis;
+  }).pipe(
+    Effect.timeout(REFRESH_TIMEOUT),
+    refreshLock.withPermits(1),
+    Effect.ignoreCause({ log: "Warn", message: "Could not refresh usage limit sources." }),
+  );
 
   const refreshHttpQuota = Effect.fn("UsageLimitSources.refreshHttpQuota")(function* ({
     sourceId,
@@ -563,6 +587,12 @@ export const make = Effect.gen(function* () {
         Duration.isPositive(current)
           ? backgroundPolicy.shouldRunScopeWork({ type: "provider-status" })
           : Effect.succeed(false),
+      ),
+      Effect.flatMap((shouldRun) =>
+        Effect.map(
+          Clock.currentTimeMillis,
+          (now) => shouldRun || now - refreshedAt >= IDLE_REFRESH_MS,
+        ),
       ),
       Effect.flatMap((shouldRun) => (shouldRun ? refresh : Effect.void)),
       Effect.ignoreCause({ log: true }),
