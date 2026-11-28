@@ -33,75 +33,86 @@ const make = Effect.gen(function* () {
         }),
       ),
       McpToolAccess.either(
-        (input) => input.action === "margin",
-        // A margin override changes one thread's routing, like pinning it.
-        McpToolAccess.writesThreads(
-          (input) => [input.threadId],
-          (input) =>
-            Effect.gen(function* () {
-              if (input.headroomScale === undefined) return yield* missing("headroomScale");
-              const { projection } = yield* readThread(input.threadId);
-              yield* accounts.margin({
-                threadId: projection.thread.id,
-                headroomScale: input.headroomScale,
-                ...(input.until === undefined ? {} : { until: input.until }),
-              });
-              return done;
-            }),
+        (input) => input.action === "refresh",
+        // The RPC needs provider management: a refresh sends the source's management key and can
+        // run the provider's CLI. Only a T3 thread with the broadest modes stands in for that.
+        McpToolAccess.writesOwnerWork("refresh provider quota readings", (input) =>
+          Effect.gen(function* () {
+            yield* McpInvocationContext.requireThreadScope(
+              yield* McpInvocationContext.McpInvocationContext,
+              "Refreshing provider quota readings",
+            );
+            if (input.sourceId === undefined) return yield* missing("sourceId");
+            if (input.accountId === undefined) return yield* missing("accountId");
+            return yield* sources
+              .refreshHttpQuota({ sourceId: input.sourceId, accountId: input.accountId })
+              .pipe(
+                Effect.mapError(
+                  (error) =>
+                    new OrchestratorMcpFailure({
+                      code: "provider_unavailable",
+                      message: error.detail,
+                    }),
+                ),
+              );
+          }),
         ),
-        // Steers, ends, redemptions and quota refreshes act on accounts every thread shares.
-        McpToolAccess.writes(
-          (input) =>
-            Effect.gen(function* () {
-              if (input.action === "redeem") {
-                // Plan mode makes no lasting changes, and a redeemed reset cannot be undone.
-                if ((yield* readCaller()).limits.interactionMode === "plan") {
-                  return yield* new OrchestratorMcpFailure({
-                    code: "interaction_mode_escalation_denied",
-                    message: "A plan-mode thread cannot redeem reset credits.",
-                  });
-                }
-                const credit = input.creditId === undefined ? {} : { creditId: input.creditId };
-                if (input.instanceId !== undefined) {
-                  return yield* accounts.redeem({ instanceId: input.instanceId, ...credit });
-                }
-                if (!input.account) {
-                  return yield* new OrchestratorMcpFailure({
-                    code: "invalid_request",
-                    message: "This action needs `instanceId` or `account`.",
-                  });
-                }
-                return yield* accounts.redeem({ account: input.account, ...credit });
-              }
-              if (input.action === "refresh") {
-                if (input.sourceId === undefined) return yield* missing("sourceId");
-                if (input.accountId === undefined) return yield* missing("accountId");
-                return yield* sources
-                  .refreshHttpQuota({ sourceId: input.sourceId, accountId: input.accountId })
-                  .pipe(
-                    Effect.mapError(
-                      (error) =>
-                        new OrchestratorMcpFailure({
-                          code: "provider_unavailable",
-                          message: error.detail,
-                        }),
-                    ),
-                  );
-              }
-              if (input.action === "end") {
-                if (!input.account) return yield* missing("account");
-                if (input.endsAt === undefined) return yield* missing("endsAt");
-                yield* accounts.end({ account: input.account, endsAt: input.endsAt });
+        McpToolAccess.either(
+          (input) => input.action === "margin",
+          // A margin override changes one thread's routing, like pinning it.
+          McpToolAccess.writesThreads(
+            (input) => [input.threadId],
+            (input) =>
+              Effect.gen(function* () {
+                if (input.headroomScale === undefined) return yield* missing("headroomScale");
+                const { projection } = yield* readThread(input.threadId);
+                yield* accounts.margin({
+                  threadId: projection.thread.id,
+                  headroomScale: input.headroomScale,
+                  ...(input.until === undefined ? {} : { until: input.until }),
+                });
                 return done;
-              }
-              if (input.account === undefined) return yield* missing("account");
-              yield* accounts.steer({
-                account: input.account,
-                ...(input.provider === undefined ? {} : { provider: input.provider }),
-              });
-              return done;
-            }),
-          { linkedCallers: { refused: "change this environment's accounts" } },
+              }),
+          ),
+          // Steers, ends and redemptions act on accounts every thread shares, not on one thread.
+          McpToolAccess.writes(
+            (input) =>
+              Effect.gen(function* () {
+                if (input.action === "redeem") {
+                  // Plan mode makes no lasting changes, and a redeemed reset cannot be undone.
+                  if ((yield* readCaller()).limits.interactionMode === "plan") {
+                    return yield* new OrchestratorMcpFailure({
+                      code: "interaction_mode_escalation_denied",
+                      message: "A plan-mode thread cannot redeem reset credits.",
+                    });
+                  }
+                  const credit = input.creditId === undefined ? {} : { creditId: input.creditId };
+                  if (input.instanceId !== undefined) {
+                    return yield* accounts.redeem({ instanceId: input.instanceId, ...credit });
+                  }
+                  if (!input.account) {
+                    return yield* new OrchestratorMcpFailure({
+                      code: "invalid_request",
+                      message: "This action needs `instanceId` or `account`.",
+                    });
+                  }
+                  return yield* accounts.redeem({ account: input.account, ...credit });
+                }
+                if (input.action === "end") {
+                  if (!input.account) return yield* missing("account");
+                  if (input.endsAt === undefined) return yield* missing("endsAt");
+                  yield* accounts.end({ account: input.account, endsAt: input.endsAt });
+                  return done;
+                }
+                if (input.account === undefined) return yield* missing("account");
+                yield* accounts.steer({
+                  account: input.account,
+                  ...(input.provider === undefined ? {} : { provider: input.provider }),
+                });
+                return done;
+              }),
+            { linkedCallers: { refused: "change this environment's accounts" } },
+          ),
         ),
       ),
     ),

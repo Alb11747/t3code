@@ -47,10 +47,18 @@ const client = McpSchema.McpServerClient.of({
   getClient: Effect.die("unused"),
 });
 
-const callTool = (args: object, capabilities = scope.capabilities) =>
+const callTool = (
+  args: object,
+  capabilities = scope.capabilities,
+  thread: McpInvocationContext.McpInvocationScope["thread"] | null = scope.thread,
+) =>
   McpServer.McpServer.pipe(
     Effect.flatMap((server) => server.callTool({ name: "t3_usage", arguments: args })),
-    Effect.provideService(McpInvocationContext.McpInvocationContext, { ...scope, capabilities }),
+    Effect.provideService(McpInvocationContext.McpInvocationContext, {
+      ...scope,
+      capabilities,
+      thread: thread ?? undefined,
+    }),
     Effect.provideService(McpSchema.McpServerClient, client),
   );
 
@@ -118,11 +126,6 @@ it.effect.each([
   },
   { action: "end", args: { account, endsAt: null }, call: { end: { account, endsAt: null } } },
   { action: "redeem", args: { account }, call: { redeem: { account } } },
-  {
-    action: "refresh",
-    args: { sourceId: "antigravity", accountId: "neon" },
-    call: { refresh: { sourceId: "antigravity", accountId: "neon" } },
-  },
 ])("$action needs a caller that can control threads, not full access", ({ action, args, call }) => {
   const calls: Array<unknown> = [];
   return Effect.gen(function* () {
@@ -152,4 +155,27 @@ it.effect.each([
     expect(failureCode(result)).toBe(refused ? "interaction_mode_escalation_denied" : undefined);
     expect(calls).toHaveLength(refused ? 0 : 1);
   }).pipe(Effect.provide(layer("approval-required", calls, "plan")));
+});
+
+// A refresh sends the source's management key and can run the provider's CLI, which the RPC
+// leaves to provider managers.
+it.effect.each([
+  { caller: "an approval-required thread", runtimeMode: "approval-required", refused: true },
+  { caller: "a plan-mode thread", runtimeMode: "full-access", plan: true, refused: true },
+  { caller: "a client outside T3", runtimeMode: "full-access", outside: true, refused: true },
+  { caller: "a full-access thread", runtimeMode: "full-access", refused: false },
+] as const)("refreshes a quota reading only for $caller with full access", (row) => {
+  const calls: Array<unknown> = [];
+  const args = { action: "refresh", sourceId: "antigravity", accountId: "neon" };
+  return Effect.gen(function* () {
+    const result = yield* callTool(
+      args,
+      scope.capabilities,
+      "outside" in row ? null : scope.thread,
+    );
+    expect(result.isError === true).toBe(row.refused);
+    expect(calls).toEqual(
+      row.refused ? [] : [{ refresh: { sourceId: "antigravity", accountId: "neon" } }],
+    );
+  }).pipe(Effect.provide(layer(row.runtimeMode, calls, "plan" in row ? "plan" : "default")));
 });

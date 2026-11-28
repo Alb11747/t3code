@@ -225,13 +225,14 @@ const quotaSummary = (
   now: number,
 ) => {
   const readAt = account.readAt === undefined ? Number.NaN : Date.parse(account.readAt);
+  // A reading from the future (a skewed clock) has no age an agent could trust.
   return {
     id: account.id,
     label: account.label,
-    ...(account.readAt === undefined ? {} : { readAt: account.readAt }),
-    ...(Number.isNaN(readAt)
+    ...(Number.isNaN(readAt) ? {} : { readAt: account.readAt }),
+    ...(Number.isNaN(readAt) || readAt > now
       ? {}
-      : { ageMinutes: Math.max(0, Math.floor((now - readAt) / 60_000)) }),
+      : { ageMinutes: Math.floor((now - readAt) / 60_000) }),
     ...(account.refreshable === undefined ? {} : { refreshable: account.refreshable }),
     ...(account.refreshAfter === undefined ? {} : { refreshAfter: account.refreshAfter }),
     windows: account.windows.map((window) => ({
